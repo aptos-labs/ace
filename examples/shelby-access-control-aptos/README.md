@@ -23,6 +23,7 @@ shelby-access-control-aptos/
 └── demo-cli-flow/           # TypeScript demo CLI
     ├── src/
     │   ├── test-localnet.ts  # Full e2e test on localnet
+    │   ├── test-testnet.ts   # Full e2e test on testnet
     │   ├── policy.ts         # Access policy types (mirrors Move structs)
     │   └── utils.ts          # Helper functions
     └── package.json
@@ -34,7 +35,7 @@ shelby-access-control-aptos/
 
 1. **Aptos CLI** - Install from [Aptos CLI docs](https://aptos.dev/tools/aptos-cli/install-cli/)
 2. **Node.js** (v18+) and **pnpm**
-3. **ACE Workers** - Local workers for localnet testing
+3. **ACE Workers** - Local workers for localnet testing (testnet uses public workers)
 
 ### Run Against Localnet
 
@@ -90,6 +91,26 @@ If your workers are running on different ports:
 
 ```bash
 WORKER_0=http://localhost:9000 WORKER_1=http://localhost:9001 pnpm test:localnet
+```
+
+### Run Against Testnet
+
+This runs the e2e test against Aptos testnet using the already-deployed contract and public ACE workers.
+
+```bash
+cd examples/shelby-access-control-aptos/demo-cli-flow
+pnpm test:testnet
+```
+
+The script will:
+1. Generate test accounts (Alice and Bob)
+2. **Pause and prompt you to fund the accounts** via the [Aptos testnet faucet](https://aptos.dev/en/network/faucet)
+3. Continue with the e2e test flow (encrypt, register, grant access, decrypt)
+
+This test uses public ACE workers by default. To use custom workers:
+
+```bash
+WORKER_0=https://my-worker-0.example.com WORKER_1=https://my-worker-1.example.com pnpm test:testnet
 ```
 
 ## How It Works

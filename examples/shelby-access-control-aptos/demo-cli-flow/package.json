@@ -9,6 +9,7 @@
     "demo": "tsx src/demo.ts",
     "localnet": "aptos node run-local-testnet --with-faucet --force-restart",
     "test:localnet": "tsx src/test-localnet.ts",
+    "test:testnet": "tsx src/test-testnet.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

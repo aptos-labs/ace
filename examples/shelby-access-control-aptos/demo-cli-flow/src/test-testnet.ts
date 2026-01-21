@@ -2,25 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Shelby Access Control - Localnet End-to-End Test
+ * Shelby Access Control - Testnet End-to-End Test
  * 
- * This script demonstrates the complete flow of the Shelby Access Control system:
- * 1. Deploy the Move contract to Aptos localnet
+ * This script demonstrates the complete flow of the Shelby Access Control system on testnet:
+ * 1. Assumes the Move contract is already deployed to Aptos testnet
  * 2. Alice (content owner) encrypts data and registers a blob with restricted access
  * 3. Bob (consumer) attempts to decrypt without permission (fails)
  * 4. Alice grants Bob permission by updating the access policy
  * 5. Bob successfully decrypts the content
  * 
  * Prerequisites:
- * 1. Start Aptos localnet: pnpm localnet
- * 2. Start ACE workers: 
- *    - Terminal 1: cd worker && pnpm start:worker0
- *    - Terminal 2: cd worker && pnpm start:worker1
- * 3. Run this test: pnpm test:localnet
+ * 1. Deploy the contract to testnet first: 
+ *    cd ../contract && aptos move publish --network testnet --named-addresses admin=default
+ * 2. Run this test: pnpm test:testnet
+ * 
+ * Note: This test uses public ACE workers by default. Override with WORKER_0/WORKER_1 env vars.
  */
 
-import { execSync } from "child_process";
-import { Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
+import * as readline from "readline";
+import { Account, AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { ace as ACE, Result } from "@aptos-labs/ace-sdk";
 import { AccessPolicy, RegistrationInfo, regsToBytes } from "./policy";
 
@@ -29,11 +29,9 @@ import { AccessPolicy, RegistrationInfo, regsToBytes } from "./policy";
 // ============================================================================
 
 /**
- * Fixed deployer private key for reproducible deployments.
- * The corresponding address (derived from this key) must match the 'admin' 
- * address in Move.toml for the contract to deploy correctly.
+ * Contract address on testnet (matches 'admin' in Move.toml).
  */
-const DEPLOYER_PRIVATE_KEY_HEX = "0x1111111111111111111111111111111111111111111111111111111111111111";
+const CONTRACT_ADDRESS = "0x147e4d3a5b10eaed2a93536e284c23096dfcea9ac61f0a8420e5d01fbd8f0ea8";
 
 // Text encoding utilities for converting between strings and bytes
 const textEncoder = new TextEncoder();
@@ -51,21 +49,21 @@ function log(...args: any[]) {
 }
 
 /**
- * Fund an account using the localnet faucet.
- * 
- * @param address - The account address to fund
- * @param amount - Amount in octas (1 APT = 100,000,000 octas)
+ * Wait for the user to press Enter to continue.
+ * Used to pause execution while user manually funds accounts.
  */
-async function fundViaFaucet(address: AccountAddress, amount: number): Promise<void> {
-    const faucetUrl = "http://localhost:8081";
-    const response = await fetch(`${faucetUrl}/mint?amount=${amount}&address=${address.toStringLong()}`, {
-        method: "POST",
+async function waitForEnter(message: string): Promise<void> {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
     });
-    if (!response.ok) {
-        throw new Error(`Faucet request failed: ${response.status} ${await response.text()}`);
-    }
-    // Wait for the transaction to be processed by the node
-    await new Promise(r => setTimeout(r, 2000));
+
+    return new Promise((resolve) => {
+        rl.question(message, () => {
+            rl.close();
+            resolve();
+        });
+    });
 }
 
 /**
@@ -100,76 +98,29 @@ async function runTxn(
 // ============================================================================
 
 async function main() {
-    log("=== Shelby Access Control - Aptos Localnet Test ===");
+    log("=== Shelby Access Control - Aptos Testnet Test ===");
+    log(`Contract address: ${CONTRACT_ADDRESS}`);
     
     // ========================================================================
-    // Step 1: Connect to Localnet
+    // Step 2: Connect to Testnet
     // ========================================================================
     
     const aptos = new Aptos(new AptosConfig({
-        network: Network.LOCAL,
-        fullnode: "http://localhost:8080/v1",
-        faucet: "http://localhost:8081",
+        network: Network.TESTNET,
     }));
     
-    // Verify localnet is running
+    // Verify testnet connectivity
     try {
-        await aptos.getLedgerInfo();
-        log("✓ Connected to Aptos localnet");
-    } catch {
-        console.error("ERROR: Localnet not running. Start it first with: pnpm localnet");
-        process.exit(1);
-    }
-    
-    // ========================================================================
-    // Step 2: Setup Deployer Account
-    // ========================================================================
-    
-    // Create deployer from fixed private key (matches 'admin' in Move.toml)
-    const deployerPrivateKey = new Ed25519PrivateKey(DEPLOYER_PRIVATE_KEY_HEX);
-    console.log("deployerPrivateKey", deployerPrivateKey.toString());
-    const deployer = Account.fromPrivateKey({ privateKey: deployerPrivateKey });
-    console.log("publicKey", deployer.publicKey.toString());
-    log(`Deployer address: ${deployer.accountAddress.toStringLong()}`);
-    log(`(This address must match 'admin' in Move.toml)`);
-    
-    // Fund the deployer account
-    log("Funding deployer account...");
-    await fundViaFaucet(deployer.accountAddress, 500_000_000); // 5 APT
-    log("✓ Deployer funded");
-    
-    // ========================================================================
-    // Step 3: Deploy and Initialize Contract
-    // ========================================================================
-    
-    log("Deploying Move contract...");
-    const contractDir = new URL("../../contract", import.meta.url).pathname;
-    try {
-        // Clean build directory to avoid cached compilation issues
-        execSync(`rm -rf build`, { cwd: contractDir, stdio: "inherit" });
-        // Deploy the contract using Aptos CLI
-        execSync(
-            `aptos move publish --language-version 2.2 --assume-yes --url http://localhost:8080 --private-key ${deployer.privateKey.toString()}`,
-            { cwd: contractDir, stdio: "inherit" }
-        );
+        const ledgerInfo = await aptos.getLedgerInfo();
+        log(`✓ Connected to Aptos testnet (chain_id: ${ledgerInfo.chain_id})`);
     } catch (e) {
-        console.error("Failed to deploy contract:", e);
+        console.error("ERROR: Failed to connect to Aptos testnet");
+        console.error(e);
         process.exit(1);
     }
-    log("✓ Contract deployed");
-    
-    // Wait for the indexer to catch up
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const CONTRACT_ADDRESS = deployer.accountAddress.toStringLong();
-    
-    // Initialize the access control module
-    log("Initializing contract...");
-    await runTxn(aptos, deployer, `${CONTRACT_ADDRESS}::access_control::initialize`, []);
-    log("✓ Contract initialized");
     
     // ========================================================================
-    // Step 4: Create Test Accounts
+    // Step 3: Create Test Accounts
     // ========================================================================
     
     // Alice: Content owner who will encrypt and register a blob
@@ -180,19 +131,48 @@ async function main() {
     log(`Alice (owner): ${alice.accountAddress.toStringLong()}`);
     log(`Bob (consumer): ${bob.accountAddress.toStringLong()}`);
     
-    // Fund test accounts
-    log("Funding test accounts...");
-    await fundViaFaucet(alice.accountAddress, 100_000_000); // 1 APT
-    await fundViaFaucet(bob.accountAddress, 100_000_000);   // 1 APT
-    log("✓ Test accounts funded");
+    // ========================================================================
+    // Step 4: Wait for Manual Funding
+    // ========================================================================
+    
+    console.log("\n" + "=".repeat(70));
+    console.log("MANUAL FUNDING REQUIRED");
+    console.log("=".repeat(70));
+    console.log("\nPlease fund the following accounts using the Aptos testnet faucet:");
+    console.log("Faucet URL: https://aptos.dev/en/network/faucet\n");
+    console.log(`  Alice: ${alice.accountAddress.toStringLong()}`);
+    console.log(`  Bob:   ${bob.accountAddress.toStringLong()}`);
+    console.log("\nEach account needs at least 0.1 APT for transaction fees.");
+    console.log("=".repeat(70) + "\n");
+    
+    await waitForEnter("Press Enter once both accounts have been funded...");
+    
+    // Verify accounts are funded
+    log("Verifying account balances...");
+    try {
+        const aliceBalance = await aptos.getAccountAPTAmount({ accountAddress: alice.accountAddress });
+        const bobBalance = await aptos.getAccountAPTAmount({ accountAddress: bob.accountAddress });
+        log(`  Alice balance: ${aliceBalance / 100_000_000} APT`);
+        log(`  Bob balance: ${bobBalance / 100_000_000} APT`);
+        
+        if (aliceBalance === 0 || bobBalance === 0) {
+            console.error("ERROR: One or both accounts have zero balance. Please fund them first.");
+            process.exit(1);
+        }
+        log("✓ Accounts funded");
+    } catch (e) {
+        console.error("ERROR: Failed to check account balances. Make sure accounts are funded.");
+        console.error(e);
+        process.exit(1);
+    }
     
     // ========================================================================
     // Step 5: Setup ACE Committee
     // ========================================================================
     
-    // Worker endpoints - configurable via environment variables
-    const worker0 = process.env.WORKER_0 ?? "http://localhost:9000";
-    const worker1 = process.env.WORKER_1 ?? "http://localhost:9001";
+    // Worker endpoints - use public test workers by default, configurable via environment variables
+    const worker0 = process.env.WORKER_0 ?? "https://ace-worker-0-646682240579.europe-west1.run.app";
+    const worker1 = process.env.WORKER_1 ?? "https://ace-worker-1-646682240579.europe-west1.run.app";
     log(`Using ACE workers: ${worker0}, ${worker1}`);
     
     // Create the committee configuration
@@ -206,9 +186,9 @@ async function main() {
     log("Fetching IBE encryption key from workers...");
     const encryptionKeyFetchResult = await ACE.EncryptionKey.fetch({ committee });
     if (!encryptionKeyFetchResult.isOk) {
-        console.error("ERROR: Failed to fetch encryption key. Are workers running?");
-        console.error("Start workers with: cd worker && pnpm start:worker0 (and worker1)");
+        console.error("ERROR: Failed to fetch encryption key from workers.");
         console.error(encryptionKeyFetchResult);
+        console.error(encryptionKeyFetchResult.extra['mpkFetchResults'][0]);
         process.exit(1);
     }
     const encryptionKey = encryptionKeyFetchResult.okValue!;
@@ -310,7 +290,7 @@ async function main() {
     await runTxn(aptos, alice, `${CONTRACT_ADDRESS}::access_control::force_update_policy`, [fileName, newPolicy]);
     log("✓ Permission granted to Bob");
     
-    // Wait for state to propagate (localnet indexer may have slight delay)
+    // Wait for state to propagate
     log("Waiting for state propagation...");
     await new Promise(resolve => setTimeout(resolve, 3000));
     
@@ -344,7 +324,7 @@ async function main() {
     log("=== All tests passed! ===");
     log("");
     log("Summary:");
-    log("  1. ✓ Deployed access_control contract to localnet");
+    log("  1. ✓ Connected to Aptos testnet");
     log("  2. ✓ Alice encrypted content with ACE");
     log("  3. ✓ Alice registered blob with empty allowlist");
     log("  4. ✓ Bob was denied decryption (not in allowlist)");
@@ -354,3 +334,4 @@ async function main() {
 
 // Run the main function and handle any errors
 main().catch(console.error);
+

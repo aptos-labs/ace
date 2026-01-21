@@ -78,6 +78,7 @@ Alice picks a committee of workers and encrypts her album.
 import { ace } from "@aptos-labs/ace-sdk";
 
 // Alice picks a decryption committee (e.g., 2-of-2 threshold)
+// For testing, you can use the public test workers (see below)
 const committee = new ace.Committee({
   workerEndpoints: ["https://worker1.example.com", "https://worker2.example.com"],
   threshold: 2,
@@ -155,6 +156,27 @@ const albumData = ace.decrypt({
 |---------|-------|-------------|
 | [Aptos Access Control](./examples/shelby-access-control-aptos) | Aptos | Allowlist-based encryption with Move contract |
 | [Solana Access Control](./examples/shelby-access-control-solana) | Solana | Pay-to-download with Anchor programs |
+
+### Public Test Workers
+
+Two public test workers are available for development and testing:
+
+| Worker | Endpoint |
+|--------|----------|
+| Worker 0 | `https://ace-worker-0-646682240579.europe-west1.run.app` |
+| Worker 1 | `https://ace-worker-1-646682240579.europe-west1.run.app` |
+
+```typescript
+const committee = new ace.Committee({
+  workerEndpoints: [
+    "https://ace-worker-0-646682240579.europe-west1.run.app",
+    "https://ace-worker-1-646682240579.europe-west1.run.app",
+  ],
+  threshold: 2,
+});
+```
+
+> ⚠️ **Test only**: These workers are for development/testing purposes. For production, run your own workers (see below).
 
 ### Running Your Own Worker
 

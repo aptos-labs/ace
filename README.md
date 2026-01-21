@@ -204,6 +204,7 @@ This outputs an IBE master secret key (`IBE_MSK`) and master public key (`IBE_MP
 
 ```bash
 # Pass env vars inline (IBE_MSK only goes to ace-worker, not exported to shell)
+# The RPC endpoint env vars are optional; omit any chains you don't need
 env $(grep -v '^#' worker-profile.txt | xargs) \
 APTOS_MAINNET_API_ENDPOINT=https://my-aptos-fullnode:8080/v1 \
 APTOS_MAINNET_API_KEY=your-api-key \

@@ -203,12 +203,10 @@ This outputs an IBE master secret key (`IBE_MSK`) and master public key (`IBE_MP
 **3. Start the Worker**
 
 ```bash
-# Load IBE_MSK from worker-profile.txt
-source worker-profile.txt
-# Aptos fullnode endpoints (optional API key for authenticated access)
+# Pass env vars inline (IBE_MSK only goes to ace-worker, not exported to shell)
+env $(grep -v '^#' worker-profile.txt | xargs) \
 APTOS_MAINNET_API_ENDPOINT=https://my-aptos-fullnode:8080/v1 \
 APTOS_MAINNET_API_KEY=your-api-key \
-# Solana RPC endpoints
 SOLANA_MAINNET_API_ENDPOINT=https://my-solana-rpc:8899 \
 ace-worker run-worker --port 3000
 ```

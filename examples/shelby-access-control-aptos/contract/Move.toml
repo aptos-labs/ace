@@ -1,0 +1,17 @@
+[package]
+name = "ShelbyAccessControl"
+version = "1.0.0"
+authors = []
+
+[addresses]
+admin = "0x147e4d3a5b10eaed2a93536e284c23096dfcea9ac61f0a8420e5d01fbd8f0ea8"
+
+[dev-addresses]
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"
+
+[dev-dependencies]
+

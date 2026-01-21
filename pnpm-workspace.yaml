@@ -1,0 +1,6 @@
+packages:
+  - "ts-sdk"
+  - "worker"
+  - "examples/*"
+  - "examples/*/demo-cli-flow"
+

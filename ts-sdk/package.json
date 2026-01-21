@@ -1,0 +1,55 @@
+{
+  "name": "@aptos-labs/ace-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for ACE",
+  "main": "dist/common/index.js",
+  "module": "dist/esm/index.mjs",
+  "types": "dist/common/index.d.ts",
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/common/index.d.ts",
+        "default": "./dist/common/index.js"
+      },
+      "import": {
+        "types": "./dist/esm/index.d.mts",
+        "default": "./dist/esm/index.mjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:clean": "rm -rf dist",
+    "build": "npm run build:clean && tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ace",
+    "encryption",
+    "access-control",
+    "cryptography",
+    "sdk"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@noble/ciphers": "^1.2.1",
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1"
+  },
+  "peerDependencies": {
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "@solana/web3.js": "^1.95.0"
+  },
+  "devDependencies": {
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "@solana/web3.js": "^1.95.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^1.0.0"
+  }
+}

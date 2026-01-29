@@ -1,6 +1,6 @@
 {
   "name": "@aptos-labs/ace-worker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ACE Worker - key management and decryption share generation",
   "type": "module",
   "main": "dist/cli.js",

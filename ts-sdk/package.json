@@ -1,6 +1,6 @@
 {
   "name": "@aptos-labs/ace-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for ACE",
   "main": "dist/common/index.js",
   "module": "dist/esm/index.mjs",

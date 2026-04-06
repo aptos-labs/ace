@@ -299,8 +299,8 @@ module admin::access_control {
     // ============================================================================
 
     /// Create a full blob name from owner address and suffix.
-    /// Format: "0x<canonical_owner_address>/<blob_name_suffix>"
-    /// Example: "0x00000000000000000000000000000000000000000000000000000000000000aa/movies/star-wars.mov"
+    /// Format: "@<canonical_owner_address>/<blob_name_suffix>"
+    /// Example: "@00000000000000000000000000000000000000000000000000000000000000aa/movies/star-wars.mov"
     public fun create_full_blob_name(owner_address: address, blob_name_suffix: String): String {
         let full_blob_name = string_utils::to_string_with_canonical_addresses(&owner_address);
         full_blob_name.append_utf8(b"/");
@@ -452,5 +452,10 @@ module admin::access_control {
         // Verify Bob only paid the reduced price
         assert!(mint_amount - half_price == coin::balance<aptos_coin::AptosCoin>(@0xbb),
             20 /* Bob should have paid the new half price */);
+    }
+
+    #[test]
+    fun t2() {
+        std::debug::print(&create_full_blob_name(@0x1, utf8(b"movies/star-wars.mov")));
     }
 }

@@ -5,6 +5,7 @@
 import { Command } from 'commander';
 import * as NewWorkerProfile from './cmd_new_worker_profile.js';
 import * as RunWorker from './cmd_run_worker.js';
+import * as RunWorkerV2 from './cmd_run_worker_v2.js';
 
 const program = new Command();
 
@@ -38,6 +39,24 @@ Environment Variables:
   SOLANA_LOCALNET_API_ENDPOINT  Solana localnet RPC endpoint`)
   .requiredOption('--port <port>', 'Port to listen on', (value) => parseInt(value, 10))
   .action((options) => RunWorker.run({ port: options.port }));
+
+program
+  .command('run-worker-v2')
+  .description(`Start the ACE worker v2 server (threshold IBE mode).
+
+Environment Variables:
+  ACE_WORKER_V2_PRIVATE_KEY  Ed25519 private key hex (alternative to --keypair)`)
+  .requiredOption('--port <port>', 'Port to listen on', (v) => parseInt(v, 10))
+  .requiredOption('--rpc-url <url>', 'Aptos fullnode RPC URL (e.g. http://localhost:8080/v1)')
+  .requiredOption('--ace-contract <addr>', 'ACE network contract address')
+  .option('--keypair <path>', 'Path to file containing Ed25519 private key hex')
+  .action((options) => RunWorkerV2.run({
+    port: options.port,
+    rpcUrl: options.rpcUrl,
+    aceContract: options.aceContract,
+    keypairPath: options.keypair,
+    privateKey: process.env.ACE_WORKER_V2_PRIVATE_KEY,
+  }));
 
 program.parse();
 

@@ -313,7 +313,7 @@ async function checkPermission({aptos, fullDecryptionDomain, proof}: {aptos: Apt
             aptos,
             func: `${contractId.moduleAddr.toStringLong()}::${contractId.moduleName}::${contractId.functionName}`,
             typeArguments: [],
-            functionArguments: [proof.userAddr, fullDecryptionDomain.domain]
+            functionArguments: [proof.userAddr, Array.from(fullDecryptionDomain.domain)]
         });
         extra['viewFunctionInvocationResult'] = viewFunctionInvocationResult;
         if (!viewFunctionInvocationResult.isOk) {

@@ -17,6 +17,10 @@
     "dev:cli": "tsx src/cli.ts",
     "start:worker0": "env $(cat local-worker-0.env | xargs) tsx src/cli.ts run-worker --port 9000",
     "start:worker1": "env $(cat local-worker-1.env | xargs) tsx src/cli.ts run-worker --port 9001",
+    "start:worker-v2-0": "ACE_WORKER_V2_PRIVATE_KEY=${WORKER0_KEY} tsx src/cli.ts run-worker-v2 --port 9000 --rpc-url ${RPC_URL:-http://localhost:8080/v1} --ace-contract ${ACE_CONTRACT}",
+    "start:worker-v2-1": "ACE_WORKER_V2_PRIVATE_KEY=${WORKER1_KEY} tsx src/cli.ts run-worker-v2 --port 9001 --rpc-url ${RPC_URL:-http://localhost:8080/v1} --ace-contract ${ACE_CONTRACT}",
+    "start:worker-v2-2": "ACE_WORKER_V2_PRIVATE_KEY=${WORKER2_KEY} tsx src/cli.ts run-worker-v2 --port 9002 --rpc-url ${RPC_URL:-http://localhost:8080/v1} --ace-contract ${ACE_CONTRACT}",
+    "start:worker-v2-3": "ACE_WORKER_V2_PRIVATE_KEY=${WORKER3_KEY} tsx src/cli.ts run-worker-v2 --port 9003 --rpc-url ${RPC_URL:-http://localhost:8080/v1} --ace-contract ${ACE_CONTRACT}",
     "lint": "eslint src/",
     "clean": "rm -rf dist"
   },

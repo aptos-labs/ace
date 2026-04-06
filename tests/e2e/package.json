@@ -1,0 +1,19 @@
+{
+  "name": "ace-e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ACE end-to-end tests",
+  "scripts": {
+    "test:permissioned": "tsx test-permissioned.ts"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ace-worker": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.1.1",
+    "tsx": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  }
+}

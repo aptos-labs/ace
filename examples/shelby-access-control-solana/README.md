@@ -70,7 +70,7 @@ shelby-access-control-solana/
 
 1. **Solana CLI** - Install from [Solana docs](https://docs.solana.com/cli/install-solana-cli-tools)
 2. **Anchor CLI** - Install from [Anchor docs](https://www.anchor-lang.com/docs/installation)
-3. **Node.js** (v18+) and **pnpm**
+3. **Node.js 18 or 20** (LTS) and **pnpm** — tests use the standard Anchor `ts-mocha` setup; Node 22+ can trigger ESM errors in the test runner.
 
 ### Step 1: Start ACE Workers
 
@@ -98,6 +98,18 @@ This will:
 1. Start a local Solana validator
 2. Build and deploy both Anchor programs
 3. Run the e2e test with automatic airdrop funding
+
+### Run e2e against testnet
+
+If the programs are already deployed on testnet, run the same e2e test against testnet (no local validator, no deploy):
+
+```bash
+cd examples/shelby-access-control-solana
+solana config set --url https://api.testnet.solana.com
+pnpm test:testnet
+```
+
+Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.testnet]`, and ACE workers running (see Step 1). The test will print two addresses (Alice and Bob) to fund on testnet and wait until they have enough SOL, or you can airdrop: `solana airdrop 2 <ADDRESS>`.
 
 ## How It Works
 

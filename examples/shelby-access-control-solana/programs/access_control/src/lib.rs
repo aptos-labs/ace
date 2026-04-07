@@ -33,7 +33,7 @@
 use anchor_lang::prelude::*;
 
 // Declare the program ID (must match Anchor.toml)
-declare_id!("WhBoxsYfAhJNRRjXGUF7iUEXmBSnPiY72k86AkMSkro");
+declare_id!("Csx54S8XVLHgY5KW3peJiMaeYUgTirDoTAAGjqcjq1wu");
 
 pub mod utils;
 pub mod instructions;

@@ -110,8 +110,8 @@ describe("access-control", () => {
       console.log(`Using localnet workers: ${worker0}, ${worker1}`);
     } else {
       // Production workers for testnet
-      worker0 = "https://xchain-worker-0-646682240579.europe-west1.run.app";
-      worker1 = "https://xchain-worker-1-646682240579.europe-west1.run.app";
+      worker0 = process.env.WORKER_0 ?? "https://ace-worker-0-646682240579.europe-west1.run.app";
+      worker1 = process.env.WORKER_1 ?? "https://ace-worker-1-646682240579.europe-west1.run.app";
       knownChainName = "testnet";
       console.log(`Using testnet workers: ${worker0}, ${worker1}`);
     }

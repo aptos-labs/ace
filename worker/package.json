@@ -33,6 +33,8 @@
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",
     "@aptos-labs/ts-sdk": "^5.1.1",
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1",
     "@solana/web3.js": "^1.98.4",
     "commander": "^11.0.0",
     "cors": "^2.8.5",

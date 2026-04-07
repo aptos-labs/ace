@@ -1,7 +1,11 @@
 {
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18 <=20"
+  },
   "scripts": {
     "test:localnet": "anchor test --provider.cluster localnet",
+    "test:testnet": "anchor test --skip-local-validator --skip-deploy --provider.cluster testnet",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

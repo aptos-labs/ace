@@ -3,18 +3,26 @@
 
 /// ACE Network Coordination Contract
 ///
-/// Manages worker registration, epochs, DKG (Distributed Key Generation),
-/// and DKR (Distributed Key Refresh) for the threshold IBE system.
+/// Manages worker registration, epochs, secret proposals, DKG, and epoch changes
+/// for the threshold IBE system.
 ///
-/// Secret shares NEVER appear on-chain; they are communicated node-to-node
-/// via the DKG/DKR protocol (or in dummy mode, derived deterministically
-/// from the on-chain dummy_secret field — INSECURE, for testing only).
+/// Key design points:
+///   - Epoch 0 is the first operational epoch (set by start_initial_epoch).
+///   - Any committee member can propose a new secret or an epoch change; these
+///     only proceed once ≥ threshold committee members approve.
+///   - Multiple secret proposals can be active simultaneously.
+///   - Only one epoch change proposal is allowed per epoch.
+///   - When an epoch change is approved, all pending secret proposals are discarded.
+///   - Secret shares NEVER appear on-chain (except the dummy_secret in test mode).
 module admin::ace_network {
     use std::error;
     use std::signer::address_of;
     use std::string::String;
     use std::vector;
+    use std::option::{Self, Option};
     use aptos_std::table::{Self, Table};
+    use aptos_framework::object;
+    use aptos_framework::event;
 
     // ============================================================================
     // Status codes
@@ -22,6 +30,7 @@ module admin::ace_network {
 
     const STATUS_IN_PROGRESS: u8 = 0;
     const STATUS_DONE: u8 = 1;
+    const STATUS_DISCARDED: u8 = 2;
 
     // ============================================================================
     // Error codes
@@ -35,6 +44,11 @@ module admin::ace_network {
     const E_DKG_NOT_FOUND: u64 = 6;
     const E_EPOCH_CHANGE_NOT_FOUND: u64 = 7;
     const E_SECRET_NOT_FOUND: u64 = 8;
+    const E_INITIAL_EPOCH_ALREADY_SET: u64 = 9;
+    const E_PROPOSAL_NOT_VOTING: u64 = 10;
+    const E_PROPOSAL_STALE: u64 = 11;
+    const E_ALREADY_APPROVED: u64 = 12;
+    const E_EPOCH_CHANGE_PENDING: u64 = 13;
 
     // ============================================================================
     // Contribution format constants (first byte)
@@ -91,6 +105,27 @@ module admin::ace_network {
         resharings: vector<SecretResharing>,
     }
 
+    /// A proposal to create a new IBE secret, created as an Aptos Object.
+    /// Becomes active (DKGRecord created) once ≥ threshold approvals are collected.
+    struct SecretProposal has key {
+        spec_bytes: vector<u8>,   // opaque: scheme + description
+        proposer: address,
+        created_epoch: u64,
+        approvals: vector<address>,
+        status: u8,               // STATUS_IN_PROGRESS | STATUS_DONE | STATUS_DISCARDED
+    }
+
+    /// A proposal to change the epoch committee, created as an Aptos Object.
+    /// Only one may be pending at a time per epoch.
+    struct EpochChangeProposal has key {
+        new_nodes: vector<address>,
+        new_threshold: u64,
+        proposer: address,
+        created_epoch: u64,
+        approvals: vector<address>,
+        status: u8,
+    }
+
     struct NetworkState has key {
         authority: address,
         node_registry: Table<address, NodeInfo>,
@@ -100,6 +135,28 @@ module admin::ace_network {
         epoch_change_records: vector<EpochChangeRecord>,
         next_dkg_id: u64,
         next_epoch_change_id: u64,
+        /// Addresses of SecretProposal objects currently in voting or approved.
+        pending_secret_proposals: vector<address>,
+        /// Address of the one pending EpochChangeProposal, if any.
+        pending_epoch_change_proposal_addr: Option<address>,
+    }
+
+    // ============================================================================
+    // Events
+    // ============================================================================
+
+    #[event]
+    struct SecretProposalCreated has drop, store {
+        proposal_addr: address,
+        proposer: address,
+        created_epoch: u64,
+    }
+
+    #[event]
+    struct EpochChangeProposalCreated has drop, store {
+        proposal_addr: address,
+        proposer: address,
+        created_epoch: u64,
     }
 
     // ============================================================================
@@ -123,7 +180,27 @@ module admin::ace_network {
             epoch_change_records: vector[],
             next_dkg_id: 0,
             next_epoch_change_id: 0,
+            pending_secret_proposals: vector[],
+            pending_epoch_change_proposal_addr: option::none(),
         });
+    }
+
+    /// Set epoch 0's committee. Can only be called once (when epoch is 0 and
+    /// the committee is still empty). Authority-only.
+    public entry fun start_initial_epoch(
+        authority: &signer,
+        initial_nodes: vector<address>,
+        initial_threshold: u64,
+    ) acquires NetworkState {
+        let state = borrow_global_mut<NetworkState>(@admin);
+        assert!(address_of(authority) == state.authority, error::permission_denied(E_NOT_AUTHORITY));
+        assert!(
+            state.current_epoch_info.epoch_num == 0 &&
+            vector::is_empty(&state.current_epoch_info.nodes),
+            error::invalid_state(E_INITIAL_EPOCH_ALREADY_SET)
+        );
+        state.current_epoch_info.nodes = initial_nodes;
+        state.current_epoch_info.threshold = initial_threshold;
     }
 
     /// Node self-registers with its HTTP endpoint.
@@ -140,67 +217,69 @@ module admin::ace_network {
         };
     }
 
-    /// Admin triggers an epoch change.
-    ///   - If no active secrets: sets committee immediately (sync), increments epoch.
-    ///   - If active secrets: creates EpochChangeRecord (async); epoch not yet incremented.
-    public entry fun start_epoch_change(
-        authority: &signer,
-        new_nodes: vector<address>,
-        new_threshold: u64,
+    /// Any committee member proposes a new IBE secret.
+    /// Creates a SecretProposal object and emits SecretProposalCreated.
+    /// DKG starts only after ≥ threshold approvals via approve_secret_proposal.
+    public entry fun propose_new_secret(
+        worker: &signer,
+        spec_bytes: vector<u8>,
     ) acquires NetworkState {
+        let worker_addr = address_of(worker);
         let state = borrow_global_mut<NetworkState>(@admin);
-        assert!(address_of(authority) == state.authority, error::permission_denied(E_NOT_AUTHORITY));
+        assert!(node_in_committee(state, worker_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
+        let created_epoch = state.current_epoch_info.epoch_num;
 
-        if (vector::is_empty(&state.secrets)) {
-            // Synchronous: no secrets to re-share
-            state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
-            state.current_epoch_info.nodes = new_nodes;
-            state.current_epoch_info.threshold = new_threshold;
-        } else {
-            // Async: create resharing records for each secret
-            let resharings = vector[];
-            let num_secrets = vector::length(&state.secrets);
-            let i = 0;
-            while (i < num_secrets) {
-                let secret = vector::borrow(&state.secrets, i);
-                vector::push_back(&mut resharings, SecretResharing {
-                    secret_id: secret.secret_id,
-                    status: STATUS_IN_PROGRESS,
-                    contributions: vector[],
-                });
-                i = i + 1;
-            };
-            let record = EpochChangeRecord {
-                id: state.next_epoch_change_id,
-                new_nodes,
-                new_threshold,
-                status: STATUS_IN_PROGRESS,
-                resharings,
-            };
-            state.next_epoch_change_id = state.next_epoch_change_id + 1;
-            vector::push_back(&mut state.epoch_change_records, record);
-        };
+        let constructor_ref = object::create_object(worker_addr);
+        let proposal_addr = object::address_from_constructor_ref(&constructor_ref);
+        let proposal_signer = object::generate_signer(&constructor_ref);
+        move_to(&proposal_signer, SecretProposal {
+            spec_bytes,
+            proposer: worker_addr,
+            created_epoch,
+            approvals: vector[],
+            status: STATUS_IN_PROGRESS,
+        });
+
+        vector::push_back(&mut state.pending_secret_proposals, proposal_addr);
+        event::emit(SecretProposalCreated { proposal_addr, proposer: worker_addr, created_epoch });
     }
 
-    /// Admin creates a DKG record (InProgress). Workers will contribute.
-    public entry fun start_dkg(authority: &signer) acquires NetworkState {
+    /// Vote to approve a secret proposal. When ≥ threshold approvals are
+    /// collected, a DKGRecord (InProgress) is created and workers can contribute.
+    /// Rejected if the proposal's epoch no longer matches the current epoch.
+    public entry fun approve_secret_proposal(
+        worker: &signer,
+        proposal_addr: address,
+    ) acquires NetworkState, SecretProposal {
+        let worker_addr = address_of(worker);
         let state = borrow_global_mut<NetworkState>(@admin);
-        assert!(address_of(authority) == state.authority, error::permission_denied(E_NOT_AUTHORITY));
-        let record = DKGRecord {
-            id: state.next_dkg_id,
-            epoch: state.current_epoch_info.epoch_num,
-            status: STATUS_IN_PROGRESS,
-            contributions: vector[],
+        assert!(node_in_committee(state, worker_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
+
+        let proposal = borrow_global_mut<SecretProposal>(proposal_addr);
+        assert!(proposal.status == STATUS_IN_PROGRESS, error::invalid_state(E_PROPOSAL_NOT_VOTING));
+        assert!(proposal.created_epoch == state.current_epoch_info.epoch_num, error::invalid_state(E_PROPOSAL_STALE));
+        assert!(!vector::contains(&proposal.approvals, &worker_addr), error::already_exists(E_ALREADY_APPROVED));
+
+        vector::push_back(&mut proposal.approvals, worker_addr);
+
+        if (vector::length(&proposal.approvals) >= state.current_epoch_info.threshold) {
+            proposal.status = STATUS_DONE;
+            let record = DKGRecord {
+                id: state.next_dkg_id,
+                epoch: state.current_epoch_info.epoch_num,
+                status: STATUS_IN_PROGRESS,
+                contributions: vector[],
+            };
+            state.next_dkg_id = state.next_dkg_id + 1;
+            vector::push_back(&mut state.dkg_records, record);
         };
-        state.next_dkg_id = state.next_dkg_id + 1;
-        vector::push_back(&mut state.dkg_records, record);
     }
 
     /// Submit a contribution to an in-progress DKG.
-    /// Caller must be the authority or a current committee member.
+    /// The DKG record must belong to the current epoch; stale DKGs are rejected.
     ///
     /// Final contribution format: [0x01][mpk_48_bytes][base_48_bytes][r_32_bytes]
-    /// When a final contribution is received, the contract creates SecretInfo and marks DKG Done.
+    /// When a final contribution is received, SecretInfo is created and DKG is marked Done.
     public entry fun contribute_to_dkg(
         caller: &signer,
         dkg_id: u64,
@@ -213,11 +292,13 @@ module admin::ace_network {
             error::permission_denied(E_NOT_COMMITTEE_MEMBER)
         );
 
+        let current_epoch = state.current_epoch_info.epoch_num;
         let n = vector::length(&state.dkg_records);
         let found_idx = n;
         let i = 0;
         while (i < n) {
-            if (vector::borrow(&state.dkg_records, i).id == dkg_id) {
+            let r = vector::borrow(&state.dkg_records, i);
+            if (r.id == dkg_id && r.epoch == current_epoch && r.status == STATUS_IN_PROGRESS) {
                 found_idx = i;
             };
             i = i + 1;
@@ -229,8 +310,6 @@ module admin::ace_network {
 
         if (is_final(&record.contributions)) {
             record.status = STATUS_DONE;
-            // Extract public data from the final contribution
-            // Format: [0x01][mpk_48][base_48][r_32]
             let final_contrib = vector::borrow(&record.contributions, vector::length(&record.contributions) - 1);
             let mpk_bytes = vector::slice(final_contrib, 1, 49);
             let base_bytes = vector::slice(final_contrib, 49, 97);
@@ -240,14 +319,124 @@ module admin::ace_network {
                 secret_id,
                 mpk: mpk_bytes,
                 base: base_bytes,
-                created_epoch: state.current_epoch_info.epoch_num,
+                created_epoch: current_epoch,
                 dummy_secret: r_bytes,
             });
         };
     }
 
+    /// Any committee member proposes an epoch change.
+    /// Only one proposal is allowed while a prior proposal or EpochChangeRecord is in progress.
+    /// Creates an EpochChangeProposal object and emits EpochChangeProposalCreated.
+    public entry fun propose_epoch_change(
+        worker: &signer,
+        new_nodes: vector<address>,
+        new_threshold: u64,
+    ) acquires NetworkState {
+        let worker_addr = address_of(worker);
+        let state = borrow_global_mut<NetworkState>(@admin);
+        assert!(node_in_committee(state, worker_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
+        // Only one epoch change process at a time (proposal or active resharing)
+        assert!(
+            option::is_none(&state.pending_epoch_change_proposal_addr) &&
+            !epoch_change_in_progress(state),
+            error::invalid_state(E_EPOCH_CHANGE_PENDING)
+        );
+
+        let created_epoch = state.current_epoch_info.epoch_num;
+        let constructor_ref = object::create_object(worker_addr);
+        let proposal_addr = object::address_from_constructor_ref(&constructor_ref);
+        let proposal_signer = object::generate_signer(&constructor_ref);
+        move_to(&proposal_signer, EpochChangeProposal {
+            new_nodes,
+            new_threshold,
+            proposer: worker_addr,
+            created_epoch,
+            approvals: vector[],
+            status: STATUS_IN_PROGRESS,
+        });
+
+        state.pending_epoch_change_proposal_addr = option::some(proposal_addr);
+        event::emit(EpochChangeProposalCreated { proposal_addr, proposer: worker_addr, created_epoch });
+    }
+
+    /// Vote to approve an epoch change proposal. When ≥ threshold approvals are
+    /// collected, the actual epoch change begins:
+    ///   - If no secrets: committee and epoch advance immediately.
+    ///   - If secrets exist: EpochChangeRecord (InProgress) created for DKR.
+    /// All pending secret proposals are discarded on approval.
+    public entry fun approve_epoch_change(
+        worker: &signer,
+        proposal_addr: address,
+    ) acquires NetworkState, EpochChangeProposal, SecretProposal {
+        let worker_addr = address_of(worker);
+        let state = borrow_global_mut<NetworkState>(@admin);
+        assert!(node_in_committee(state, worker_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
+
+        let proposal = borrow_global_mut<EpochChangeProposal>(proposal_addr);
+        assert!(proposal.status == STATUS_IN_PROGRESS, error::invalid_state(E_PROPOSAL_NOT_VOTING));
+        assert!(proposal.created_epoch == state.current_epoch_info.epoch_num, error::invalid_state(E_PROPOSAL_STALE));
+        assert!(!vector::contains(&proposal.approvals, &worker_addr), error::already_exists(E_ALREADY_APPROVED));
+
+        vector::push_back(&mut proposal.approvals, worker_addr);
+        let threshold_reached = vector::length(&proposal.approvals) >= state.current_epoch_info.threshold;
+
+        if (threshold_reached) {
+            // Copy proposal data before mutating
+            let new_nodes = proposal.new_nodes;
+            let new_threshold = proposal.new_threshold;
+            proposal.status = STATUS_DONE;
+
+            // Clear the pending pointer
+            state.pending_epoch_change_proposal_addr = option::none();
+
+            // Discard any pending secret proposals from this epoch
+            let pending_sps = state.pending_secret_proposals;
+            state.pending_secret_proposals = vector[];
+            let n = vector::length(&pending_sps);
+            let i = 0;
+            while (i < n) {
+                let sp_addr = *vector::borrow(&pending_sps, i);
+                let sp = borrow_global_mut<SecretProposal>(sp_addr);
+                if (sp.status == STATUS_IN_PROGRESS) {
+                    sp.status = STATUS_DISCARDED;
+                };
+                i = i + 1;
+            };
+
+            if (vector::is_empty(&state.secrets)) {
+                // No secrets: advance epoch synchronously
+                state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
+                state.current_epoch_info.nodes = new_nodes;
+                state.current_epoch_info.threshold = new_threshold;
+            } else {
+                // Secrets exist: create resharing records (async DKR)
+                let resharings = vector[];
+                let num_secrets = vector::length(&state.secrets);
+                let j = 0;
+                while (j < num_secrets) {
+                    let secret = vector::borrow(&state.secrets, j);
+                    vector::push_back(&mut resharings, SecretResharing {
+                        secret_id: secret.secret_id,
+                        status: STATUS_IN_PROGRESS,
+                        contributions: vector[],
+                    });
+                    j = j + 1;
+                };
+                let record = EpochChangeRecord {
+                    id: state.next_epoch_change_id,
+                    new_nodes,
+                    new_threshold,
+                    status: STATUS_IN_PROGRESS,
+                    resharings,
+                };
+                state.next_epoch_change_id = state.next_epoch_change_id + 1;
+                vector::push_back(&mut state.epoch_change_records, record);
+            };
+        };
+    }
+
     /// Submit a contribution for a specific secret's resharing within an epoch change.
-    /// When a final contribution is received for a resharing, it is marked Done.
     /// When all resharings are done, the EpochChangeRecord is marked Done and epoch increments.
     public entry fun contribute_to_epoch_change(
         caller: &signer,
@@ -306,9 +495,9 @@ module admin::ace_network {
         if (all_done) {
             record.status = STATUS_DONE;
             // Advance epoch
-            state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
             let new_nodes = record.new_nodes;
             let new_threshold = record.new_threshold;
+            state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
             state.current_epoch_info.nodes = new_nodes;
             state.current_epoch_info.threshold = new_threshold;
         };
@@ -374,7 +563,7 @@ module admin::ace_network {
     }
 
     #[view]
-    /// Returns (has_pending, epoch_change_id) for any in-progress epoch change.
+    /// Returns (has_pending, epoch_change_id) for any in-progress EpochChangeRecord.
     public fun get_pending_epoch_change(admin_addr: address): (bool, u64) acquires NetworkState {
         let state = borrow_global<NetworkState>(admin_addr);
         let n = vector::length(&state.epoch_change_records);
@@ -387,6 +576,24 @@ module admin::ace_network {
             i = i + 1;
         };
         (false, 0)
+    }
+
+    #[view]
+    /// Returns the addresses of all pending (voting-phase) SecretProposal objects.
+    public fun get_pending_secret_proposals(admin_addr: address): vector<address> acquires NetworkState {
+        let state = borrow_global<NetworkState>(admin_addr);
+        state.pending_secret_proposals
+    }
+
+    #[view]
+    /// Returns (has_pending, proposal_addr) for the pending EpochChangeProposal, if any.
+    public fun get_pending_epoch_change_proposal(admin_addr: address): (bool, address) acquires NetworkState {
+        let state = borrow_global<NetworkState>(admin_addr);
+        if (option::is_some(&state.pending_epoch_change_proposal_addr)) {
+            (true, *option::borrow(&state.pending_epoch_change_proposal_addr))
+        } else {
+            (false, @0x0)
+        }
     }
 
     #[view]
@@ -421,6 +628,18 @@ module admin::ace_network {
 
     fun node_in_committee(state: &NetworkState, addr: address): bool {
         vector::contains(&state.current_epoch_info.nodes, &addr)
+    }
+
+    fun epoch_change_in_progress(state: &NetworkState): bool {
+        let n = vector::length(&state.epoch_change_records);
+        let i = 0;
+        while (i < n) {
+            if (vector::borrow(&state.epoch_change_records, i).status == STATUS_IN_PROGRESS) {
+                return true
+            };
+            i = i + 1;
+        };
+        false
     }
 
     /// Returns true if the last contribution in the vector has the final flag set.

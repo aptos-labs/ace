@@ -72,8 +72,8 @@ export class ThresholdEncryptionKey {
                     },
                 });
                 extra['viewResult'] = result;
-                // Returns [mpk_hex, base_hex, created_epoch, dummy_secret_hex]
-                const [mpkHex, baseHex] = result as [string, string, unknown, unknown];
+                // Returns [mpk_hex, base_hex, created_epoch]
+                const [mpkHex, baseHex] = result as [string, string, unknown];
                 const mpkBytes = hexToBytes(mpkHex.replace('0x', ''));
                 const baseBytes = hexToBytes(baseHex.replace('0x', ''));
                 const publicPointG1 = bls12_381.G1.Point.fromBytes(mpkBytes) as unknown as WeierstrassPoint<bigint>;

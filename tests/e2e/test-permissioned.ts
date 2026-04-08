@@ -4,6 +4,11 @@
 /**
  * E2E test for the permissioned ACE network with threshold IBE.
  *
+ * Scenario:
+ *   Epoch 0: 3-out-of-4 committee (workers 0–3)
+ *   Epoch 1: 3-out-of-5 committee (workers 1–5)
+ *             Worker 0 leaves; workers 4 and 5 join.
+ *
  * Run:
  *   cd tests/e2e && pnpm test:permissioned
  */
@@ -30,14 +35,20 @@ import {
     WORKER_BASE_PORT,
 } from './config.js';
 import { log, assert, sleep, waitFor, createAptos, fundAccount, callView, submitTxn } from './helpers.js';
-import { deployContract, spawnWorker, waitWorkerHealthy } from './infra.js';
+import { buildWorker, deployContract, spawnWorker, waitWorkerHealthy } from './infra.js';
+
+// Epoch-1 committee: workers 1–5 (3-of-5); worker 0 leaves, workers 4–5 join.
+const NEW_NUM_WORKERS = 5;
+const NEW_THRESHOLD = 3;
+// Total unique workers across both epochs: 0–5 (6 total).
+const TOTAL_WORKERS = NUM_WORKERS + 2; // 6
 
 async function main() {
     const workers: ChildProcess[] = [];
     let localnetProc: ChildProcess | null = null;
 
-    // Clean up any stale share files from previous runs
-    for (let i = 0; i < NUM_WORKERS; i++) {
+    // Clean up any stale share files from previous runs (all 6 workers).
+    for (let i = 0; i < TOTAL_WORKERS; i++) {
         const jsonPath = path.join(process.cwd(), `worker_shares_${WORKER_BASE_PORT + i}.json`);
         if (existsSync(jsonPath)) rmSync(jsonPath);
     }
@@ -105,11 +116,11 @@ async function main() {
         await submitTxn(aptos, adminAccount, adminAddr, 'ace_network', 'initialize', []);
         console.log('  Initialized');
 
-        // ── Step 5: Fund worker accounts ────────────────────────────────────
-        log('5', 'Fund 4 worker accounts');
+        // ── Step 5: Fund all 6 worker accounts ──────────────────────────────
+        log('5', `Fund ${TOTAL_WORKERS} worker accounts (epoch-0 uses 0–${NUM_WORKERS - 1}, epoch-1 uses 1–${TOTAL_WORKERS - 1})`);
         const workerKeys: Ed25519PrivateKey[] = [];
         const workerAccounts: Account[] = [];
-        for (let i = 0; i < NUM_WORKERS; i++) {
+        for (let i = 0; i < TOTAL_WORKERS; i++) {
             const key = new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, j) => j + 10 + i)));
             const acc = Account.fromPrivateKey({ privateKey: key });
             await fundAccount(aptos, acc);
@@ -119,38 +130,47 @@ async function main() {
         }
         const workerAddrs = workerAccounts.map(a => a.accountAddress.toStringLong());
 
+        // Epoch-0 committee: workers 0–3 (NUM_WORKERS = 4, threshold = THRESHOLD = 3)
+        const epoch0Addrs = workerAddrs.slice(0, NUM_WORKERS);
+
+        // Epoch-1 committee: workers 1–5 (NEW_NUM_WORKERS = 5, threshold = NEW_THRESHOLD = 3)
+        // Worker 0 leaves; workers 4 and 5 join.
+        const epoch1Addrs = workerAddrs.slice(1, TOTAL_WORKERS);
+
         // ── Step 5b: Set epoch 0 committee ───────────────────────────────────
         log('5b', `Admin calls start_initial_epoch (${NUM_WORKERS} workers, threshold=${THRESHOLD})`);
         await submitTxn(aptos, adminAccount, adminAddr, 'ace_network', 'start_initial_epoch', [
-            workerAddrs, THRESHOLD,
+            epoch0Addrs, THRESHOLD,
         ]);
         const [epochNum] = await callView(aptos, adminAddr, 'ace_network', 'get_current_epoch', []);
         assert(Number(epochNum) === 0, `Expected epoch 0, got ${epochNum}`);
         console.log(`  Epoch 0 committee set (${NUM_WORKERS} workers, threshold=${THRESHOLD})`);
 
-        // ── Step 6: Start worker processes ───────────────────────────────────
-        log('6', 'Start 4 worker processes (ports 9000-9003)');
-        for (let i = 0; i < NUM_WORKERS; i++) {
+        // ── Step 6: Build and start all 6 worker processes ──────────────────
+        log('6', `Build and start ${TOTAL_WORKERS} worker processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1})`);
+        buildWorker();
+        for (let i = 0; i < TOTAL_WORKERS; i++) {
             const proc = spawnWorker(workerKeys[i], WORKER_BASE_PORT + i, adminAddr);
             workers.push(proc);
         }
 
-        log('6b', 'Wait for workers to become healthy');
-        for (let i = 0; i < NUM_WORKERS; i++) {
+        log('6b', 'Wait for all workers to become healthy');
+        for (let i = 0; i < TOTAL_WORKERS; i++) {
             await waitWorkerHealthy(WORKER_BASE_PORT + i);
         }
-        // Give extra time for registration transactions to land
+        // Give extra time for registration transactions to land.
+        // Workers 4–5 are not in epoch-0 committee but still register their endpoints
+        // on-chain so old members can look them up during DKR.
         await sleep(3000);
 
         // ── Step 7: Propose a new secret ─────────────────────────────────────
-        const proposerIdx = Math.floor(Math.random() * NUM_WORKERS);
+        const proposerIdx = Math.floor(Math.random() * NUM_WORKERS); // from old committee
         log('7', `Worker ${proposerIdx} proposes a new secret`);
         const specBytes = Array.from(new TextEncoder().encode(
             JSON.stringify({ scheme: 'bls12-381-ibe', description: 'test-secret-0' })
         ));
         await submitTxn(aptos, workerAccounts[proposerIdx], adminAddr, 'ace_network', 'propose_new_secret', [specBytes]);
 
-        // Fetch the proposal address from on-chain state
         const proposalsResult = await callView(aptos, adminAddr, 'ace_network', 'get_pending_secret_proposals', []);
         const secretProposalAddrs = proposalsResult[0] as string[];
         assert(secretProposalAddrs.length === 1, `Expected 1 pending proposal, got ${secretProposalAddrs.length}`);
@@ -160,7 +180,7 @@ async function main() {
         // ── Step 7b: THRESHOLD workers approve the proposal ───────────────────
         log('7b', `${THRESHOLD} workers approve the secret proposal (DKG starts when threshold reached)`);
         for (let i = 0; i < THRESHOLD; i++) {
-            const approverIdx = (proposerIdx + 1 + i) % NUM_WORKERS; // pick workers other than proposer
+            const approverIdx = (proposerIdx + 1 + i) % NUM_WORKERS;
             console.log(`  Worker ${approverIdx} approves`);
             await submitTxn(aptos, workerAccounts[approverIdx], adminAddr, 'ace_network', 'approve_secret_proposal', [secretProposalAddr]);
         }
@@ -174,7 +194,6 @@ async function main() {
         }, 60_000);
         console.log('  DKG complete, secret_id=0 created');
 
-        // Give workers time to derive their shares
         await sleep(5000);
         console.log('  Workers should have derived shares by now');
 
@@ -217,7 +236,6 @@ async function main() {
         const fullBlobName = `@${alice.accountAddress.toStringLong().slice(2)}/${blobNameSuffix}`;
         const blobDomain = new TextEncoder().encode(fullBlobName);
 
-        // DIAGNOSTIC: verify check_permission works directly from the test
         {
             const registerTxResult = await aptos.waitForTransaction({ transactionHash: registerPending.hash });
             console.log(`  [DIAG] register tx success=${registerTxResult.success} vm_status=${registerTxResult.vm_status}`);
@@ -292,22 +310,24 @@ async function main() {
         assert(decryptedText === 'Hello threshold IBE world!', `Decrypted text mismatch: ${decryptedText}`);
         console.log(`  Bob decrypted: "${decryptedText}" ✓`);
 
-        // ── Step 13: Propose epoch change ─────────────────────────────────────
-        const ecProposerIdx = Math.floor(Math.random() * NUM_WORKERS);
-        log('13', `Worker ${ecProposerIdx} proposes epoch change`);
+        // ── Step 13: Propose epoch change (committee rotation) ────────────────
+        // Worker 0 leaves; workers 4 and 5 join. New committee: workers 1–5, threshold 3-of-5.
+        const ecProposerIdx = Math.floor(Math.random() * NUM_WORKERS); // from old committee
+        log('13', `Worker ${ecProposerIdx} proposes epoch change: ${NUM_WORKERS}-of-${NUM_WORKERS} → ${NEW_THRESHOLD}-of-${NEW_NUM_WORKERS} (worker 0 leaves, workers 4–5 join)`);
         await submitTxn(aptos, workerAccounts[ecProposerIdx], adminAddr, 'ace_network', 'propose_epoch_change', [
-            workerAddrs, THRESHOLD,
+            epoch1Addrs, NEW_THRESHOLD,
         ]);
 
         const ecProposalResult = await callView(aptos, adminAddr, 'ace_network', 'get_pending_epoch_change_proposal', []);
         assert(ecProposalResult[0] === true, 'Expected a pending epoch change proposal');
         const ecProposalAddr = ecProposalResult[1] as string;
         console.log(`  EpochChangeProposal created at ${ecProposalAddr}`);
+        console.log(`  New committee: workers 1–5 (${epoch1Addrs.map((_, i) => i + 1).join(', ')})`);
 
-        // ── Step 13b: THRESHOLD workers approve epoch change ──────────────────
-        log('13b', `${THRESHOLD} workers approve the epoch change proposal`);
+        // ── Step 13b: OLD committee approves epoch change ─────────────────────
+        log('13b', `${THRESHOLD} old-committee workers approve the epoch change proposal`);
         for (let i = 0; i < THRESHOLD; i++) {
-            const approverIdx = (ecProposerIdx + 1 + i) % NUM_WORKERS;
+            const approverIdx = (ecProposerIdx + 1 + i) % NUM_WORKERS; // within old committee (0–3)
             console.log(`  Worker ${approverIdx} approves`);
             await submitTxn(aptos, workerAccounts[approverIdx], adminAddr, 'ace_network', 'approve_epoch_change', [ecProposalAddr]);
         }
@@ -321,11 +341,14 @@ async function main() {
         }, 60_000);
         console.log('  Epoch advanced to 1');
 
-        // Wait for workers to re-derive shares at epoch 1
+        // Wait for workers to re-derive shares at epoch 1.
+        // Workers 4 and 5 compute their shares for the first time via Lagrange interpolation.
         await sleep(6000);
 
         // ── Step 15: Bob decrypts again after DKR ────────────────────────────
-        log('15', 'Bob decrypts again after DKR (same MPK, refreshed shares)');
+        // MPK is unchanged; shares are refreshed across a NEW committee (workers 1–5).
+        // Worker 0 is no longer in the committee and is not contacted.
+        log('15', 'Bob decrypts again after DKR (same MPK, new committee workers 1–5)');
 
         const decKey2Result = await ace_threshold.ThresholdDecryptionKey.fetch(
             network, contractId, blobDomain, proof
@@ -355,7 +378,7 @@ async function main() {
             console.log('Stopping localnet...');
             localnetProc.kill('SIGTERM');
         }
-        for (let i = 0; i < NUM_WORKERS; i++) {
+        for (let i = 0; i < TOTAL_WORKERS; i++) {
             const jsonPath = path.join(process.cwd(), `worker_shares_${WORKER_BASE_PORT + i}.json`);
             if (existsSync(jsonPath)) rmSync(jsonPath);
         }

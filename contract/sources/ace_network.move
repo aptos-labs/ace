@@ -13,7 +13,18 @@
 ///   - Multiple secret proposals can be active simultaneously.
 ///   - Only one epoch change proposal is allowed per epoch.
 ///   - When an epoch change is approved, all pending secret proposals are discarded.
-///   - Secret shares NEVER appear on-chain (except the dummy_secret in test mode).
+///   - Secret shares NEVER appear on-chain.  The DKG master secret is the sum
+///     of all dealers' secret contributions and is never reconstructed in full.
+///   - DKG uses Synchronous VSS: every committee member posts a partial MPK
+///     ([0x02][G1_compressed_48_bytes]).  The contract aggregates partial MPKs
+///     with on-chain G1 arithmetic; when all n members have contributed the DKG
+///     finalises automatically.  The base point is the BLS12-381 G1 generator.
+///   - DKR (Distributed Key Resharing): each old committee member re-deals their
+///     share to the new committee using a fresh degree-(t_new-1) polynomial whose
+///     constant term equals their current share.  Old members post their Pedersen
+///     commitments on-chain ([0x02][C_0 48B]...[C_{t_new-1} 48B]).  The resharing
+///     finalises for a secret when ≥ old_threshold old members have contributed.
+///     New members compute their share via Lagrange interpolation client-side.
 module admin::ace_network {
     use std::error;
     use std::signer::address_of;
@@ -21,6 +32,8 @@ module admin::ace_network {
     use std::vector;
     use std::option::{Self, Option};
     use aptos_std::table::{Self, Table};
+    use aptos_std::crypto_algebra::{Self, Element};
+    use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
     use aptos_framework::object;
     use aptos_framework::event;
 
@@ -49,15 +62,20 @@ module admin::ace_network {
     const E_PROPOSAL_STALE: u64 = 11;
     const E_ALREADY_APPROVED: u64 = 12;
     const E_EPOCH_CHANGE_PENDING: u64 = 13;
+    const E_INVALID_THRESHOLD: u64 = 14;
+    const E_ALREADY_CONTRIBUTED: u64 = 15;
+    const E_INVALID_CONTRIBUTION: u64 = 16;
 
     // ============================================================================
     // Contribution format constants (first byte)
     // ============================================================================
 
-    /// First byte of a "final" contribution blob.
-    /// DKG final: [0x01][mpk_48][base_48][r_32] = 129 bytes total.
-    /// Epoch change final: [0x01] = 1 byte.
-    const CONTRIBUTION_FINAL_FLAG: u8 = 0x01;
+    /// First byte of a partial-MPK contribution (DKG or DKR): [0x02].
+    const CONTRIBUTION_PARTIAL_FLAG: u8 = 0x02;
+
+    /// BLS12-381 G1 generator (compressed, 48 bytes).
+    /// This is the fixed base point used for all IBE MPK computations.
+    const G1_GENERATOR_COMPRESSED: vector<u8> = x"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
 
     // ============================================================================
     // Data Structures
@@ -75,13 +93,11 @@ module admin::ace_network {
     }
 
     /// Public-only secret info stored on-chain after a successful DKG.
-    /// dummy_secret is the raw master scalar r — INSECURE, for testing only.
     struct SecretInfo has copy, drop, store {
         secret_id: u64,
-        mpk: vector<u8>,        // 48-byte compressed G1 point
-        base: vector<u8>,       // 48-byte compressed G1 point
+        mpk: vector<u8>,        // 48-byte compressed G1 point (aggregate of all partial MPKs)
+        base: vector<u8>,       // 48-byte compressed G1 point (always = G1 generator)
         created_epoch: u64,
-        dummy_secret: vector<u8>, // 32-byte LE Fr scalar (INSECURE: test-only)
     }
 
     struct DKGRecord has copy, drop, store {
@@ -89,18 +105,34 @@ module admin::ace_network {
         epoch: u64,
         status: u8,
         contributions: vector<vector<u8>>,
+        /// Running G1 aggregate of partial MPKs (48 bytes, empty = identity/zero).
+        partial_mpk: vector<u8>,
+        /// Addresses that have already posted a partial MPK.
+        contributors: vector<address>,
     }
 
+    /// Per-secret resharing state within a DKR round.
     struct SecretResharing has copy, drop, store {
         secret_id: u64,
         status: u8,
+        /// Commitment blobs posted by each qualifying old dealer (one per dealer).
+        /// Each blob: [0x02][C_0 48B][C_1 48B]...[C_{t_new-1} 48B].
+        /// New members read these to verify received sub-shares off-chain.
         contributions: vector<vector<u8>>,
+        /// Addresses of old committee members who have contributed (for dedup).
+        contributors: vector<address>,
+        /// 1-based indices of each contributor in the old committee (parallel to contributors).
+        /// New members use these as the x-coordinates for Lagrange interpolation.
+        contributor_indices: vector<u64>,
     }
 
     struct EpochChangeRecord has copy, drop, store {
         id: u64,
         new_nodes: vector<address>,
         new_threshold: u64,
+        /// Threshold of the old committee.  A resharing finalises when this many
+        /// old members have posted their VSS commitments on-chain.
+        old_threshold: u64,
         status: u8,
         resharings: vector<SecretResharing>,
     }
@@ -199,6 +231,8 @@ module admin::ace_network {
             vector::is_empty(&state.current_epoch_info.nodes),
             error::invalid_state(E_INITIAL_EPOCH_ALREADY_SET)
         );
+        let n = vector::length(&initial_nodes);
+        assert!(initial_threshold >= 2 && initial_threshold <= n && 2 * initial_threshold > n, error::invalid_argument(E_INVALID_THRESHOLD));
         state.current_epoch_info.nodes = initial_nodes;
         state.current_epoch_info.threshold = initial_threshold;
     }
@@ -269,17 +303,20 @@ module admin::ace_network {
                 epoch: state.current_epoch_info.epoch_num,
                 status: STATUS_IN_PROGRESS,
                 contributions: vector[],
+                partial_mpk: vector[],
+                contributors: vector[],
             };
             state.next_dkg_id = state.next_dkg_id + 1;
             vector::push_back(&mut state.dkg_records, record);
         };
     }
 
-    /// Submit a contribution to an in-progress DKG.
-    /// The DKG record must belong to the current epoch; stale DKGs are rejected.
+    /// Submit a partial-MPK contribution to an in-progress DKG.
     ///
-    /// Final contribution format: [0x01][mpk_48_bytes][base_48_bytes][r_32_bytes]
-    /// When a final contribution is received, SecretInfo is created and DKG is marked Done.
+    /// Partial contribution format: [0x02][G1_compr_48_bytes] = 49 bytes.
+    /// Each committee member submits exactly one partial contribution.
+    /// When all n committee members have contributed, the contract aggregates
+    /// the partial MPKs on-chain (G1 addition) and finalises the DKG.
     public entry fun contribute_to_dkg(
         caller: &signer,
         dkg_id: u64,
@@ -293,6 +330,8 @@ module admin::ace_network {
         );
 
         let current_epoch = state.current_epoch_info.epoch_num;
+        let committee_size = vector::length(&state.current_epoch_info.nodes);
+
         let n = vector::length(&state.dkg_records);
         let found_idx = n;
         let i = 0;
@@ -306,21 +345,50 @@ module admin::ace_network {
         assert!(found_idx < n, error::not_found(E_DKG_NOT_FOUND));
 
         let record = vector::borrow_mut(&mut state.dkg_records, found_idx);
+
+        // Must be a partial contribution.
+        assert!(
+            !vector::is_empty(&contribution) && *vector::borrow(&contribution, 0) == CONTRIBUTION_PARTIAL_FLAG,
+            error::invalid_argument(E_DKG_NOT_FOUND)
+        );
+        assert!(vector::length(&contribution) == 49, error::invalid_argument(E_DKG_NOT_FOUND));
+
+        // Each address may only contribute once.
+        assert!(
+            !vector::contains(&record.contributors, &caller_addr),
+            error::already_exists(E_ALREADY_APPROVED)
+        );
+
+        // Deserialise the incoming partial MPK (bytes 1..49).
+        let mpk_i_bytes = vector::slice(&contribution, 1, 49);
+        let mpk_i_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(&mpk_i_bytes);
+        assert!(std::option::is_some(&mpk_i_opt), error::invalid_argument(E_DKG_NOT_FOUND));
+        let mpk_i: Element<G1> = std::option::destroy_some(mpk_i_opt);
+
+        // Accumulate into the running aggregate.
+        let new_partial_mpk = if (vector::is_empty(&record.partial_mpk)) {
+            mpk_i
+        } else {
+            let prev_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(&record.partial_mpk);
+            assert!(std::option::is_some(&prev_opt), error::invalid_state(E_DKG_NOT_FOUND));
+            let prev: Element<G1> = std::option::destroy_some(prev_opt);
+            crypto_algebra::add(&prev, &mpk_i)
+        };
+        record.partial_mpk = crypto_algebra::serialize<G1, FormatG1Compr>(&new_partial_mpk);
+
+        vector::push_back(&mut record.contributors, caller_addr);
         vector::push_back(&mut record.contributions, contribution);
 
-        if (is_final(&record.contributions)) {
+        // Finalise when all committee members have contributed.
+        if (vector::length(&record.contributors) >= committee_size) {
             record.status = STATUS_DONE;
-            let final_contrib = vector::borrow(&record.contributions, vector::length(&record.contributions) - 1);
-            let mpk_bytes = vector::slice(final_contrib, 1, 49);
-            let base_bytes = vector::slice(final_contrib, 49, 97);
-            let r_bytes = vector::slice(final_contrib, 97, 129);
             let secret_id = vector::length(&state.secrets);
+            let final_mpk = record.partial_mpk;
             vector::push_back(&mut state.secrets, SecretInfo {
                 secret_id,
-                mpk: mpk_bytes,
-                base: base_bytes,
+                mpk: final_mpk,
+                base: G1_GENERATOR_COMPRESSED,
                 created_epoch: current_epoch,
-                dummy_secret: r_bytes,
             });
         };
     }
@@ -336,12 +404,13 @@ module admin::ace_network {
         let worker_addr = address_of(worker);
         let state = borrow_global_mut<NetworkState>(@admin);
         assert!(node_in_committee(state, worker_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
-        // Only one epoch change process at a time (proposal or active resharing)
         assert!(
             option::is_none(&state.pending_epoch_change_proposal_addr) &&
             !epoch_change_in_progress(state),
             error::invalid_state(E_EPOCH_CHANGE_PENDING)
         );
+        let n = vector::length(&new_nodes);
+        assert!(new_threshold >= 2 && new_threshold <= n && 2 * new_threshold > n, error::invalid_argument(E_INVALID_THRESHOLD));
 
         let created_epoch = state.current_epoch_info.epoch_num;
         let constructor_ref = object::create_object(worker_addr);
@@ -382,15 +451,13 @@ module admin::ace_network {
         let threshold_reached = vector::length(&proposal.approvals) >= state.current_epoch_info.threshold;
 
         if (threshold_reached) {
-            // Copy proposal data before mutating
             let new_nodes = proposal.new_nodes;
             let new_threshold = proposal.new_threshold;
             proposal.status = STATUS_DONE;
 
-            // Clear the pending pointer
             state.pending_epoch_change_proposal_addr = option::none();
 
-            // Discard any pending secret proposals from this epoch
+            // Discard any pending secret proposals from this epoch.
             let pending_sps = state.pending_secret_proposals;
             state.pending_secret_proposals = vector[];
             let n = vector::length(&pending_sps);
@@ -405,12 +472,14 @@ module admin::ace_network {
             };
 
             if (vector::is_empty(&state.secrets)) {
-                // No secrets: advance epoch synchronously
+                // No secrets: advance epoch synchronously.
                 state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
                 state.current_epoch_info.nodes = new_nodes;
                 state.current_epoch_info.threshold = new_threshold;
             } else {
-                // Secrets exist: create resharing records (async DKR)
+                // Secrets exist: create resharing records (async DKR).
+                // Snapshot the old threshold — resharing requires this many old-member contributions.
+                let old_threshold = state.current_epoch_info.threshold;
                 let resharings = vector[];
                 let num_secrets = vector::length(&state.secrets);
                 let j = 0;
@@ -420,6 +489,8 @@ module admin::ace_network {
                         secret_id: secret.secret_id,
                         status: STATUS_IN_PROGRESS,
                         contributions: vector[],
+                        contributors: vector[],
+                        contributor_indices: vector[],
                     });
                     j = j + 1;
                 };
@@ -427,6 +498,7 @@ module admin::ace_network {
                     id: state.next_epoch_change_id,
                     new_nodes,
                     new_threshold,
+                    old_threshold,
                     status: STATUS_IN_PROGRESS,
                     resharings,
                 };
@@ -436,8 +508,16 @@ module admin::ace_network {
         };
     }
 
-    /// Submit a contribution for a specific secret's resharing within an epoch change.
-    /// When all resharings are done, the EpochChangeRecord is marked Done and epoch increments.
+    /// Old committee member submits their VSS commitments for one secret's resharing.
+    ///
+    /// Contribution format: [0x02][C_0 48B][C_1 48B]...[C_{t_new-1} 48B]
+    ///   where t_new = EpochChangeRecord.new_threshold.
+    ///
+    /// The commitments are published on-chain so new committee members can verify
+    /// the sub-shares they received peer-to-peer against the authentic commitment.
+    ///
+    /// A resharing finalises when ≥ old_threshold old members have contributed.
+    /// When all resharings are done the epoch advances to the new committee.
     public entry fun contribute_to_epoch_change(
         caller: &signer,
         epoch_change_id: u64,
@@ -446,12 +526,10 @@ module admin::ace_network {
     ) acquires NetworkState {
         let caller_addr = address_of(caller);
         let state = borrow_global_mut<NetworkState>(@admin);
-        assert!(
-            caller_addr == state.authority || node_in_committee(state, caller_addr),
-            error::permission_denied(E_NOT_COMMITTEE_MEMBER)
-        );
+        // Only old committee members may contribute.
+        assert!(node_in_committee(state, caller_addr), error::permission_denied(E_NOT_COMMITTEE_MEMBER));
 
-        // Find the EpochChangeRecord
+        // Find the EpochChangeRecord.
         let nec = vector::length(&state.epoch_change_records);
         let ec_idx = nec;
         let i = 0;
@@ -463,7 +541,35 @@ module admin::ace_network {
         };
         assert!(ec_idx < nec, error::not_found(E_EPOCH_CHANGE_NOT_FOUND));
 
-        // Find the SecretResharing within it
+        // Ignore if the overall record is already done.
+        if (vector::borrow(&state.epoch_change_records, ec_idx).status == STATUS_DONE) {
+            return
+        };
+
+        // Validate contribution format: [0x02][48 * t_new bytes].
+        let new_threshold = vector::borrow(&state.epoch_change_records, ec_idx).new_threshold;
+        let expected_len = 1 + 48 * new_threshold;
+        assert!(
+            !vector::is_empty(&contribution) &&
+            *vector::borrow(&contribution, 0) == CONTRIBUTION_PARTIAL_FLAG &&
+            vector::length(&contribution) == expected_len,
+            error::invalid_argument(E_INVALID_CONTRIBUTION)
+        );
+
+        // Find the caller's 1-based index in the old (current) committee.
+        let old_nodes = &state.current_epoch_info.nodes;
+        let n_old = vector::length(old_nodes);
+        let caller_old_index = 0u64;
+        let oi = 0;
+        while (oi < n_old) {
+            if (*vector::borrow(old_nodes, oi) == caller_addr) {
+                caller_old_index = oi + 1;
+            };
+            oi = oi + 1;
+        };
+        assert!(caller_old_index > 0, error::permission_denied(E_NOT_COMMITTEE_MEMBER));
+
+        // Find the SecretResharing.
         let record = vector::borrow_mut(&mut state.epoch_change_records, ec_idx);
         let nr = vector::length(&record.resharings);
         let r_idx = nr;
@@ -477,12 +583,28 @@ module admin::ace_network {
         assert!(r_idx < nr, error::not_found(E_SECRET_NOT_FOUND));
 
         let resharing = vector::borrow_mut(&mut record.resharings, r_idx);
+
+        // Skip if this resharing is already finalised.
+        if (resharing.status == STATUS_DONE) {
+            return
+        };
+
+        // Each old member may only contribute once per secret.
+        assert!(
+            !vector::contains(&resharing.contributors, &caller_addr),
+            error::already_exists(E_ALREADY_CONTRIBUTED)
+        );
+
         vector::push_back(&mut resharing.contributions, contribution);
-        if (is_final(&resharing.contributions)) {
+        vector::push_back(&mut resharing.contributors, caller_addr);
+        vector::push_back(&mut resharing.contributor_indices, caller_old_index);
+
+        // Finalise this resharing when enough old members have contributed.
+        if (vector::length(&resharing.contributors) >= record.old_threshold) {
             resharing.status = STATUS_DONE;
         };
 
-        // Check if all resharings are done
+        // Check if all resharings are done → advance epoch.
         let all_done = true;
         let k = 0;
         while (k < nr) {
@@ -494,7 +616,6 @@ module admin::ace_network {
 
         if (all_done) {
             record.status = STATUS_DONE;
-            // Advance epoch
             let new_nodes = record.new_nodes;
             let new_threshold = record.new_threshold;
             state.current_epoch_info.epoch_num = state.current_epoch_info.epoch_num + 1;
@@ -516,12 +637,12 @@ module admin::ace_network {
     }
 
     #[view]
-    /// Returns (mpk_bytes, base_bytes, created_epoch, dummy_secret) for a secret.
-    public fun get_secret(admin_addr: address, secret_id: u64): (vector<u8>, vector<u8>, u64, vector<u8>) acquires NetworkState {
+    /// Returns (mpk_bytes, base_bytes, created_epoch) for a secret.
+    public fun get_secret(admin_addr: address, secret_id: u64): (vector<u8>, vector<u8>, u64) acquires NetworkState {
         let state = borrow_global<NetworkState>(admin_addr);
         assert!(secret_id < vector::length(&state.secrets), error::not_found(E_SECRET_NOT_FOUND));
         let s = vector::borrow(&state.secrets, secret_id);
-        (s.mpk, s.base, s.created_epoch, s.dummy_secret)
+        (s.mpk, s.base, s.created_epoch)
     }
 
     #[view]
@@ -622,6 +743,59 @@ module admin::ace_network {
         vector[]
     }
 
+    #[view]
+    /// Returns (new_nodes, new_threshold) for an EpochChangeRecord.
+    /// Used by old committee members to know where to send resharing sub-shares.
+    public fun get_epoch_change_details(admin_addr: address, epoch_change_id: u64): (vector<address>, u64) acquires NetworkState {
+        let state = borrow_global<NetworkState>(admin_addr);
+        let n = vector::length(&state.epoch_change_records);
+        let i = 0;
+        while (i < n) {
+            let record = vector::borrow(&state.epoch_change_records, i);
+            if (record.id == epoch_change_id) {
+                return (record.new_nodes, record.new_threshold)
+            };
+            i = i + 1;
+        };
+        assert!(false, error::not_found(E_EPOCH_CHANGE_NOT_FOUND));
+        (vector[], 0)
+    }
+
+    #[view]
+    /// Returns (contributor_old_indices, commitment_blobs) for a specific resharing.
+    ///
+    /// contributor_old_indices[k] is the 1-based index of contributors[k] in the
+    /// old committee — the x-coordinates for Lagrange interpolation.
+    ///
+    /// commitment_blobs[k] is the full contribution blob from that dealer:
+    ///   [0x02][C_0 48B]...[C_{t_new-1} 48B]
+    /// New members verify their received sub-share g_i(my_new_index) against C_0..C_{t_new-1}.
+    public fun get_resharing_dealer_info(
+        admin_addr: address,
+        epoch_change_id: u64,
+        secret_id: u64,
+    ): (vector<u64>, vector<vector<u8>>) acquires NetworkState {
+        let state = borrow_global<NetworkState>(admin_addr);
+        let n = vector::length(&state.epoch_change_records);
+        let i = 0;
+        while (i < n) {
+            let record = vector::borrow(&state.epoch_change_records, i);
+            if (record.id == epoch_change_id) {
+                let nr = vector::length(&record.resharings);
+                let j = 0;
+                while (j < nr) {
+                    let resharing = vector::borrow(&record.resharings, j);
+                    if (resharing.secret_id == secret_id) {
+                        return (resharing.contributor_indices, resharing.contributions)
+                    };
+                    j = j + 1;
+                };
+            };
+            i = i + 1;
+        };
+        (vector[], vector[])
+    }
+
     // ============================================================================
     // Internal Helpers
     // ============================================================================
@@ -640,13 +814,5 @@ module admin::ace_network {
             i = i + 1;
         };
         false
-    }
-
-    /// Returns true if the last contribution in the vector has the final flag set.
-    fun is_final(contributions: &vector<vector<u8>>): bool {
-        let n = vector::length(contributions);
-        if (n == 0) return false;
-        let last = vector::borrow(contributions, n - 1);
-        !vector::is_empty(last) && *vector::borrow(last, 0) == CONTRIBUTION_FINAL_FLAG
     }
 }

@@ -3,8 +3,15 @@
 
 import { Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 import { execSync, spawn, ChildProcess } from 'child_process';
-import { LOCALNET_URL, WORKER_CLI } from './config.js';
+import * as path from 'path';
+import { LOCALNET_URL, WORKER_BINARY, REPO_ROOT } from './config.js';
 import { waitFor } from './helpers.js';
+
+export function buildWorker(): void {
+    const manifestPath = path.join(REPO_ROOT, 'worker-rs', 'Cargo.toml');
+    console.log(`  $ cargo build --manifest-path ${manifestPath}`);
+    execSync(`cargo build --manifest-path ${manifestPath}`, { stdio: 'inherit' });
+}
 
 export function deployContract(contractDir: string, adminAddress: string, privateKeyHex: string, overrideAdmin = true): void {
     const parts = [
@@ -15,8 +22,6 @@ export function deployContract(contractDir: string, adminAddress: string, privat
         '--assume-yes',
         '--skip-fetch-latest-git-deps',
     ];
-    // Only pass --named-addresses when the Move.toml uses admin="_" (needs overriding).
-    // Skip when the address is already hardcoded in Move.toml.
     if (overrideAdmin) {
         parts.splice(3, 0, '--named-addresses', `admin=${adminAddress}`);
     }
@@ -27,7 +32,8 @@ export function deployContract(contractDir: string, adminAddress: string, privat
 
 export function spawnWorker(privateKey: Ed25519PrivateKey, port: number, contractAddr: string): ChildProcess {
     const privateKeyHex = Buffer.from(privateKey.toUint8Array()).toString('hex');
-    const proc = spawn('tsx', [WORKER_CLI, 'run-worker-v2',
+    const proc = spawn(WORKER_BINARY, [
+        'run-worker-v2',
         '--port', String(port),
         '--rpc-url', LOCALNET_URL,
         '--ace-contract', contractAddr,
@@ -35,6 +41,7 @@ export function spawnWorker(privateKey: Ed25519PrivateKey, port: number, contrac
         env: {
             ...process.env,
             ACE_WORKER_V2_PRIVATE_KEY: `0x${privateKeyHex}`,
+            RUST_LOG: 'info',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
     });

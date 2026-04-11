@@ -30,11 +30,35 @@ export function deployContract(contractDir: string, adminAddress: string, privat
     execSync(cmd, { stdio: 'inherit' });
 }
 
+/**
+ * Register a worker's public endpoint on-chain.
+ * Run once per worker after funding, before starting the worker process.
+ * endpoint is the public URL peers will use, e.g. "http://localhost:9000".
+ */
+export function registerWorker(privateKey: Ed25519PrivateKey, endpoint: string, contractAddr: string): void {
+    const privateKeyHex = Buffer.from(privateKey.toUint8Array()).toString('hex');
+    execSync(
+        `${WORKER_BINARY} register-node --endpoint ${endpoint} --rpc-url ${LOCALNET_URL} --ace-contract ${contractAddr}`,
+        {
+            env: { ...process.env, ACE_WORKER_V2_PRIVATE_KEY: `0x${privateKeyHex}`, RUST_LOG: 'info' },
+            stdio: 'inherit',
+        }
+    );
+}
+
+/**
+ * Spawn a worker process in `run` mode.
+ * Public server on `port`; internal signer on `port + 100`.
+ * The public URL (http://localhost:<port>) must be registered on-chain first
+ * via registerWorker().
+ */
 export function spawnWorker(privateKey: Ed25519PrivateKey, port: number, contractAddr: string): ChildProcess {
     const privateKeyHex = Buffer.from(privateKey.toUint8Array()).toString('hex');
+    const signerPort = port + 500; // +100 conflicts with localnet metrics:9101 and admin:9102
     const proc = spawn(WORKER_BINARY, [
-        'run-worker-v2',
+        'run',
         '--port', String(port),
+        '--signer-port', String(signerPort),
         '--rpc-url', LOCALNET_URL,
         '--ace-contract', contractAddr,
     ], {

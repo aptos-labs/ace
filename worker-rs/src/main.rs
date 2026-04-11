@@ -1,5 +1,10 @@
-// Copyright (c) Aptos Labs
-// Licensed under Apache-2.0
+// ACE Worker — single binary, multiple subcommands
+//
+//  run              All-in-one (simple Docker): public server + signer in one process.
+//  signer           Signer only (Helm, replicas=1): DKG/DKR + /partial_key.
+//  server           Public server only (Helm, replicas=N): user-facing + proxies to signer.
+//  register-node    One-shot: register this worker's public endpoint on-chain.
+//                   Run once after deployment; operator provides the public URL.
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::collections::{HashMap, HashSet};
@@ -11,7 +16,9 @@ mod aptos_rpc;
 mod bcs;
 mod crypto;
 mod dkg;
-mod server;
+mod public_server;
+mod server; // kept for backward-compat; new code uses public_server + signer
+mod signer;
 mod store;
 mod types;
 mod verify;
@@ -19,38 +26,20 @@ mod vss;
 
 /// Shared in-memory state for the sync-VSS DKG dealing phase.
 pub struct DkgShareAccum {
-    /// dkg_id → accumulated Fr scalar (sum of all received shares)
     pub shares: HashMap<u64, ark_bls12_381::Fr>,
-    /// dkg_ids for which this worker has already posted a partial-MPK contribution
     pub posted_dkg_ids: HashSet<u64>,
 }
-
 impl DkgShareAccum {
-    pub fn new() -> Self {
-        Self {
-            shares: HashMap::new(),
-            posted_dkg_ids: HashSet::new(),
-        }
-    }
+    pub fn new() -> Self { Self { shares: HashMap::new(), posted_dkg_ids: HashSet::new() } }
 }
 
 /// Shared in-memory state for the DKR (resharing) phase.
-///
-/// Old committee members send sub-shares g_i(j) to new committee members via
-/// HTTP POST /reshare_share.  New members accumulate them here, then after the
-/// epoch advances compute their new share via Lagrange combination.
 pub struct ReshareAccum {
-    /// (epoch_change_id, secret_id) → list of (dealer_old_index, sub_share_fr)
     pub sub_shares: HashMap<(u64, u64), Vec<(u64, ark_bls12_381::Fr)>>,
-    /// epoch_change_ids for which this worker has already dealt (old-member side)
     pub posted_epoch_change_ids: HashSet<u64>,
-    /// epoch_change_ids for which the new share has already been stored
     pub committed_epoch_change_ids: HashSet<u64>,
-    /// The epoch_change_id + secret_ids of the currently active resharing,
-    /// saved when first detected so it's available after the epoch advances.
     pub active_resharing: Option<(u64, Vec<u64>)>,
 }
-
 impl ReshareAccum {
     pub fn new() -> Self {
         Self {
@@ -62,8 +51,10 @@ impl ReshareAccum {
     }
 }
 
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
 #[derive(Parser)]
-#[command(name = "worker-rs", about = "ACE Worker v2 (Rust)")]
+#[command(name = "worker-rs", about = "ACE Worker")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -71,56 +62,74 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(name = "run-worker-v2")]
-    RunWorkerV2(RunWorkerV2Args),
+    /// All-in-one mode for simple Docker deployments.
+    /// Runs the public server on --port and an internal signer on --signer-port
+    /// (default: --port + 500).  Both share in-process state; no network hop
+    /// for /partial_key in this mode because they are on the same host.
+    #[command(name = "run")]
+    Run(RunArgs),
+
+    /// Signer-only mode (Helm: Deployment replicas=1).
+    /// Holds the private key, runs DKG/DKR polling, exposes /partial_key,
+    /// /deal_share, /reshare_share on --port.
+    #[command(name = "signer")]
+    Signer(SignerArgs),
+
+    /// Public-server-only mode (Helm: Deployment replicas=N).
+    /// Verifies permissions and proxies /partial_key to the signer.
+    #[command(name = "server")]
+    Server(ServerArgs),
+
+    /// Register this worker's public endpoint on-chain.
+    /// Run once after deployment when the public URL is known.
+    #[command(name = "register-node")]
+    RegisterNode(RegisterNodeArgs),
 }
 
+// ── Shared key arg helper ─────────────────────────────────────────────────────
+
+fn parse_private_key(hex: &str) -> Result<ed25519_dalek::SigningKey> {
+    let raw = hex.trim_start_matches("0x");
+    let bytes: [u8; 32] = hex::decode(raw)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("private key must be 32 bytes"))?;
+    Ok(ed25519_dalek::SigningKey::from_bytes(&bytes))
+}
+
+fn normalize_addr(s: &str) -> String {
+    if s.starts_with("0x") { s.to_string() } else { format!("0x{}", s) }
+}
+
+// ── run subcommand ────────────────────────────────────────────────────────────
+
 #[derive(clap::Args)]
-struct RunWorkerV2Args {
+struct RunArgs {
+    /// Public port (user-facing HTTP server).
     #[arg(long)]
     port: u16,
-
+    /// Internal signer port (defaults to port + 500).
+    #[arg(long)]
+    signer_port: Option<u16>,
     #[arg(long, name = "rpc-url")]
     rpc_url: String,
-
     #[arg(long, name = "ace-contract")]
     ace_contract: String,
-
     #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
     private_key: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-    let cli = Cli::parse();
-    match cli.command {
-        Commands::RunWorkerV2(args) => run_worker_v2(args).await,
-    }
-}
-
-async fn run_worker_v2(args: RunWorkerV2Args) -> Result<()> {
-    // Parse private key
-    let pk_hex = args.private_key.trim_start_matches("0x");
-    let pk_bytes: [u8; 32] = hex::decode(pk_hex)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("private key must be 32 bytes"))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&pk_bytes);
+async fn cmd_run(args: RunArgs) -> Result<()> {
+    let signer_port = args.signer_port.unwrap_or(args.port + 500);
+    let signing_key = parse_private_key(&args.private_key)?;
     let verifying_key = signing_key.verifying_key();
     let my_address = compute_address(&verifying_key);
-
-    let contract_addr = if args.ace_contract.starts_with("0x") {
-        args.ace_contract.clone()
-    } else {
-        format!("0x{}", args.ace_contract)
-    };
-
-    let endpoint = format!("http://localhost:{}", args.port);
+    let contract_addr = normalize_addr(&args.ace_contract);
     let store_path = format!("worker_shares_{}.json", args.port);
 
-    info!("ACE Worker v2 (Rust)");
+    info!("ACE Worker (run mode)");
     info!("  Address:  0x{}", hex::encode(my_address));
-    info!("  Endpoint: {}", endpoint);
+    info!("  Public:   http://localhost:{}", args.port);
+    info!("  Signer:   http://localhost:{}", signer_port);
     info!("  Contract: {}", contract_addr);
     info!("  Store:    {}", store_path);
 
@@ -129,49 +138,199 @@ async fn run_worker_v2(args: RunWorkerV2Args) -> Result<()> {
     let accum = Arc::new(Mutex::new(DkgShareAccum::new()));
     let reshare_accum = Arc::new(Mutex::new(ReshareAccum::new()));
 
-    // Register node
-    let _ = dkg::ensure_registered(&rpc, &signing_key, &verifying_key, &contract_addr, &endpoint).await;
-
-    // Initial poll
+    // Initial poll then background poller.
     let _ = dkg::poll(
         &rpc, &signing_key, &verifying_key, &contract_addr, &my_address,
         &store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
     ).await;
+    spawn_dkg_poller(
+        rpc.clone(), signing_key, verifying_key, contract_addr.clone(),
+        my_address, store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
+    );
 
-    // Background poller
-    {
-        let rpc2 = rpc.clone();
-        let contract_addr2 = contract_addr.clone();
-        let store_path2 = store_path.clone();
-        let store2 = Arc::clone(&store);
-        let accum2 = Arc::clone(&accum);
-        let reshare_accum2 = Arc::clone(&reshare_accum);
-        let sk_bytes = signing_key.to_bytes();
-        let vk_bytes = verifying_key.to_bytes();
-        let my_address2 = my_address;
-        tokio::spawn(async move {
-            let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
-            let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).unwrap();
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-                let _ = dkg::poll(
-                    &rpc2, &sk, &vk, &contract_addr2, &my_address2,
-                    &store_path2, Arc::clone(&store2), Arc::clone(&accum2),
-                    Arc::clone(&reshare_accum2),
-                ).await;
-            }
-        });
-    }
+    let signer_state = signer::SignerState {
+        contract_addr: contract_addr.clone(),
+        rpc: rpc.clone(),
+        my_address,
+        store,
+        accum,
+        reshare_accum,
+    };
+    let signer_url = format!("http://localhost:{}", signer_port);
+    let public_state = public_server::PublicServerState {
+        contract_addr,
+        rpc,
+        signer_url,
+        http_client: reqwest::Client::new(),
+    };
 
-    // HTTP server
-    server::run(args.port, contract_addr, args.rpc_url, my_address, store, accum, reshare_accum).await
+    tokio::try_join!(
+        signer::run(signer_port, signer_state),
+        public_server::run(args.port, public_state),
+    )?;
+    Ok(())
 }
+
+// ── signer subcommand ─────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct SignerArgs {
+    /// Port for signer HTTP (DKG/DKR + /partial_key).
+    #[arg(long)]
+    port: u16,
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+async fn cmd_signer(args: SignerArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let verifying_key = signing_key.verifying_key();
+    let my_address = compute_address(&verifying_key);
+    let contract_addr = normalize_addr(&args.ace_contract);
+    let store_path = format!("worker_shares_{}.json", args.port);
+
+    info!("ACE Worker (signer mode)");
+    info!("  Address:  0x{}", hex::encode(my_address));
+    info!("  Port:     {}", args.port);
+    info!("  Contract: {}", contract_addr);
+    info!("  Store:    {}", store_path);
+
+    let rpc = aptos_rpc::AptosRpc::new(args.rpc_url);
+    let store = Arc::new(Mutex::new(store::ShareStore::load(&store_path)));
+    let accum = Arc::new(Mutex::new(DkgShareAccum::new()));
+    let reshare_accum = Arc::new(Mutex::new(ReshareAccum::new()));
+
+    let _ = dkg::poll(
+        &rpc, &signing_key, &verifying_key, &contract_addr, &my_address,
+        &store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
+    ).await;
+    spawn_dkg_poller(
+        rpc.clone(), signing_key, verifying_key, contract_addr.clone(),
+        my_address, store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
+    );
+
+    let state = signer::SignerState { contract_addr, rpc, my_address, store, accum, reshare_accum };
+    signer::run(args.port, state).await
+}
+
+// ── server subcommand ─────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct ServerArgs {
+    /// Public port.
+    #[arg(long)]
+    port: u16,
+    /// Base URL of the signer, e.g. "http://signer-service:8080".
+    #[arg(long, name = "signer-url")]
+    signer_url: String,
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+}
+
+async fn cmd_server(args: ServerArgs) -> Result<()> {
+    info!("ACE Worker (server mode)");
+    info!("  Port:       {}", args.port);
+    info!("  Signer URL: {}", args.signer_url);
+
+    let state = public_server::PublicServerState {
+        contract_addr: normalize_addr(&args.ace_contract),
+        rpc: aptos_rpc::AptosRpc::new(args.rpc_url),
+        signer_url: args.signer_url,
+        http_client: reqwest::Client::new(),
+    };
+    public_server::run(args.port, state).await
+}
+
+// ── register-node subcommand ──────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct RegisterNodeArgs {
+    /// The public URL this worker is reachable at, e.g. "https://worker.acme.com".
+    #[arg(long)]
+    endpoint: String,
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+async fn cmd_register_node(args: RegisterNodeArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let verifying_key = signing_key.verifying_key();
+    let my_address = compute_address(&verifying_key);
+    let my_addr_str = format!("0x{}", hex::encode(my_address));
+    let contract_addr = normalize_addr(&args.ace_contract);
+    let rpc = aptos_rpc::AptosRpc::new(args.rpc_url);
+
+    info!("Registering node: {} → {}", my_addr_str, args.endpoint);
+    rpc.submit_txn(
+        &signing_key,
+        &verifying_key,
+        &my_addr_str,
+        &format!("{}::ace_network::register_node", contract_addr),
+        &[],
+        &[serde_json::json!(args.endpoint)],
+    )
+    .await?;
+    info!("Node registered successfully.");
+    Ok(())
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Run(a) => cmd_run(a).await,
+        Commands::Signer(a) => cmd_signer(a).await,
+        Commands::Server(a) => cmd_server(a).await,
+        Commands::RegisterNode(a) => cmd_register_node(a).await,
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub fn compute_address(vk: &ed25519_dalek::VerifyingKey) -> [u8; 32] {
     use sha3::{Digest, Sha3_256};
     let mut hasher = Sha3_256::new();
     hasher.update(vk.as_bytes());
-    hasher.update([0x00u8]); // Ed25519 scheme byte
+    hasher.update([0x00u8]);
     hasher.finalize().into()
+}
+
+fn spawn_dkg_poller(
+    rpc: aptos_rpc::AptosRpc,
+    signing_key: ed25519_dalek::SigningKey,
+    verifying_key: ed25519_dalek::VerifyingKey,
+    contract_addr: String,
+    my_address: [u8; 32],
+    store_path: String,
+    store: Arc<Mutex<store::ShareStore>>,
+    accum: Arc<Mutex<DkgShareAccum>>,
+    reshare_accum: Arc<Mutex<ReshareAccum>>,
+) {
+    let sk_bytes = signing_key.to_bytes();
+    let vk_bytes = verifying_key.to_bytes();
+    tokio::spawn(async move {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).unwrap();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let _ = dkg::poll(
+                &rpc, &sk, &vk, &contract_addr, &my_address,
+                &store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
+            ).await;
+        }
+    });
 }

@@ -35,7 +35,7 @@ import {
     WORKER_BASE_PORT,
 } from './config.js';
 import { log, assert, sleep, waitFor, createAptos, fundAccount, callView, submitTxn } from './helpers.js';
-import { buildWorker, deployContract, spawnWorker, waitWorkerHealthy } from './infra.js';
+import { buildWorker, deployContract, registerWorker, spawnWorker, waitWorkerHealthy } from './infra.js';
 
 // Epoch-1 committee: workers 1–5 (3-of-5); worker 0 leaves, workers 4–5 join.
 const NEW_NUM_WORKERS = 5;
@@ -146,22 +146,33 @@ async function main() {
         assert(Number(epochNum) === 0, `Expected epoch 0, got ${epochNum}`);
         console.log(`  Epoch 0 committee set (${NUM_WORKERS} workers, threshold=${THRESHOLD})`);
 
-        // ── Step 6: Build and start all 6 worker processes ──────────────────
-        log('6', `Build and start ${TOTAL_WORKERS} worker processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1})`);
+        // ── Step 6: Build worker binary ──────────────────────────────────────
+        log('6', 'Build worker binary');
         buildWorker();
+
+        // ── Step 6b: Register all worker endpoints on-chain ──────────────────
+        // Registration is a separate operator step; the worker process itself
+        // no longer auto-registers.  We register all 6 workers here so that
+        // peers can look up their endpoints during DKG and DKR.
+        log('6b', `Register ${TOTAL_WORKERS} worker endpoints on-chain`);
+        for (let i = 0; i < TOTAL_WORKERS; i++) {
+            const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
+            console.log(`  Registering worker ${i}: ${endpoint}`);
+            registerWorker(workerKeys[i], endpoint, adminAddr);
+        }
+
+        // ── Step 6c: Start all worker processes ──────────────────────────────
+        log('6c', `Start ${TOTAL_WORKERS} worker processes (public ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1}, signer ports +100)`);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const proc = spawnWorker(workerKeys[i], WORKER_BASE_PORT + i, adminAddr);
             workers.push(proc);
         }
 
-        log('6b', 'Wait for all workers to become healthy');
+        log('6d', 'Wait for all workers to become healthy');
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             await waitWorkerHealthy(WORKER_BASE_PORT + i);
         }
-        // Give extra time for registration transactions to land.
-        // Workers 4–5 are not in epoch-0 committee but still register their endpoints
-        // on-chain so old members can look them up during DKR.
-        await sleep(3000);
+        await sleep(2000);
 
         // ── Step 7: Propose a new secret ─────────────────────────────────────
         const proposerIdx = Math.floor(Math.random() * NUM_WORKERS); // from old committee

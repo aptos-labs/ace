@@ -17,6 +17,13 @@ export function frMod(a: bigint): bigint {
     return ((a % FR_MODULUS) + FR_MODULUS) % FR_MODULUS;
 }
 
+/** Reject unless `s` is a canonical unsigned Fr element in `[0, FR_MODULUS)`. */
+export function assertCanonicalFrScalar(label: string, s: bigint): void {
+    if (s < 0n || s >= FR_MODULUS) {
+        throw `${label}: expected canonical Fr scalar in [0, FR_MODULUS)`;
+    }
+}
+
 export function frAdd(a: bigint, b: bigint): bigint {
     return frMod(a + b);
 }

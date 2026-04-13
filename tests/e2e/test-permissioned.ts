@@ -33,9 +33,19 @@ import {
     NUM_WORKERS,
     THRESHOLD,
     WORKER_BASE_PORT,
-} from './config.js';
-import { log, assert, sleep, waitFor, createAptos, fundAccount, callView, submitTxn } from './helpers.js';
-import { buildWorker, deployContract, registerWorker, spawnWorker, waitWorkerHealthy } from './infra.js';
+} from './config';
+import {
+    assertTxnSuccess,
+    log,
+    assert,
+    sleep,
+    waitFor,
+    createAptos,
+    fundAccount,
+    callView,
+    submitTxn,
+} from './helpers';
+import { buildWorker, deployContract, registerWorker, spawnWorker, waitWorkerHealthy } from './infra';
 
 // Epoch-1 committee: workers 1–5 (3-of-5); worker 0 leaves, workers 4–5 join.
 const NEW_NUM_WORKERS = 5;
@@ -91,7 +101,7 @@ async function main() {
         log('1', 'Fund admin account');
         const adminKey = new Ed25519PrivateKey('0x1111111111111111111111111111111111111111111111111111111111111111');
         const adminAccount = Account.fromPrivateKey({ privateKey: adminKey });
-        await fundAccount(aptos, adminAccount);
+        await fundAccount(adminAccount.accountAddress);
         const adminAddr = adminAccount.accountAddress.toStringLong();
         const adminKeyHex = Buffer.from(adminAccount.privateKey.toUint8Array()).toString('hex');
         console.log(`  Admin: ${adminAddr}`);
@@ -102,18 +112,21 @@ async function main() {
         const bobKey = new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + 200)));
         const alice = Account.fromPrivateKey({ privateKey: aliceKey });
         const bob = Account.fromPrivateKey({ privateKey: bobKey });
-        await Promise.all([fundAccount(aptos, alice), fundAccount(aptos, bob)]);
+        await Promise.all([fundAccount(alice.accountAddress), fundAccount(bob.accountAddress)]);
         console.log(`  Alice: ${alice.accountAddress.toStringLong()}`);
         console.log(`  Bob:   ${bob.accountAddress.toStringLong()}`);
 
         // ── Step 3: Deploy ACE network contract ──────────────────────────────
         log('3', 'Deploy ACE network contract');
-        deployContract(CONTRACT_DIR, adminAddr, adminKeyHex);
+        await deployContract(CONTRACT_DIR, adminAddr, adminKeyHex);
         console.log(`  Deployed ace_network at ${adminAddr}`);
 
         // ── Step 4: Initialize ACE network contract ──────────────────────────
         log('4', 'Initialize ACE network contract');
-        await submitTxn(aptos, adminAccount, adminAddr, 'ace_network', 'initialize', []);
+        assertTxnSuccess(
+            await submitTxn(adminAccount, `${adminAddr}::ace_network::initialize`, []),
+            'ace_network::initialize',
+        );
         console.log('  Initialized');
 
         // ── Step 5: Fund all 6 worker accounts ──────────────────────────────
@@ -123,7 +136,7 @@ async function main() {
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const key = new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, j) => j + 10 + i)));
             const acc = Account.fromPrivateKey({ privateKey: key });
-            await fundAccount(aptos, acc);
+            await fundAccount(acc.accountAddress);
             workerKeys.push(key);
             workerAccounts.push(acc);
             console.log(`  Worker ${i}: ${acc.accountAddress.toStringLong()}`);
@@ -139,9 +152,13 @@ async function main() {
 
         // ── Step 5b: Set epoch 0 committee ───────────────────────────────────
         log('5b', `Admin calls start_initial_epoch (${NUM_WORKERS} workers, threshold=${THRESHOLD})`);
-        await submitTxn(aptos, adminAccount, adminAddr, 'ace_network', 'start_initial_epoch', [
-            epoch0Addrs, THRESHOLD,
-        ]);
+        assertTxnSuccess(
+            await submitTxn(adminAccount, `${adminAddr}::ace_network::start_initial_epoch`, [
+                epoch0Addrs,
+                THRESHOLD,
+            ]),
+            'ace_network::start_initial_epoch',
+        );
         const [epochNum] = await callView(aptos, adminAddr, 'ace_network', 'get_current_epoch', []);
         assert(Number(epochNum) === 0, `Expected epoch 0, got ${epochNum}`);
         console.log(`  Epoch 0 committee set (${NUM_WORKERS} workers, threshold=${THRESHOLD})`);
@@ -180,7 +197,12 @@ async function main() {
         const specBytes = Array.from(new TextEncoder().encode(
             JSON.stringify({ scheme: 'bls12-381-ibe', description: 'test-secret-0' })
         ));
-        await submitTxn(aptos, workerAccounts[proposerIdx], adminAddr, 'ace_network', 'propose_new_secret', [specBytes]);
+        assertTxnSuccess(
+            await submitTxn(workerAccounts[proposerIdx], `${adminAddr}::ace_network::propose_new_secret`, [
+                specBytes,
+            ]),
+            'ace_network::propose_new_secret',
+        );
 
         const proposalsResult = await callView(aptos, adminAddr, 'ace_network', 'get_pending_secret_proposals', []);
         const secretProposalAddrs = proposalsResult[0] as string[];
@@ -193,7 +215,12 @@ async function main() {
         for (let i = 0; i < THRESHOLD; i++) {
             const approverIdx = (proposerIdx + 1 + i) % NUM_WORKERS;
             console.log(`  Worker ${approverIdx} approves`);
-            await submitTxn(aptos, workerAccounts[approverIdx], adminAddr, 'ace_network', 'approve_secret_proposal', [secretProposalAddr]);
+            assertTxnSuccess(
+                await submitTxn(workerAccounts[approverIdx], `${adminAddr}::ace_network::approve_secret_proposal`, [
+                    secretProposalAddr,
+                ]),
+                'ace_network::approve_secret_proposal',
+            );
         }
         console.log('  Threshold reached — DKG record created');
 
@@ -210,10 +237,13 @@ async function main() {
 
         // ── Step 9: Deploy access_control contract ────────────────────────────
         log('9', 'Deploy access_control contract');
-        deployContract(ACCESS_CONTROL_CONTRACT_DIR, adminAddr, adminKeyHex, false);
+        await deployContract(ACCESS_CONTROL_CONTRACT_DIR, adminAddr, adminKeyHex);
         console.log(`  Deployed access_control at ${adminAddr}`);
 
-        await submitTxn(aptos, adminAccount, adminAddr, 'access_control', 'initialize', []);
+        assertTxnSuccess(
+            await submitTxn(adminAccount, `${adminAddr}::access_control::initialize`, []),
+            'access_control::initialize',
+        );
         console.log('  access_control initialized');
 
         // ── Step 10: Register blob (Alice as owner, Bob in allowlist) ─────────
@@ -325,9 +355,13 @@ async function main() {
         // Worker 0 leaves; workers 4 and 5 join. New committee: workers 1–5, threshold 3-of-5.
         const ecProposerIdx = Math.floor(Math.random() * NUM_WORKERS); // from old committee
         log('13', `Worker ${ecProposerIdx} proposes epoch change: ${NUM_WORKERS}-of-${NUM_WORKERS} → ${NEW_THRESHOLD}-of-${NEW_NUM_WORKERS} (worker 0 leaves, workers 4–5 join)`);
-        await submitTxn(aptos, workerAccounts[ecProposerIdx], adminAddr, 'ace_network', 'propose_epoch_change', [
-            epoch1Addrs, NEW_THRESHOLD,
-        ]);
+        assertTxnSuccess(
+            await submitTxn(workerAccounts[ecProposerIdx], `${adminAddr}::ace_network::propose_epoch_change`, [
+                epoch1Addrs,
+                NEW_THRESHOLD,
+            ]),
+            'ace_network::propose_epoch_change',
+        );
 
         const ecProposalResult = await callView(aptos, adminAddr, 'ace_network', 'get_pending_epoch_change_proposal', []);
         assert(ecProposalResult[0] === true, 'Expected a pending epoch change proposal');
@@ -340,7 +374,12 @@ async function main() {
         for (let i = 0; i < THRESHOLD; i++) {
             const approverIdx = (ecProposerIdx + 1 + i) % NUM_WORKERS; // within old committee (0–3)
             console.log(`  Worker ${approverIdx} approves`);
-            await submitTxn(aptos, workerAccounts[approverIdx], adminAddr, 'ace_network', 'approve_epoch_change', [ecProposalAddr]);
+            assertTxnSuccess(
+                await submitTxn(workerAccounts[approverIdx], `${adminAddr}::ace_network::approve_epoch_change`, [
+                    ecProposalAddr,
+                ]),
+                'ace_network::approve_epoch_change',
+            );
         }
         console.log('  Threshold reached — DKR started');
 

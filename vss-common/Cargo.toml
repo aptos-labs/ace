@@ -1,0 +1,18 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "vss-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Aptos REST + on-chain VSS Session parsing for vss-dealer / vss-recipient."
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+hex = "0.4"
+ed25519-dalek = "2"
+tokio = { version = "1", features = ["rt", "time"] }
+sha3 = "0.10"

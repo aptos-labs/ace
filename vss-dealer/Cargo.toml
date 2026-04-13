@@ -1,0 +1,23 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "vss-dealer"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain VSS dealer client."
+
+[[bin]]
+name = "vss-dealer"
+path = "src/main.rs"
+
+[lib]
+name = "vss_dealer"
+path = "src/lib.rs"
+
+[dependencies]
+vss-common = { path = "../vss-common" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"

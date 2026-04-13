@@ -17,36 +17,45 @@ mod bcs;
 mod crypto;
 mod dkg;
 mod public_server;
+mod share_crypto;
 mod server; // kept for backward-compat; new code uses public_server + signer
 mod signer;
 mod store;
 mod types;
 mod verify;
 mod vss;
+mod vss_dealer;
+mod vss_recipient;
 
-/// Shared in-memory state for the sync-VSS DKG dealing phase.
+/// Shared in-memory state for the sync-VSS DKG dealing phase (keyed by DkgSession object address).
 pub struct DkgShareAccum {
-    pub shares: HashMap<u64, ark_bls12_381::Fr>,
-    pub posted_dkg_ids: HashSet<u64>,
+    pub shares: HashMap<String, ark_bls12_381::Fr>,
+    pub posted_dkg_sessions: HashSet<String>,
 }
 impl DkgShareAccum {
-    pub fn new() -> Self { Self { shares: HashMap::new(), posted_dkg_ids: HashSet::new() } }
+    pub fn new() -> Self {
+        Self {
+            shares: HashMap::new(),
+            posted_dkg_sessions: HashSet::new(),
+        }
+    }
 }
 
-/// Shared in-memory state for the DKR (resharing) phase.
+/// Shared in-memory state for DKR (keyed by DkrSession object address).
 pub struct ReshareAccum {
-    pub sub_shares: HashMap<(u64, u64), Vec<(u64, ark_bls12_381::Fr)>>,
-    pub posted_epoch_change_ids: HashSet<u64>,
-    pub committed_epoch_change_ids: HashSet<u64>,
-    pub active_resharing: Option<(u64, Vec<u64>)>,
+    pub sub_shares: HashMap<(String, u64), Vec<(u64, ark_bls12_381::Fr)>>,
+    pub posted_dkr_contribs: HashSet<(String, u64)>,
+    /// (dkr_session_addr, secret_idx) pairs for which the new share was written to `ShareStore`.
+    pub committed_dkr_secrets: HashSet<(String, u64)>,
+    pub active_dkr: Option<String>,
 }
 impl ReshareAccum {
     pub fn new() -> Self {
         Self {
             sub_shares: HashMap::new(),
-            posted_epoch_change_ids: HashSet::new(),
-            committed_epoch_change_ids: HashSet::new(),
-            active_resharing: None,
+            posted_dkr_contribs: HashSet::new(),
+            committed_dkr_secrets: HashSet::new(),
+            active_dkr: None,
         }
     }
 }
@@ -70,8 +79,7 @@ enum Commands {
     Run(RunArgs),
 
     /// Signer-only mode (Helm: Deployment replicas=1).
-    /// Holds the private key, runs DKG/DKR polling, exposes /partial_key,
-    /// /deal_share, /reshare_share on --port.
+    /// Holds the private key, runs DKG/DKR polling, exposes /partial_key on --port.
     #[command(name = "signer")]
     Signer(SignerArgs),
 
@@ -84,6 +92,47 @@ enum Commands {
     /// Run once after deployment when the public URL is known.
     #[command(name = "register-node")]
     RegisterNode(RegisterNodeArgs),
+
+    /// Recipient-side on-chain VSS (`vss-recipient run`, …).
+    #[command(name = "vss-recipient")]
+    VssRecipient(VssRecipientCli),
+
+    /// Dealer-side on-chain VSS (`vss-dealer run`, …).
+    #[command(name = "vss-dealer")]
+    VssDealer(VssDealerCli),
+}
+
+/// `worker-rs vss-recipient …` — nested subcommands (mirrors `vss-dealer`).
+#[derive(clap::Args)]
+struct VssRecipientCli {
+    #[command(subcommand)]
+    cmd: VssRecipientCommand,
+}
+
+#[derive(Subcommand)]
+enum VssRecipientCommand {
+    /// Poll until the dealer posts this account's 80-byte row, decrypt the Shamir share, then wait for `DONE`.
+    Run(VssRecipientRunArgs),
+    /// One-shot: read ciphertext now, decrypt, print 32-byte share hex (fails if row not yet posted).
+    #[command(name = "decrypt-once")]
+    DecryptOnce(VssRecipientDecryptOnceArgs),
+}
+
+/// `worker-rs vss-dealer …` — must be `Args` so the nested `Subcommand` parses correctly.
+#[derive(clap::Args)]
+struct VssDealerCli {
+    #[command(subcommand)]
+    cmd: VssDealerCommand,
+}
+
+/// Subcommands under `vss-dealer`.
+#[derive(Subcommand)]
+enum VssDealerCommand {
+    /// Poll on-chain VssSession: phase-1 encrypted shares + escrow; after delay, phase-2 contribution.
+    Run(VssDealerRunArgs),
+    /// Print this account's 48-byte compressed G1 VSS encryption public key (hex) for `--recipient-pks-hex`.
+    #[command(name = "print-encryption-pk")]
+    PrintEncryptionPk(VssDealerPrintEncryptionPkArgs),
 }
 
 // ── Shared key arg helper ─────────────────────────────────────────────────────
@@ -153,8 +202,6 @@ async fn cmd_run(args: RunArgs) -> Result<()> {
         rpc: rpc.clone(),
         my_address,
         store,
-        accum,
-        reshare_accum,
     };
     let signer_url = format!("http://localhost:{}", signer_port);
     let public_state = public_server::PublicServerState {
@@ -213,7 +260,7 @@ async fn cmd_signer(args: SignerArgs) -> Result<()> {
         my_address, store_path, Arc::clone(&store), Arc::clone(&accum), Arc::clone(&reshare_accum),
     );
 
-    let state = signer::SignerState { contract_addr, rpc, my_address, store, accum, reshare_accum };
+    let state = signer::SignerState { contract_addr, rpc, my_address, store };
     signer::run(args.port, state).await
 }
 
@@ -250,6 +297,70 @@ async fn cmd_server(args: ServerArgs) -> Result<()> {
 // ── register-node subcommand ──────────────────────────────────────────────────
 
 #[derive(clap::Args)]
+struct VssDealerRunArgs {
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+    #[arg(long)]
+    vss_session: String,
+    #[arg(long, value_delimiter = ',')]
+    recipients: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    recipient_pks_hex: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    recipient_indices: Vec<u64>,
+    #[arg(long)]
+    threshold: u64,
+    #[arg(long, default_value = "10")]
+    poll_secs: u64,
+    #[arg(long, default_value = "10")]
+    phase2_delay_secs: u64,
+    /// Optional 32-byte scalar (hex). Default: HKDF-derived VSS key from the Ed25519 signing key.
+    #[arg(long)]
+    vss_dk_hex: Option<String>,
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+#[derive(clap::Args)]
+struct VssDealerPrintEncryptionPkArgs {
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+#[derive(clap::Args)]
+struct VssRecipientDecryptOnceArgs {
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+    #[arg(long)]
+    vss_session: String,
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+#[derive(clap::Args)]
+struct VssRecipientRunArgs {
+    #[arg(long, name = "rpc-url")]
+    rpc_url: String,
+    #[arg(long, name = "ace-contract")]
+    ace_contract: String,
+    #[arg(long)]
+    vss_session: String,
+    #[arg(long, default_value = "2")]
+    poll_secs: u64,
+    #[arg(long, default_value = "120")]
+    max_wait_secs: u64,
+    /// Optional 32-byte scalar (hex). Default: HKDF-derived VSS key from the Ed25519 signing key.
+    #[arg(long)]
+    vss_dk_hex: Option<String>,
+    #[arg(long, env = "ACE_WORKER_V2_PRIVATE_KEY")]
+    private_key: String,
+}
+
+#[derive(clap::Args)]
 struct RegisterNodeArgs {
     /// The public URL this worker is reachable at, e.g. "https://worker.acme.com".
     #[arg(long)]
@@ -271,13 +382,19 @@ async fn cmd_register_node(args: RegisterNodeArgs) -> Result<()> {
     let rpc = aptos_rpc::AptosRpc::new(args.rpc_url);
 
     info!("Registering node: {} → {}", my_addr_str, args.endpoint);
+    let dk = share_crypto::derive_vss_dk(&signing_key);
+    let enc_pk = share_crypto::encryption_pk_compressed(&dk);
     rpc.submit_txn(
         &signing_key,
         &verifying_key,
         &my_addr_str,
         &format!("{}::ace_network::register_node", contract_addr),
         &[],
-        &[serde_json::json!(args.endpoint)],
+        &[
+            serde_json::json!(args.endpoint),
+            // REST expects `vector<u8>` as a single hex string (not a JSON array of u8).
+            serde_json::json!(format!("0x{}", hex::encode(enc_pk))),
+        ],
     )
     .await?;
     info!("Node registered successfully.");
@@ -295,7 +412,75 @@ async fn main() -> Result<()> {
         Commands::Signer(a) => cmd_signer(a).await,
         Commands::Server(a) => cmd_server(a).await,
         Commands::RegisterNode(a) => cmd_register_node(a).await,
+        Commands::VssRecipient(cli) => match cli.cmd {
+            VssRecipientCommand::Run(a) => cmd_vss_recipient_run(a).await,
+            VssRecipientCommand::DecryptOnce(a) => cmd_vss_recipient_decrypt_once(a).await,
+        },
+        Commands::VssDealer(cli) => match cli.cmd {
+            VssDealerCommand::Run(a) => cmd_vss_dealer_run(a).await,
+            VssDealerCommand::PrintEncryptionPk(a) => cmd_vss_dealer_print_encryption_pk(a),
+        },
     }
+}
+
+async fn cmd_vss_dealer_run(args: VssDealerRunArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let verifying_key = signing_key.verifying_key();
+    let my_lower = format!("0x{}", hex::encode(compute_address(&verifying_key))).to_lowercase();
+    let cfg = vss_dealer::VssDealerConfig {
+        rpc_url: args.rpc_url,
+        contract_addr: normalize_addr(&args.ace_contract),
+        vss_session: args.vss_session,
+        recipients: args.recipients,
+        recipient_pks_hex: args.recipient_pks_hex,
+        recipient_indices: args.recipient_indices,
+        threshold: args.threshold,
+        poll_secs: args.poll_secs,
+        phase2_delay_secs: args.phase2_delay_secs,
+        vss_dk_hex: args.vss_dk_hex,
+    };
+    vss_dealer::run_dealer(cfg, &signing_key, &verifying_key, &my_lower).await
+}
+
+fn cmd_vss_dealer_print_encryption_pk(args: VssDealerPrintEncryptionPkArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let dk = share_crypto::derive_vss_dk(&signing_key);
+    let pk = share_crypto::encryption_pk_compressed(&dk);
+    println!("0x{}", hex::encode(pk));
+    Ok(())
+}
+
+async fn cmd_vss_recipient_run(args: VssRecipientRunArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let verifying_key = signing_key.verifying_key();
+    let my_lower = format!("0x{}", hex::encode(compute_address(&verifying_key))).to_lowercase();
+    let cfg = vss_recipient::VssRecipientConfig {
+        rpc_url: args.rpc_url,
+        contract_addr: normalize_addr(&args.ace_contract),
+        vss_session: args.vss_session,
+        poll_secs: args.poll_secs,
+        max_wait_secs: args.max_wait_secs,
+        vss_dk_hex: args.vss_dk_hex,
+    };
+    vss_recipient::run_recipient(cfg, &signing_key, &my_lower).await
+}
+
+async fn cmd_vss_recipient_decrypt_once(args: VssRecipientDecryptOnceArgs) -> Result<()> {
+    let signing_key = parse_private_key(&args.private_key)?;
+    let verifying_key = signing_key.verifying_key();
+    let my = format!("0x{}", hex::encode(compute_address(&verifying_key))).to_lowercase();
+    let rpc = aptos_rpc::AptosRpc::new(args.rpc_url);
+    let contract = normalize_addr(&args.ace_contract);
+    let ct = rpc
+        .get_encrypted_share(&args.vss_session, &my, &contract)
+        .await?;
+    if ct.len() != 80 {
+        anyhow::bail!("no ciphertext yet (len={})", ct.len());
+    }
+    let dk = share_crypto::derive_vss_dk(&signing_key);
+    let plain = share_crypto::decrypt_share_80(&ct, &dk)?;
+    println!("0x{}", hex::encode(plain));
+    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -324,7 +509,7 @@ fn spawn_dkg_poller(
     tokio::spawn(async move {
         let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).unwrap();
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
         loop {
             interval.tick().await;
             let _ = dkg::poll(

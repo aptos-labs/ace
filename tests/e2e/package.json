@@ -5,11 +5,13 @@
   "type": "module",
   "description": "ACE end-to-end tests",
   "scripts": {
-    "test:permissioned": "tsx test-permissioned.ts"
+    "test:permissioned": "tsx test-permissioned.ts",
+    "test:vss-only": "tsx test-vss-protocol.ts",
+    "test:dkg-only": "tsx layered-compile-smoke.ts dkg",
+    "test:dkr-only": "tsx layered-compile-smoke.ts dkr"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",
-    "@aptos-labs/ace-worker": "workspace:*",
     "@aptos-labs/ts-sdk": "^5.1.1",
     "tsx": "^4.6.0"
   },

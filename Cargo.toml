@@ -1,0 +1,6 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+resolver = "2"
+members = ["vss-common", "vss-dealer", "vss-recipient"]

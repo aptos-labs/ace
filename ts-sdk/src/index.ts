@@ -11,6 +11,9 @@ export { split, combine } from "./shamir_gf256";
 // Shamir's Secret Sharing over BLS12-381 Fr
 export * as shamir_fr from "./shamir_fr";
 
+// Shamir secret sharing
+export * as vss from "./vss";
+
 // Result type for error handling
 export { Result } from "./result";
 
@@ -22,6 +25,9 @@ export * as sym from "./sym";
 
 // ACE
 export * as ace from "./ace";
+
+// Public Key Encryption
+export * as pke from "./pke";
 
 // Threshold IBE
 export * as threshold_ibe from "./threshold-ibe";

@@ -96,6 +96,43 @@ impl Polynomial {
         let proj: G1Projective = g * self.coeffs[0];
         proj.into()
     }
+
+    /// Serialize coefficients for `dealer_escrow` (4-byte little-endian count + 32-byte LE coeffs).
+    pub fn serialize_for_escrow(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        let n = self.coeffs.len() as u32;
+        v.extend_from_slice(&n.to_le_bytes());
+        for c in &self.coeffs {
+            v.extend_from_slice(&fr_to_le32(*c));
+        }
+        v
+    }
+
+    /// Deserialize [`Polynomial`] from [`serialize_for_escrow`] bytes.
+    pub fn deserialize_from_escrow(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 {
+            return Err(anyhow!("escrow too short for count"));
+        }
+        let n = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let need = 4usize.saturating_add(n.saturating_mul(32));
+        if data.len() < need {
+            return Err(anyhow!(
+                "escrow length {} < expected {} for {} coeffs",
+                data.len(),
+                need,
+                n
+            ));
+        }
+        let mut coeffs = Vec::with_capacity(n);
+        for i in 0..n {
+            let s = 4 + i * 32;
+            let chunk: [u8; 32] = data[s..s + 32]
+                .try_into()
+                .map_err(|_| anyhow!("coeff slice"))?;
+            coeffs.push(fr_from_le32(&chunk));
+        }
+        Ok(Self { coeffs })
+    }
 }
 
 // ── Share verification ────────────────────────────────────────────────────────

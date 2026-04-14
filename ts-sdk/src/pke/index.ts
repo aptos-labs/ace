@@ -4,9 +4,9 @@
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
-import * as SimpleElGamalRistretto255 from "./simple_elgamal_ristretto255";
+import * as ElGamalOtpRistretto255 from "./elgamal_otp_ristretto255";
 
-export const SCHEME_SIMPLE_ELGAMAL_RISTRETTO255 = 0;
+export const SCHEME_ELGAMAL_OTP_RISTRETTO255 = 0;
 
 function hexStringToBytes(hex: string): Uint8Array {
     const h = hex.trim();
@@ -22,9 +22,9 @@ function assertDeserializerConsumed(deserializer: Deserializer, label: string): 
 
 export class EncryptionKey {
     scheme: number;
-    inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255EncKey;
+    inner: ElGamalOtpRistretto255.EncryptionKey;
 
-    constructor(scheme: number, inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255EncKey) {
+    constructor(scheme: number, inner: ElGamalOtpRistretto255.EncryptionKey) {
         this.scheme = scheme;
         this.inner = inner;
     }
@@ -38,10 +38,10 @@ export class EncryptionKey {
             recordsExecutionTimeMs: false,
             task: () => {
                 const scheme = deserializer.deserializeU8();
-                if (scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
+                if (scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
                     const inner =
-                        SimpleElGamalRistretto255.SimpleElGamalRistretto255EncKey.deserialize(deserializer);
-                    return new EncryptionKey(scheme, inner);
+                        ElGamalOtpRistretto255.EncryptionKey.deserialize(deserializer);
+                    return new EncryptionKey(scheme, inner.unwrapOrThrow("EncryptionKey.deserialize failed"));
                 }
                 throw new Error(`Unknown scheme: ${scheme}`);
             },
@@ -90,9 +90,9 @@ export class EncryptionKey {
 
 export class DecryptionKey {
     scheme: number;
-    inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255DecKey;
+    inner: ElGamalOtpRistretto255.DecryptionKey;
 
-    constructor(scheme: number, inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255DecKey) {
+    constructor(scheme: number, inner: ElGamalOtpRistretto255.DecryptionKey) {
         this.scheme = scheme;
         this.inner = inner;
     }
@@ -102,10 +102,10 @@ export class DecryptionKey {
             recordsExecutionTimeMs: false,
             task: () => {
                 const scheme = deserializer.deserializeU8();
-                if (scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
+                if (scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
                     const inner =
-                        SimpleElGamalRistretto255.SimpleElGamalRistretto255DecKey.deserialize(deserializer);
-                    return new DecryptionKey(scheme, inner);
+                        ElGamalOtpRistretto255.DecryptionKey.deserialize(deserializer);
+                    return new DecryptionKey(scheme, inner.unwrapOrThrow("DecryptionKey.deserialize failed"));
                 }
                 throw new Error(`Unknown scheme: ${scheme}`);
             },
@@ -154,9 +154,9 @@ export class DecryptionKey {
 
 export class Ciphertext {
     scheme: number;
-    inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255Ciphertext;
+    inner: ElGamalOtpRistretto255.Ciphertext;
 
-    constructor(scheme: number, inner: SimpleElGamalRistretto255.SimpleElGamalRistretto255Ciphertext) {
+    constructor(scheme: number, inner: ElGamalOtpRistretto255.Ciphertext) {
         this.scheme = scheme;
         this.inner = inner;
     }
@@ -166,10 +166,10 @@ export class Ciphertext {
             recordsExecutionTimeMs: false,
             task: () => {
                 const scheme = deserializer.deserializeU8();
-                if (scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
+                if (scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
                     const inner =
-                        SimpleElGamalRistretto255.SimpleElGamalRistretto255Ciphertext.deserialize(deserializer);
-                    return new Ciphertext(scheme, inner);
+                        ElGamalOtpRistretto255.Ciphertext.deserialize(deserializer);
+                    return new Ciphertext(scheme, inner.unwrapOrThrow("Ciphertext.deserialize failed"));
                 }
                 throw new Error(`Unknown scheme: ${scheme}`);
             },
@@ -213,8 +213,8 @@ export class Ciphertext {
 }
 
 function deriveEncryptionKeyFromDecryptionKey(dk: DecryptionKey): EncryptionKey {
-    if (dk.scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
-        const ek = SimpleElGamalRistretto255.deriveEncryptionKey(dk.inner);
+    if (dk.scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
+        const ek = ElGamalOtpRistretto255.deriveEncryptionKey(dk.inner);
         return new EncryptionKey(dk.scheme, ek);
     }
     throw new Error(`Unknown scheme: ${dk.scheme}`);
@@ -226,8 +226,8 @@ export function deriveEncryptionKey(decryptionKey: DecryptionKey): EncryptionKey
 }
 
 export function keygen(): { encryptionKey: EncryptionKey; decryptionKey: DecryptionKey } {
-    const scheme = SCHEME_SIMPLE_ELGAMAL_RISTRETTO255;
-    const dkInner = SimpleElGamalRistretto255.keygen();
+    const scheme = SCHEME_ELGAMAL_OTP_RISTRETTO255;
+    const dkInner = ElGamalOtpRistretto255.keygen();
     const decryptionKey = new DecryptionKey(scheme, dkInner);
     const encryptionKey = deriveEncryptionKeyFromDecryptionKey(decryptionKey);
     return { encryptionKey, decryptionKey };
@@ -239,12 +239,12 @@ export function encrypt({
 }: {
     encryptionKey: EncryptionKey;
     plaintext: Uint8Array;
-}): Uint8Array {
-    if (encryptionKey.scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
-        const ciphertext = SimpleElGamalRistretto255.encrypt(encryptionKey.inner, plaintext);
-        return new Ciphertext(encryptionKey.scheme, ciphertext).toBytes();
+}): Ciphertext {
+    if (encryptionKey.scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
+        const ciphertext = ElGamalOtpRistretto255.encrypt({encryptionKey: encryptionKey.inner, plaintext});
+        return new Ciphertext(encryptionKey.scheme, ciphertext);
     }
-    throw new Error(`Unknown scheme: ${encryptionKey.scheme}`);
+    throw 'unreachable';
 }
 
 export function decrypt({
@@ -252,25 +252,21 @@ export function decrypt({
     ciphertext,
 }: {
     decryptionKey: DecryptionKey;
-    ciphertext: Uint8Array;
+    ciphertext: Ciphertext;
 }): Result<Uint8Array> {
     return Result.capture({
         recordsExecutionTimeMs: false,
         task: (extra: Record<string, any>) => {
-            const ciph = Ciphertext.fromBytes(ciphertext).unwrapOrThrow("Ciphertext.fromBytes failed");
             extra['dk_scheme'] = decryptionKey.scheme;
-            extra['ciph_scheme'] = ciph.scheme;
-            if (decryptionKey.scheme !== ciph.scheme) {
+            extra['ciph_scheme'] = ciphertext.scheme;
+            if (decryptionKey.scheme !== ciphertext.scheme) {
                 throw 'scheme mismatch';
             }
-            if (decryptionKey.scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255 && ciph.scheme === SCHEME_SIMPLE_ELGAMAL_RISTRETTO255) {
-                const plain = SimpleElGamalRistretto255.decrypt(decryptionKey.inner, ciph.inner);
-                if (plain === undefined) {
-                    throw 'MAC verification failed';
-                }
+            if (decryptionKey.scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255 && ciphertext.scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
+                const plain = ElGamalOtpRistretto255.decrypt(decryptionKey.inner, ciphertext.inner).unwrapOrThrow("MAC verification failed");
                 return plain;
             }
-            throw 'unknown scheme';
+            throw 'decrypt: unknown scheme';
         },
     });
 }

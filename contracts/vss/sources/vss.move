@@ -1,28 +1,38 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-/// VSS sub-session object: one dealer slot within a DKG or DKR parent session.
+/// VSS abstract layer — scheme-dispatching enums and on-chain session management.
+/// Mirrors ts-sdk/src/vss/index.ts.
+///
+/// Each enum currently has one variant (BLS12-381 Fr = scheme 0).
+/// Adding a new scheme is an additive change: add a variant here and a sibling module.
+/// Scheme-specific types and serde live in ace::vss_bls12381_fr.
 module ace::vss {
     use std::error;
     use std::signer::address_of;
     use std::vector::{range};
     use aptos_framework::object;
     use aptos_framework::event;
-    use ace::worker_config;
     use aptos_framework::timestamp;
+    use aptos_std::bcs_stream::{Self, BCSStream};
+    use ace::worker_config;
+    use ace::vss_bls12381_fr;
+
+    // ── Error codes ──────────────────────────────────────────────────────────
 
     const E_INVALID_CONTRIBUTION: u64 = 16;
     const E_ALREADY_CONTRIBUTED: u64 = 15;
     const E_ONLT_DEALER_CAN_DO_THIS: u64 = 18;
     const E_ESCROW_TOO_LARGE: u64 = 19;
     const E_NOT_IN_PROGRESS: u64 = 20;
-
     const E_INVALID_DEALER: u64 = 21;
     const E_INVALID_RECIPIENT: u64 = 22;
     const E_INVALID_THRESHOLD: u64 = 23;
     const E_UNSUPORTED_SECRET_SCHEME: u64 = 24;
     const E_RECIPIENT_NOT_FOUND: u64 = 25;
     const E_TOO_EARLY_TO_OPEN: u64 = 26;
+
+    // ── Protocol constants ───────────────────────────────────────────────────
 
     const ACK_WINDOW_MICROS: u64 = 20000000; // 20 seconds
 
@@ -33,7 +43,13 @@ module ace::vss {
     const STATE__RECIPIENT_ACK: u8 = 1;
     const STATE__SUCCESS: u8 = 2;
     const STATE__FAILED: u8 = 3;
-    
+
+    // ── Scheme constants ─────────────────────────────────────────────────────
+
+    const SCHEME_BLS12381FR: u8 = 0;
+
+    // ── On-chain session state ────────────────────────────────────────────────
+
     struct Session has key {
         dealer: address,
         share_holders: vector<address>,
@@ -50,6 +66,103 @@ module ace::vss {
     struct SessionCreated has drop, store {
         session_addr: address,
     }
+
+    // ── Abstract wrapper enums ────────────────────────────────────────────────
+    //
+    // Only types that have a `scheme` field in ts-sdk/src/vss/index.ts are enums here.
+    // DealerContribution0 and DealerContribution1 have no scheme field and live only in
+    // ace::vss_bls12381_fr.
+
+    /// Wire: [u8 scheme] [inner PcsCommitment bytes]
+    enum PcsCommitment has drop {
+        Bls12381Fr(vss_bls12381_fr::PcsCommitment),
+    }
+
+    /// Wire: [u8 scheme] [inner PcsOpening bytes]
+    enum PcsOpening has drop {
+        Bls12381Fr(vss_bls12381_fr::PcsOpening),
+    }
+
+    /// Wire: [u8 scheme] [inner PcsBatchOpening bytes]
+    enum PcsBatchOpening has drop {
+        Bls12381Fr(vss_bls12381_fr::PcsBatchOpening),
+    }
+
+    // ── Public scheme constant ────────────────────────────────────────────────
+
+    public fun scheme_bls12381_fr(): u8 { SCHEME_BLS12381FR }
+
+    // ── Abstract deserialize functions ────────────────────────────────────────
+
+    /// Parse a `PcsCommitment` from a BCS stream (reads the leading scheme byte).
+    public fun deserialize_pcs_commitment(stream: &mut BCSStream): PcsCommitment {
+        let scheme = bcs_stream::deserialize_u8(stream);
+        if (scheme == SCHEME_BLS12381FR) {
+            PcsCommitment::Bls12381Fr(vss_bls12381_fr::deserialize_pcs_commitment(stream))
+        } else {
+            abort E_INVALID_CONTRIBUTION
+        }
+    }
+
+    /// Parse a `PcsOpening` from a BCS stream (reads the leading scheme byte).
+    public fun deserialize_pcs_opening(stream: &mut BCSStream): PcsOpening {
+        let scheme = bcs_stream::deserialize_u8(stream);
+        if (scheme == SCHEME_BLS12381FR) {
+            PcsOpening::Bls12381Fr(vss_bls12381_fr::deserialize_pcs_opening(stream))
+        } else {
+            abort E_INVALID_CONTRIBUTION
+        }
+    }
+
+    /// Parse a `PcsBatchOpening` from a BCS stream (reads the leading scheme byte).
+    public fun deserialize_pcs_batch_opening(stream: &mut BCSStream): PcsBatchOpening {
+        let scheme = bcs_stream::deserialize_u8(stream);
+        if (scheme == SCHEME_BLS12381FR) {
+            PcsBatchOpening::Bls12381Fr(vss_bls12381_fr::deserialize_pcs_batch_opening(stream))
+        } else {
+            abort E_INVALID_CONTRIBUTION
+        }
+    }
+
+    // ── Abstract scheme getters and downcast accessors ────────────────────────
+
+    public fun get_pcs_commitment_scheme(c: &PcsCommitment): u8 {
+        match (c) {
+            PcsCommitment::Bls12381Fr(_) => SCHEME_BLS12381FR,
+        }
+    }
+
+    public fun pcs_commitment_as_bls12381_fr(c: PcsCommitment): vss_bls12381_fr::PcsCommitment {
+        match (c) {
+            PcsCommitment::Bls12381Fr(inner) => inner,
+        }
+    }
+
+    public fun get_pcs_opening_scheme(o: &PcsOpening): u8 {
+        match (o) {
+            PcsOpening::Bls12381Fr(_) => SCHEME_BLS12381FR,
+        }
+    }
+
+    public fun pcs_opening_as_bls12381_fr(o: PcsOpening): vss_bls12381_fr::PcsOpening {
+        match (o) {
+            PcsOpening::Bls12381Fr(inner) => inner,
+        }
+    }
+
+    public fun get_pcs_batch_opening_scheme(o: &PcsBatchOpening): u8 {
+        match (o) {
+            PcsBatchOpening::Bls12381Fr(_) => SCHEME_BLS12381FR,
+        }
+    }
+
+    public fun pcs_batch_opening_as_bls12381_fr(o: PcsBatchOpening): vss_bls12381_fr::PcsBatchOpening {
+        match (o) {
+            PcsBatchOpening::Bls12381Fr(inner) => inner,
+        }
+    }
+
+    // ── Entry functions ──────────────────────────────────────────────────────
 
     public fun new_session(
         caller: &signer,
@@ -80,7 +193,6 @@ module ace::vss {
             share_holder_acks: range(0, num_share_holders).map(|_| false),
             dealer_contribution_1: vector[],
         };
-
         move_to(&object_signer, session);
         event::emit(SessionCreated { session_addr });
         session_addr
@@ -104,6 +216,11 @@ module ace::vss {
         let session = borrow_global_mut<Session>(session_addr);
         assert!(session.state_code == STATE__DEALER_DEAL, error::invalid_state(E_NOT_IN_PROGRESS));
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
+        if (session.secret_scheme == SECRET_SCHEME__BLS12381G1) {
+            let _dc0 = vss_bls12381_fr::parse_dealer_contribution_0(copy payload_bytes);
+        } else {
+            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
+        };
         session.dealer_contribution_0 = payload_bytes;
         session.state_code = STATE__RECIPIENT_ACK;
         session.deal_time_micros = timestamp::now_microseconds();
@@ -130,8 +247,12 @@ module ace::vss {
         assert!(session.state_code == STATE__RECIPIENT_ACK, error::invalid_state(E_NOT_IN_PROGRESS));
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
         assert!(timestamp::now_microseconds() - session.deal_time_micros > ACK_WINDOW_MICROS, error::invalid_state(E_TOO_EARLY_TO_OPEN));
+        if (session.secret_scheme == SECRET_SCHEME__BLS12381G1) {
+            let _dc1 = vss_bls12381_fr::parse_dealer_contribution_1(copy payload_bytes);
+        } else {
+            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
+        };
         session.dealer_contribution_1 = payload_bytes;
-        //TODO: verify dealer contribution 1
         session.state_code = STATE__SUCCESS;
     }
 }

@@ -4,73 +4,21 @@
 import { AccountAddress, Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import * as Bls12381G1 from "./bls12381g1";
-import * as Bls12381G2 from "./bls12381g2";
+import * as Bls12381Fr from "./bls12381-fr";
+import * as pke from "../pke";
 
-export const SCHEME_BLS12381G1 = 0;
-export const SCHEME_BLS12381G2 = 1;
+export const SCHEME_BLS12381Fr = 0;
 
-function keygenWithScheme(scheme: number): { secret: Secret; publicCommitment: PublicCommitment } {
-    if (scheme === SCHEME_BLS12381G1) {
-        const { secret, publicCommitment } = Bls12381G1.keygen();
-        return { secret: Secret.fromG1(secret), publicCommitment: PublicCommitment.fromG1(publicCommitment) };
+export function sample(scheme: number): Secret {
+    if (scheme === SCHEME_BLS12381Fr) {
+        const secret = Bls12381Fr.sample();
+        return new Secret(SCHEME_BLS12381Fr, secret);
     }
-    if (scheme === SCHEME_BLS12381G2) {
-        const { secret, publicCommitment } = Bls12381G2.keygen();
-        return { secret: Secret.fromG2(secret), publicCommitment: PublicCommitment.fromG2(publicCommitment) };
-    }
-    throw new Error(`keygenWithScheme: unsupported scheme ${scheme}`);
+    throw new Error(`sample: unsupported scheme ${scheme}`);
 }
 
-export function keygenBLS12381G1(): { secret: Secret; publicCommitment: PublicCommitment } {
-    return keygenWithScheme(SCHEME_BLS12381G1);
-}
-
-export function keygenBLS12381G2(): { secret: Secret; publicCommitment: PublicCommitment } {
-    return keygenWithScheme(SCHEME_BLS12381G2);
-}
-
-export function derivePublicCommitment({ secret }: { secret: Secret }): PublicCommitment {
-    if (secret.scheme === SCHEME_BLS12381G1) {
-        const pc = Bls12381G1.derivePublicCommitment({ secret: secret.inner as Bls12381G1.Secret });
-        return PublicCommitment.fromG1(pc);
-    }
-    if (secret.scheme === SCHEME_BLS12381G2) {
-        const pc = Bls12381G2.derivePublicCommitment({ secret: secret.inner as Bls12381G2.Secret });
-        return PublicCommitment.fromG2(pc);
-    }
-    throw new Error(`derivePublicCommitment: unsupported scheme ${secret.scheme}`);
-}
-
-export function split({
-    secret,
-    numShares,
-    threshold,
-}: {
-    secret: Secret;
-    numShares: number;
-    threshold: number;
-}): Result<SecretShare[]> {
-    return Result.capture({
-        recordsExecutionTimeMs: false,
-        task: () => {
-            const n = numShares;
-            const t = threshold;
-            if (secret.scheme === SCHEME_BLS12381G1) {
-                const shares = Bls12381G1.split({ secret: secret.inner as Bls12381G1.Secret, n, t }).unwrapOrThrow(
-                    "split: Bls12381G1.split failed",
-                );
-                return shares.map((s) => SecretShare.fromG1(s));
-            }
-            if (secret.scheme === SCHEME_BLS12381G2) {
-                const shares = Bls12381G2.split({ secret: secret.inner as Bls12381G2.Secret, n, t }).unwrapOrThrow(
-                    "split: Bls12381G2.split failed",
-                );
-                return shares.map((s) => SecretShare.fromG2(s));
-            }
-            throw new Error(`split: unsupported scheme ${secret.scheme}`);
-        },
-    });
+export function sampleBLS12381Fr(): Secret {
+    return sample(SCHEME_BLS12381Fr);
 }
 
 export function reconstruct({ secretShares }: { secretShares: SecretShare[] }): Result<Secret> {
@@ -82,36 +30,22 @@ export function reconstruct({ secretShares }: { secretShares: SecretShare[] }): 
             for (const sh of secretShares) {
                 if (sh.scheme !== scheme) throw "reconstruct: SecretShare scheme mismatch";
             }
-            if (scheme === SCHEME_BLS12381G1) {
-                const inners = secretShares.map((s) => s.inner as Bls12381G1.SecretShare);
-                const s = Bls12381G1.reconstruct({ secretShares: inners }).unwrapOrThrow("reconstruct: Bls12381G1 failed");
-                return Secret.fromG1(s);
+            if (scheme === SCHEME_BLS12381Fr) {
+                const inners = secretShares.map((s) => s.inner as Bls12381Fr.SecretShare);
+                const s = Bls12381Fr.reconstruct({ secretShares: inners }).unwrapOrThrow("reconstruct: Bls12381Fr failed");
+                return new Secret(SCHEME_BLS12381Fr, s);
             }
-            if (scheme === SCHEME_BLS12381G2) {
-                const inners = secretShares.map((s) => s.inner as Bls12381G2.SecretShare);
-                const s = Bls12381G2.reconstruct({ secretShares: inners }).unwrapOrThrow("reconstruct: Bls12381G2 failed");
-                return Secret.fromG2(s);
-            }
-            throw new Error(`reconstruct: unsupported scheme ${scheme}`);
+            throw `unsupported scheme`;
         },
     });
 }
 
 export class Secret {
-    scheme: number;
-    inner: any;
+    constructor(readonly scheme: number, readonly inner: any) {}
 
-    private constructor(scheme: number, inner: any) {
-        this.scheme = scheme;
-        this.inner = inner;
-    }
-
-    static fromG1(inner: Bls12381G1.Secret): Secret {
-        return new Secret(SCHEME_BLS12381G1, inner);
-    }
-
-    static fromG2(inner: Bls12381G2.Secret): Secret {
-        return new Secret(SCHEME_BLS12381G2, inner);
+    asBls12381Fr(): Bls12381Fr.Secret {
+        if (this.scheme !== SCHEME_BLS12381Fr) throw 'wrong scheme';
+        return this.inner as Bls12381Fr.Secret;
     }
 
     static deserialize(deserializer: Deserializer): Result<Secret> {
@@ -120,19 +54,11 @@ export class Secret {
             task: (extra: Record<string, any>) => {
                 const scheme = deserializer.deserializeU8();
                 extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381G1) {
-                    const inner = Bls12381G1.Secret.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G1.Secret deserialization failed",
-                    );
-                    return new Secret(scheme, inner);
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.Secret.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new Secret(SCHEME_BLS12381Fr, inner);
                 }
-                if (scheme === SCHEME_BLS12381G2) {
-                    const inner = Bls12381G2.Secret.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G2.Secret deserialization failed",
-                    );
-                    return new Secret(scheme, inner);
-                }
-                throw new Error(`Secret.deserialize: unsupported scheme ${scheme}`);
+                throw 'unsupported scheme';
             },
         });
     }
@@ -142,9 +68,9 @@ export class Secret {
             recordsExecutionTimeMs: false,
             task: (_extra: Record<string, any>) => {
                 const deserializer = new Deserializer(bytes);
-                const obj = Secret.deserialize(deserializer).unwrapOrThrow("Secret.fromBytes failed with deserialization error");
+                const obj = Secret.deserialize(deserializer).unwrapOrThrow("deserialization failed");
                 if (deserializer.remaining() !== 0) {
-                    throw "Secret.fromBytes failed with trailing bytes";
+                    throw "trailing bytes";
                 }
                 return obj;
             },
@@ -156,107 +82,17 @@ export class Secret {
             recordsExecutionTimeMs: false,
             task: (_extra: Record<string, any>) => {
                 const bytes = hexToBytes(hex);
-                return Secret.fromBytes(bytes).unwrapOrThrow("Secret.fromHex failed with bytes deserialization error");
+                return Secret.fromBytes(bytes).unwrapOrThrow("deserialization failed");
             },
         });
     }
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381G1) {
-            (this.inner as Bls12381G1.Secret).serialize(serializer);
-        } else if (this.scheme === SCHEME_BLS12381G2) {
-            (this.inner as Bls12381G2.Secret).serialize(serializer);
+        if (this.scheme === SCHEME_BLS12381Fr) {
+            (this.inner as Bls12381Fr.Secret).serialize(serializer);
         } else {
-            throw new Error(`Secret.serialize: unsupported scheme ${this.scheme}`);
-        }
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
-}
-
-export class PublicCommitment {
-    scheme: number;
-    inner: any;
-
-    private constructor(scheme: number, inner: any) {
-        this.scheme = scheme;
-        this.inner = inner;
-    }
-
-    static fromG1(inner: Bls12381G1.PublicCommitment): PublicCommitment {
-        return new PublicCommitment(SCHEME_BLS12381G1, inner);
-    }
-
-    static fromG2(inner: Bls12381G2.PublicCommitment): PublicCommitment {
-        return new PublicCommitment(SCHEME_BLS12381G2, inner);
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PublicCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: (extra: Record<string, any>) => {
-                const scheme = deserializer.deserializeU8();
-                extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381G1) {
-                    const inner = Bls12381G1.PublicCommitment.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G1.PublicCommitment deserialization failed",
-                    );
-                    return new PublicCommitment(scheme, inner);
-                }
-                if (scheme === SCHEME_BLS12381G2) {
-                    const inner = Bls12381G2.PublicCommitment.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G2.PublicCommitment deserialization failed",
-                    );
-                    return new PublicCommitment(scheme, inner);
-                }
-                throw new Error(`PublicCommitment.deserialize: unsupported scheme ${scheme}`);
-            },
-        });
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<PublicCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = PublicCommitment.deserialize(deserializer).unwrapOrThrow(
-                    "PublicCommitment.fromBytes failed with deserialization error",
-                );
-                if (deserializer.remaining() !== 0) {
-                    throw "PublicCommitment.fromBytes failed with trailing bytes";
-                }
-                return obj;
-            },
-        });
-    }
-
-    static fromHex(hex: string): Result<PublicCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () =>
-                PublicCommitment.fromBytes(hexToBytes(hex)).unwrapOrThrow(
-                    "PublicCommitment.fromHex failed with bytes deserialization error",
-                ),
-        });
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381G1) {
-            (this.inner as Bls12381G1.PublicCommitment).serialize(serializer);
-        } else if (this.scheme === SCHEME_BLS12381G2) {
-            (this.inner as Bls12381G2.PublicCommitment).serialize(serializer);
-        } else {
-            throw new Error(`PublicCommitment.serialize: unsupported scheme ${this.scheme}`);
+            throw 'unsupported scheme';
         }
     }
 
@@ -272,21 +108,7 @@ export class PublicCommitment {
 }
 
 export class SecretShare {
-    scheme: number;
-    inner: any;
-
-    private constructor(scheme: number, inner: any) {
-        this.scheme = scheme;
-        this.inner = inner;
-    }
-
-    static fromG1(inner: Bls12381G1.SecretShare): SecretShare {
-        return new SecretShare(SCHEME_BLS12381G1, inner);
-    }
-
-    static fromG2(inner: Bls12381G2.SecretShare): SecretShare {
-        return new SecretShare(SCHEME_BLS12381G2, inner);
-    }
+    constructor(readonly scheme: number, readonly inner: any) {}
 
     static deserialize(deserializer: Deserializer): Result<SecretShare> {
         return Result.capture({
@@ -294,19 +116,11 @@ export class SecretShare {
             task: (extra: Record<string, any>) => {
                 const scheme = deserializer.deserializeU8();
                 extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381G1) {
-                    const inner = Bls12381G1.SecretShare.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G1.SecretShare deserialization failed",
-                    );
-                    return new SecretShare(scheme, inner);
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.SecretShare.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new SecretShare(SCHEME_BLS12381Fr, inner);
                 }
-                if (scheme === SCHEME_BLS12381G2) {
-                    const inner = Bls12381G2.SecretShare.deserialize(deserializer).unwrapOrThrow(
-                        "Bls12381G2.SecretShare deserialization failed",
-                    );
-                    return new SecretShare(scheme, inner);
-                }
-                throw new Error(`SecretShare.deserialize: unsupported scheme ${scheme}`);
+                throw 'unsupported scheme';
             },
         });
     }
@@ -317,10 +131,10 @@ export class SecretShare {
             task: () => {
                 const deserializer = new Deserializer(bytes);
                 const obj = SecretShare.deserialize(deserializer).unwrapOrThrow(
-                    "SecretShare.fromBytes failed with deserialization error",
+                    "deserialization failed",
                 );
                 if (deserializer.remaining() !== 0) {
-                    throw "SecretShare.fromBytes failed with trailing bytes";
+                    throw "trailing bytes";
                 }
                 return obj;
             },
@@ -339,12 +153,10 @@ export class SecretShare {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381G1) {
-            (this.inner as Bls12381G1.SecretShare).serialize(serializer);
-        } else if (this.scheme === SCHEME_BLS12381G2) {
-            (this.inner as Bls12381G2.SecretShare).serialize(serializer);
+        if (this.scheme === SCHEME_BLS12381Fr) {
+            (this.inner as Bls12381Fr.SecretShare).serialize(serializer);
         } else {
-            throw new Error(`SecretShare.serialize: unsupported scheme ${this.scheme}`);
+            throw 'unsupported scheme';
         }
     }
 
@@ -359,6 +171,442 @@ export class SecretShare {
     }
 }
 
+export class PcsCommitment {
+    private constructor(private readonly scheme: number, private readonly inner: any) {
+    }
+
+    static fromBls12381Fr(inner: Bls12381Fr.PcsCommitment): PcsCommitment {
+        return new PcsCommitment(SCHEME_BLS12381Fr, inner);
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === SCHEME_BLS12381Fr) {
+            (this.inner as Bls12381Fr.PcsCommitment).serialize(serializer);
+        } else {
+            throw 'unsupported scheme';
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PcsCommitment> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (extra: Record<string, any>) => {
+                const scheme = deserializer.deserializeU8();
+                extra["scheme"] = scheme;
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.PcsCommitment.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new PcsCommitment(SCHEME_BLS12381Fr, inner);
+                }
+                throw 'unsupported scheme';
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PcsCommitment> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PcsCommitment.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<PcsCommitment> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => PcsCommitment.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+export class PcsOpening {
+    private constructor(private readonly scheme: number, private readonly inner: any) {
+    }
+
+    static fromBls12381Fr(inner: Bls12381Fr.PcsOpening): PcsOpening {
+        return new PcsOpening(SCHEME_BLS12381Fr, inner);
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === SCHEME_BLS12381Fr) {
+            (this.inner as Bls12381Fr.PcsOpening).serialize(serializer);
+        } else {
+            throw 'unsupported scheme';
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PcsOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (extra: Record<string, any>) => {
+                const scheme = deserializer.deserializeU8();
+                extra["scheme"] = scheme;
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new PcsOpening(SCHEME_BLS12381Fr, inner);
+                }
+                throw 'unsupported scheme';
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PcsOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<PcsOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => PcsOpening.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+export class PcsBatchOpening {
+    private constructor(private readonly scheme: number, private readonly inner: any) {
+    }
+
+    static fromBls12381Fr(inner: Bls12381Fr.PcsBatchOpening): PcsBatchOpening {
+        return new PcsBatchOpening(SCHEME_BLS12381Fr, inner);
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === SCHEME_BLS12381Fr) {
+            (this.inner as Bls12381Fr.PcsBatchOpening).serialize(serializer);
+        } else {
+            throw 'unsupported scheme';
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PcsBatchOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (extra: Record<string, any>) => {
+                const scheme = deserializer.deserializeU8();
+                extra["scheme"] = scheme;
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new PcsBatchOpening(SCHEME_BLS12381Fr, inner);
+                }
+                throw 'unsupported scheme';
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PcsBatchOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<PcsBatchOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => PcsBatchOpening.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+export class PrivateShareMessage {
+    share: SecretShare;
+    proof: PcsOpening;
+
+    constructor(share: SecretShare, proof: PcsOpening) {
+        this.share = share;
+        this.proof = proof;
+    }
+
+    serialize(serializer: Serializer): void {
+        this.share.serialize(serializer);
+        this.proof.serialize(serializer);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PrivateShareMessage> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const share = SecretShare.deserialize(deserializer).unwrapOrThrow("share deserialize failed");
+                const proof = PcsOpening.deserialize(deserializer).unwrapOrThrow("proof deserialize failed");
+                return new PrivateShareMessage(share, proof);
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PrivateShareMessage> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PrivateShareMessage.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<PrivateShareMessage> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => PrivateShareMessage.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+export class DealerState {
+    scheme: number;
+    inner: any;
+    constructor(scheme: number, inner: any) {
+        this.scheme = scheme;
+        this.inner = inner;
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        this.inner.serialize(serializer);
+    }
+
+    asBls12381Fr(): Bls12381Fr.DealerState {
+        if (this.scheme !== SCHEME_BLS12381Fr) throw 'wrong scheme';
+        return this.inner as Bls12381Fr.DealerState;
+    }
+
+    static deserialize(deserializer: Deserializer): Result<DealerState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const scheme = deserializer.deserializeU8();
+                if (scheme === SCHEME_BLS12381Fr) {
+                    const inner = Bls12381Fr.DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new DealerState(SCHEME_BLS12381Fr, inner);
+                }
+                throw 'unsupported scheme';
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+    
+    static fromBytes(bytes: Uint8Array): Result<DealerState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<DealerState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => DealerState.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+export class DealerContribution0 {
+    pcsCommitment: PcsCommitment;
+    privateShareMessages: pke.Ciphertext[];
+    dealerState: pke.Ciphertext | undefined; /// Dealer can choose to save private state on chain.
+
+    constructor({sharingPolyCommitment, privateShareMessages, dealerState}: {sharingPolyCommitment: PcsCommitment, privateShareMessages: pke.Ciphertext[], dealerState?: pke.Ciphertext}) {
+        this.pcsCommitment = sharingPolyCommitment;
+        this.privateShareMessages = privateShareMessages;
+        this.dealerState = dealerState ?? undefined;
+    }
+
+    serialize(serializer: Serializer): void {
+        this.pcsCommitment.serialize(serializer);
+        serializer.serializeU32AsUleb128(this.privateShareMessages.length);
+        for (const ct of this.privateShareMessages) {
+            ct.serialize(serializer);
+        }
+        if (this.dealerState !== undefined) {
+            serializer.serializeU8(1);
+            this.dealerState.serialize(serializer);
+        } else {
+            serializer.serializeU8(0);
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<DealerContribution0> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const pcsCommitment = PcsCommitment.deserialize(deserializer).unwrapOrThrow("pcsCommitment deserialize failed");
+                const n = deserializer.deserializeUleb128AsU32();
+                const privateShareMessages: pke.Ciphertext[] = [];
+                for (let i = 0; i < n; i++) {
+                    const ct = pke.Ciphertext.deserialize(deserializer).unwrapOrThrow(`privateShareMessages[${i}] deserialize failed`);
+                    privateShareMessages.push(ct);
+                }
+                const dealerStateTag = deserializer.deserializeU8();
+                let dealerState: pke.Ciphertext | undefined;
+                if (dealerStateTag === 1) {
+                    dealerState = pke.Ciphertext.deserialize(deserializer).unwrapOrThrow("dealerState deserialize failed");
+                } else if (dealerStateTag !== 0) {
+                    throw `dealerState option tag must be 0 or 1, got ${dealerStateTag}`;
+                }
+                return new DealerContribution0({sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState});
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<DealerContribution0> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = DealerContribution0.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<DealerContribution0> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => DealerContribution0.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+/**
+ * In paper, this message also includes v (the pcs commitment), I (the nodes that haven't ack yet), sigma (the valid acks received).
+ * In this implementation, they are made available on chain already, so dealer doesn't need to re-publish.
+ */
+export class DealerContribution1 {
+    pcsBatchOpening: PcsBatchOpening;
+
+    constructor(pcsBatchOpening: PcsBatchOpening) {
+        this.pcsBatchOpening = pcsBatchOpening;
+    }
+
+    serialize(serializer: Serializer): void {
+        this.pcsBatchOpening.serialize(serializer);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<DealerContribution1> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const pcsBatchOpening = PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("pcsBatchOpening deserialize failed");
+                return new DealerContribution1(pcsBatchOpening);
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<DealerContribution1> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = DealerContribution1.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<DealerContribution1> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => DealerContribution1.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
 export class Session {
     //TODO: this should match Session in vss.move
     dealer: AccountAddress;
@@ -367,11 +615,33 @@ export class Session {
     secretScheme: number;
     stateCode: number;
     dealTimeMicros: number;
-    dealerContribution0: Uint8Array;
+    dealerContribution0: DealerContribution0 | undefined;
     shareHolderAcks: boolean[];
-    dealerContribution1: Uint8Array;
+    dealerContribution1: DealerContribution1 | undefined;
 
-    private constructor({dealer, shareHolders, threshold, secretScheme, stateCode, dealTimeMicros, dealerContribution0, shareHolderAcks, dealerContribution1}: {dealer: AccountAddress, shareHolders: AccountAddress[], threshold: number, secretScheme: number, stateCode: number, dealTimeMicros: number, dealerContribution0: Uint8Array, shareHolderAcks: boolean[], dealerContribution1: Uint8Array}) {
+    private constructor(
+        {
+            dealer,
+            shareHolders,
+            threshold,
+            secretScheme,
+            stateCode,
+            dealTimeMicros,
+            dealerContribution0,
+            shareHolderAcks,
+            dealerContribution1
+        }: {
+            dealer: AccountAddress,
+            shareHolders: AccountAddress[],
+            threshold: number,
+            secretScheme: number,
+            stateCode: number,
+            dealTimeMicros: number,
+            dealerContribution0: DealerContribution0 | undefined,
+            shareHolderAcks: boolean[],
+            dealerContribution1: DealerContribution1 | undefined
+        }
+    ) {
         this.dealer = dealer;
         this.shareHolders = shareHolders;
         this.threshold = threshold;
@@ -383,100 +653,67 @@ export class Session {
         this.dealerContribution1 = dealerContribution1;
     }
 
-    /**
-     * Build a {@link Session} from the JSON shape returned by the Aptos node resource API
-     * for `ace::vss::Session` (snake_case field names, address hex strings, `u64` as string).
-     *
-     * Example:
-     * ```json
-     * {
-     *   "deal_time_micros": "0",
-     *   "dealer": "0x9b4026268872d0ee307c6aca4562700d3344d302e51d96213c0e1663746b3444",
-     *   "dealer_contribution_0": "0x",
-     *   "dealer_contribution_1": "0x",
-     *   "secret_scheme": 0,
-     *   "share_holder_acks": [ false, false, false, false ],
-     *   "share_holders": [
-     *     "0x9b4026268872d0ee307c6aca4562700d3344d302e51d96213c0e1663746b3444",
-     *     "0xe2c4a1ba6571fdc000eee47dc5eee5404e891376093bfe7b9b07aa6580256e5",
-     *     "0xe73b92ec1494170f9da69bf81dfd6746f0b418c41afd3fc2180e55ad14656880",
-     *     "0x23fef4f7b1a8a745053ae0a0c9745d88c5793b893c68c96ca4eaaf3effedda03"
-     *   ],
-     *   "state_code": 0,
-     *   "threshold": "3"
-     * }
-     * ```
-     */
-    static fromNodeResourceApi(dataJson: any): Result<Session> {
+    serialize(serializer: Serializer): void {
+        this.dealer.serialize(serializer);
+        serializer.serializeU32AsUleb128(this.shareHolders.length);
+        for (const sh of this.shareHolders) {
+            sh.serialize(serializer);
+        }
+        serializer.serializeU64(this.threshold);
+        serializer.serializeU8(this.secretScheme);
+        serializer.serializeU8(this.stateCode);
+        serializer.serializeU64(this.dealTimeMicros);
+        if (this.dealerContribution0 === undefined) {
+            serializer.serializeU8(0);
+        } else {
+            serializer.serializeU8(1);
+            this.dealerContribution0.serialize(serializer);
+        }
+        serializer.serializeU32AsUleb128(this.shareHolderAcks.length);
+        for (const ack of this.shareHolderAcks) {
+            serializer.serializeBool(ack);
+        }
+        if (this.dealerContribution1 === undefined) {
+            serializer.serializeU8(0);
+        } else {
+            serializer.serializeU8(1);
+            this.dealerContribution1.serialize(serializer);
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<Session> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
-                const parseHexBytes = (field: string): Uint8Array => {
-                    const raw = dataJson[field];
-                    if (typeof raw !== "string") {
-                        throw new Error(`Session.fromNodeResourceApi: "${field}" must be a hex string`);
-                    }
-                    let hex = raw.trim();
-                    if (hex.startsWith("0x") || hex.startsWith("0X")) {
-                        hex = hex.slice(2);
-                    }
-                    if (hex.length === 0) {
-                        return new Uint8Array();
-                    }
-                    if (hex.length % 2 === 1) {
-                        hex = `0${hex}`;
-                    }
-                    return hexToBytes(hex);
-                };
-
-                const u64FieldToNumber = (field: string): number => {
-                    const raw = dataJson[field];
-                    if (raw === undefined || raw === null) {
-                        throw new Error(`Session.fromNodeResourceApi: missing field "${field}"`);
-                    }
-                    const bn = BigInt(String(raw));
-                    if (bn < 0n || bn > BigInt(Number.MAX_SAFE_INTEGER)) {
-                        throw new Error(`Session.fromNodeResourceApi: "${field}" is out of JS safe integer range`);
-                    }
-                    return Number(bn);
-                };
-
-                if (dataJson.dealer === undefined || dataJson.dealer === null) {
-                    throw new Error(`Session.fromNodeResourceApi: missing field "dealer"`);
+                const dealer = AccountAddress.deserialize(deserializer);
+                const holdersLen = deserializer.deserializeUleb128AsU32();
+                const shareHolders: AccountAddress[] = [];
+                for (let i = 0; i < holdersLen; i++) {
+                    shareHolders.push(AccountAddress.deserialize(deserializer));
                 }
-                const dealer = AccountAddress.fromString(String(dataJson.dealer));
-
-                const holdersRaw = dataJson.share_holders;
-                if (!Array.isArray(holdersRaw)) {
-                    throw new Error(`Session.fromNodeResourceApi: share_holders must be an array`);
+                const threshold = Number(deserializer.deserializeU64());
+                const secretScheme = deserializer.deserializeU8();
+                const stateCode = deserializer.deserializeU8();
+                const dealTimeMicros = Number(deserializer.deserializeU64());
+                const dc0Tag = deserializer.deserializeU8();
+                let dealerContribution0: DealerContribution0 | undefined;
+                if (dc0Tag === 1) {
+                    dealerContribution0 = DealerContribution0.deserialize(deserializer).unwrapOrThrow("dealerContribution0 deserialize failed");
+                } else if (dc0Tag !== 0) {
+                    throw `dealerContribution0 option tag must be 0 or 1, got ${dc0Tag}`;
                 }
-                const shareHolders = holdersRaw.map((a: unknown) => AccountAddress.fromString(String(a)));
-
-                const threshold = u64FieldToNumber("threshold");
-
-                const secretScheme = Number(dataJson.secret_scheme);
-                if (secretScheme !== SCHEME_BLS12381G1 && secretScheme !== SCHEME_BLS12381G2) {
-                    throw new Error(`Session.fromNodeResourceApi: unsupported secret_scheme ${secretScheme}`);
+                const acksLen = deserializer.deserializeUleb128AsU32();
+                const shareHolderAcks: boolean[] = [];
+                for (let i = 0; i < acksLen; i++) {
+                    shareHolderAcks.push(deserializer.deserializeBool());
                 }
-
-                const stateCode = Number(dataJson.state_code);
-                if (!Number.isInteger(stateCode) || stateCode < 0 || stateCode > 255) {
-                    throw new Error(`Session.fromNodeResourceApi: invalid state_code ${dataJson.state_code}`);
+                const dc1Tag = deserializer.deserializeU8();
+                let dealerContribution1: DealerContribution1 | undefined;
+                if (dc1Tag === 1) {
+                    dealerContribution1 = DealerContribution1.deserialize(deserializer).unwrapOrThrow("dealerContribution1 deserialize failed");
+                } else if (dc1Tag !== 0) {
+                    throw `dealerContribution1 option tag must be 0 or 1, got ${dc1Tag}`;
                 }
-
-                const dealTimeMicros = u64FieldToNumber("deal_time_micros");
-
-                const acksRaw = dataJson.share_holder_acks;
-                if (!Array.isArray(acksRaw)) {
-                    throw new Error(`Session.fromNodeResourceApi: share_holder_acks must be an array`);
-                }
-                const shareHolderAcks = acksRaw.map((v: unknown) => Boolean(v));
-                if (shareHolderAcks.length !== shareHolders.length) {
-                    throw new Error(
-                        `Session.fromNodeResourceApi: share_holder_acks length ${shareHolderAcks.length} != share_holders length ${shareHolders.length}`,
-                    );
-                }
-
                 return new Session({
                     dealer,
                     shareHolders,
@@ -484,11 +721,40 @@ export class Session {
                     secretScheme,
                     stateCode,
                     dealTimeMicros,
-                    dealerContribution0: parseHexBytes("dealer_contribution_0"),
+                    dealerContribution0,
                     shareHolderAcks,
-                    dealerContribution1: parseHexBytes("dealer_contribution_1"),
+                    dealerContribution1,
                 });
             },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<Session> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = Session.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<Session> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => Session.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
 
@@ -497,4 +763,4 @@ export class Session {
     }
 }
 
-export { type SplitConfig } from "./dealing";
+export * as bls12381Fr from "./bls12381-fr";

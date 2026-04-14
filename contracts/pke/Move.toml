@@ -1,5 +1,5 @@
 [package]
-name = "WorkerConfig"
+name = "PKE"
 version = "1.0.0"
 authors = []
 
@@ -10,6 +10,3 @@ ace = "0xcafe"
 git = "https://github.com/aptos-labs/aptos-framework.git"
 rev = "mainnet"
 subdir = "aptos-framework"
-
-[dependencies.PKE]
-local = "../pke"

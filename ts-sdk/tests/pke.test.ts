@@ -19,12 +19,12 @@ const GOLDEN_ENC_KEY_HEX =
 
 /** Ciphertext bytes that decrypt under {@link GOLDEN_DEC_KEY_BYTES} to `"golden-plaintext"`. */
 const GOLDEN_CIPHERTEXT_BYTES = hexToBytes(
-    "00209664c19dd000f772c25ec65b4b4fccda7233a11b19c9c6ba9df43e55cd5ad06520f64f3d4419543d892e967726e831315da6dc52753b2db562e050e743fd38717b10f99cfbfd1a4a73d75e272be8a9682907206dffa55ba1c65e7ed865bd02b15bf58933139a4bd1022b94b99fe18ac7938d59",
+    "0020ec9d964805902bc6966b04ef1d54e655bb4356ad67029958e4af28b3dab4956320fe2416a85535cbd637b93487527a6427a0c632d6c66d3b3f71d82d625f3ba07e107b7b4a4ec372436a02589fe86b5d0eff2080b95f09e629565a296a7dcaadba6648f8f286633c9747774e453f5b2427540d",
 );
 
 const GOLDEN_CIPHERTEXT_HEX = bytesToHex(GOLDEN_CIPHERTEXT_BYTES);
 
-describe("PKE (Simple ElGamal Ristretto255)", () => {
+describe("PKE (ElGamal OTP Ristretto255)", () => {
     it("keygen, encrypt, decrypt round-trip", () => {
         const { encryptionKey, decryptionKey } = pke.keygen();
         const plaintext = new TextEncoder().encode("hello pke");
@@ -44,7 +44,7 @@ describe("PKE (Simple ElGamal Ristretto255)", () => {
      */
     it("deserialization compatibility: fixed dec key + fixed ciphertext -> fixed plaintext", () => {
         const decryptionKey = pke.DecryptionKey.fromBytes(GOLDEN_DEC_KEY_BYTES).unwrapOrThrow("golden dk");
-        const ciphertext = GOLDEN_CIPHERTEXT_BYTES;
+        const ciphertext = pke.Ciphertext.fromBytes(GOLDEN_CIPHERTEXT_BYTES).unwrapOrThrow("golden ct");
         const expectedPlaintext = new TextEncoder().encode("golden-plaintext");
 
         const result = pke.decrypt({ decryptionKey, ciphertext });

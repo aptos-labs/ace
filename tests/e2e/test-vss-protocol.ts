@@ -6,9 +6,6 @@ import * as ace from '@aptos-labs/ace-sdk';
 import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getVssSession } from './helpers';
 import {
     buildRustWorkspace,
-    checkVSSCompletion,
-    fetchEncryptedShares,
-    fetchPublicKeyBytes,
     spawnVSSDealerRun,
     spawnVSSRecipientRun,
 } from './vss-clients';
@@ -49,7 +46,7 @@ async function main() {
                 dealerAccount.accountAddress,
                 recipientAccounts.map(w => w.accountAddress),
                 3, // threshold
-                ace.vss.SCHEME_BLS12381G1, // secret scheme
+                ace.vss.SCHEME_BLS12381Fr, // secret scheme
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
@@ -78,34 +75,36 @@ async function main() {
         try {
             log('Wait for VSS session to complete.');
             const deadlineMillis = Date.now() + 30000;
-            let completed = false;
+            var session: ace.vss.Session | undefined;
             while (Date.now() < deadlineMillis) {
                 const maybeSession = await getVssSession(adminAccount.accountAddress, sessionAddr);
-                if (maybeSession.okValue?.isCompleted()) {
-                    completed = true;
-                    break;
+                if (maybeSession.isOk) {
+                    session = maybeSession.okValue!;
+                    if (session.isCompleted()) break;
                 }
                 await sleep(1000);
             }
-            if (!completed) throw 'VSS session did not complete in time.';
+            if (!(session?.isCompleted())) throw 'VSS session did not complete in time.';
             
-            log('Secret reconstruction should work and match on-chain public key.');
-            // const encryptedShares = await fetchEncryptedShares(sessionAddr);
-            // const shares = encryptedShares.map((encryptedShare, i) => {
-            //     let shareBytes = ace.pke.decrypt({
-            //         decryptionKey: encKeypairs[i].decryptionKey,
-            //         ciphertext: encryptedShare,
-            //     }).unwrapOrThrow('Failed to decrypt share.');
-            //     let secretShare = ace.vss.SecretShare.fromBytes(shareBytes).unwrapOrThrow('Failed to parse secret share.');
-            //     return secretShare;
-            // });
 
-            // const secret = ace.vss.reconstructSecret(shares).unwrapOrThrow('Failed to reconstruct secret.');
-            // const publicCommitment = ace.vss.derivePublicCommitment({secret});
-            // const onchainPublicKey = (await fetchPublicKeyBytes(sessionAddr)).unwrapOrThrow(
-            //     'Failed to fetch public key.',
-            // );
-            // if (publicCommitment.toBytes() !== onchainPublicKey) throw 'Public commitment does not match on-chain public key.';
+            log('Secret reconstruction should work and match on-chain public key.');
+            const shares = session!.dealerContribution0!.privateShareMessages.map((ciphertext: ace.pke.Ciphertext, i: number) => {
+                let msgBytes = ace.pke.decrypt({
+                    decryptionKey: encKeypairs[i].decryptionKey,
+                    ciphertext,
+                }).unwrapOrThrow('Failed to decrypt share.');
+                
+                const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes).unwrapOrThrow('Failed to parse private share message.');
+                return msg.share;
+            });
+
+            const reconstructedSecret = ace.vss.reconstruct({ secretShares: shares}).unwrapOrThrow('Failed to reconstruct secret.');
+            const decryptedDealerStateBytes = ace.pke.decrypt({
+                decryptionKey: encKeypairs[0].decryptionKey,
+                ciphertext: session.dealerContribution0!.dealerState!,
+            }).unwrapOrThrow('Failed to decrypt dealer state.');
+            const dealerState = ace.vss.DealerState.fromBytes(decryptedDealerStateBytes).unwrapOrThrow('Failed to parse dealer state.');
+            if (reconstructedSecret.asBls12381Fr().scalar !== dealerState.asBls12381Fr().coefsPolyP[0]) throw 'Public commitment does not match on-chain public key.';
         } finally {
             for (const proc of [dealerProc, ...recipientProcs]) {
                 proc.kill();

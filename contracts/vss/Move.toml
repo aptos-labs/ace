@@ -9,6 +9,9 @@ ace = "0xcafe"
 [dependencies.WorkerConfig]
 local = "../worker_config"
 
+[dependencies.PKE]
+local = "../pke"
+
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"
 rev = "mainnet"

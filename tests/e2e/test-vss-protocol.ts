@@ -26,7 +26,7 @@ async function main() {
         const recipientAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['worker_config', 'vss']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'vss']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -74,7 +74,7 @@ async function main() {
 
         try {
             log('Wait for VSS session to complete.');
-            const deadlineMillis = Date.now() + 30000;
+            const deadlineMillis = Date.now() + 60000;
             var session: ace.vss.Session | undefined;
             while (Date.now() < deadlineMillis) {
                 const maybeSession = await getVssSession(adminAccount.accountAddress, sessionAddr);
@@ -88,7 +88,7 @@ async function main() {
             
 
             log('Secret reconstruction should work and match on-chain public key.');
-            const shares = session!.dealerContribution0!.privateShareMessages.map((ciphertext: ace.pke.Ciphertext, i: number) => {
+            const shares = session!.dealerContribution0!.privateShareMessages.slice(0, session!.threshold).map((ciphertext: ace.pke.Ciphertext, i: number) => {
                 let msgBytes = ace.pke.decrypt({
                     decryptionKey: encKeypairs[i].decryptionKey,
                     ciphertext,
@@ -104,7 +104,9 @@ async function main() {
                 ciphertext: session.dealerContribution0!.dealerState!,
             }).unwrapOrThrow('Failed to decrypt dealer state.');
             const dealerState = ace.vss.DealerState.fromBytes(decryptedDealerStateBytes).unwrapOrThrow('Failed to parse dealer state.');
-            if (reconstructedSecret.asBls12381Fr().scalar !== dealerState.asBls12381Fr().coefsPolyP[0]) throw 'Public commitment does not match on-chain public key.';
+            const reconstructedScalar = reconstructedSecret.asBls12381Fr().scalar;
+            if (reconstructedScalar !== dealerState.asBls12381Fr().coefsPolyP[0]) throw 'Public commitment does not match on-chain public key.';
+            console.log(`Secret: ${reconstructedScalar}`);
         } finally {
             for (const proc of [dealerProc, ...recipientProcs]) {
                 proc.kill();

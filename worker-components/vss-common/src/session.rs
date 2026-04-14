@@ -14,7 +14,7 @@ pub const STATE_RECIPIENT_ACK: u8 = 1;
 pub const STATE_SUCCESS: u8 = 2;
 pub const STATE_FAILED: u8 = 3;
 
-pub const ACK_WINDOW_MICROS: u64 = 20_000_000;
+pub const ACK_WINDOW_MICROS: u64 = 5_000_000;
 
 #[derive(Debug, Clone)]
 pub struct Session {

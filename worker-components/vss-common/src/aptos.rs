@@ -181,6 +181,42 @@ impl AptosRpc {
         Ok(hash)
     }
 
+    /// Call a Move view function and return the JSON response values.
+    pub async fn call_view(&self, function: &str, args: &[Value]) -> Result<Vec<Value>> {
+        let url = format!("{}/view", self.base_url.trim_end_matches('/'));
+        let body = json!({
+            "function": function,
+            "type_arguments": [],
+            "arguments": args
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await?;
+            return Err(anyhow!("view call failed: {}", body_text));
+        }
+        Ok(resp.json::<Vec<Value>>().await?)
+    }
+
+    /// Fetch a worker's PKE encryption key via the `get_pke_enc_key_bcs` view function.
+    pub async fn get_pke_enc_key_bcs(
+        &self,
+        ace: &str,
+        worker_addr: &str,
+    ) -> Result<crate::pke::EncryptionKey> {
+        let result = self
+            .call_view(
+                &format!("{}::worker_config::get_pke_enc_key_bcs", ace),
+                &[json!(worker_addr)],
+            )
+            .await?;
+        let hex = result
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("expected string in view result"))?;
+        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+        crate::pke::EncryptionKey::from_bytes(&bytes)
+    }
+
     pub async fn wait_for_txn(&self, hash: &str) -> Result<()> {
         let url = format!(
             "{}/transactions/by_hash/{}",

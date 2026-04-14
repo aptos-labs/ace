@@ -8,6 +8,7 @@
 /// Scheme-specific structs, serde, and accessors live here.
 /// The abstract outer layer lives in ace::vss.
 module ace::vss_bls12381_fr {
+    use std::option::{Self, Option};
     use aptos_std::bcs_stream::{Self, BCSStream};
     use aptos_std::crypto_algebra::{Self, Element};
     use aptos_std::bls12381_algebra::{G1, FormatG1Compr, Fr, FormatFrLsb};
@@ -49,7 +50,7 @@ module ace::vss_bls12381_fr {
     struct DealerContribution0 has drop {
         pcs_commitment: PcsCommitment,
         private_share_messages: vector<Ciphertext>,
-        dealer_state: Ciphertext,
+        dealer_state: Option<Ciphertext>,
     }
 
     struct DealerContribution1 has drop {
@@ -129,7 +130,14 @@ module ace::vss_bls12381_fr {
     public fun deserialize_dealer_contribution_0(stream: &mut BCSStream): DealerContribution0 {
         let pcs_commitment = deserialize_pcs_commitment(stream);
         let private_share_messages = bcs_stream::deserialize_vector(stream, |s| pke::deserialize_ciphertext(s));
-        let dealer_state = pke::deserialize_ciphertext(stream);
+        let tag = bcs_stream::deserialize_u8(stream);
+        let dealer_state = if (tag == 1) {
+            option::some(pke::deserialize_ciphertext(stream))
+        } else if (tag == 0) {
+            option::none()
+        } else {
+            abort E_INVALID
+        };
         DealerContribution0 { pcs_commitment, private_share_messages, dealer_state }
     }
 
@@ -241,7 +249,7 @@ module ace::vss_bls12381_fr {
         &dc0.private_share_messages
     }
 
-    public fun dc0_dealer_state(dc0: &DealerContribution0): &Ciphertext {
+    public fun dc0_dealer_state(dc0: &DealerContribution0): &Option<Ciphertext> {
         &dc0.dealer_state
     }
 

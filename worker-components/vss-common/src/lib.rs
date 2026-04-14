@@ -1,10 +1,13 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared [`Session`] JSON parsing (Aptos node resource API) and minimal [`AptosRpc`] for VSS binaries.
+//! Shared types and utilities for VSS dealer / recipient binaries.
 
 pub mod aptos;
+pub mod crypto;
+pub mod pke;
 pub mod session;
+pub mod vss_types;
 
 pub use aptos::AptosRpc;
 pub use session::Session;

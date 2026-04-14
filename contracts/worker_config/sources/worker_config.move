@@ -3,6 +3,7 @@
 
 /// Shared constants for ACE worker / protocol packages (epoch status, crypto formats).
 module ace::worker_config {
+    use std::bcs;
     use std::string::String;
     use ace::pke;
 
@@ -25,5 +26,13 @@ module ace::worker_config {
 
     public fun has_pke_enc_key(worker: address): bool {
         exists<PkeEncryptionKey>(worker)
+    }
+
+    /// Return BCS encoding of the worker's PKE encryption key.
+    /// Output: [u8 variant=0x00][u8 ULEB128(32)][32B enc_base][u8 ULEB128(32)][32B public_point] = 67 bytes.
+    /// Compatible with ts-sdk `pke.EncryptionKey.fromBytes()` and `vss-common` `pke::EncryptionKey::from_bytes()`.
+    #[view]
+    public fun get_pke_enc_key_bcs(worker: address): vector<u8> acquires PkeEncryptionKey {
+        bcs::to_bytes(&borrow_global<PkeEncryptionKey>(worker).ek)
     }
 }

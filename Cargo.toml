@@ -3,4 +3,8 @@
 
 [workspace]
 resolver = "2"
-members = ["vss-common", "vss-dealer", "vss-recipient"]
+members = [
+    "worker-components/vss-common",
+    "worker-components/vss-dealer",
+    "worker-components/vss-recipient",
+]

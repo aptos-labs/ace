@@ -338,11 +338,16 @@ export async function getVssSession(aceContractAddr: AccountAddress, sessionAddr
     return Result.captureAsync({
         recordsExecutionTimeMs: false,
         task: async () => {
-            const url = `${LOCALNET_URL}/accounts/${sessionAddr.toStringLong()}/resource/${aceContractAddr.toStringLong()}::vss::Session`
-            const response = await fetch(url);
-            const data = await response.json() as any;
-            const maybeSession = ace.vss.Session.fromNodeResourceApi(data.data);
-            return maybeSession.unwrapOrThrow('Failed to parse session.');
+            const aptos = createAptos();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr.toStringLong()}::vss::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [sessionAddr.toStringLong()],
+                },
+            });
+            const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
+            return ace.vss.Session.fromBytes(bytes).unwrapOrThrow('Failed to parse session.');
         },
     });
 }

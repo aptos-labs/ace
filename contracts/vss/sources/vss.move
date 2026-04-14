@@ -8,6 +8,7 @@
 /// Adding a new scheme is an additive change: add a variant here and a sibling module.
 /// Scheme-specific types and serde live in ace::vss_bls12381_fr.
 module ace::vss {
+    use std::bcs;
     use std::error;
     use std::signer::address_of;
     use std::vector::{range};
@@ -34,7 +35,7 @@ module ace::vss {
 
     // ── Protocol constants ───────────────────────────────────────────────────
 
-    const ACK_WINDOW_MICROS: u64 = 20000000; // 20 seconds
+    const ACK_WINDOW_MICROS: u64 = 5_000_000; // 5 seconds for localnet
 
     const SECRET_SCHEME__BLS12381G1: u8 = 0;
     const SECRET_SCHEME__BLS12381G2: u8 = 1;
@@ -160,6 +161,47 @@ module ace::vss {
         match (o) {
             PcsBatchOpening::Bls12381Fr(inner) => inner,
         }
+    }
+
+    // ── View functions ───────────────────────────────────────────────────────
+
+    /// Serialize a `Session` to BCS bytes compatible with ts-sdk `Session.fromBytes()`.
+    /// Move's native `bcs::to_bytes` for `vector<u8>` fields would include a length prefix,
+    /// but ts-sdk reads dc0/dc1 as u8 option tags. This function manually serializes with
+    /// u8 option tags (0=None, 1=Some+payload) so the output can be deserialized by the SDK.
+    #[view]
+    public fun get_session_bcs(session_addr: address): vector<u8> acquires Session {
+        let s = borrow_global<Session>(session_addr);
+        let bytes = bcs::to_bytes(&s.dealer);
+        bytes.append(bcs::to_bytes(&s.share_holders));
+        bytes.append(bcs::to_bytes(&s.threshold));
+        bytes.push_back(s.secret_scheme);
+        bytes.push_back(s.state_code);
+        bytes.append(bcs::to_bytes(&s.deal_time_micros));
+        if (s.dealer_contribution_0.is_empty()) {
+            bytes.push_back(0u8);
+        } else {
+            bytes.push_back(1u8);
+            let n = s.dealer_contribution_0.length();
+            let i = 0;
+            while (i < n) {
+                bytes.push_back(*s.dealer_contribution_0.borrow(i));
+                i = i + 1;
+            };
+        };
+        bytes.append(bcs::to_bytes(&s.share_holder_acks));
+        if (s.dealer_contribution_1.is_empty()) {
+            bytes.push_back(0u8);
+        } else {
+            bytes.push_back(1u8);
+            let n = s.dealer_contribution_1.length();
+            let i = 0;
+            while (i < n) {
+                bytes.push_back(*s.dealer_contribution_1.borrow(i));
+                i = i + 1;
+            };
+        };
+        bytes
     }
 
     // ── Entry functions ──────────────────────────────────────────────────────

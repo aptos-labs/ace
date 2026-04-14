@@ -181,7 +181,7 @@ describe("DealerContribution0 serde", () => {
     it("round-trip: with share messages", () => {
         const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
         const ct = goldenCiphertext();
-        const dc0 = new DealerContribution0(commitment, [ct, ct], ct);
+        const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [ct, ct], dealerState: ct });
         const dc0b = DealerContribution0.fromBytes(dc0.toBytes()).unwrapOrThrow("round-trip");
         expect(dc0b.toHex()).toBe(dc0.toHex());
     });
@@ -189,7 +189,7 @@ describe("DealerContribution0 serde", () => {
     it("round-trip: empty share messages", () => {
         const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
         const ct = goldenCiphertext();
-        const dc0 = new DealerContribution0(commitment, [], ct);
+        const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
         const dc0b = DealerContribution0.fromBytes(dc0.toBytes()).unwrapOrThrow("round-trip empty");
         expect(dc0b.toHex()).toBe(dc0.toHex());
     });
@@ -197,7 +197,7 @@ describe("DealerContribution0 serde", () => {
     it("rejects trailing bytes", () => {
         const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
         const ct = goldenCiphertext();
-        const dc0 = new DealerContribution0(commitment, [], ct);
+        const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
         expect(DealerContribution0.fromHex(dc0.toHex() + "00").isOk).toBe(false);
     });
 });
@@ -241,7 +241,7 @@ describe("Session serde", () => {
     it("round-trip: with optional fields set", () => {
         const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
         const ct = goldenCiphertext();
-        const dc0 = new DealerContribution0(commitment, [], ct);
+        const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
         const dc1 = new DealerContribution1(PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34));
 
         // Build a session by hand with fromBytes, then mutate via round-trip

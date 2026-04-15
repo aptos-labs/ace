@@ -6,6 +6,7 @@
 
 use anyhow::{anyhow, Result};
 use ark_bls12_381::Fr;
+use ark_ff::PrimeField;
 use serde_json::json;
 use tokio::sync::oneshot;
 use vss_common::aptos::json_move_vec_u8_hex;
@@ -27,6 +28,9 @@ pub struct RunConfig {
     pub account_sk_hex: String,
     /// BCS-encoded PKE decryption key (scheme byte + inner), hex with optional 0x prefix.
     pub pke_dk_hex: String,
+    /// Optional explicit secret to use as coefs[0] (32-byte Fr LE).
+    /// When Some, overrides the DK-derived secret. DKR dealers must provide their DKG share here.
+    pub secret_override: Option<[u8; 32]>,
 }
 
 /// Dealer state machine.
@@ -98,6 +102,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         &ace,
                         &session,
                         &pke_dk_bytes,
+                        config.secret_override,
                     )
                     .await
                     {
@@ -130,6 +135,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             &ace,
                             &session,
                             &pke_dk_bytes,
+                            config.secret_override,
                         )
                         .await
                         {
@@ -168,15 +174,26 @@ async fn build_and_submit_dc0(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
+    secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
     let threshold = session.threshold as usize;
 
-    // Derive polynomial coefficients from the DK (deterministic).
-    // coefs[0] = secret = f(0); coefs[1..threshold-1] = random coefficients.
-    let coefs: Vec<Fr> = (0..threshold)
-        .map(|i| fr_from_dk_bytes(pke_dk_bytes, i))
-        .collect();
+    // Derive polynomial coefficients. coefs[0] = secret = f(0).
+    // If secret_override is provided (e.g. DKR dealer using their DKG share), use it for coefs[0].
+    // All other coefficients are derived deterministically from the DK.
+    let coefs: Vec<Fr> = {
+        let secret = if let Some(s) = secret_override {
+            Fr::from_le_bytes_mod_order(&s)
+        } else {
+            fr_from_dk_bytes(pke_dk_bytes, 0)
+        };
+        let mut v = vec![secret];
+        for i in 1..threshold {
+            v.push(fr_from_dk_bytes(pke_dk_bytes, i));
+        }
+        v
+    };
 
     // Fetch each recipient's encryption key.
     let mut enc_keys = Vec::with_capacity(n);
@@ -243,14 +260,24 @@ async fn build_and_submit_dc1(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
+    secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
     let threshold = session.threshold as usize;
 
-    // Re-derive the same polynomial coefficients.
-    let coefs: Vec<Fr> = (0..threshold)
-        .map(|i| fr_from_dk_bytes(pke_dk_bytes, i))
-        .collect();
+    // Re-derive the same polynomial (must match DC0 exactly).
+    let coefs: Vec<Fr> = {
+        let secret = if let Some(s) = secret_override {
+            Fr::from_le_bytes_mod_order(&s)
+        } else {
+            fr_from_dk_bytes(pke_dk_bytes, 0)
+        };
+        let mut v = vec![secret];
+        for i in 1..threshold {
+            v.push(fr_from_dk_bytes(pke_dk_bytes, i));
+        }
+        v
+    };
 
     // Build shares-to-reveal: None if holder acked, Some(y_bytes) if not acked.
     let shares_to_reveal: Vec<Option<[u8; 32]>> = (0..n)

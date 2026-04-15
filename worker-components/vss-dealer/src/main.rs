@@ -63,6 +63,7 @@ async fn main() {
                 pke_dk_hex: args.pke_dk_hex,
                 account_addr,
                 account_sk_hex: sk_hex,
+                secret_override: None,
             };
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

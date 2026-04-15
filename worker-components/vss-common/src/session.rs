@@ -35,11 +35,11 @@ impl Session {
     /// `data_json` is the inner `data` object from
     /// `GET /accounts/.../resource/...::vss::Session`.
     ///
-    /// # New Session struct layout (no `secret_scheme`; base_point is a G1 enum):
+    /// # Session struct layout (mirrors `ace::vss::Session` Move struct):
     /// - `dealer: address`
     /// - `share_holders: vector<address>`
     /// - `threshold: u64`
-    /// - `base_point: PublicPoint` (enum, we don't need the value — just skip it)
+    /// - `public_base_element: group::Element` (we don't need the value — just skip it)
     /// - `state_code: u8`
     /// - `deal_time_micros: u64`
     /// - `dealer_contribution_0: Option<DealerContribution0>` (struct, not raw bytes)
@@ -80,10 +80,10 @@ impl Session {
 
         let threshold = u64_field("threshold")?;
 
-        // base_point: PublicPoint — present in new Session (replaces secret_scheme).
-        // We only check it exists; we don't need the actual G1 bytes.
-        if data_json.get("base_point").is_none() && data_json.get("secret_scheme").is_none() {
-            return Err(anyhow!("missing base_point (and no legacy secret_scheme either)"));
+        // public_base_element: group::Element — present in Session.
+        // We only check it exists; we don't need the actual value.
+        if data_json.get("public_base_element").is_none() {
+            return Err(anyhow!("missing public_base_element in VSS session"));
         }
 
         let state_code_raw = data_json

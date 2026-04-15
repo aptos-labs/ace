@@ -65,7 +65,7 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point: group::Element,
+        public_base_element: group::Element,
         state_code: u8,
         deal_time_micros: u64,
         dealer_contribution_0: Option<DealerContribution0>,
@@ -93,7 +93,7 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point: group::Element,
+        public_base_element: group::Element,
     ): address {
         assert!(worker_config::has_pke_enc_key(dealer), error::invalid_argument(E_INVALID_DEALER));
         share_holders.for_each(|share_holder| {
@@ -109,7 +109,7 @@ module ace::vss {
             dealer,
             share_holders,
             threshold,
-            base_point,
+            public_base_element,
             deal_time_micros: 0,
             state_code: STATE__DEALER_DEAL,
             dealer_contribution_0: option::none(),
@@ -184,7 +184,7 @@ module ace::vss {
         // Verify the revealed shares in dc1 match the commitment in dc0.
         let n = session.share_holders.length();
         let dc0 = session.dealer_contribution_0.borrow();
-        let scheme = group::element_scheme(&session.base_point);
+        let scheme = group::element_scheme(&session.public_base_element);
         range(0, n).for_each(|i| {
             if (dc1.shares_to_reveal[i].is_some()) {
                 let x = group::scalar_from_u64(scheme, i + 1);
@@ -196,7 +196,7 @@ module ace::vss {
                 });
 
                 let revealed_share = dc1.shares_to_reveal[i].borrow();
-                let lhs = group::scale_element(&session.base_point, revealed_share);
+                let lhs = group::scale_element(&session.public_base_element, revealed_share);
                 let rhs = group::msm(dc0.pcs_commitment.points, powers_of_x);
                 assert!(group::element_eq(&lhs, &rhs), error::invalid_state(E_INVALID_REVEALED_SHARE));
             }
@@ -216,6 +216,12 @@ module ace::vss {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.dealer_contribution_0.borrow().pcs_commitment.points[0]
+    }
+
+    public fun ack_vec(session_addr: address): vector<u8> acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.share_holder_acks.map(|ack| if (ack) 1 else 0)
     }
 
     // ── Serde helpers ────────────────────────────────────────────────────────

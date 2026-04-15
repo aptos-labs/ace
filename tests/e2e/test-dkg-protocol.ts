@@ -66,12 +66,6 @@ async function main() {
             const deadlineMillis = Date.now() + 120_000;
             let session: ace.dkg.Session | undefined;
             while (Date.now() < deadlineMillis) {
-                // Touch the session to let the contract finalize state when ready.
-                await submitTxn({
-                    signer: adminAccount,
-                    entryFunction: `${aceContract}::dkg::touch_entry`,
-                    args: [sessionAddr],
-                });
                 const maybeSession = await getDKGSession(adminAccount.accountAddress, sessionAddr);
                 if (maybeSession.isOk) {
                     session = maybeSession.okValue!;

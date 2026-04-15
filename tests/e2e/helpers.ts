@@ -369,3 +369,21 @@ export async function getDKGSession(aceContractAddr: AccountAddress, sessionAddr
         },
     });
 }
+
+export async function getDKRSession(aceContractAddr: AccountAddress, sessionAddr: AccountAddress): Promise<Result<ace.dkr.Session>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: false,
+        task: async () => {
+            const aptos = createAptos();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr.toStringLong()}::dkr::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [sessionAddr.toStringLong()],
+                },
+            });
+            const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
+            return ace.dkr.Session.fromBytes(bytes).unwrapOrThrow('Failed to parse DKR session.');
+        },
+    });
+}

@@ -6,12 +6,24 @@ use ed25519_dalek::Signer;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use crate::session::Session;
 
 /// Process-global nonce counter for orderless transactions.
-/// Each `submit_txn` call increments this to produce a unique nonce.
-static TXN_NONCE: AtomicU64 = AtomicU64::new(1);
+/// Seeded from the current time in nanoseconds so that separate OS processes
+/// (e.g. dkr-src and dkr-dst running as the same account) start at different offsets
+/// and don't collide.
+fn txn_nonce() -> &'static AtomicU64 {
+    static TXN_NONCE: OnceLock<AtomicU64> = OnceLock::new();
+    TXN_NONCE.get_or_init(|| {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
+        AtomicU64::new(seed)
+    })
+}
 
 #[derive(Clone)]
 pub struct AptosRpc {
@@ -101,7 +113,7 @@ impl AptosRpc {
     ) -> Result<String> {
         // Orderless transaction: unique nonce instead of sequence number.
         // Multiple concurrent submissions from the same account are safe.
-        let nonce = TXN_NONCE.fetch_add(1, Ordering::Relaxed);
+        let nonce = txn_nonce().fetch_add(1, Ordering::Relaxed);
 
         let expiry = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

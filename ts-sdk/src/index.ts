@@ -19,6 +19,8 @@ export * as vss from "./vss";
 
 export * as dkg from "./dkg";
 
+export * as dkr from "./dkr";
+
 // Result type for error handling
 export { Result } from "./result";
 

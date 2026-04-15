@@ -148,6 +148,12 @@ pub fn fr_from_dk_bytes(dk: &[u8], idx: usize) -> Fr {
     Fr::from_le_bytes_mod_order(&hash)
 }
 
+/// Deserialize a BLS12-381 Fr element from 32-byte little-endian bytes.
+/// Reduces mod Fr order, matching `Fr::from_le_bytes_mod_order`.
+pub fn fr_from_le_bytes(bytes: [u8; 32]) -> Fr {
+    Fr::from_le_bytes_mod_order(&bytes)
+}
+
 /// Evaluate polynomial at `x` using Horner's method.
 /// `coefs[0]` is the constant term (secret), `coefs[t-1]` is the highest-degree coefficient.
 pub fn poly_eval(coefs: &[Fr], x: Fr) -> Fr {

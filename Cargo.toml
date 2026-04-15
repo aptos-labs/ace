@@ -8,4 +8,6 @@ members = [
     "worker-components/vss-dealer",
     "worker-components/vss-recipient",
     "worker-components/dkg-worker",
+    "worker-components/dkr-src",
+    "worker-components/dkr-dst",
 ]

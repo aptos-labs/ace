@@ -8,7 +8,7 @@
     "test:permissioned": "tsx test-permissioned.ts",
     "test:vss-only": "tsx test-vss-protocol.ts",
     "test:dkg-only": "tsx test-dkg-protocol.ts",
-    "test:dkr-only": "tsx layered-compile-smoke.ts dkr"
+    "test:dkr-only": "tsx test-dkr-protocol.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

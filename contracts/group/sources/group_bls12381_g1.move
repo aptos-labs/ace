@@ -1,7 +1,8 @@
 module ace::group_bls12381_g1 {
     use aptos_std::bcs_stream::{Self, BCSStream};
     use aptos_std::crypto_algebra::{Self, Element};
-    use aptos_std::bls12381_algebra::{G1, FormatG1Compr, Fr, FormatFrLsb};
+    use aptos_std::bls12381_algebra::{G1, FormatG1Compr, Fr, FormatFrLsb, HashG1XmdSha256SswuRo};
+    use aptos_framework::randomness;
 
     // ── Error codes ──────────────────────────────────────────────────────────
 
@@ -11,6 +12,7 @@ module ace::group_bls12381_g1 {
 
     const G1_COMPRESSED_BYTES: u64 = 48;
     const FR_SCALAR_BYTES: u64 = 32;
+    const DST: vector<u8> = b"ace::group_bls12381_g1";
 
     struct PrivateScalar has copy, drop, store {
         scalar: vector<u8>,
@@ -63,6 +65,11 @@ module ace::group_bls12381_g1 {
     public fun deserialize_public_point(stream: &mut BCSStream): PublicPoint {
         let point = deserialize_g1_point(stream);
         from_inner_element(&point)
+    }
+
+    #[lint::allow_unsafe_randomness]
+    public fun rand_element(): PublicPoint {
+        from_inner_element(&crypto_algebra::hash_to<G1, HashG1XmdSha256SswuRo>(&DST, &randomness::bytes(32)))
     }
 
     fun to_inner_element(element: &PublicPoint): Element<G1> {

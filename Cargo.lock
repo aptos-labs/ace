@@ -1075,6 +1075,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dkg-worker",
+ "dkr-dst",
+ "dkr-src",
+ "serde_json",
+ "tokio",
+ "vss-common",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

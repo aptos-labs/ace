@@ -370,6 +370,24 @@ export async function getDKGSession(aceContractAddr: AccountAddress, sessionAddr
     });
 }
 
+export async function getNetworkState(aceContractAddr: AccountAddress): Promise<Result<ace.network.State>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: false,
+        task: async () => {
+            const aptos = createAptos();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr.toStringLong()}::network::state_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [],
+                },
+            });
+            const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
+            return ace.network.State.fromBytes(bytes).unwrapOrThrow('Failed to parse network State.');
+        },
+    });
+}
+
 export async function getDKRSession(aceContractAddr: AccountAddress, sessionAddr: AccountAddress): Promise<Result<ace.dkr.Session>> {
     return Result.captureAsync({
         recordsExecutionTimeMs: false,

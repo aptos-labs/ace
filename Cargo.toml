@@ -10,4 +10,5 @@ members = [
     "worker-components/dkg-worker",
     "worker-components/dkr-src",
     "worker-components/dkr-dst",
+    "worker-components/network-node",
 ]

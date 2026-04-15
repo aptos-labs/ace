@@ -21,6 +21,8 @@ export * as dkg from "./dkg";
 
 export * as dkr from "./dkr";
 
+export * as network from "./network";
+
 // Result type for error handling
 export { Result } from "./result";
 

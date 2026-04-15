@@ -40,6 +40,9 @@ export const DKG_WORKER_BINARY = path.join(cargoDebugDir, 'dkg-worker');
 /** `dkr-src` binary from the repo-root Cargo workspace. */
 export const DKR_SRC_BINARY = path.join(cargoDebugDir, 'dkr-src');
 
+/** `network-node` binary (not yet implemented; placeholder for future unified worker). */
+export const NETWORK_NODE_BINARY = path.join(cargoDebugDir, 'network-node');
+
 /** `dkr-dst` binary from the repo-root Cargo workspace. */
 export const DKR_DST_BINARY = path.join(cargoDebugDir, 'dkr-dst');
 

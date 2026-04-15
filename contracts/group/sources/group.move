@@ -152,6 +152,15 @@ module ace::group {
         }
     }
 
+    #[lint::allow_unsafe_randomness]
+    public fun rand_element(scheme: u8): Element {
+        if (scheme == SCHEME__BLS12381G1) {
+            Element::Bls12381G1(group_bls12381_g1::rand_element())
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     // ── Private unwrap helpers ───────────────────────────────────────────────
 
     fun to_bls12381g1_scalar(s: &Scalar): &group_bls12381_g1::PrivateScalar {

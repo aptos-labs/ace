@@ -173,3 +173,15 @@ pub fn g1_compressed(scalar: Fr) -> [u8; 48] {
     pt.serialize_compressed(&mut bytes[..]).expect("G1 serialize failed");
     bytes
 }
+
+/// Compute the compressed 48-byte BLS12-381 G1 point `scalar * base_point`.
+/// Use this instead of `g1_compressed` when the session's base point is not G1::generator.
+pub fn g1_compressed_with_base(scalar: Fr, base_point_bytes: &[u8]) -> anyhow::Result<[u8; 48]> {
+    use ark_serialize::CanonicalDeserialize;
+    let base = ark_bls12_381::G1Affine::deserialize_compressed(base_point_bytes)
+        .map_err(|e| anyhow::anyhow!("base_point deserialize: {}", e))?;
+    let pt: ark_bls12_381::G1Affine = (base * scalar).into_affine();
+    let mut bytes = [0u8; 48];
+    pt.serialize_compressed(&mut bytes[..]).expect("G1 serialize failed");
+    Ok(bytes)
+}

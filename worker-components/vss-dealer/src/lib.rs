@@ -10,7 +10,7 @@ use ark_ff::PrimeField;
 use serde_json::json;
 use tokio::sync::oneshot;
 use vss_common::aptos::json_move_vec_u8_hex;
-use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed, pke_encrypt, poly_eval};
+use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed_with_base, pke_encrypt, poly_eval};
 use vss_common::session::{ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
 use vss_common::vss_types::{
     dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsCommitment, SecretShare,
@@ -195,6 +195,13 @@ async fn build_and_submit_dc0(
         v
     };
 
+    // Fetch the BCS session to get the actual base_point for the Feldman commitment.
+    let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await
+        .map_err(|e| anyhow!("failed to fetch BCS session: {}", e))?;
+    let base_point_bytes = match &bcs_session.base_point {
+        vss_common::session::BcsElement::Bls12381G1(p) => p.point.clone(),
+    };
+
     // Fetch each recipient's encryption key.
     let mut enc_keys = Vec::with_capacity(n);
     for holder_addr in &session.share_holders {
@@ -224,9 +231,12 @@ async fn build_and_submit_dc0(
     };
     let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
 
-    // Build Feldman PCS commitment: v_k = coefs[k] * G1::generator for k = 0..threshold.
+    // Build Feldman PCS commitment: v_k = coefs[k] * base_point for k = 0..threshold.
+    // Use the session's actual base_point (not necessarily G1::generator).
     let commitment = PcsCommitment::Bls12381Fr {
-        v_values: coefs.iter().map(|c| g1_compressed(*c)).collect(),
+        v_values: coefs.iter()
+            .map(|c| g1_compressed_with_base(*c, &base_point_bytes))
+            .collect::<anyhow::Result<Vec<_>>>()?,
     };
 
     let payload = dc0_bytes(&commitment, &share_ciphertexts, &dealer_state_ct);

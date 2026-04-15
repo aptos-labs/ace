@@ -4,8 +4,28 @@
 import { Account } from '@aptos-labs/ts-sdk';
 import { spawn, type ChildProcess } from 'child_process';
 
-import { NETWORK_NODE_BINARY, LOCALNET_URL } from './config';
+import { NETWORK_NODE_BINARY, LOCALNET_URL, REPO_ROOT } from './config';
 import { ed25519PrivateKeyHex } from './helpers';
+
+function spawnExitZero(cmd: string, args: string[], cwd: string, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const child = spawn(cmd, args, { cwd, stdio: 'inherit' });
+        child.once('error', reject);
+        child.once('close', (code, signal) => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`${label} exited with code ${code}${signal ? ` (signal ${signal})` : ''}`));
+            }
+        });
+    });
+}
+
+/** Build the repo-root Cargo workspace (all binaries including network-node). */
+export async function buildRustWorkspace(): Promise<void> {
+    console.log(`  $ (cwd ${REPO_ROOT}) cargo build`);
+    await spawnExitZero('cargo', ['build'], REPO_ROOT, 'cargo build');
+}
 
 export type NetworkNodeSpawnInput = {
     runAs: Account;

@@ -21,7 +21,7 @@ use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use vss_common::{normalize_account_addr, AptosRpc};
+use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -91,6 +91,8 @@ fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
     let rpc = AptosRpc::new(config.rpc_url.clone());
+    let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
+    let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
     let ace = normalize_account_addr(&config.ace_contract);
 
@@ -125,6 +127,17 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 continue;
             }
         };
+
+        // Call network::touch() to advance state (move completed DKGs to secrets,
+        // or advance the epoch when all DKR sessions are done).
+        let no_args: &[Value] = &[];
+        if let Err(e) = rpc.submit_txn(
+            &sk, &vk, &account_addr,
+            &format!("{}::network::touch", ace), &[],
+            no_args,
+        ).await {
+            eprintln!("network-node: touch error: {:#}", e);
+        }
 
         let in_cur_nodes = state.cur_nodes.iter().any(|n| n == &account_addr);
 

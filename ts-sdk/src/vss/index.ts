@@ -7,68 +7,76 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import * as Bls12381Fr from "./bls12381-fr";
 import * as pke from "../pke";
 
-export const SCHEME_BLS12381Fr = 0;
+export const SCHEME_BLS12381G1 = 0;
+export const SCHEME_BLS12381G2 = 1;
 
-export function sample(scheme: number): Secret {
-    if (scheme === SCHEME_BLS12381Fr) {
+export function sample(scheme: number): PrivateScalar {
+    if (scheme === SCHEME_BLS12381G1) {
         const secret = Bls12381Fr.sample();
-        return new Secret(SCHEME_BLS12381Fr, secret);
+        return new PrivateScalar(SCHEME_BLS12381G1, secret);
     }
     throw new Error(`sample: unsupported scheme ${scheme}`);
 }
 
-export function sampleBLS12381Fr(): Secret {
-    return sample(SCHEME_BLS12381Fr);
+export function sampleBLS12381G1(): PrivateScalar {
+    return sample(SCHEME_BLS12381G1);
 }
 
-export function reconstruct({ secretShares }: { secretShares: SecretShare[] }): Result<Secret> {
+export function reconstruct({ indexedShares }: {
+    indexedShares: { index: number; share: SecretShare }[]
+}): Result<PrivateScalar> {
     return Result.capture({
         recordsExecutionTimeMs: false,
         task: () => {
-            if (secretShares.length < 1) throw "reconstruct: no shares";
-            const scheme = secretShares[0].scheme;
-            for (const sh of secretShares) {
-                if (sh.scheme !== scheme) throw "reconstruct: SecretShare scheme mismatch";
+            if (indexedShares.length < 1) throw "reconstruct: no shares";
+            const scheme = indexedShares[0].share.scheme;
+            for (const { share } of indexedShares) {
+                if (share.scheme !== scheme) throw "reconstruct: SecretShare scheme mismatch";
             }
-            if (scheme === SCHEME_BLS12381Fr) {
-                const inners = secretShares.map((s) => s.inner as Bls12381Fr.SecretShare);
-                const s = Bls12381Fr.reconstruct({ secretShares: inners }).unwrapOrThrow("reconstruct: Bls12381Fr failed");
-                return new Secret(SCHEME_BLS12381Fr, s);
+            if (scheme === SCHEME_BLS12381G1) {
+                const inners = indexedShares.map(({ index, share }) => ({
+                    index,
+                    share: share.inner as Bls12381Fr.SecretShare,
+                }));
+                const s = Bls12381Fr.reconstruct({ indexedShares: inners }).unwrapOrThrow("reconstruct: Bls12381G1 failed");
+                return new PrivateScalar(SCHEME_BLS12381G1, s);
             }
             throw `unsupported scheme`;
         },
     });
 }
 
-export class Secret {
+// ── PrivateScalar ─────────────────────────────────────────────────────────────
+
+export class PrivateScalar {
     constructor(readonly scheme: number, readonly inner: any) {}
 
-    asBls12381Fr(): Bls12381Fr.Secret {
-        if (this.scheme !== SCHEME_BLS12381Fr) throw 'wrong scheme';
-        return this.inner as Bls12381Fr.Secret;
+    asBls12381Fr(): Bls12381Fr.PrivateScalar {
+        if (this.scheme !== SCHEME_BLS12381G1) throw 'wrong scheme';
+        return this.inner as Bls12381Fr.PrivateScalar;
     }
 
-    static deserialize(deserializer: Deserializer): Result<Secret> {
+    static deserialize(deserializer: Deserializer): Result<PrivateScalar> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: (extra: Record<string, any>) => {
                 const scheme = deserializer.deserializeU8();
                 extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381Fr) {
-                    const inner = Bls12381Fr.Secret.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new Secret(SCHEME_BLS12381Fr, inner);
+                if (scheme === SCHEME_BLS12381G1) {
+                    const inner = Bls12381Fr.PrivateScalar.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new PrivateScalar(SCHEME_BLS12381G1, inner);
                 }
                 throw 'unsupported scheme';
             },
         });
     }
 
-    static fromBytes(bytes: Uint8Array): Result<Secret> {
+    static fromBytes(bytes: Uint8Array): Result<PrivateScalar> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: (_extra: Record<string, any>) => {
                 const deserializer = new Deserializer(bytes);
-                const obj = Secret.deserialize(deserializer).unwrapOrThrow("deserialization failed");
+                const obj = PrivateScalar.deserialize(deserializer).unwrapOrThrow("deserialization failed");
                 if (deserializer.remaining() !== 0) {
                     throw "trailing bytes";
                 }
@@ -77,20 +85,20 @@ export class Secret {
         });
     }
 
-    static fromHex(hex: string): Result<Secret> {
+    static fromHex(hex: string): Result<PrivateScalar> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: (_extra: Record<string, any>) => {
                 const bytes = hexToBytes(hex);
-                return Secret.fromBytes(bytes).unwrapOrThrow("deserialization failed");
+                return PrivateScalar.fromBytes(bytes).unwrapOrThrow("deserialization failed");
             },
         });
     }
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381Fr) {
-            (this.inner as Bls12381Fr.Secret).serialize(serializer);
+        if (this.scheme === SCHEME_BLS12381G1) {
+            (this.inner as Bls12381Fr.PrivateScalar).serialize(serializer);
         } else {
             throw 'unsupported scheme';
         }
@@ -107,6 +115,71 @@ export class Secret {
     }
 }
 
+// ── PublicPoint ───────────────────────────────────────────────────────────────
+
+export class PublicPoint {
+    constructor(readonly scheme: number, readonly inner: any) {}
+
+    static fromBls12381G1(inner: Bls12381Fr.PublicPoint): PublicPoint {
+        return new PublicPoint(SCHEME_BLS12381G1, inner);
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === SCHEME_BLS12381G1) {
+            (this.inner as Bls12381Fr.PublicPoint).serialize(serializer);
+        } else {
+            throw 'unsupported scheme';
+        }
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PublicPoint> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (extra: Record<string, any>) => {
+                const scheme = deserializer.deserializeU8();
+                extra["scheme"] = scheme;
+                if (scheme === SCHEME_BLS12381G1) {
+                    const inner = Bls12381Fr.PublicPoint.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new PublicPoint(SCHEME_BLS12381G1, inner);
+                }
+                throw 'unsupported scheme';
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PublicPoint> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PublicPoint.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    static fromHex(hex: string): Result<PublicPoint> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => PublicPoint.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
+        });
+    }
+}
+
+// ── SecretShare ───────────────────────────────────────────────────────────────
+
 export class SecretShare {
     constructor(readonly scheme: number, readonly inner: any) {}
 
@@ -116,9 +189,9 @@ export class SecretShare {
             task: (extra: Record<string, any>) => {
                 const scheme = deserializer.deserializeU8();
                 extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381Fr) {
+                if (scheme === SCHEME_BLS12381G1) {
                     const inner = Bls12381Fr.SecretShare.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new SecretShare(SCHEME_BLS12381Fr, inner);
+                    return new SecretShare(SCHEME_BLS12381G1, inner);
                 }
                 throw 'unsupported scheme';
             },
@@ -153,7 +226,7 @@ export class SecretShare {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381Fr) {
+        if (this.scheme === SCHEME_BLS12381G1) {
             (this.inner as Bls12381Fr.SecretShare).serialize(serializer);
         } else {
             throw 'unsupported scheme';
@@ -171,34 +244,39 @@ export class SecretShare {
     }
 }
 
-export class PcsCommitment {
-    private constructor(private readonly scheme: number, private readonly inner: any) {
-    }
+// ── PcsCommitment ─────────────────────────────────────────────────────────────
 
-    static fromBls12381Fr(inner: Bls12381Fr.PcsCommitment): PcsCommitment {
-        return new PcsCommitment(SCHEME_BLS12381Fr, inner);
+/**
+ * Feldman PCS commitment: a vector of G1 points, no scheme-byte prefix.
+ * Wire format: [uleb128 t] { [uleb128(48)] [48-byte G1] } × t
+ */
+export class PcsCommitment {
+    constructor(readonly points: PublicPoint[]) {}
+
+    static fromBls12381G1(innerPoints: Bls12381Fr.PcsCommitment): PcsCommitment {
+        return new PcsCommitment(
+            innerPoints.vValues.map((pt) => PublicPoint.fromBls12381G1(new Bls12381Fr.PublicPoint(pt)))
+        );
     }
 
     serialize(serializer: Serializer): void {
-        serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381Fr) {
-            (this.inner as Bls12381Fr.PcsCommitment).serialize(serializer);
-        } else {
-            throw 'unsupported scheme';
+        serializer.serializeU32AsUleb128(this.points.length);
+        for (const pt of this.points) {
+            pt.serialize(serializer); // writes [u8 scheme][uleb128(48)][48B]
         }
     }
 
     static deserialize(deserializer: Deserializer): Result<PcsCommitment> {
         return Result.capture({
             recordsExecutionTimeMs: false,
-            task: (extra: Record<string, any>) => {
-                const scheme = deserializer.deserializeU8();
-                extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381Fr) {
-                    const inner = Bls12381Fr.PcsCommitment.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new PcsCommitment(SCHEME_BLS12381Fr, inner);
+            task: () => {
+                const len = deserializer.deserializeUleb128AsU32();
+                const points: PublicPoint[] = [];
+                for (let i = 0; i < len; i++) {
+                    const pt = PublicPoint.deserialize(deserializer).unwrapOrThrow(`point[${i}] deserialize failed`);
+                    points.push(pt);
                 }
-                throw 'unsupported scheme';
+                return new PcsCommitment(points);
             },
         });
     }
@@ -233,142 +311,14 @@ export class PcsCommitment {
     }
 }
 
-export class PcsOpening {
-    private constructor(private readonly scheme: number, private readonly inner: any) {
-    }
+// ── PrivateShareMessage ───────────────────────────────────────────────────────
 
-    static fromBls12381Fr(inner: Bls12381Fr.PcsOpening): PcsOpening {
-        return new PcsOpening(SCHEME_BLS12381Fr, inner);
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381Fr) {
-            (this.inner as Bls12381Fr.PcsOpening).serialize(serializer);
-        } else {
-            throw 'unsupported scheme';
-        }
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PcsOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: (extra: Record<string, any>) => {
-                const scheme = deserializer.deserializeU8();
-                extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381Fr) {
-                    const inner = Bls12381Fr.PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new PcsOpening(SCHEME_BLS12381Fr, inner);
-                }
-                throw 'unsupported scheme';
-            },
-        });
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<PcsOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return obj;
-            },
-        });
-    }
-
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
-
-    static fromHex(hex: string): Result<PcsOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => PcsOpening.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
-        });
-    }
-}
-
-export class PcsBatchOpening {
-    private constructor(private readonly scheme: number, private readonly inner: any) {
-    }
-
-    static fromBls12381Fr(inner: Bls12381Fr.PcsBatchOpening): PcsBatchOpening {
-        return new PcsBatchOpening(SCHEME_BLS12381Fr, inner);
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU8(this.scheme);
-        if (this.scheme === SCHEME_BLS12381Fr) {
-            (this.inner as Bls12381Fr.PcsBatchOpening).serialize(serializer);
-        } else {
-            throw 'unsupported scheme';
-        }
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PcsBatchOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: (extra: Record<string, any>) => {
-                const scheme = deserializer.deserializeU8();
-                extra["scheme"] = scheme;
-                if (scheme === SCHEME_BLS12381Fr) {
-                    const inner = Bls12381Fr.PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new PcsBatchOpening(SCHEME_BLS12381Fr, inner);
-                }
-                throw 'unsupported scheme';
-            },
-        });
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<PcsBatchOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return obj;
-            },
-        });
-    }
-
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
-
-    static fromHex(hex: string): Result<PcsBatchOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => PcsBatchOpening.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
-        });
-    }
-}
-
+/** The plaintext payload encrypted to each share holder: just the share scalar. */
 export class PrivateShareMessage {
-    share: SecretShare;
-    proof: PcsOpening;
-
-    constructor(share: SecretShare, proof: PcsOpening) {
-        this.share = share;
-        this.proof = proof;
-    }
+    constructor(readonly share: SecretShare) {}
 
     serialize(serializer: Serializer): void {
         this.share.serialize(serializer);
-        this.proof.serialize(serializer);
     }
 
     static deserialize(deserializer: Deserializer): Result<PrivateShareMessage> {
@@ -376,8 +326,7 @@ export class PrivateShareMessage {
             recordsExecutionTimeMs: false,
             task: () => {
                 const share = SecretShare.deserialize(deserializer).unwrapOrThrow("share deserialize failed");
-                const proof = PcsOpening.deserialize(deserializer).unwrapOrThrow("proof deserialize failed");
-                return new PrivateShareMessage(share, proof);
+                return new PrivateShareMessage(share);
             },
         });
     }
@@ -412,6 +361,8 @@ export class PrivateShareMessage {
     }
 }
 
+// ── DealerState ───────────────────────────────────────────────────────────────
+
 export class DealerState {
     scheme: number;
     inner: any;
@@ -426,7 +377,7 @@ export class DealerState {
     }
 
     asBls12381Fr(): Bls12381Fr.DealerState {
-        if (this.scheme !== SCHEME_BLS12381Fr) throw 'wrong scheme';
+        if (this.scheme !== SCHEME_BLS12381G1) throw 'wrong scheme';
         return this.inner as Bls12381Fr.DealerState;
     }
 
@@ -435,9 +386,9 @@ export class DealerState {
             recordsExecutionTimeMs: false,
             task: () => {
                 const scheme = deserializer.deserializeU8();
-                if (scheme === SCHEME_BLS12381Fr) {
+                if (scheme === SCHEME_BLS12381G1) {
                     const inner = Bls12381Fr.DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                    return new DealerState(SCHEME_BLS12381Fr, inner);
+                    return new DealerState(SCHEME_BLS12381G1, inner);
                 }
                 throw 'unsupported scheme';
             },
@@ -449,7 +400,7 @@ export class DealerState {
         this.serialize(serializer);
         return serializer.toUint8Array();
     }
-    
+
     static fromBytes(bytes: Uint8Array): Result<DealerState> {
         return Result.capture({
             recordsExecutionTimeMs: false,
@@ -474,17 +425,24 @@ export class DealerState {
     }
 }
 
+// ── DealerContribution0 ───────────────────────────────────────────────────────
+
 export class DealerContribution0 {
     pcsCommitment: PcsCommitment;
     privateShareMessages: pke.Ciphertext[];
-    dealerState: pke.Ciphertext | undefined; /// Dealer can choose to save private state on chain.
+    dealerState: pke.Ciphertext | undefined;
 
-    constructor({sharingPolyCommitment, privateShareMessages, dealerState}: {sharingPolyCommitment: PcsCommitment, privateShareMessages: pke.Ciphertext[], dealerState?: pke.Ciphertext}) {
+    constructor({ sharingPolyCommitment, privateShareMessages, dealerState }: {
+        sharingPolyCommitment: PcsCommitment;
+        privateShareMessages: pke.Ciphertext[];
+        dealerState?: pke.Ciphertext;
+    }) {
         this.pcsCommitment = sharingPolyCommitment;
         this.privateShareMessages = privateShareMessages;
         this.dealerState = dealerState ?? undefined;
     }
 
+    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] */
     serialize(serializer: Serializer): void {
         this.pcsCommitment.serialize(serializer);
         serializer.serializeU32AsUleb128(this.privateShareMessages.length);
@@ -517,7 +475,7 @@ export class DealerContribution0 {
                 } else if (dealerStateTag !== 0) {
                     throw `dealerState option tag must be 0 or 1, got ${dealerStateTag}`;
                 }
-                return new DealerContribution0({sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState});
+                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState });
             },
         });
     }
@@ -552,27 +510,49 @@ export class DealerContribution0 {
     }
 }
 
+// ── DealerContribution1 ───────────────────────────────────────────────────────
+
 /**
- * In paper, this message also includes v (the pcs commitment), I (the nodes that haven't ack yet), sigma (the valid acks received).
- * In this implementation, they are made available on chain already, so dealer doesn't need to re-publish.
+ * Dealer's open message: for each share holder (in order), either reveal the share scalar
+ * (if they did not ACK) or None (if they ACK'd and already have their share privately).
+ *
+ * Wire format: [uleb128 n] { [u8 0] | [u8 1] [uleb128(32)] [32-byte Fr LE] } × n
+ * (BCS vector<Option<Element<Fr>>>)
  */
 export class DealerContribution1 {
-    pcsBatchOpening: PcsBatchOpening;
-
-    constructor(pcsBatchOpening: PcsBatchOpening) {
-        this.pcsBatchOpening = pcsBatchOpening;
-    }
+    constructor(readonly sharesToReveal: (PrivateScalar | undefined)[]) {}
 
     serialize(serializer: Serializer): void {
-        this.pcsBatchOpening.serialize(serializer);
+        serializer.serializeU32AsUleb128(this.sharesToReveal.length);
+        for (const s of this.sharesToReveal) {
+            if (s === undefined) {
+                serializer.serializeU8(0);
+            } else {
+                serializer.serializeU8(1);
+                s.serialize(serializer);
+            }
+        }
     }
 
     static deserialize(deserializer: Deserializer): Result<DealerContribution1> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
-                const pcsBatchOpening = PcsBatchOpening.deserialize(deserializer).unwrapOrThrow("pcsBatchOpening deserialize failed");
-                return new DealerContribution1(pcsBatchOpening);
+                const n = deserializer.deserializeUleb128AsU32();
+                const sharesToReveal: (PrivateScalar | undefined)[] = [];
+                for (let i = 0; i < n; i++) {
+                    const tag = deserializer.deserializeU8();
+                    if (tag === 0) {
+                        sharesToReveal.push(undefined);
+                    } else if (tag === 1) {
+                        const scheme = deserializer.deserializeU8(); // scheme/variant byte
+                        const inner = Bls12381Fr.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
+                        sharesToReveal.push(new PrivateScalar(scheme, inner));
+                    } else {
+                        throw `sharesToReveal[${i}]: invalid option tag ${tag}`;
+                    }
+                }
+                return new DealerContribution1(sharesToReveal);
             },
         });
     }
@@ -607,12 +587,13 @@ export class DealerContribution1 {
     }
 }
 
+// ── Session ───────────────────────────────────────────────────────────────────
+
 export class Session {
-    //TODO: this should match Session in vss.move
     dealer: AccountAddress;
     shareHolders: AccountAddress[];
     threshold: number;
-    secretScheme: number;
+    basePoint: PublicPoint;
     stateCode: number;
     dealTimeMicros: number;
     dealerContribution0: DealerContribution0 | undefined;
@@ -624,7 +605,7 @@ export class Session {
             dealer,
             shareHolders,
             threshold,
-            secretScheme,
+            basePoint,
             stateCode,
             dealTimeMicros,
             dealerContribution0,
@@ -634,7 +615,7 @@ export class Session {
             dealer: AccountAddress,
             shareHolders: AccountAddress[],
             threshold: number,
-            secretScheme: number,
+            basePoint: PublicPoint,
             stateCode: number,
             dealTimeMicros: number,
             dealerContribution0: DealerContribution0 | undefined,
@@ -645,7 +626,7 @@ export class Session {
         this.dealer = dealer;
         this.shareHolders = shareHolders;
         this.threshold = threshold;
-        this.secretScheme = secretScheme;
+        this.basePoint = basePoint;
         this.stateCode = stateCode;
         this.dealTimeMicros = dealTimeMicros;
         this.dealerContribution0 = dealerContribution0;
@@ -660,7 +641,7 @@ export class Session {
             sh.serialize(serializer);
         }
         serializer.serializeU64(this.threshold);
-        serializer.serializeU8(this.secretScheme);
+        this.basePoint.serialize(serializer);
         serializer.serializeU8(this.stateCode);
         serializer.serializeU64(this.dealTimeMicros);
         if (this.dealerContribution0 === undefined) {
@@ -692,7 +673,7 @@ export class Session {
                     shareHolders.push(AccountAddress.deserialize(deserializer));
                 }
                 const threshold = Number(deserializer.deserializeU64());
-                const secretScheme = deserializer.deserializeU8();
+                const basePoint = PublicPoint.deserialize(deserializer).unwrapOrThrow("basePoint deserialize failed");
                 const stateCode = deserializer.deserializeU8();
                 const dealTimeMicros = Number(deserializer.deserializeU64());
                 const dc0Tag = deserializer.deserializeU8();
@@ -718,7 +699,7 @@ export class Session {
                     dealer,
                     shareHolders,
                     threshold,
-                    secretScheme,
+                    basePoint,
                     stateCode,
                     dealTimeMicros,
                     dealerContribution0,

@@ -10,14 +10,14 @@ import * as Bls12381Fr from "../src/vss/bls12381-fr";
 import * as pke from "../src/pke";
 import {
     PcsCommitment,
-    PcsOpening,
-    PcsBatchOpening,
     PrivateShareMessage,
     DealerContribution0,
     DealerContribution1,
     Session,
     SecretShare,
-    Secret,
+    PrivateScalar,
+    PublicPoint,
+    SCHEME_BLS12381G1,
 } from "../src/vss/index";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,147 +39,102 @@ function goldenCiphertext(): pke.Ciphertext {
 const ADDR_1 = AccountAddress.fromString("0x0000000000000000000000000000000000000000000000000000000000000001");
 const ADDR_2 = AccountAddress.fromString("0x0000000000000000000000000000000000000000000000000000000000000002");
 
-/** Bls12381Fr inner types */
-const INNER_OPENING_1_2 = new Bls12381Fr.PcsOpening(1n, 2n);
-const INNER_BATCH_12_34 = new Bls12381Fr.PcsBatchOpening([1n, 2n], [3n, 4n]);
-const INNER_COMMITMENT_GEN = new Bls12381Fr.PcsCommitment([g1Gen()]);
+// ── Goldens ──────────────────────────────────────────────────────────────────
 
-// ── Goldens from bls12381-fr.ts tests (already pinned) ──────────────────────
-const INNER_GOLDEN_PCS_OPENING =
-    "200100000000000000000000000000000000000000000000000000000000000000" +
-    "200200000000000000000000000000000000000000000000000000000000000000";
-
-const INNER_GOLDEN_PCS_BATCH_OPENING =
-    "0220010000000000000000000000000000000000000000000000000000000000000020020000000000000000000000000000000000000000000000000000000000000002200300000000000000000000000000000000000000000000000000000000000000200400000000000000000000000000000000000000000000000000000000000000";
-
-const INNER_GOLDEN_PCS_COMMITMENT =
+// PcsCommitment (no scheme prefix): [01]=len1, [30]=uleb128(48), [48-byte G1 gen]
+const GOLDEN_PCS_COMMITMENT =
     "013097f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac5" +
     "86c55e83ff97a1aeffb3af00adb22c6bb";
 
-// Wrapper goldens: prepend scheme byte 0x00
-const GOLDEN_PCS_OPENING_WRAPPER = "00" + INNER_GOLDEN_PCS_OPENING;
-const GOLDEN_PCS_BATCH_OPENING_WRAPPER = "00" + INNER_GOLDEN_PCS_BATCH_OPENING;
-const GOLDEN_PCS_COMMITMENT_WRAPPER = "00" + INNER_GOLDEN_PCS_COMMITMENT;
+// DealerContribution1: vector<Option<Fr>> = [Some(Fr(1)), None]
+// [02]=len2, [01]=Some, [20]=uleb128(32), Fr(1) LE (01 + 31 zero bytes), [00]=None
+const GOLDEN_DC1 =
+    "020120010000000000000000000000000000000000000000000000000000000000000000";
 
-// ── PcsCommitment (wrapper) ──────────────────────────────────────────────────
+// ── PcsCommitment ─────────────────────────────────────────────────────────────
 
-describe("PcsCommitment wrapper serde", () => {
+describe("PcsCommitment serde", () => {
+    function makeCommitment(): PcsCommitment {
+        return PcsCommitment.fromBls12381G1(new Bls12381Fr.PcsCommitment([g1Gen()]));
+    }
+
     it("round-trip: single G1 point", () => {
-        const c = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
-        const c2 = PcsCommitment.fromBytes(c.toBytes()).unwrapOrThrow("round-trip");
+        const c = makeCommitment();
+        const c2 = PcsCommitment.fromBytes(c.toBytes(), SCHEME_BLS12381G1).unwrapOrThrow("round-trip");
         expect(c2.toHex()).toBe(c.toHex());
     });
 
-    it("golden hex: pins wire format", () => {
-        const c = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
-        expect(c.toHex()).toBe(GOLDEN_PCS_COMMITMENT_WRAPPER);
+    it("golden hex: pins wire format (no scheme prefix)", () => {
+        const c = makeCommitment();
+        expect(c.toHex()).toBe(GOLDEN_PCS_COMMITMENT);
     });
 
     it("golden deserialization: fromHex round-trips", () => {
-        const c = PcsCommitment.fromHex(GOLDEN_PCS_COMMITMENT_WRAPPER).unwrapOrThrow("golden");
-        expect(c.toHex()).toBe(GOLDEN_PCS_COMMITMENT_WRAPPER);
+        const c = PcsCommitment.fromHex(GOLDEN_PCS_COMMITMENT, SCHEME_BLS12381G1).unwrapOrThrow("golden");
+        expect(c.toHex()).toBe(GOLDEN_PCS_COMMITMENT);
     });
 
     it("rejects trailing bytes", () => {
-        expect(PcsCommitment.fromHex(GOLDEN_PCS_COMMITMENT_WRAPPER + "00").isOk).toBe(false);
-    });
-
-    it("rejects unknown scheme", () => {
-        const bad = "01" + INNER_GOLDEN_PCS_COMMITMENT;
-        expect(PcsCommitment.fromHex(bad).isOk).toBe(false);
+        expect(PcsCommitment.fromHex(GOLDEN_PCS_COMMITMENT + "00", SCHEME_BLS12381G1).isOk).toBe(false);
     });
 });
 
-// ── PcsOpening (wrapper) ─────────────────────────────────────────────────────
+// ── PublicPoint ───────────────────────────────────────────────────────────────
 
-describe("PcsOpening wrapper serde", () => {
+describe("PublicPoint serde", () => {
+    function makePt(): PublicPoint {
+        return PublicPoint.fromBls12381G1(new Bls12381Fr.PublicPoint(g1Gen()));
+    }
+
     it("round-trip", () => {
-        const o = PcsOpening.fromBls12381Fr(INNER_OPENING_1_2);
-        const o2 = PcsOpening.fromBytes(o.toBytes()).unwrapOrThrow("round-trip");
-        expect(o2.toHex()).toBe(o.toHex());
+        const pt = makePt();
+        const pt2 = PublicPoint.fromBytes(pt.toBytes()).unwrapOrThrow("round-trip");
+        expect(pt2.toHex()).toBe(pt.toHex());
     });
 
-    it("golden hex: pins wire format", () => {
-        const o = PcsOpening.fromBls12381Fr(INNER_OPENING_1_2);
-        expect(o.toHex()).toBe(GOLDEN_PCS_OPENING_WRAPPER);
-    });
-
-    it("golden deserialization: fromHex round-trips", () => {
-        const o = PcsOpening.fromHex(GOLDEN_PCS_OPENING_WRAPPER).unwrapOrThrow("golden");
-        expect(o.toHex()).toBe(GOLDEN_PCS_OPENING_WRAPPER);
-    });
-
-    it("rejects trailing bytes", () => {
-        expect(PcsOpening.fromHex(GOLDEN_PCS_OPENING_WRAPPER + "00").isOk).toBe(false);
+    it("golden hex: scheme=0 prefix + 48-byte G1 generator", () => {
+        const pt = makePt();
+        // [00] scheme + [30] uleb128(48) + 48 bytes
+        expect(pt.toHex()).toBe("00" + "30" + "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb");
     });
 });
 
-// ── PcsBatchOpening (wrapper) ────────────────────────────────────────────────
-
-describe("PcsBatchOpening wrapper serde", () => {
-    it("round-trip", () => {
-        const b = PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34);
-        const b2 = PcsBatchOpening.fromBytes(b.toBytes()).unwrapOrThrow("round-trip");
-        expect(b2.toHex()).toBe(b.toHex());
-    });
-
-    it("golden hex: pins wire format", () => {
-        const b = PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34);
-        expect(b.toHex()).toBe(GOLDEN_PCS_BATCH_OPENING_WRAPPER);
-    });
-
-    it("golden deserialization: fromHex round-trips", () => {
-        const b = PcsBatchOpening.fromHex(GOLDEN_PCS_BATCH_OPENING_WRAPPER).unwrapOrThrow("golden");
-        expect(b.toHex()).toBe(GOLDEN_PCS_BATCH_OPENING_WRAPPER);
-    });
-});
-
-// ── PrivateShareMessage ──────────────────────────────────────────────────────
+// ── PrivateShareMessage ───────────────────────────────────────────────────────
 
 describe("PrivateShareMessage serde", () => {
     function makeShare(): SecretShare {
-        // SecretShare(scheme=0, Bls12381Fr.SecretShare(x=1n, y=2n))
-        const innerHex = new Bls12381Fr.SecretShare(1n, 2n).toHex();
-        return SecretShare.fromHex("00" + innerHex).unwrapOrThrow("make share");
-    }
-
-    function makeProof(): PcsOpening {
-        return PcsOpening.fromBls12381Fr(INNER_OPENING_1_2);
+        const inner = new Bls12381Fr.SecretShare(2n);
+        return new SecretShare(SCHEME_BLS12381G1, inner);
     }
 
     it("round-trip", () => {
-        const msg = new PrivateShareMessage(makeShare(), makeProof());
+        const msg = new PrivateShareMessage(makeShare());
         const msg2 = PrivateShareMessage.fromBytes(msg.toBytes()).unwrapOrThrow("round-trip");
         expect(msg2.toHex()).toBe(msg.toHex());
     });
 
-    it("golden hex: pins wire format", () => {
-        const msg = new PrivateShareMessage(makeShare(), makeProof());
-        // share bytes: "00" + inner_SecretShare(1n,2n) hex
-        // proof bytes: "00" + inner_PcsOpening(1n,2n) hex
-        const shareHex = "00" + new Bls12381Fr.SecretShare(1n, 2n).toHex();
-        const proofHex = GOLDEN_PCS_OPENING_WRAPPER;
-        expect(msg.toHex()).toBe(shareHex + proofHex);
-    });
-
-    it("golden deserialization: fromHex round-trips", () => {
-        const msg = new PrivateShareMessage(makeShare(), makeProof());
-        const hex = msg.toHex();
-        const msg2 = PrivateShareMessage.fromHex(hex).unwrapOrThrow("golden");
-        expect(msg2.toHex()).toBe(hex);
+    it("golden hex: [scheme] [uleb128(32)] [Fr(2) LE]", () => {
+        const msg = new PrivateShareMessage(makeShare());
+        // scheme=0, then 32-byte Fr(2) LE
+        const expected = "00" + "20" + "0200000000000000000000000000000000000000000000000000000000000000";
+        expect(msg.toHex()).toBe(expected);
     });
 
     it("rejects trailing bytes", () => {
-        const msg = new PrivateShareMessage(makeShare(), makeProof());
+        const msg = new PrivateShareMessage(makeShare());
         expect(PrivateShareMessage.fromHex(msg.toHex() + "00").isOk).toBe(false);
     });
 });
 
-// ── DealerContribution0 ──────────────────────────────────────────────────────
+// ── DealerContribution0 ───────────────────────────────────────────────────────
 
 describe("DealerContribution0 serde", () => {
+    function makeCommitment(): PcsCommitment {
+        return PcsCommitment.fromBls12381G1(new Bls12381Fr.PcsCommitment([g1Gen()]));
+    }
+
     it("round-trip: with share messages", () => {
-        const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
+        const commitment = makeCommitment();
         const ct = goldenCiphertext();
         const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [ct, ct], dealerState: ct });
         const dc0b = DealerContribution0.fromBytes(dc0.toBytes()).unwrapOrThrow("round-trip");
@@ -187,7 +142,7 @@ describe("DealerContribution0 serde", () => {
     });
 
     it("round-trip: empty share messages", () => {
-        const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
+        const commitment = makeCommitment();
         const ct = goldenCiphertext();
         const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
         const dc0b = DealerContribution0.fromBytes(dc0.toBytes()).unwrapOrThrow("round-trip empty");
@@ -195,30 +150,40 @@ describe("DealerContribution0 serde", () => {
     });
 
     it("rejects trailing bytes", () => {
-        const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
+        const commitment = makeCommitment();
         const ct = goldenCiphertext();
         const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
         expect(DealerContribution0.fromHex(dc0.toHex() + "00").isOk).toBe(false);
     });
 });
 
-// ── DealerContribution1 ──────────────────────────────────────────────────────
+// ── DealerContribution1 ───────────────────────────────────────────────────────
 
 describe("DealerContribution1 serde", () => {
+    function makeDC1(): DealerContribution1 {
+        // [Some(Fr(1)), None]
+        return new DealerContribution1([1n, undefined]);
+    }
+
     it("round-trip", () => {
-        const dc1 = new DealerContribution1(PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34));
+        const dc1 = makeDC1();
         const dc1b = DealerContribution1.fromBytes(dc1.toBytes()).unwrapOrThrow("round-trip");
         expect(dc1b.toHex()).toBe(dc1.toHex());
     });
 
     it("golden hex: pins wire format", () => {
-        const dc1 = new DealerContribution1(PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34));
-        // DealerContribution1 just serializes pcsBatchOpening (the outer wrapper)
-        expect(dc1.toHex()).toBe(GOLDEN_PCS_BATCH_OPENING_WRAPPER);
+        const dc1 = makeDC1();
+        expect(dc1.toHex()).toBe(GOLDEN_DC1);
+    });
+
+    it("round-trip: all None", () => {
+        const dc1 = new DealerContribution1([undefined, undefined, undefined]);
+        const dc1b = DealerContribution1.fromBytes(dc1.toBytes()).unwrapOrThrow("all-None round-trip");
+        expect(dc1b.toHex()).toBe(dc1.toHex());
     });
 
     it("rejects trailing bytes", () => {
-        const dc1 = new DealerContribution1(PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34));
+        const dc1 = makeDC1();
         expect(DealerContribution1.fromHex(dc1.toHex() + "00").isOk).toBe(false);
     });
 });
@@ -226,12 +191,6 @@ describe("DealerContribution1 serde", () => {
 // ── Session ──────────────────────────────────────────────────────────────────
 
 describe("Session serde", () => {
-    function makeSecret(): Secret {
-        // Secret(scheme=0, Bls12381Fr.Secret(scalar=1n))
-        const innerHex = new Bls12381Fr.Secret(1n).toHex();
-        return Secret.fromHex("00" + innerHex).unwrapOrThrow("make secret");
-    }
-
     it("round-trip: no optional fields", () => {
         const session = Session.fromBytes(makeMinimalSessionBytes()).unwrapOrThrow("round-trip");
         const session2 = Session.fromBytes(session.toBytes()).unwrapOrThrow("double round-trip");
@@ -239,14 +198,10 @@ describe("Session serde", () => {
     });
 
     it("round-trip: with optional fields set", () => {
-        const commitment = PcsCommitment.fromBls12381Fr(INNER_COMMITMENT_GEN);
+        const commitment = PcsCommitment.fromBls12381G1(new Bls12381Fr.PcsCommitment([g1Gen()]));
         const ct = goldenCiphertext();
         const dc0 = new DealerContribution0({ sharingPolyCommitment: commitment, privateShareMessages: [], dealerState: ct });
-        const dc1 = new DealerContribution1(PcsBatchOpening.fromBls12381Fr(INNER_BATCH_12_34));
-
-        // Build a session by hand with fromBytes, then mutate via round-trip
-        const base = Session.fromBytes(makeMinimalSessionBytes()).unwrapOrThrow("base");
-        // We can't mutate the private constructor, so serialize directly
+        const dc1 = new DealerContribution1([1n, undefined]);
         const withOptionals = buildSession({ dc0, dc1 });
         const withOptionals2 = Session.fromBytes(withOptionals.toBytes()).unwrapOrThrow("with-optionals round-trip");
         expect(withOptionals2.toHex()).toBe(withOptionals.toHex());
@@ -265,50 +220,42 @@ describe("Session serde", () => {
     });
 
     it("rejects bad option tag", () => {
-        // Craft bytes with dc0Tag=2 (invalid)
         const bytes = makeMinimalSessionBytes();
-        // The dc0Tag is at offset: 32(dealer) + 1+32(holders) + 8(threshold) + 1(secretScheme) + 1(stateCode) + 8(dealTimeMicros) = 83
+        // dc0Tag at offset 83
         const bad = new Uint8Array(bytes);
-        bad[83] = 2; // corrupt dc0 option tag
+        bad[83] = 2;
         expect(Session.fromBytes(bad).isOk).toBe(false);
     });
 });
 
 // ── Helpers for Session tests ─────────────────────────────────────────────────
 
-/**
- * Builds the minimal valid BCS bytes for a Session:
- *   dealer=ADDR_1, shareHolders=[ADDR_2], threshold=2, secretScheme=0, stateCode=0,
- *   dealTimeMicros=0, dealerContribution0=None, shareHolderAcks=[false], dealerContribution1=None
- */
 function makeMinimalSessionBytes(): Uint8Array {
-    // We build it by constructing a Session via deserialize from a manually crafted byte array
-    // Alternatively, use the serializer directly:
     const { Serializer } = require("@aptos-labs/ts-sdk");
     const s = new Serializer();
-    ADDR_1.serialize(s);                    // dealer: 32 bytes
-    s.serializeU32AsUleb128(1);             // shareHolders length = 1
-    ADDR_2.serialize(s);                    // shareHolders[0]: 32 bytes
-    s.serializeU64(2);                      // threshold = 2
+    ADDR_1.serialize(s);
+    s.serializeU32AsUleb128(1);
+    ADDR_2.serialize(s);
+    s.serializeU64(2);
     s.serializeU8(0);                       // secretScheme = 0
-    s.serializeU8(0);                       // stateCode = 0
-    s.serializeU64(0);                      // dealTimeMicros = 0
+    s.serializeU8(0);
+    s.serializeU64(0);
     s.serializeU8(0);                       // dealerContribution0 = None
-    s.serializeU32AsUleb128(1);             // shareHolderAcks length = 1
-    s.serializeBool(false);                 // shareHolderAcks[0] = false
+    s.serializeU32AsUleb128(1);
+    s.serializeBool(false);
     s.serializeU8(0);                       // dealerContribution1 = None
     return s.toUint8Array();
 }
 
 function buildSession({ dc0, dc1 }: { dc0?: DealerContribution0; dc1?: DealerContribution1 }): Session {
-    const { Serializer, Deserializer } = require("@aptos-labs/ts-sdk");
+    const { Serializer } = require("@aptos-labs/ts-sdk");
     const s = new Serializer();
     ADDR_1.serialize(s);
     s.serializeU32AsUleb128(1);
     ADDR_2.serialize(s);
     s.serializeU64(3);
     s.serializeU8(0);
-    s.serializeU8(1); // stateCode = 1 (RECIPIENT_ACK)
+    s.serializeU8(1);
     s.serializeU64(1700000000000000);
     if (dc0 === undefined) {
         s.serializeU8(0);

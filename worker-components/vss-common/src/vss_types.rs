@@ -3,57 +3,31 @@
 
 //! VSS types mirroring `ts-sdk/src/vss/index.ts` and `ts-sdk/src/vss/bls12381-fr.ts`.
 //!
-//! Outer enums prepend a 1-byte scheme tag; inner struct fields use `bcs::to_bytes()`.
+//! Outer types prepend a 1-byte scheme tag; inner struct fields use `bcs::to_bytes()`.
 
 use serde::Serialize;
 
-pub const SCHEME_BLS12381_FR: u8 = 0;
+pub const SCHEME_BLS12381_G1: u8 = 0;
 
 // ── SecretShare ───────────────────────────────────────────────────────────────
 
-/// Wire: [u8 scheme=0x00] [ULEB128(32)+32B x] [ULEB128(32)+32B y]
+/// Wire (as PrivateShareMessage plaintext): [u8 scheme=0x00] [ULEB128(32)+32B y]
 pub enum SecretShare {
-    Bls12381Fr { x: [u8; 32], y: [u8; 32] },
+    Bls12381Fr { y: [u8; 32] },
 }
 
 #[derive(Serialize)]
 struct Bls12381FrSecretShareInner {
-    x: Vec<u8>,
     y: Vec<u8>,
 }
 
 impl SecretShare {
+    /// Returns `[u8 scheme][uleb128(32)][32B y]` — the PrivateShareMessage plaintext.
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
-            SecretShare::Bls12381Fr { x, y } => {
-                let inner = Bls12381FrSecretShareInner { x: x.to_vec(), y: y.to_vec() };
-                let mut out = vec![SCHEME_BLS12381_FR];
-                out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
-                out
-            }
-        }
-    }
-}
-
-// ── PcsOpening ────────────────────────────────────────────────────────────────
-
-/// Wire: [u8 scheme=0x00] [ULEB128(32)+32B p_eval] [ULEB128(32)+32B r_eval]
-pub enum PcsOpening {
-    Bls12381Fr { p_eval: [u8; 32], r_eval: [u8; 32] },
-}
-
-#[derive(Serialize)]
-struct Bls12381FrPcsOpeningInner {
-    p_eval: Vec<u8>,
-    r_eval: Vec<u8>,
-}
-
-impl PcsOpening {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            PcsOpening::Bls12381Fr { p_eval, r_eval } => {
-                let inner = Bls12381FrPcsOpeningInner { p_eval: p_eval.to_vec(), r_eval: r_eval.to_vec() };
-                let mut out = vec![SCHEME_BLS12381_FR];
+            SecretShare::Bls12381Fr { y } => {
+                let inner = Bls12381FrSecretShareInner { y: y.to_vec() };
+                let mut out = vec![SCHEME_BLS12381_G1];
                 out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
                 out
             }
@@ -63,7 +37,9 @@ impl PcsOpening {
 
 // ── PcsCommitment ─────────────────────────────────────────────────────────────
 
-/// Wire: [u8 scheme=0x00] [ULEB128(n)] { [ULEB128(48)+48B G1] } × n
+/// Wire body (no scheme byte): [ULEB128(n)] { [ULEB128(48)+48B G1] } × n
+///
+/// The scheme byte is written by DealerContribution0, not by PcsCommitment.
 pub enum PcsCommitment {
     Bls12381Fr { v_values: Vec<[u8; 48]> },
 }
@@ -74,57 +50,33 @@ struct Bls12381FrPcsCommitmentInner {
 }
 
 impl PcsCommitment {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// Returns the body bytes without a scheme-byte prefix.
+    /// The caller (dc0_bytes) prepends the scheme byte.
+    pub fn body_bytes(&self) -> Vec<u8> {
         match self {
             PcsCommitment::Bls12381Fr { v_values } => {
                 let inner = Bls12381FrPcsCommitmentInner {
                     v_values: v_values.iter().map(|v| v.to_vec()).collect(),
                 };
-                let mut out = vec![SCHEME_BLS12381_FR];
-                out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
-                out
+                bcs::to_bytes(&inner).expect("bcs serialization failed")
             }
         }
     }
-}
 
-// ── PcsBatchOpening ───────────────────────────────────────────────────────────
-
-/// Wire: [u8 scheme=0x00] [ULEB128(n)] { p_eval × n } [ULEB128(n)] { r_eval × n }
-pub enum PcsBatchOpening {
-    Bls12381Fr { p_evals: Vec<[u8; 32]>, r_evals: Vec<[u8; 32]> },
-}
-
-#[derive(Serialize)]
-struct Bls12381FrPcsBatchOpeningInner {
-    p_evals: Vec<Vec<u8>>,
-    r_evals: Vec<Vec<u8>>,
-}
-
-impl PcsBatchOpening {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn scheme_byte(&self) -> u8 {
         match self {
-            PcsBatchOpening::Bls12381Fr { p_evals, r_evals } => {
-                let inner = Bls12381FrPcsBatchOpeningInner {
-                    p_evals: p_evals.iter().map(|v| v.to_vec()).collect(),
-                    r_evals: r_evals.iter().map(|v| v.to_vec()).collect(),
-                };
-                let mut out = vec![SCHEME_BLS12381_FR];
-                out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
-                out
-            }
+            PcsCommitment::Bls12381Fr { .. } => SCHEME_BLS12381_G1,
         }
     }
 }
 
 // ── DealerState ───────────────────────────────────────────────────────────────
 
-/// Wire: [u8 scheme=0x00] [LE64 n] [ULEB128(t)] { coef_p × t } [ULEB128(t)] { coef_r × t }
+/// Wire: [u8 scheme=0x00] [LE64 n] [ULEB128(t)] { [ULEB128(32)+32B coef_p] } × t
 pub enum DealerState {
     Bls12381Fr {
         n: u64,
         coefs_poly_p: Vec<[u8; 32]>,
-        coefs_poly_r: Vec<[u8; 32]>,
     },
 }
 
@@ -132,19 +84,17 @@ pub enum DealerState {
 struct Bls12381FrDealerStateInner {
     n: u64,
     coefs_poly_p: Vec<Vec<u8>>,
-    coefs_poly_r: Vec<Vec<u8>>,
 }
 
 impl DealerState {
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
-            DealerState::Bls12381Fr { n, coefs_poly_p, coefs_poly_r } => {
+            DealerState::Bls12381Fr { n, coefs_poly_p } => {
                 let inner = Bls12381FrDealerStateInner {
                     n: *n,
                     coefs_poly_p: coefs_poly_p.iter().map(|v| v.to_vec()).collect(),
-                    coefs_poly_r: coefs_poly_r.iter().map(|v| v.to_vec()).collect(),
                 };
-                let mut out = vec![SCHEME_BLS12381_FR];
+                let mut out = vec![SCHEME_BLS12381_G1];
                 out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
                 out
             }
@@ -154,23 +104,34 @@ impl DealerState {
 
 // ── PrivateShareMessage ───────────────────────────────────────────────────────
 
-/// Concatenated plaintext of a per-recipient PKE ciphertext: SecretShare || PcsOpening.
-pub fn private_share_message_bytes(share: &SecretShare, opening: &PcsOpening) -> Vec<u8> {
-    let mut out = share.to_bytes();
-    out.extend(opening.to_bytes());
-    out
+/// Plaintext of a per-recipient PKE ciphertext: just the SecretShare bytes.
+pub fn private_share_message_bytes(share: &SecretShare) -> Vec<u8> {
+    share.to_bytes()
 }
 
 // ── DealerContribution0 payload ───────────────────────────────────────────────
 
 /// Build the wire-format payload for `on_dealer_contribution_0`.
-/// Layout: PcsCommitment || ULEB128(n) || Ciphertext × n || 0x01 || dealer_state_Ciphertext
+/// Layout: ULEB128(t) || { [u8 scheme] ULEB128(48) 48B } × t || ULEB128(n) || Ciphertext × n || 0x01 || dealer_state_ct
+///
+/// Each G1 point is prefixed with a per-point scheme byte (matching Move's
+/// `deserialize_public_point` which reads scheme then inner bytes).
 pub fn dc0_bytes(
     commitment: &PcsCommitment,
     share_ciphertexts: &[crate::pke::Ciphertext],
     dealer_state_ct: &crate::pke::Ciphertext,
 ) -> Vec<u8> {
-    let mut out = commitment.to_bytes();
+    let mut out = Vec::new();
+    match commitment {
+        PcsCommitment::Bls12381Fr { v_values } => {
+            write_uleb128(&mut out, v_values.len() as u64);
+            for v in v_values {
+                out.push(SCHEME_BLS12381_G1); // per-point scheme byte
+                write_uleb128(&mut out, 48);  // uleb128(48) = 0x30
+                out.extend_from_slice(v);     // 48 bytes G1 compressed
+            }
+        }
+    }
     write_uleb128(&mut out, share_ciphertexts.len() as u64);
     for ct in share_ciphertexts {
         out.extend(ct.to_bytes());
@@ -183,9 +144,25 @@ pub fn dc0_bytes(
 // ── DealerContribution1 payload ───────────────────────────────────────────────
 
 /// Build the wire-format payload for `on_dealer_open`.
-/// Layout: PcsBatchOpening (outer format with scheme byte)
-pub fn dc1_bytes(batch_opening: &PcsBatchOpening) -> Vec<u8> {
-    batch_opening.to_bytes()
+/// Layout: vector<Option<Element<Fr>>> — BCS [ULEB128(n)] { [u8 0] | [u8 1][ULEB128(32)][32B y] } × n
+///
+/// `shares_to_reveal[i]` = None if holder i acked (they already have their share),
+///                         Some([u8;32]) = y_i bytes if holder i did not ack.
+pub fn dc1_bytes(shares_to_reveal: &[Option<[u8; 32]>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_uleb128(&mut out, shares_to_reveal.len() as u64);
+    for opt in shares_to_reveal {
+        match opt {
+            None => out.push(0u8),
+            Some(y_bytes) => {
+                out.push(1u8);                // Option::Some tag
+                out.push(SCHEME_BLS12381_G1); // scheme byte (Move reads this in deserialize_private_scalar)
+                out.push(0x20u8);             // uleb128(32) = length prefix for 32-byte Fr scalar
+                out.extend_from_slice(y_bytes);
+            }
+        }
+    }
+    out
 }
 
 // ── ULEB128 helper ────────────────────────────────────────────────────────────

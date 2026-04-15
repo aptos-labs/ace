@@ -22,11 +22,10 @@ async function main() {
         }
 
         const adminAccount = accounts[numWorkers];
-        const dealerAccount = accounts[0];
-        const recipientAccounts = accounts.slice(0, numWorkers);
+        const workerAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'vss']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'vss', 'dkg']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -38,50 +37,38 @@ async function main() {
             maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
         }
         
-        // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
-        const g1Inner = ace.vss.bls12381Fr.g1Generator();
-        const basePointBytes = ace.vss.PublicPoint.fromBls12381G1(g1Inner).toBytes();
-
-        log('Start VSS session.');
+        log('Start DKG session.');
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
-            entryFunction: `${adminAccount.accountAddress}::vss::new_session_entry`,
+            entryFunction: `${adminAccount.accountAddress}::dkg::new_session_entry`,
             args: [
-                dealerAccount.accountAddress,
-                recipientAccounts.map(w => w.accountAddress),
+                adminAccount.accountAddress,
+                workerAccounts.map(w => w.accountAddress),
                 3, // threshold
-                basePointBytes, // base_point: vector<u8>
+                ace.dkg.SCHEME_0, // secret scheme
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
         const aceContract = adminAccount.accountAddress.toStringLong();
-        const sessionAddrStr = committedTxn.events.find(e => e.type === `${aceContract}::vss::SessionCreated`)?.data.session_addr;
+        const sessionAddrStr = committedTxn.events.find(e => e.type === `${aceContract}::dkg::SessionCreated`)?.data.session_addr;
         if (!sessionAddrStr) throw 'Failed to get session address.';
         const sessionAddr = AccountAddress.fromString(sessionAddrStr);
 
-        log('Start dealer and recipient clients.');
+        log('Start dkg clients.');
         await buildRustWorkspace();
-        const dealerProc = spawnVSSDealerRun({
-            runAs: dealerAccount,
-            pkeDkHex: `0x${Buffer.from(encKeypairs[0].decryptionKey.toBytes()).toString('hex')}`,
+        const dkgProcs = workerAccounts.map((w, i) => spawnDKGRun({
+            runAs: w,
+            pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             sessionAddr,
             aceContract,
-        });
-        const recipientProcs = recipientAccounts.map((account, i) =>
-            spawnVSSRecipientRun({
-                runAs: account,
-                pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
-                sessionAddr,
-                aceContract,
-            }),
-        );
+        }));
 
         try {
-            log('Wait for VSS session to complete.');
+            log('Wait for DKG to complete.');
             const deadlineMillis = Date.now() + 60000;
-            var session: ace.vss.Session | undefined;
+            var session: ace.dkg.Session | undefined;
             while (Date.now() < deadlineMillis) {
-                const maybeSession = await getVssSession(adminAccount.accountAddress, sessionAddr);
+                const maybeSession = await getDKGSession(adminAccount.accountAddress, sessionAddr);
                 if (maybeSession.isOk) {
                     session = maybeSession.okValue!;
                     if (session.isCompleted()) break;
@@ -89,7 +76,6 @@ async function main() {
                 await sleep(1000);
             }
             if (!(session?.isCompleted())) throw 'VSS session did not complete in time.';
-            
 
             log('Secret reconstruction should work and match on-chain public key.');
             const shares = session!.dealerContribution0!.privateShareMessages.slice(0, session!.threshold).map((ciphertext: ace.pke.Ciphertext, i: number) => {
@@ -102,7 +88,7 @@ async function main() {
                 return msg.share;
             });
 
-            const reconstructedSecret = ace.vss.reconstruct({ indexedShares: shares.map((share, i) => ({ index: i + 1, share })) }).unwrapOrThrow('Failed to reconstruct secret.');
+            const reconstructedSecret = ace.vss.reconstruct({ secretShares: shares}).unwrapOrThrow('Failed to reconstruct secret.');
             const decryptedDealerStateBytes = ace.pke.decrypt({
                 decryptionKey: encKeypairs[0].decryptionKey,
                 ciphertext: session.dealerContribution0!.dealerState!,

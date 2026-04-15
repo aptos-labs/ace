@@ -14,6 +14,8 @@ export * as shamir_fr from "./shamir_fr";
 // Shamir secret sharing
 export * as vss from "./vss";
 
+export * as dkg from "./dkg";
+
 // Result type for error handling
 export { Result } from "./result";
 

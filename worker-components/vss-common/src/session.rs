@@ -1,7 +1,7 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Parse `ace::vss::Session` from Aptos REST `data` JSON — mirrors `ts-sdk` `Session.fromNodeResourceApi`.
+//! Parse `ace::vss::Session` from Aptos REST `data` JSON — mirrors `ts-sdk` `Session`.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -21,51 +21,41 @@ pub struct Session {
     pub dealer: String,
     pub share_holders: Vec<String>,
     pub threshold: u64,
-    pub secret_scheme: u8,
-    pub state_code: u8,
-    pub deal_time_micros: u64,
+    /// `dealer_contribution_0` is empty if DC0 has not been submitted yet.
+    /// Non-empty (sentinel `[1]`) once the dealer has called `on_dealer_contribution_0`.
     pub dealer_contribution_0: Vec<u8>,
     pub share_holder_acks: Vec<bool>,
+    /// `dealer_contribution_1` is empty if DC1 has not been submitted yet.
     pub dealer_contribution_1: Vec<u8>,
+    pub state_code: u8,
+    pub deal_time_micros: u64,
 }
 
 impl Session {
     /// `data_json` is the inner `data` object from
-    /// `GET /accounts/.../resource/...::vss::Session` (same shape as TS `fromNodeResourceApi`).
+    /// `GET /accounts/.../resource/...::vss::Session`.
+    ///
+    /// # New Session struct layout (no `secret_scheme`; base_point is a G1 enum):
+    /// - `dealer: address`
+    /// - `share_holders: vector<address>`
+    /// - `threshold: u64`
+    /// - `base_point: PublicPoint` (enum, we don't need the value — just skip it)
+    /// - `state_code: u8`
+    /// - `deal_time_micros: u64`
+    /// - `dealer_contribution_0: Option<DealerContribution0>` (struct, not raw bytes)
+    /// - `share_holder_acks: vector<bool>`
+    /// - `dealer_contribution_1: Option<DealerContribution1>` (struct, not raw bytes)
     pub fn try_from_node_resource_api(data_json: &Value) -> Result<Self> {
-        let parse_hex_bytes = |field: &str| -> Result<Vec<u8>> {
-            let raw = data_json
-                .get(field)
-                .ok_or_else(|| anyhow!("missing field {:?}", field))?;
-            let s = raw
-                .as_str()
-                .ok_or_else(|| anyhow!("field {:?} must be a hex string", field))?;
-            let mut hex = s.trim().to_string();
-            if hex.starts_with("0x") || hex.starts_with("0X") {
-                hex = hex[2..].to_string();
-            }
-            if hex.is_empty() {
-                return Ok(Vec::new());
-            }
-            if hex.len() % 2 == 1 {
-                hex = format!("0{}", hex);
-            }
-            hex::decode(&hex).with_context(|| format!("decode hex field {:?}", field))
-        };
-
         let u64_field = |field: &str| -> Result<u64> {
             let raw = data_json
                 .get(field)
                 .ok_or_else(|| anyhow!("missing field {:?}", field))?;
-            let s = if let Some(n) = raw.as_u64() {
+            if let Some(n) = raw.as_u64() {
                 return Ok(n);
             } else if let Some(st) = raw.as_str() {
-                st.to_string()
-            } else {
-                raw.to_string()
-            };
-            s.parse::<u64>()
-                .with_context(|| format!("parse u64 field {:?}", field))
+                return st.parse::<u64>().with_context(|| format!("parse u64 field {:?}", field));
+            }
+            raw.to_string().parse::<u64>().with_context(|| format!("parse u64 field {:?}", field))
         };
 
         let dealer = data_json
@@ -90,30 +80,39 @@ impl Session {
 
         let threshold = u64_field("threshold")?;
 
-        let secret_scheme = data_json
-            .get("secret_scheme")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow!("secret_scheme"))? as u8;
-        if secret_scheme != SCHEME_BLS12381G1 && secret_scheme != SCHEME_BLS12381G2 {
-            return Err(anyhow!("unsupported secret_scheme {}", secret_scheme));
+        // base_point: PublicPoint — present in new Session (replaces secret_scheme).
+        // We only check it exists; we don't need the actual G1 bytes.
+        if data_json.get("base_point").is_none() && data_json.get("secret_scheme").is_none() {
+            return Err(anyhow!("missing base_point (and no legacy secret_scheme either)"));
         }
 
-        let state_code_u64 = data_json
+        let state_code_raw = data_json
             .get("state_code")
-            .and_then(|v| v.as_u64())
-            .or_else(|| data_json.get("state_code").and_then(|v| v.as_str()?.parse().ok()))
-            .ok_or_else(|| anyhow!("state_code"))?;
-        let state_code: u8 = state_code_u64
-            .try_into()
-            .map_err(|_| anyhow!("state_code out of range"))?;
+            .ok_or_else(|| anyhow!("missing state_code"))?;
+        let state_code: u8 = if let Some(n) = state_code_raw.as_u64() {
+            n.try_into().map_err(|_| anyhow!("state_code out of range"))?
+        } else if let Some(s) = state_code_raw.as_str() {
+            s.parse::<u8>().with_context(|| "parse state_code")?
+        } else {
+            return Err(anyhow!("state_code has unexpected type"));
+        };
 
         let deal_time_micros = u64_field("deal_time_micros")?;
+
+        // dealer_contribution_0: Option<DealerContribution0>
+        // In Move JSON, Option<T> is represented as {"vec": []} (None) or {"vec": [value]} (Some).
+        // We only care whether it has been submitted (Some vs None).
+        let dc0_submitted = option_field_is_set(data_json, "dealer_contribution_0");
+        let dealer_contribution_0 = if dc0_submitted { vec![1u8] } else { vec![] };
 
         let acks_raw = data_json
             .get("share_holder_acks")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("share_holder_acks must be an array"))?;
-        let share_holder_acks: Vec<bool> = acks_raw.iter().map(|v| v.as_bool().unwrap_or(false)).collect();
+        let share_holder_acks: Vec<bool> = acks_raw
+            .iter()
+            .map(|v| v.as_bool().unwrap_or(false))
+            .collect();
         if share_holder_acks.len() != share_holders.len() {
             return Err(anyhow!(
                 "share_holder_acks length {} != share_holders length {}",
@@ -122,16 +121,19 @@ impl Session {
             ));
         }
 
+        // dealer_contribution_1: Option<DealerContribution1> — same logic as DC0.
+        let dc1_submitted = option_field_is_set(data_json, "dealer_contribution_1");
+        let dealer_contribution_1 = if dc1_submitted { vec![1u8] } else { vec![] };
+
         Ok(Session {
             dealer,
             share_holders,
             threshold,
-            secret_scheme,
+            dealer_contribution_0,
+            share_holder_acks,
+            dealer_contribution_1,
             state_code,
             deal_time_micros,
-            dealer_contribution_0: parse_hex_bytes("dealer_contribution_0")?,
-            share_holder_acks,
-            dealer_contribution_1: parse_hex_bytes("dealer_contribution_1")?,
         })
     }
 
@@ -152,9 +154,23 @@ impl Session {
     /// Active states where the skeleton client should keep working.
     #[inline]
     pub fn is_in_progress(&self) -> bool {
-        matches!(
-            self.state_code,
-            STATE_DEALER_DEAL | STATE_RECIPIENT_ACK
-        )
+        matches!(self.state_code, STATE_DEALER_DEAL | STATE_RECIPIENT_ACK)
+    }
+}
+
+/// Check whether a Move `Option<T>` field (encoded as `{"vec": []}` or `{"vec": [value]}`)
+/// represents `Some`. Returns `true` if the field has a non-empty `vec` array.
+fn option_field_is_set(data_json: &Value, field: &str) -> bool {
+    match data_json.get(field) {
+        None | Some(Value::Null) => false,
+        Some(v) => {
+            // Option<T> in Aptos JSON: {"vec": []} or {"vec": [value]}
+            if let Some(vec_arr) = v.get("vec").and_then(|a| a.as_array()) {
+                !vec_arr.is_empty()
+            } else {
+                // Fallback: if the field is non-null and not the empty-vec pattern, treat as Some.
+                !v.is_null()
+            }
+        }
     }
 }

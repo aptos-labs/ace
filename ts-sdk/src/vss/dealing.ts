@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Fr-only Shamir dealing: polynomial coefficients and pseudorandom evaluation
- * abscissas derived from (SplitConfig, seed, baseCompressed). Shared by G1 and G2 variants.
+ * Fr-only Shamir dealing: polynomial coefficients derived from (SplitConfig, seed, baseCompressed).
+ * Evaluation points are fixed: s(0) = secret, s(i) = share for holder i (1-indexed).
+ * Shared by G1 and G2 variants.
  *
  * Wire format constants and helpers used by `SecretShare` / tests.
  */
@@ -60,17 +61,15 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 const te = new TextEncoder();
 
 /**
- * Derive `n + t - 1` pseudorandom Fr values for Shamir dealing (depends only on split config, seed, and `B`).
+ * Derive `t - 1` pseudorandom Fr values for Shamir polynomial coefficients.
+ * (Evaluation points are fixed: holder i uses x = i, 1-indexed.)
  *
- * For each slot `i` in `0 .. n+t-2`: `sha3_512("ace-sss-dealing-v2" ‖ seed ‖ n ‖ t ‖ u32le(i) ‖ baseCompressed)`,
+ * For each slot `i` in `0 .. t-2`: `sha3_512("ace-sss-dealing-v2" ‖ seed ‖ n ‖ t ‖ u32le(i) ‖ baseCompressed)`,
  * 64-byte digest as unsigned LE integer, then `frMod` to Fr.
  *
- * Callers typically form:
- * - `coeffs = [frMod(s), ...draws.slice(0, t-1)]` (length `t`),
- * - `xs = draws.slice(t-1)` (length `n`).
- *
- * We do not reject `x == 0` or duplicate `x` (probability ~1/|Fr|` and ~`n²/|Fr|`). If some `x_j == 0`,
- * then `y_j = f(0) = s` and that share would reveal the secret; negligible in practice.
+ * Callers form:
+ * - `coeffs = [frMod(s), ...draws]` (length `t`): degree-(t-1) polynomial with s = coeffs[0] = f(0).
+ * - Holder i receives share f(i) for i = 1..n.
  */
 export function deriveDealingFrs(args: {
     splitConfig: SplitConfig;
@@ -82,7 +81,7 @@ export function deriveDealingFrs(args: {
     if (n < 1n || t < 1n || n < t) throw "deriveDealingFrs: require 1 <= t <= n";
     if (seed.length !== SSS_SEED_BYTES) throw "deriveDealingFrs: invalid seed length";
 
-    const numDraws = Number(n + t - 1n);
+    const numDraws = Number(t - 1n);
     const draws: bigint[] = [];
     for (let i = 0; i < numDraws; i++) {
         const transcript = concatBytes([

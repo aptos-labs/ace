@@ -12,8 +12,7 @@ use vss_common::aptos::json_move_vec_u8_hex;
 use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed, pke_encrypt, poly_eval};
 use vss_common::session::{ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
 use vss_common::vss_types::{
-    dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsBatchOpening, PcsCommitment,
-    PcsOpening, SecretShare,
+    dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsCommitment, SecretShare,
 };
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
@@ -35,7 +34,7 @@ pub struct RunConfig {
 /// Performs real BLS12-381 Fr polynomial dealing:
 /// - STATE_DEALER_DEAL: fetches recipient enc keys, computes polynomial, encrypts shares,
 ///   encrypts dealer state, builds and submits `dealer_contribution_0`.
-/// - STATE_RECIPIENT_ACK: re-derives polynomial, builds batch opening, submits `on_dealer_open`.
+/// - STATE_RECIPIENT_ACK: re-derives polynomial, builds shares-to-reveal vector, submits `on_dealer_open`.
 ///
 /// Exits cleanly when the session reaches `STATE__SUCCESS`.
 /// Returns `Err` on `STATE__FAILED`, wrong dealer, or unrecoverable errors.
@@ -174,6 +173,7 @@ async fn build_and_submit_dc0(
     let threshold = session.threshold as usize;
 
     // Derive polynomial coefficients from the DK (deterministic).
+    // coefs[0] = secret = f(0); coefs[1..threshold-1] = random coefficients.
     let coefs: Vec<Fr> = (0..threshold)
         .map(|i| fr_from_dk_bytes(pke_dk_bytes, i))
         .collect();
@@ -187,16 +187,15 @@ async fn build_and_submit_dc0(
     }
 
     // Build per-recipient encrypted share messages.
+    // Holder at index i (0-based) gets share y = f(i+1) (1-indexed evaluation point).
     let share_ciphertexts: Vec<vss_common::pke::Ciphertext> = (0..n)
         .map(|i| {
             let x_fr = Fr::from((i + 1) as u64);
             let y_fr = poly_eval(&coefs, x_fr);
-            let x_bytes = fr_to_le_bytes(x_fr);
             let y_bytes = fr_to_le_bytes(y_fr);
 
-            let share = SecretShare::Bls12381Fr { x: x_bytes, y: y_bytes };
-            let opening = PcsOpening::Bls12381Fr { p_eval: y_bytes, r_eval: [0u8; 32] };
-            let plaintext = private_share_message_bytes(&share, &opening);
+            let share = SecretShare::Bls12381Fr { y: y_bytes };
+            let plaintext = private_share_message_bytes(&share);
             pke_encrypt(&enc_keys[i], &plaintext)
         })
         .collect();
@@ -205,11 +204,10 @@ async fn build_and_submit_dc0(
     let dealer_state = DealerState::Bls12381Fr {
         n: n as u64,
         coefs_poly_p: coefs.iter().map(|c| fr_to_le_bytes(*c)).collect(),
-        coefs_poly_r: vec![[0u8; 32]; threshold],
     };
     let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
 
-    // Build PCS commitment: v_j = coef[j] * G1::generator.
+    // Build Feldman PCS commitment: v_k = coefs[k] * G1::generator for k = 0..threshold.
     let commitment = PcsCommitment::Bls12381Fr {
         v_values: coefs.iter().map(|c| g1_compressed(*c)).collect(),
     };
@@ -232,7 +230,10 @@ async fn build_and_submit_dc0(
     .await
 }
 
-/// Re-derive polynomial, build batch opening, submit dc1.
+/// Re-derive polynomial, build shares-to-reveal vector, submit dc1.
+///
+/// For each holder: if they acked, put None (they already have their share);
+/// if they did not ack, reveal their share scalar publicly.
 async fn build_and_submit_dc1(
     rpc: &AptosRpc,
     sk: &ed25519_dalek::SigningKey,
@@ -251,15 +252,21 @@ async fn build_and_submit_dc1(
         .map(|i| fr_from_dk_bytes(pke_dk_bytes, i))
         .collect();
 
-    // Build batch opening: p_evals[i] = p(i+1), r_evals[i] = 0 (no blinding).
-    let p_evals: Vec<[u8; 32]> = (0..n)
-        .map(|i| fr_to_le_bytes(poly_eval(&coefs, Fr::from((i + 1) as u64))))
+    // Build shares-to-reveal: None if holder acked, Some(y_bytes) if not acked.
+    let shares_to_reveal: Vec<Option<[u8; 32]>> = (0..n)
+        .map(|i| {
+            let acked = session.share_holder_acks.get(i).copied().unwrap_or(false);
+            if acked {
+                None
+            } else {
+                let x_fr = Fr::from((i + 1) as u64);
+                let y_fr = poly_eval(&coefs, x_fr);
+                Some(fr_to_le_bytes(y_fr))
+            }
+        })
         .collect();
-    let r_evals = vec![[0u8; 32]; n];
 
-    let batch_opening = PcsBatchOpening::Bls12381Fr { p_evals, r_evals };
-    let payload = dc1_bytes(&batch_opening);
-
+    let payload = dc1_bytes(&shares_to_reveal);
     println!("vss-dealer: dc1 payload {} bytes", payload.len());
 
     let args = [json!(session_addr), json_move_vec_u8_hex(&payload)];

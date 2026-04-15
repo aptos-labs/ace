@@ -7,4 +7,5 @@ members = [
     "worker-components/vss-common",
     "worker-components/vss-dealer",
     "worker-components/vss-recipient",
+    "worker-components/dkg-worker",
 ]

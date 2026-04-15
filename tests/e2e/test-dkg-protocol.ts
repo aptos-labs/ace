@@ -3,7 +3,7 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession } from './helpers';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession } from './helpers';
 import { buildRustWorkspace, spawnDKGRun } from './dkg-clients';
 
 async function main() {
@@ -33,8 +33,8 @@ async function main() {
         }
 
         // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
-        const g1Inner = ace.vss.bls12381Fr.g1Generator();
-        const basePointBytes = ace.vss.PublicPoint.fromBls12381G1(g1Inner).toBytes();
+        const g1Inner = ace.group.bls12381G1.g1Generator();
+        const basePointBytes = ace.group.Element.fromBls12381G1(g1Inner).toBytes();
 
         log('Start DKG session.');
         const maybeCommittedTxn = await submitTxn({
@@ -83,6 +83,47 @@ async function main() {
 
             if (!session.resultPk) throw 'DKG session completed but resultPk is missing.';
             log(`DKG complete. resultPk: ${session.resultPk.toHex()}`);
+
+            log('Fetch contributing VSS sessions and reconstruct combined secret.');
+
+            // Which VSS sessions contributed to the result.
+            const contributingIndices = session.doneFlags
+                .map((done, i) => (done ? i : -1))
+                .filter(i => i >= 0);
+
+            // For each contributing VSS session, decrypt every worker's sub-share.
+            // subShares[vi][j] = SecretShare from dealer contributingIndices[vi] for worker j.
+            const subShares: ace.vss.SecretShare[][] = [];
+            for (const i of contributingIndices) {
+                const vssSession = (await getVssSession(adminAccount.accountAddress, session.vssSessions[i]))
+                    .unwrapOrThrow(`Failed to fetch VSS session ${i}.`);
+                const sharesForVss: ace.vss.SecretShare[] = [];
+                for (let j = 0; j < numWorkers; j++) {
+                    const msgBytes = ace.pke.decrypt({
+                        decryptionKey: encKeypairs[j].decryptionKey,
+                        ciphertext: vssSession.dealerContribution0!.privateShareMessages[j],
+                    }).unwrapOrThrow(`Failed to decrypt sub-share (vss=${i}, worker=${j}).`);
+                    const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
+                        .unwrapOrThrow(`Failed to parse PrivateShareMessage (vss=${i}, worker=${j}).`);
+                    sharesForVss.push(msg.share);
+                }
+                subShares.push(sharesForVss);
+            }
+
+            // Combine sub-shares per worker using SecretShare.add (Fr arithmetic).
+            const combinedShares: ace.vss.SecretShare[] = workerAccounts.map((_, j) =>
+                subShares.slice(1).reduce((acc, sharesForVss) => acc.add(sharesForVss[j]), subShares[0][j])
+            );
+
+            // Reconstruct the combined secret from the first `threshold` combined shares.
+            const reconstructedSecret = ace.vss.reconstruct({
+                indexedShares: combinedShares.slice(0, session.threshold).map((share, j) => ({ index: j + 1, share })),
+            }).unwrapOrThrow('Failed to reconstruct combined secret.');
+
+            // Verify s * B == resultPk.
+            const computedPk = session.basePoint.scale(reconstructedSecret);
+            if (!computedPk.equals(session.resultPk)) throw 'Reconstructed secret does not match DKG result PK.';
+            log(`DKG correctness verified. resultPk: ${session.resultPk.toHex()}`);
         } finally {
             for (const proc of dkgProcs) {
                 proc.kill();

@@ -433,6 +433,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dkg-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tokio",
+ "vss-common",
+ "vss-dealer",
+ "vss-recipient",
+]
+
+[[package]]
 name = "ed25519"
 version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1882,6 +1895,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hex",
  "serde_json",
  "tokio",
  "vss-common",

@@ -5,8 +5,13 @@ use anyhow::{anyhow, Context, Result};
 use ed25519_dalek::Signer;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::Session;
+
+/// Process-global nonce counter for orderless transactions.
+/// Each `submit_txn` call increments this to produce a unique nonce.
+static TXN_NONCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct AptosRpc {
@@ -94,17 +99,15 @@ impl AptosRpc {
         type_args: &[&str],
         args: &[Value],
     ) -> Result<String> {
-        let account = self
-            .get_account(sender_addr)
-            .await
-            .with_context(|| format!("getting account for {}", sender_addr))?;
-        let seq = account.sequence_number.parse::<u64>().unwrap_or(0);
+        // Orderless transaction: unique nonce instead of sequence number.
+        // Multiple concurrent submissions from the same account are safe.
+        let nonce = TXN_NONCE.fetch_add(1, Ordering::Relaxed);
 
         let expiry = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + 600;
+            + 60; // orderless transactions have a max 60s replay window
 
         let arg_array = Value::Array(args.iter().cloned().collect());
         let type_arguments = Value::Array(
@@ -125,7 +128,8 @@ impl AptosRpc {
             "sender".to_string(),
             Value::String(sender_addr.trim().to_string()),
         );
-        txn_body.insert("sequence_number".to_string(), Value::String(seq.to_string()));
+        txn_body.insert("sequence_number".to_string(), Value::String("0".to_string()));
+        txn_body.insert("replay_protection_nonce".to_string(), Value::String(nonce.to_string()));
         txn_body.insert(
             "max_gas_amount".to_string(),
             Value::String("200000".to_string()),
@@ -179,6 +183,43 @@ impl AptosRpc {
 
         self.wait_for_txn(&hash).await?;
         Ok(hash)
+    }
+
+    /// Fetch and BCS-decode the full VSS session via the `get_session_bcs` view function.
+    pub async fn get_session_bcs_decoded(
+        &self,
+        ace: &str,
+        session_addr: &str,
+    ) -> Result<crate::session::BcsSession> {
+        let result = self
+            .call_view(
+                &format!("{}::vss::get_session_bcs", ace),
+                &[serde_json::json!(session_addr)],
+            )
+            .await?;
+        let hex = result
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("expected string in get_session_bcs result"))?;
+        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+        bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode BcsSession: {}", e))
+    }
+
+    /// Fetch the inner `data` object of an Aptos resource at `(addr, resource_type)`.
+    pub async fn get_resource_data(&self, addr: &str, resource_type: &str) -> Result<Value> {
+        let url = format!(
+            "{}/accounts/{}/resource/{}",
+            self.base_url.trim_end_matches('/'),
+            addr.trim(),
+            resource_type
+        );
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await?;
+            return Err(anyhow!("get resource '{}' failed: {}", resource_type, body));
+        }
+        let v: Value = resp.json().await?;
+        Ok(v.get("data").cloned().unwrap_or(v))
     }
 
     /// Call a Move view function and return the JSON response values.

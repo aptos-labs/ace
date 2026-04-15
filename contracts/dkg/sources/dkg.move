@@ -23,7 +23,7 @@ module ace::dkg {
     use std::option::{Option, Self};
     use aptos_framework::event;
     use aptos_framework::object;
-    use aptos_framework::permissioned_signer::address_of;
+    use std::signer::address_of;
     use std::error;
     use std::bcs;
 
@@ -71,7 +71,7 @@ module ace::dkg {
         session_addr
     }
 
-    public fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
+    public entry fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
         let base_point = group::element_from_bytes(base_point_bytes);
         new_session(caller, workers, threshold, base_point);
     }

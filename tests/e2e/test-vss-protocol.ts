@@ -39,8 +39,8 @@ async function main() {
         }
         
         // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
-        const g1Inner = ace.vss.bls12381Fr.g1Generator();
-        const basePointBytes = ace.vss.PublicPoint.fromBls12381G1(g1Inner).toBytes();
+        const g1Inner = ace.group.bls12381G1.g1Generator();
+        const basePointBytes = ace.group.Element.fromBls12381G1(g1Inner).toBytes();
 
         log('Start VSS session.');
         const maybeCommittedTxn = await submitTxn({

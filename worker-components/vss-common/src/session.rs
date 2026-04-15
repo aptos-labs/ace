@@ -158,6 +158,66 @@ impl Session {
     }
 }
 
+// ── BCS mirror types (for decoding get_session_bcs view output) ───────────────
+
+/// BCS mirror of `group_bls12381_g1::PublicPoint`.
+#[derive(serde::Deserialize)]
+pub struct BcsPublicPoint {
+    pub point: Vec<u8>, // 48-byte G1 compressed point
+}
+
+/// BCS mirror of `group::Element` enum (variant 0 = Bls12381G1).
+#[derive(serde::Deserialize)]
+pub enum BcsElement {
+    Bls12381G1(BcsPublicPoint),
+}
+
+/// BCS mirror of `vss::PcsCommitment`.
+#[derive(serde::Deserialize)]
+pub struct BcsPcsCommitment {
+    pub points: Vec<BcsElement>,
+}
+
+/// BCS mirror of `vss::DealerContribution0`.
+#[derive(serde::Deserialize)]
+pub struct BcsDealerContribution0 {
+    pub pcs_commitment: BcsPcsCommitment,
+    pub private_share_messages: Vec<crate::pke::BcsCiphertext>,
+    pub dealer_state: Option<crate::pke::BcsCiphertext>,
+}
+
+/// BCS mirror of `group_bls12381_g1::PrivateScalar`.
+#[derive(serde::Deserialize)]
+pub struct BcsPrivateScalar {
+    pub scalar: Vec<u8>, // 32-byte Fr scalar (LE)
+}
+
+/// BCS mirror of `group::Scalar` enum (variant 0 = Bls12381G1).
+#[derive(serde::Deserialize)]
+pub enum BcsScalar {
+    Bls12381G1(BcsPrivateScalar),
+}
+
+/// BCS mirror of `vss::DealerContribution1`.
+#[derive(serde::Deserialize)]
+pub struct BcsDealerContribution1 {
+    pub shares_to_reveal: Vec<Option<BcsScalar>>,
+}
+
+/// BCS mirror of `vss::Session` — used with `bcs::from_bytes` on `get_session_bcs` output.
+#[derive(serde::Deserialize)]
+pub struct BcsSession {
+    pub dealer: [u8; 32],
+    pub share_holders: Vec<[u8; 32]>,
+    pub threshold: u64,
+    pub base_point: BcsElement,
+    pub state_code: u8,
+    pub deal_time_micros: u64,
+    pub dealer_contribution_0: Option<BcsDealerContribution0>,
+    pub share_holder_acks: Vec<bool>,
+    pub dealer_contribution_1: Option<BcsDealerContribution1>,
+}
+
 /// Check whether a Move `Option<T>` field (encoded as `{"vec": []}` or `{"vec": [value]}`)
 /// represents `Some`. Returns `true` if the field has a non-empty `vec` array.
 fn option_field_is_set(data_json: &Value, field: &str) -> bool {

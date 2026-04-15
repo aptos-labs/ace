@@ -112,6 +112,15 @@ export class SecretShare {
     toHex(): string {
         return bytesToHex(this.toBytes());
     }
+
+    add(other: SecretShare): SecretShare {
+        if (this.scheme !== other.scheme) throw 'SecretShare.add: scheme mismatch';
+        if (this.scheme === SCHEME_BLS12381G1) {
+            const inner = (this.inner as Bls12381Fr.SecretShare).add(other.inner as Bls12381Fr.SecretShare);
+            return new SecretShare(SCHEME_BLS12381G1, inner);
+        }
+        throw `SecretShare.add: unsupported scheme ${this.scheme}`;
+    }
 }
 
 // ── PcsCommitment ─────────────────────────────────────────────────────────────

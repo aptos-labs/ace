@@ -165,6 +165,57 @@ pub fn dc1_bytes(shares_to_reveal: &[Option<[u8; 32]>]) -> Vec<u8> {
     out
 }
 
+// ── Feldman VSS verification ──────────────────────────────────────────────────
+
+/// Verify that `plaintext` (a `SecretShare` wire encoding) satisfies the Feldman commitment.
+///
+/// `plaintext` format: `[0x00 scheme][0x20 ULEB128(32)][32B Fr scalar y]`
+/// `holder_x`: 1-based evaluation point (= holder 0-based index + 1)
+///
+/// Checks: `y * base_point == sum(k=0..t-1, x^k * commitment.points[k])`
+pub fn feldman_verify(
+    plaintext: &[u8],
+    base_point: &crate::session::BcsElement,
+    commitment: &crate::session::BcsPcsCommitment,
+    holder_x: u64,
+) -> anyhow::Result<()> {
+    use ark_bls12_381::{Fr, G1Affine, G1Projective};
+    use ark_ec::CurveGroup;
+    use ark_ff::{PrimeField, Zero};
+    use ark_serialize::CanonicalDeserialize;
+
+    if plaintext.len() < 34 {
+        return Err(anyhow::anyhow!("plaintext too short for SecretShare"));
+    }
+    let y = &plaintext[2..34]; // skip [scheme byte][ULEB128(32) length prefix]
+    let y_fr = Fr::from_le_bytes_mod_order(y);
+
+    let base_bytes = match base_point {
+        crate::session::BcsElement::Bls12381G1(p) => p.point.as_slice(),
+    };
+    let base_g1 = G1Affine::deserialize_compressed(base_bytes)
+        .map_err(|e| anyhow::anyhow!("base_point deserialize: {}", e))?;
+    let lhs: G1Affine = (base_g1 * y_fr).into_affine();
+
+    let x = Fr::from(holder_x);
+    let mut rhs = G1Projective::zero();
+    let mut x_power = Fr::from(1u64);
+    for elem in &commitment.points {
+        let pt_bytes = match elem {
+            crate::session::BcsElement::Bls12381G1(p) => p.point.as_slice(),
+        };
+        let pt = G1Affine::deserialize_compressed(pt_bytes)
+            .map_err(|e| anyhow::anyhow!("commitment point deserialize: {}", e))?;
+        rhs += pt * x_power;
+        x_power *= x;
+    }
+
+    if lhs != rhs.into_affine() {
+        return Err(anyhow::anyhow!("Feldman verification failed: share does not match commitment"));
+    }
+    Ok(())
+}
+
 // ── ULEB128 helper ────────────────────────────────────────────────────────────
 
 pub fn write_uleb128(out: &mut Vec<u8>, mut v: u64) {

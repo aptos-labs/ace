@@ -7,7 +7,9 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 use tokio::sync::oneshot;
+use vss_common::pke::{pke_decrypt, BcsCiphertext};
 use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
+use vss_common::vss_types::feldman_verify;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
 pub const POLL_SECS: u64 = 5;
@@ -19,7 +21,6 @@ pub struct RunConfig {
     pub vss_session: String,
     pub account_addr: String,
     pub account_sk_hex: String,
-    /// Reserved for real share decryption; unused by skeleton.
     pub pke_dk_hex: String,
 }
 
@@ -43,6 +44,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         "vss-recipient: starting (account={} session={} ace={})",
         account_addr, session_addr, ace
     );
+
+    let dk_bytes = hex::decode(config.pke_dk_hex.trim_start_matches("0x"))
+        .map_err(|e| anyhow!("invalid pke_dk_hex: {}", e))?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(POLL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -94,7 +98,40 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 if already_acked {
                     println!("vss-recipient: already acked, waiting for dealer to open...");
                 } else {
-                    println!("vss-recipient: submitting on_share_holder_ack");
+                    // Decrypt and Feldman-verify share before acking.
+                    let bcs_session = match rpc.get_session_bcs_decoded(&ace, &session_addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("vss-recipient: get_session_bcs_decoded error: {:#}", e);
+                            continue;
+                        }
+                    };
+                    let dc0 = match bcs_session.dealer_contribution_0.as_ref() {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("vss-recipient: dc0 missing in bcs session");
+                            continue;
+                        }
+                    };
+                    let BcsCiphertext::ElGamalOtpRistretto255(ref inner) =
+                        dc0.private_share_messages[my_idx];
+                    let plaintext = match pke_decrypt(&dk_bytes, inner) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("vss-recipient: pke_decrypt error: {:#}", e);
+                            continue;
+                        }
+                    };
+                    if let Err(e) = feldman_verify(
+                        &plaintext,
+                        &bcs_session.base_point,
+                        &dc0.pcs_commitment,
+                        (my_idx + 1) as u64,
+                    ) {
+                        eprintln!("vss-recipient: Feldman verification failed: {:#}", e);
+                        continue;
+                    }
+                    println!("vss-recipient: Feldman verification passed, submitting on_share_holder_ack");
                     let args = [json!(session_addr)];
                     match rpc
                         .submit_txn(

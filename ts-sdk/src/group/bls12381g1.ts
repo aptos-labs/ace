@@ -221,6 +221,11 @@ export class SecretShare {
         return bytesToHex(this.toBytes());
     }
 
+    add(other: SecretShare): SecretShare {
+        const sum = frMod(this.y + other.y);
+        return SecretShare.fromBigint(sum).unwrapOrThrow('unreachable');
+    }
+
     static fromHex(hex: string): Result<SecretShare> {
         return Result.capture({
             recordsExecutionTimeMs: false,

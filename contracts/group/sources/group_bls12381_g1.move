@@ -1,4 +1,4 @@
-module ace::vss_bls12381_g1 {
+module ace::group_bls12381_g1 {
     use aptos_std::bcs_stream::{Self, BCSStream};
     use aptos_std::crypto_algebra::{Self, Element};
     use aptos_std::bls12381_algebra::{G1, FormatG1Compr, Fr, FormatFrLsb};
@@ -64,7 +64,7 @@ module ace::vss_bls12381_g1 {
         let point = deserialize_g1_point(stream);
         from_inner_element(&point)
     }
-    
+
     fun to_inner_element(element: &PublicPoint): Element<G1> {
         crypto_algebra::deserialize<G1, FormatG1Compr>(&element.point).destroy_some()
     }

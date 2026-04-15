@@ -4,7 +4,7 @@
 /// VSS abstract layer — on-chain session management.
 /// Mirrors ts-sdk/src/vss/index.ts.
 ///
-/// Scheme-specific types and serde live in ace::vss_bls12381_fr.
+/// Group-level types (Scalar, Element) and arithmetic live in ace::group.
 module ace::vss {
     use std::bcs;
     use std::error;
@@ -13,8 +13,8 @@ module ace::vss {
     use aptos_framework::object;
     use aptos_framework::event;
     use aptos_framework::timestamp;
+    use ace::group;
     use ace::worker_config;
-    use ace::vss_bls12381_g1;
     use ace::pke;
     use std::option::{Option, Self};
     use aptos_std::bcs_stream::{Self, BCSStream};
@@ -29,23 +29,16 @@ module ace::vss {
     const E_INVALID_DEALER: u64 = 21;
     const E_INVALID_RECIPIENT: u64 = 22;
     const E_INVALID_THRESHOLD: u64 = 23;
-    const E_UNSUPORTED_SECRET_SCHEME: u64 = 24;
     const E_RECIPIENT_NOT_FOUND: u64 = 25;
     const E_NOT_ENOUGH_ACKS: u64 = 26;
-    const E_INVALID_BASE_POINT: u64 = 27;
     const E_INVALID_MSM: u64 = 28;
     const E_INVALID_REVEALED_SHARE: u64 = 29;
     const E_NOT_ALL_RECIPIENTS_COVERED: u64 = 30;
-    const E_INVALID_SCALAR_MUL: u64 = 31;
     const E_NOT_COMPLETED: u64 = 32;
-    const E_INVALID_POINT_SUM: u64 = 33;
-    
+
     // ── Protocol constants ───────────────────────────────────────────────────
 
     const ACK_WINDOW_MICROS: u64 = 5_000_000; // 5 seconds for localnet
-
-    const SECRET_SCHEME__BLS12381G1: u8 = 0;
-    const SECRET_SCHEME__BLS12381G2: u8 = 1;
 
     const STATE__DEALER_DEAL: u8 = 0;
     const STATE__RECIPIENT_ACK: u8 = 1;
@@ -54,16 +47,8 @@ module ace::vss {
 
     // ── On-chain session state ────────────────────────────────────────────────
 
-    enum PrivateScalar has copy, drop, store {
-        Bls12381G1 (vss_bls12381_g1::PrivateScalar),
-    }
-
-    enum PublicPoint has copy, drop, store {
-        Bls12381G1 (vss_bls12381_g1::PublicPoint),
-    }
-
     struct PcsCommitment has copy, drop, store {
-        points: vector<PublicPoint>,
+        points: vector<group::Element>,
     }
 
     struct DealerContribution0 has copy, drop, store {
@@ -73,14 +58,14 @@ module ace::vss {
     }
 
     struct DealerContribution1 has copy, drop, store {
-        shares_to_reveal: vector<Option<PrivateScalar>>,
+        shares_to_reveal: vector<Option<group::Scalar>>,
     }
 
     struct Session has key {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point: PublicPoint,
+        base_point: group::Element,
         state_code: u8,
         deal_time_micros: u64,
         dealer_contribution_0: Option<DealerContribution0>,
@@ -108,7 +93,7 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point: PublicPoint,
+        base_point: group::Element,
     ): address {
         assert!(worker_config::has_pke_enc_key(dealer), error::invalid_argument(E_INVALID_DEALER));
         share_holders.for_each(|share_holder| {
@@ -143,7 +128,7 @@ module ace::vss {
         threshold: u64,
         base_point_bytes: vector<u8>,
     ) {
-        let base_point = public_point_from_bytes(base_point_bytes);
+        let base_point = group::element_from_bytes(base_point_bytes);
         new_session(caller, dealer, share_holders, threshold, base_point);
     }
 
@@ -183,7 +168,7 @@ module ace::vss {
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
         assert!(timestamp::now_microseconds() - session.deal_time_micros > ACK_WINDOW_MICROS, error::invalid_state(E_NOT_ENOUGH_ACKS));
         let dc1 = dealer_contribution_1_from_bytes(payload_bytes);
-        
+
         // Should not proceed without enough acks.
         let num_acks = session.share_holder_acks.filter(|ack| *ack).length();
         assert!(num_acks >= session.threshold, error::invalid_state(E_NOT_ENOUGH_ACKS));
@@ -196,24 +181,24 @@ module ace::vss {
         });
         assert!(all_recipient_covered, error::invalid_state(E_NOT_ALL_RECIPIENTS_COVERED));
 
-        // Verify the revealed shares in dc1 matches the commitment in dc0
+        // Verify the revealed shares in dc1 match the commitment in dc0.
         let n = session.share_holders.length();
         let dc0 = session.dealer_contribution_0.borrow();
-        let scheme = public_point_scheme(&session.base_point);
+        let scheme = group::element_scheme(&session.base_point);
         range(0, n).for_each(|i| {
             if (dc1.shares_to_reveal[i].is_some()) {
-                let x = scalar_from_u64(scheme, i+1);
-                let powers_of_x = vector[scalar_from_u64(scheme, 1)];
-                let accumulator = scalar_from_u64(scheme, 1);
-                range(0, session.threshold-1).for_each(|_| {
-                    accumulator = scalar_mul(&accumulator, &x);
+                let x = group::scalar_from_u64(scheme, i + 1);
+                let powers_of_x = vector[group::scalar_from_u64(scheme, 1)];
+                let accumulator = group::scalar_from_u64(scheme, 1);
+                range(0, session.threshold - 1).for_each(|_| {
+                    accumulator = group::scalar_mul(&accumulator, &x);
                     powers_of_x.push_back(accumulator);
                 });
 
                 let revealed_share = dc1.shares_to_reveal[i].borrow();
-                let lhs = scale_point(&session.base_point, revealed_share);
-                let rhs = msm(dc0.pcs_commitment.points, powers_of_x);
-                assert!(point_eq(&lhs, &rhs), error::invalid_state(E_INVALID_REVEALED_SHARE));
+                let lhs = group::scale_element(&session.base_point, revealed_share);
+                let rhs = group::msm(dc0.pcs_commitment.points, powers_of_x);
+                assert!(group::element_eq(&lhs, &rhs), error::invalid_state(E_INVALID_REVEALED_SHARE));
             }
         });
 
@@ -222,147 +207,24 @@ module ace::vss {
         session.state_code = STATE__SUCCESS;
     }
 
-    public fun completed(session_addr: address): bool {
+    public fun completed(session_addr: address): bool acquires Session {
         let session = borrow_global<Session>(session_addr);
         session.state_code == STATE__SUCCESS
     }
 
-    public fun result_pk(session_addr: address): PublicPoint {
+    public fun result_pk(session_addr: address): group::Element acquires Session {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.dealer_contribution_0.borrow().pcs_commitment.points[0]
     }
 
-    public fun point_sum(pks: &vector<PublicPoint>): PublicPoint {
-        assert!(pks.length() > 0, error::invalid_argument(E_INVALID_POINT_SUM));
-        let scheme = public_point_scheme(&pks[0]);
-        assert!(pks.all(|pk| public_point_scheme(pk) == scheme), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            let inner = vss_bls12381_g1::point_sum(&pks.map_ref(|p| *to_bls12381g1_point(p)));
-            PublicPoint::Bls12381G1(inner)
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-    fun point_eq(a: &PublicPoint, b: &PublicPoint): bool {
-        let scheme = public_point_scheme(a);
-        assert!(scheme == public_point_scheme(b), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            vss_bls12381_g1::point_eq(to_bls12381g1_point(a), to_bls12381g1_point(b))
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-
-    fun scalar_from_u64(scheme: u8, x: u64): PrivateScalar {
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            PrivateScalar::Bls12381G1(vss_bls12381_g1::scalar_from_u64(x))
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-    fun scalar_mul(a: &PrivateScalar, b: &PrivateScalar): PrivateScalar {
-        let scheme = private_scalar_scheme(a);
-        assert!(scheme == private_scalar_scheme(b), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            let inner = vss_bls12381_g1::scalar_mul(
-                to_bls12381g1_scalar(a),
-                to_bls12381g1_scalar(b),
-            );
-            PrivateScalar::Bls12381G1(inner)
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-    
-    fun scale_point(point: &PublicPoint, scalar: &PrivateScalar): PublicPoint {
-        let scheme = public_point_scheme(point);
-        assert!(scheme == private_scalar_scheme(scalar), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            PublicPoint::Bls12381G1(vss_bls12381_g1::scale_point(to_bls12381g1_point(point), to_bls12381g1_scalar(scalar)))
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-    fun msm(points: vector<PublicPoint>, scalars: vector<PrivateScalar>): PublicPoint {
-        let size = points.length();
-        assert!(size == scalars.length(), error::invalid_argument(E_INVALID_MSM));
-        assert!(size > 0, error::invalid_argument(E_INVALID_MSM));
-        let point_schemes = points.map_ref(|p| public_point_scheme(p));
-        let scalar_schemes = scalars.map_ref(|s| private_scalar_scheme(s));
-        let scheme = point_schemes[0];
-        assert!(point_schemes.all(|s| *s == scheme), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-        assert!(scalar_schemes.all(|s| *s == scheme), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
-
-        if (point_schemes[0] == SECRET_SCHEME__BLS12381G1) {
-            let inner = vss_bls12381_g1::msm(
-                points.map_ref(|p| *to_bls12381g1_point(p)),
-                scalars.map_ref(|s| *to_bls12381g1_scalar(s)),
-            );
-            PublicPoint::Bls12381G1(inner)
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-    fun to_bls12381g1_scalar(scalar: &PrivateScalar): &vss_bls12381_g1::PrivateScalar {
-        match (scalar) {
-            PrivateScalar::Bls12381G1(inner) => inner,
-        }
-    }
-
-    fun to_bls12381g1_point(point: &PublicPoint): &vss_bls12381_g1::PublicPoint {
-        match (point) {
-            PublicPoint::Bls12381G1(inner) => inner,
-        }
-    }
-
-    fun private_scalar_scheme(scalar: &PrivateScalar): u8 {
-        match (scalar) {
-            PrivateScalar::Bls12381G1(_) => SECRET_SCHEME__BLS12381G1,
-        }
-    }
-
-    fun public_point_scheme(point: &PublicPoint): u8 {
-        match (point) {
-            PublicPoint::Bls12381G1(_) => SECRET_SCHEME__BLS12381G1,
-        }
-    }
-
-    public fun public_point_from_bytes(bytes: vector<u8>): PublicPoint {
-        let stream = bcs_stream::new(bytes);
-        deserialize_public_point(&mut stream)
-    }
-
-    fun deserialize_private_scalar(stream: &mut BCSStream): PrivateScalar {
-        let scheme = bcs_stream::deserialize_u8(stream);
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            let inner = vss_bls12381_g1::deserialize_private_scalar(stream);
-            PrivateScalar::Bls12381G1(inner)
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
-
-    fun deserialize_public_point(stream: &mut BCSStream): PublicPoint {
-        let scheme = bcs_stream::deserialize_u8(stream);
-        if (scheme == SECRET_SCHEME__BLS12381G1) {
-            let inner = vss_bls12381_g1::deserialize_public_point(stream);
-            PublicPoint::Bls12381G1(inner)
-        } else {
-            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
-        }
-    }
+    // ── Serde helpers ────────────────────────────────────────────────────────
 
     fun deserialize_pcs_commitment(stream: &mut BCSStream): PcsCommitment {
-        let points = bcs_stream::deserialize_vector(stream, |s| deserialize_public_point(s));
+        let points = bcs_stream::deserialize_vector(stream, |s| group::deserialize_element(s));
         PcsCommitment { points }
     }
-    
+
     fun dealer_contribution_0_from_bytes(bytes: vector<u8>): DealerContribution0 {
         let stream = bcs_stream::new(bytes);
         let pcs_commitment = deserialize_pcs_commitment(&mut stream);
@@ -375,7 +237,7 @@ module ace::vss {
     fun dealer_contribution_1_from_bytes(bytes: vector<u8>): DealerContribution1 {
         let stream = bcs_stream::new(bytes);
         let shares_to_reveal = bcs_stream::deserialize_vector(&mut stream, |s| {
-            bcs_stream::deserialize_option(s, |s| deserialize_private_scalar(s))
+            bcs_stream::deserialize_option(s, |s| group::deserialize_scalar(s))
         });
         assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_CONTRIBUTION));
         DealerContribution1 { shares_to_reveal }

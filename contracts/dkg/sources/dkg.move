@@ -1,12 +1,12 @@
 /// Distributed Key Generation (DKG) contract.
-/// 
+///
 /// ## Client implementation guide
-/// 
+///
 /// A DKG client needs the following starting parameters.
 /// - worker_account_addr, worker_account_sk, and worker_pke_dk: necessary credentials.
 /// - session_addr: this identifies which DKG session to work on.
 /// - term_rx: this allows upper-level apps to send stop cmd.
-/// 
+///
 /// The main logic is the following.
 /// - It should "touch" the session (trigger any due update and fetch the latest state) every 5 secs.
 /// - Every time we fetch the latest state `session`, we:
@@ -19,6 +19,7 @@
 module ace::dkg {
 
     use ace::vss;
+    use ace::group;
     use std::option::{Option, Self};
     use aptos_framework::event;
     use aptos_framework::object;
@@ -36,10 +37,10 @@ module ace::dkg {
         caller: address,
         workers: vector<address>,
         threshold: u64,
-        base_point: vss::PublicPoint,
+        base_point: group::Element,
         state: u8,
         vss_sessions: vector<address>,
-        result_pk: Option<vss::PublicPoint>,
+        result_pk: Option<group::Element>,
     }
 
     #[event]
@@ -47,7 +48,7 @@ module ace::dkg {
         session_addr: address,
     }
 
-    public fun new_session(caller: &signer, workers: vector<address>, threshold: u64, base_point: vss::PublicPoint): address {
+    public fun new_session(caller: &signer, workers: vector<address>, threshold: u64, base_point: group::Element): address {
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
@@ -68,7 +69,7 @@ module ace::dkg {
     }
 
     public fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
-        let base_point = vss::public_point_from_bytes(base_point_bytes);
+        let base_point = group::element_from_bytes(base_point_bytes);
         new_session(caller, workers, threshold, base_point);
     }
 
@@ -78,7 +79,7 @@ module ace::dkg {
         session_bcs: vector<u8>,
     }
 
-    public fun touch(session_addr: address) {
+    public fun touch(session_addr: address) acquires Session {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.state == STATE__VSS_IN_PROGRESS) {
             // if t or more sessions are done, we can finalize the aggregated public key
@@ -86,7 +87,7 @@ module ace::dkg {
             if (num_done >= session.threshold) {
                 // finalize the aggregated public key
                 let sub_pks = session.vss_sessions.map(|vss_session| vss::result_pk(vss_session));
-                session.result_pk = option::some(vss::point_sum(&sub_pks));
+                session.result_pk = option::some(group::element_sum(&sub_pks));
                 session.state = STATE__DONE;
             }
         };
@@ -96,7 +97,7 @@ module ace::dkg {
         });
     }
 
-    public fun cancel(caller: &signer, session_addr: address) {
+    public fun cancel(caller: &signer, session_addr: address) acquires Session {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.caller != address_of(caller)) {
             abort error::permission_denied(E_ONLY_CALLER_CAN_DO_THIS);
@@ -109,7 +110,7 @@ module ace::dkg {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
-    public entry fun touch_entry(session_addr: address) {
+    public entry fun touch_entry(session_addr: address) acquires Session {
         touch(session_addr);
     }
 }

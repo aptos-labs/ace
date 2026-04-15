@@ -1,19 +1,10 @@
 [package]
-name = "DKG"
+name = "Group"
 version = "1.0.0"
 authors = []
 
 [addresses]
 ace = "0xcafe"
-
-[dependencies.Group]
-local = "../group"
-
-[dependencies.WorkerConfig]
-local = "../worker_config"
-
-[dependencies.VSS]
-local = '../vss'
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

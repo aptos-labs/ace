@@ -6,6 +6,9 @@ authors = []
 [addresses]
 ace = "0xcafe"
 
+[dependencies.Group]
+local = "../group"
+
 [dependencies.WorkerConfig]
 local = "../worker_config"
 

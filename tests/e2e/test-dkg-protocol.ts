@@ -21,7 +21,7 @@ async function main() {
         const workerAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'vss', 'dkg']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {

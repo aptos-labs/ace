@@ -1,3 +1,6 @@
+// Copyright (c) Aptos Labs
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Distributedly generate a key-pair for OTP-HMAC Boneh-Franklin BLS12-381 (short public key):
  * Each worker use VSS-bls12381-fr to deal a sub-secret to the committee;
@@ -10,6 +13,80 @@ export const SCHEME_0 = 0;
  * Distributedly generate a key-pair for OTP-HMAC Boneh-Franklin BLS12-381 (short identity key).
  */
 export const SCHEME_1 = 1;
+
+import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
+import { Result } from "../result";
+import { PublicPoint } from "../vss/index";
+
+const STATE_DONE = 1;
+
+export class Session {
+    constructor(
+        readonly caller: AccountAddress,
+        readonly workers: AccountAddress[],
+        readonly threshold: number,
+        readonly basePoint: PublicPoint,
+        readonly state: number,
+        readonly vssSessions: AccountAddress[],
+        readonly resultPk: PublicPoint | undefined,
+    ) {}
+
+    isCompleted(): boolean {
+        return this.state === STATE_DONE;
+    }
+
+    static deserialize(deserializer: Deserializer): Result<Session> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const caller = AccountAddress.deserialize(deserializer);
+
+                const workersLen = deserializer.deserializeUleb128AsU32();
+                const workers: AccountAddress[] = [];
+                for (let i = 0; i < workersLen; i++) {
+                    workers.push(AccountAddress.deserialize(deserializer));
+                }
+
+                const threshold = Number(deserializer.deserializeU64());
+
+                const basePoint = PublicPoint.deserialize(deserializer)
+                    .unwrapOrThrow('basePoint deserialize failed');
+
+                const state = deserializer.deserializeU8();
+
+                const vssLen = deserializer.deserializeUleb128AsU32();
+                const vssSessions: AccountAddress[] = [];
+                for (let i = 0; i < vssLen; i++) {
+                    vssSessions.push(AccountAddress.deserialize(deserializer));
+                }
+
+                // result_pk: Option<PublicPoint> — encoded as vector<PublicPoint> of length 0 or 1
+                const resultPkTag = deserializer.deserializeU8();
+                let resultPk: PublicPoint | undefined;
+                if (resultPkTag === 1) {
+                    resultPk = PublicPoint.deserialize(deserializer)
+                        .unwrapOrThrow('resultPk deserialize failed');
+                } else if (resultPkTag !== 0) {
+                    throw `resultPk option tag must be 0 or 1, got ${resultPkTag}`;
+                }
+
+                return new Session(caller, workers, threshold, basePoint, state, vssSessions, resultPk);
+            },
+        });
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<Session> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = Session.deserialize(deserializer).unwrapOrThrow('deserialize failed');
+                if (deserializer.remaining() !== 0) throw 'trailing bytes';
+                return obj;
+            },
+        });
+    }
+}
 
 export class PrivateKey {
     scheme: number;
@@ -28,14 +105,5 @@ export class PublicKey {
     constructor(scheme: number, inner: any) {
         this.scheme = scheme;
         this.inner = inner;
-    }
-}
-
-export class Session {
-    publicKey: PublicKey | undefined;
-    //TODO
-
-    constructor(publicKey: PublicKey) {
-        this.publicKey = publicKey;
     }
 }

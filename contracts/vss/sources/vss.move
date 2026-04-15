@@ -37,6 +37,9 @@ module ace::vss {
     const E_INVALID_REVEALED_SHARE: u64 = 29;
     const E_NOT_ALL_RECIPIENTS_COVERED: u64 = 30;
     const E_INVALID_SCALAR_MUL: u64 = 31;
+    const E_NOT_COMPLETED: u64 = 32;
+    const E_INVALID_POINT_SUM: u64 = 33;
+    
     // ── Protocol constants ───────────────────────────────────────────────────
 
     const ACK_WINDOW_MICROS: u64 = 5_000_000; // 5 seconds for localnet
@@ -105,7 +108,7 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point_bytes: vector<u8>,
+        base_point: PublicPoint,
     ): address {
         assert!(worker_config::has_pke_enc_key(dealer), error::invalid_argument(E_INVALID_DEALER));
         share_holders.for_each(|share_holder| {
@@ -113,7 +116,6 @@ module ace::vss {
         });
         let num_share_holders = share_holders.length();
         assert!(threshold >= 2 && threshold * 2 > num_share_holders && threshold <= num_share_holders, error::invalid_argument(E_INVALID_THRESHOLD));
-        let base_point = public_point_from_bytes(base_point_bytes);
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
@@ -141,7 +143,8 @@ module ace::vss {
         threshold: u64,
         base_point_bytes: vector<u8>,
     ) {
-        new_session(caller, dealer, share_holders, threshold, base_point_bytes);
+        let base_point = public_point_from_bytes(base_point_bytes);
+        new_session(caller, dealer, share_holders, threshold, base_point);
     }
 
     public entry fun on_dealer_contribution_0(
@@ -217,6 +220,29 @@ module ace::vss {
         // All checks passed.
         session.dealer_contribution_1 = option::some(dc1);
         session.state_code = STATE__SUCCESS;
+    }
+
+    public fun completed(session_addr: address): bool {
+        let session = borrow_global<Session>(session_addr);
+        session.state_code == STATE__SUCCESS
+    }
+
+    public fun result_pk(session_addr: address): PublicPoint {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.dealer_contribution_0.borrow().pcs_commitment.points[0]
+    }
+
+    public fun point_sum(pks: &vector<PublicPoint>): PublicPoint {
+        assert!(pks.length() > 0, error::invalid_argument(E_INVALID_POINT_SUM));
+        let scheme = public_point_scheme(&pks[0]);
+        assert!(pks.all(|pk| public_point_scheme(pk) == scheme), error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME));
+        if (scheme == SECRET_SCHEME__BLS12381G1) {
+            let inner = vss_bls12381_g1::point_sum(&pks.map_ref(|p| *to_bls12381g1_point(p)));
+            PublicPoint::Bls12381G1(inner)
+        } else {
+            abort error::invalid_argument(E_UNSUPORTED_SECRET_SCHEME)
+        }
     }
 
     fun point_eq(a: &PublicPoint, b: &PublicPoint): bool {
@@ -307,7 +333,7 @@ module ace::vss {
         }
     }
 
-    fun public_point_from_bytes(bytes: vector<u8>): PublicPoint {
+    public fun public_point_from_bytes(bytes: vector<u8>): PublicPoint {
         let stream = bcs_stream::new(bytes);
         deserialize_public_point(&mut stream)
     }

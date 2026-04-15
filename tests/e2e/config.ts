@@ -34,6 +34,9 @@ export const VSS_DEALER_BINARY = path.join(cargoDebugDir, 'vss-dealer');
 /** `vss-recipient` binary from the repo-root Cargo workspace. */
 export const VSS_RECIPIENT_BINARY = path.join(cargoDebugDir, 'vss-recipient');
 
+/** `dkg-worker` binary from the repo-root Cargo workspace. */
+export const DKG_WORKER_BINARY = path.join(cargoDebugDir, 'dkg-worker');
+
 export const LOCALNET_URL = 'http://localhost:8080/v1';
 export const FAUCET_URL = 'http://localhost:8081';
 export const CHAIN_ID = 4; // localnet

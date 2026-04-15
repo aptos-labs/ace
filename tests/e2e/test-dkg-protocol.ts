@@ -3,12 +3,8 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getVssSession } from './helpers';
-import {
-    buildRustWorkspace,
-    spawnVSSDealerRun,
-    spawnVSSRecipientRun,
-} from './vss-clients';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession } from './helpers';
+import { buildRustWorkspace, spawnDKGRun } from './dkg-clients';
 
 async function main() {
     const localnetProc = await startLocalnet();
@@ -29,76 +25,66 @@ async function main() {
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
-            const maybeCommittedTxn = await submitTxn({
+            (await submitTxn({
                 signer: accounts[i],
                 entryFunction: `${adminAccount.accountAddress}::worker_config::register_pke_enc_key`,
                 args: [encKeypairs[i].encryptionKey.toBytes()],
-            });
-            maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
+            })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
         }
-        
+
+        // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
+        const g1Inner = ace.vss.bls12381Fr.g1Generator();
+        const basePointBytes = ace.vss.PublicPoint.fromBls12381G1(g1Inner).toBytes();
+
         log('Start DKG session.');
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::dkg::new_session_entry`,
             args: [
-                adminAccount.accountAddress,
                 workerAccounts.map(w => w.accountAddress),
                 3, // threshold
-                ace.dkg.SCHEME_0, // secret scheme
+                basePointBytes,
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
         const aceContract = adminAccount.accountAddress.toStringLong();
         const sessionAddrStr = committedTxn.events.find(e => e.type === `${aceContract}::dkg::SessionCreated`)?.data.session_addr;
-        if (!sessionAddrStr) throw 'Failed to get session address.';
+        if (!sessionAddrStr) throw 'Failed to get DKG session address.';
         const sessionAddr = AccountAddress.fromString(sessionAddrStr);
 
-        log('Start dkg clients.');
+        log('Start DKG worker clients.');
         await buildRustWorkspace();
         const dkgProcs = workerAccounts.map((w, i) => spawnDKGRun({
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
-            sessionAddr,
+            dkgSessionAddr: sessionAddr,
             aceContract,
         }));
 
         try {
-            log('Wait for DKG to complete.');
-            const deadlineMillis = Date.now() + 60000;
-            var session: ace.dkg.Session | undefined;
+            log('Wait for DKG session to complete.');
+            const deadlineMillis = Date.now() + 120_000;
+            let session: ace.dkg.Session | undefined;
             while (Date.now() < deadlineMillis) {
+                // Touch the session to let the contract finalize state when ready.
+                await submitTxn({
+                    signer: adminAccount,
+                    entryFunction: `${aceContract}::dkg::touch_entry`,
+                    args: [sessionAddr],
+                });
                 const maybeSession = await getDKGSession(adminAccount.accountAddress, sessionAddr);
                 if (maybeSession.isOk) {
                     session = maybeSession.okValue!;
                     if (session.isCompleted()) break;
                 }
-                await sleep(1000);
+                await sleep(5_000);
             }
-            if (!(session?.isCompleted())) throw 'VSS session did not complete in time.';
+            if (!session?.isCompleted()) throw 'DKG session did not complete in time.';
 
-            log('Secret reconstruction should work and match on-chain public key.');
-            const shares = session!.dealerContribution0!.privateShareMessages.slice(0, session!.threshold).map((ciphertext: ace.pke.Ciphertext, i: number) => {
-                let msgBytes = ace.pke.decrypt({
-                    decryptionKey: encKeypairs[i].decryptionKey,
-                    ciphertext,
-                }).unwrapOrThrow('Failed to decrypt share.');
-                
-                const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes).unwrapOrThrow('Failed to parse private share message.');
-                return msg.share;
-            });
-
-            const reconstructedSecret = ace.vss.reconstruct({ secretShares: shares}).unwrapOrThrow('Failed to reconstruct secret.');
-            const decryptedDealerStateBytes = ace.pke.decrypt({
-                decryptionKey: encKeypairs[0].decryptionKey,
-                ciphertext: session.dealerContribution0!.dealerState!,
-            }).unwrapOrThrow('Failed to decrypt dealer state.');
-            const dealerState = ace.vss.DealerState.fromBytes(decryptedDealerStateBytes).unwrapOrThrow('Failed to parse dealer state.');
-            const reconstructedScalar = reconstructedSecret.asBls12381Fr().scalar;
-            if (reconstructedScalar !== dealerState.asBls12381Fr().coefsPolyP[0]) throw 'Public commitment does not match on-chain public key.';
-            console.log(`Secret: ${reconstructedScalar}`);
+            if (!session.resultPk) throw 'DKG session completed but resultPk is missing.';
+            log(`DKG complete. resultPk: ${session.resultPk.toHex()}`);
         } finally {
-            for (const proc of [dealerProc, ...recipientProcs]) {
+            for (const proc of dkgProcs) {
                 proc.kill();
                 //TODO: save logs to file and print the path.
             }
@@ -107,7 +93,6 @@ async function main() {
     } finally {
         localnetProc.kill();
     }
-
 }
 
 main();

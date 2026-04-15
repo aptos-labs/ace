@@ -6,6 +6,12 @@ authors = []
 [addresses]
 ace = "0xcafe"
 
+[dependencies.WorkerConfig]
+local = "../worker_config"
+
+[dependencies.VSS]
+local = '../vss'
+
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"
 rev = "mainnet"

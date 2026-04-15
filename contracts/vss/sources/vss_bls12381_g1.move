@@ -20,6 +20,14 @@ module ace::vss_bls12381_g1 {
         point: vector<u8>,
     }
 
+    public fun point_sum(pks: &vector<PublicPoint>): PublicPoint {
+        let accumulator = crypto_algebra::zero<G1>();
+        pks.for_each_ref(|pk| {
+            accumulator = crypto_algebra::add(&accumulator, &to_inner_element(pk));
+        });
+        from_inner_element(&accumulator)
+    }
+
     public fun point_eq(a: &PublicPoint, b: &PublicPoint): bool {
         crypto_algebra::eq(&to_inner_element(a), &to_inner_element(b))
     }

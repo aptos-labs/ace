@@ -351,3 +351,21 @@ export async function getVssSession(aceContractAddr: AccountAddress, sessionAddr
         },
     });
 }
+
+export async function getDKGSession(aceContractAddr: AccountAddress, sessionAddr: AccountAddress): Promise<Result<ace.dkg.Session>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: false,
+        task: async () => {
+            const aptos = createAptos();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr.toStringLong()}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [sessionAddr.toStringLong()],
+                },
+            });
+            const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
+            return ace.dkg.Session.fromBytes(bytes).unwrapOrThrow('Failed to parse DKG session.');
+        },
+    });
+}

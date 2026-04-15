@@ -7,7 +7,7 @@
   "scripts": {
     "test:permissioned": "tsx test-permissioned.ts",
     "test:vss-only": "tsx test-vss-protocol.ts",
-    "test:dkg-only": "tsx layered-compile-smoke.ts dkg",
+    "test:dkg-only": "tsx test-dkg-protocol.ts",
     "test:dkr-only": "tsx layered-compile-smoke.ts dkr"
   },
   "dependencies": {

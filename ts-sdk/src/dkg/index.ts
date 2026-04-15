@@ -28,6 +28,7 @@ export class Session {
         readonly basePoint: PublicPoint,
         readonly state: number,
         readonly vssSessions: AccountAddress[],
+        readonly doneFlags: boolean[],
         readonly resultPk: PublicPoint | undefined,
     ) {}
 
@@ -60,6 +61,10 @@ export class Session {
                     vssSessions.push(AccountAddress.deserialize(deserializer));
                 }
 
+                const doneFlagsLen = deserializer.deserializeUleb128AsU32();
+                const doneFlags: boolean[] = [];
+                for (let i = 0; i < doneFlagsLen; i++) doneFlags.push(deserializer.deserializeBool());
+
                 // result_pk: Option<PublicPoint> — encoded as vector<PublicPoint> of length 0 or 1
                 const resultPkTag = deserializer.deserializeU8();
                 let resultPk: PublicPoint | undefined;
@@ -70,7 +75,7 @@ export class Session {
                     throw `resultPk option tag must be 0 or 1, got ${resultPkTag}`;
                 }
 
-                return new Session(caller, workers, threshold, basePoint, state, vssSessions, resultPk);
+                return new Session(caller, workers, threshold, basePoint, state, vssSessions, doneFlags, resultPk);
             },
         });
     }

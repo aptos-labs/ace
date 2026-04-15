@@ -11,6 +11,9 @@ export { split, combine } from "./shamir_gf256";
 // Shamir's Secret Sharing over BLS12-381 Fr
 export * as shamir_fr from "./shamir_fr";
 
+// Group algebra (BLS12-381 G1 and other curves)
+export * as group from "./group";
+
 // Shamir secret sharing
 export * as vss from "./vss";
 

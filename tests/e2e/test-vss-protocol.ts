@@ -103,14 +103,12 @@ async function main() {
             });
 
             const reconstructedSecret = ace.vss.reconstruct({ indexedShares: shares.map((share, i) => ({ index: i + 1, share })) }).unwrapOrThrow('Failed to reconstruct secret.');
-            const decryptedDealerStateBytes = ace.pke.decrypt({
-                decryptionKey: encKeypairs[0].decryptionKey,
-                ciphertext: session.dealerContribution0!.dealerState!,
-            }).unwrapOrThrow('Failed to decrypt dealer state.');
-            const dealerState = ace.vss.DealerState.fromBytes(decryptedDealerStateBytes).unwrapOrThrow('Failed to parse dealer state.');
-            const reconstructedScalar = reconstructedSecret.asBls12381Fr().scalar;
-            if (reconstructedScalar !== dealerState.asBls12381Fr().coefsPolyP[0]) throw 'Public commitment does not match on-chain public key.';
-            console.log(`Secret: ${reconstructedScalar}`);
+
+            log('Verify s*B == pcsCommitment.points[0].');
+            const computedPk = session!.basePoint.scale(reconstructedSecret);
+            const expectedPk = session!.dealerContribution0!.pcsCommitment.points[0];
+            if (!computedPk.equals(expectedPk)) throw 'Reconstructed secret does not match on-chain public key.';
+            console.log(`Reconstructed PK: ${computedPk.toHex()}`);
         } finally {
             for (const proc of [dealerProc, ...recipientProcs]) {
                 proc.kill();

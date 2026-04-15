@@ -17,7 +17,7 @@ import { bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { FR_MODULUS, frMod } from "../shamir_fr";
 import { Result } from "../result";
-import { lagrangeAtZero } from "./dealing";
+import { lagrangeAtZero } from "../vss/dealing";
 import { randBytes } from "../utils";
 import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
 
@@ -149,6 +149,17 @@ export class PublicPoint {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
+    }
+
+    /** Scalar multiplication: returns scalar * this. */
+    scale(scalar: PrivateScalar): PublicPoint {
+        const result = (this.pt as any).multiply(scalar.scalar);
+        return new PublicPoint(result as unknown as WeierstrassPoint<bigint>);
+    }
+
+    /** Projective equality check. */
+    equals(other: PublicPoint): boolean {
+        return (this.pt as any).equals(other.pt);
     }
 }
 

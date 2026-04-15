@@ -40,6 +40,8 @@ module ace::dkg {
         base_point: group::Element,
         state: u8,
         vss_sessions: vector<address>,
+        /// When we try to conclude this DKG session with enough VSS done, some other may not have finished yet and will thus be ignored.
+        done_flags: vector<bool>,
         result_pk: Option<group::Element>,
     }
 
@@ -61,6 +63,7 @@ module ace::dkg {
             base_point,
             state: STATE__VSS_IN_PROGRESS,
             vss_sessions,
+            done_flags: vector[],
             result_pk: option::none(),
         };
         move_to(&object_signer, session);
@@ -83,11 +86,22 @@ module ace::dkg {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.state == STATE__VSS_IN_PROGRESS) {
             // if t or more sessions are done, we can finalize the aggregated public key
-            let num_done = session.vss_sessions.filter(|vss_session| vss::completed(*vss_session)).length();
+            let done_flags = vector[];
+            let num_done = 0;
+            let done_sessions = vector[];
+            session.vss_sessions.for_each(|vss_session| {
+                let done = vss::completed(vss_session);
+                if (done) {
+                    num_done += 1;
+                    done_sessions.push_back(vss_session);
+                };
+                done_flags.push_back(done);
+
+            });
             if (num_done >= session.threshold) {
-                // finalize the aggregated public key
-                let sub_pks = session.vss_sessions.map(|vss_session| vss::result_pk(vss_session));
-                session.result_pk = option::some(group::element_sum(&sub_pks));
+                let available_sub_pks = done_sessions.map(|vss_session| vss::result_pk(vss_session));
+                session.done_flags = done_flags;
+                session.result_pk = option::some(group::element_sum(&available_sub_pks));
                 session.state = STATE__DONE;
             }
         };

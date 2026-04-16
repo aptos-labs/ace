@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * E2E test: encrypt/decrypt traffic through a live ACE network.
+ * Full happy-path E2E test: covers SDK, network, DKG, epoch transitions, and encrypt/decrypt.
  *
  * Epoch layout:
  *   Epoch 0: workers 0,1,2  threshold=2
@@ -20,7 +20,7 @@
  *   - Alice purchases pong-blob and decrypts "PONG"
  *
  * Run:
- *   cd tests/e2e && pnpm test:enc-dec
+ *   cd integration-tests && pnpm full-happy-path
  */
 
 import {

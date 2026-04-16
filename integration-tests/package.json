@@ -1,16 +1,15 @@
 {
-  "name": "ace-e2e-tests",
+  "name": "ace-integration-tests",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "ACE end-to-end tests",
+  "description": "ACE integration tests",
   "scripts": {
-    "test:permissioned": "tsx test-permissioned.ts",
     "test:vss-only": "tsx test-vss-protocol.ts",
     "test:dkg-only": "tsx test-dkg-protocol.ts",
     "test:dkr-only": "tsx test-dkr-protocol.ts",
     "test:network-only": "tsx test-network-protocol.ts",
-    "test:enc-dec": "tsx test-enc-dec-traffic.ts"
+    "full-happy-path": "tsx full-happy-path.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

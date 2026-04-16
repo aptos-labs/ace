@@ -5,7 +5,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const REPO_ROOT = path.resolve(__dirname, '../..');
+export const REPO_ROOT = path.resolve(__dirname, '..');
 
 /**
  * Dummy `admin` address in each package `Move.toml` under `contracts/` for `aptos move compile` without CLI named-addresses.

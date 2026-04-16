@@ -3,5 +3,5 @@ packages:
   - "worker"
   - "examples/*"
   - "examples/*/demo-cli-flow"
-  - "tests/e2e"
+  - "integration-tests"
 

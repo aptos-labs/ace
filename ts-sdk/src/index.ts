@@ -35,6 +35,9 @@ export * as sym from "./sym";
 // ACE
 export * as ace from "./ace";
 
+// ACE-EX
+export * as ace_ex from "./ace-ex";
+
 // Public Key Encryption
 export * as pke from "./pke";
 

@@ -61,7 +61,7 @@ module ace::network {
         assert!(@ace == address_of(ace), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
         assert!(!exists<AutoEpochChanger>(@ace), error::already_exists(E_ALREADY_INITIALIZED));
         let object_ref = object::create_sticky_object(@ace);
-        let extend_ref = object::generate_extend_ref(&object_ref);
+        let extend_ref = object_ref.generate_extend_ref();
         move_to(ace, AutoEpochChanger {
             extend_ref,
             epoch_duration_micros: epoch_duration_secs * 1_000_000,
@@ -130,7 +130,7 @@ module ace::network {
             if (exists<AutoEpochChanger>(@ace) && state.dkgs_in_progress.is_empty()) {
                 let changer = borrow_global<AutoEpochChanger>(@ace);
                 if (now_micros - state.epoch_start_time_micros >= changer.epoch_duration_micros) {
-                    let virtual_signer = object::generate_signer_for_extending(&changer.extend_ref);
+                    let virtual_signer = changer.extend_ref.generate_signer_for_extending();
                     let new_nodes = state.cur_nodes.map_ref(|a| *a);
                     let new_threshold = state.cur_threshold;
                     do_start_epoch_change(&virtual_signer, state, new_nodes, new_threshold);

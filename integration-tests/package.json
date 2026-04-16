@@ -9,7 +9,9 @@
     "test:dkg-only": "tsx test-dkg-protocol.ts",
     "test:dkr-only": "tsx test-dkr-protocol.ts",
     "test:network-only": "tsx test-network-protocol.ts",
-    "full-happy-path": "tsx full-happy-path.ts"
+    "full-happy-path": "tsx full-happy-path.ts",
+    "test:access-failures": "tsx test-access-failures.ts",
+    "test:fault-tolerance": "tsx test-fault-tolerance.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

@@ -19,6 +19,7 @@
 
 mod crypto;
 mod http_server;
+pub mod verify;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -124,7 +125,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let ks = keypair_shares.clone();
         let cn = cur_nodes_shared.clone();
         let my = account_addr.clone();
-        tokio::spawn(http_server::run(port, ks, cn, my));
+        let rpc = config.rpc_url.clone();
+        tokio::spawn(http_server::run(port, ks, cn, my, rpc));
     }
 
     let mut dkg_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();

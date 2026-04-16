@@ -7,10 +7,12 @@ pub mod aptos;
 pub mod crypto;
 pub mod pke;
 pub mod session;
+pub mod share_reconstruction;
 pub mod vss_types;
 
 pub use aptos::AptosRpc;
 pub use session::Session;
+pub use share_reconstruction::reconstruct_share;
 
 /// Aptos account address from Ed25519 verifying key (same as `worker-rs` / TS-sdk single-key accounts).
 pub fn compute_account_address(vk: &ed25519_dalek::VerifyingKey) -> [u8; 32] {

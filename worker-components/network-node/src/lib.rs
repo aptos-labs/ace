@@ -17,10 +17,14 @@
 //! sender in a `HashMap`; calling `stop_tasks` drains the map and fires each
 //! sender (errors are silently ignored because the task may have already exited).
 
+mod crypto;
+mod http_server;
+
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::HashMap;
-use tokio::sync::oneshot;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::{oneshot, RwLock};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
 #[derive(Debug, Clone)]
@@ -30,6 +34,7 @@ pub struct RunConfig {
     pub account_addr: String,
     pub account_sk_hex: String,
     pub pke_dk_hex: String,
+    pub port: Option<u16>,
 }
 
 // ── On-chain state representation ───────────────────────────────────────────
@@ -43,6 +48,7 @@ struct NetworkState {
     cur_nodes: Vec<String>,
     dkgs_in_progress: Vec<String>,
     epoch_change_state: Option<EpochChangeState>,
+    secrets: Vec<String>,
 }
 
 fn parse_addr_array(v: &Value) -> Vec<String> {
@@ -58,6 +64,7 @@ fn parse_addr_array(v: &Value) -> Vec<String> {
 fn parse_network_state(data: &Value) -> NetworkState {
     let cur_nodes = parse_addr_array(&data["cur_nodes"]);
     let dkgs_in_progress = parse_addr_array(&data["dkgs_in_progress"]);
+    let secrets = parse_addr_array(&data["secrets"]);
 
     // Move `Option<T>` encodes as `{"vec": []}` (None) or `{"vec": [<T>]}` (Some).
     let epoch_change_state = data["epoch_change_state"]["vec"]
@@ -68,7 +75,7 @@ fn parse_network_state(data: &Value) -> NetworkState {
             dkr_sessions: parse_addr_array(&ecs["dkr_sessions"]),
         });
 
-    NetworkState { cur_nodes, dkgs_in_progress, epoch_change_state }
+    NetworkState { cur_nodes, dkgs_in_progress, epoch_change_state, secrets }
 }
 
 async fn fetch_network_state(rpc: &AptosRpc, ace: &str) -> Result<NetworkState> {
@@ -96,14 +103,34 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let account_addr = normalize_account_addr(&config.account_addr);
     let ace = normalize_account_addr(&config.ace_contract);
 
+    // Decode PKE decryption key bytes once.
+    let pke_dk_bytes: Vec<u8> = {
+        let raw = config.pke_dk_hex.trim().trim_start_matches("0x");
+        hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk_hex decode: {}", e))?
+    };
+
     println!(
         "network-node: starting (account={} ace={})",
         account_addr, ace
     );
 
+    // Shared state for the HTTP server.
+    let keypair_shares: Arc<RwLock<HashMap<String, [u8; 32]>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let cur_nodes_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+
+    // Spawn HTTP server if a port was configured.
+    if let Some(port) = config.port {
+        let ks = keypair_shares.clone();
+        let cn = cur_nodes_shared.clone();
+        let my = account_addr.clone();
+        tokio::spawn(http_server::run(port, ks, cn, my));
+    }
+
     let mut dkg_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut dkr_src_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut dkr_dst_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -115,6 +142,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 stop_tasks(&mut dkg_tasks);
                 stop_tasks(&mut dkr_src_tasks);
                 stop_tasks(&mut dkr_dst_tasks);
+                stop_tasks(&mut urh_tasks);
                 return Ok(());
             }
             _ = interval.tick() => {}
@@ -141,9 +169,68 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
         let in_cur_nodes = state.cur_nodes.iter().any(|n| n == &account_addr);
 
+        // Update cur_nodes for the HTTP server's eval-point lookup.
+        *cur_nodes_shared.write().await = state.cur_nodes.clone();
+
+        // ── URH (UserRequestHandler) tasks ─────────────────────────────────
+        // For each session address in state.secrets, maintain a background task that:
+        //   1. Reconstructs this node's Shamir scalar share.
+        //   2. Inserts it into keypair_shares so the HTTP server can serve requests.
+        //   3. Waits for shutdown, then removes it from keypair_shares.
+
+        let active_secrets: HashSet<String> = if in_cur_nodes {
+            state.secrets.iter().cloned().collect()
+        } else {
+            HashSet::new()
+        };
+
+        for secret_addr in &active_secrets {
+            if urh_tasks.contains_key(secret_addr) {
+                continue;
+            }
+            let (tx, rx) = oneshot::channel::<()>();
+            urh_tasks.insert(secret_addr.clone(), tx);
+
+            let rpc2 = rpc.clone();
+            let ace2 = ace.clone();
+            let secret = secret_addr.clone();
+            let pke_dk = pke_dk_bytes.clone();
+            let my = account_addr.clone();
+            let shares = keypair_shares.clone();
+
+            tokio::spawn(async move {
+                match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
+                    Ok((scalar_le32, keypair_id)) => {
+                        shares.write().await.insert(keypair_id.clone(), scalar_le32);
+                        println!("network-node: [urh] registered keypair_id={}", keypair_id);
+                        let _ = rx.await;
+                        shares.write().await.remove(&keypair_id);
+                        println!("network-node: [urh] unregistered keypair_id={}", keypair_id);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "network-node: [urh] reconstruct_share failed for {}: {:#}",
+                            secret, e
+                        );
+                    }
+                }
+            });
+            println!("network-node: started URH task for secret={}", secret_addr);
+        }
+
+        let stale_secrets: Vec<String> = urh_tasks
+            .keys()
+            .filter(|k| !active_secrets.contains(*k))
+            .cloned()
+            .collect();
+        for k in stale_secrets {
+            if let Some(tx) = urh_tasks.remove(&k) {
+                let _ = tx.send(());
+                println!("network-node: stopped URH task for secret={}", k);
+            }
+        }
+
         // ── DKG sub-tasks ───────────────────────────────────────────────────
-        // TODO: also start UserRequestHandler tasks for each session in State.secrets
-        //       when in_cur_nodes (serves decryption requests from clients).
 
         if in_cur_nodes {
             for session_addr in &state.dkgs_in_progress {

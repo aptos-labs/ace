@@ -28,6 +28,12 @@ module ace::worker_config {
         exists<PkeEncryptionKey>(worker)
     }
 
+    /// Return the worker's registered HTTP endpoint string.
+    #[view]
+    public fun get_endpoint(worker: address): String acquires Endpoint {
+        borrow_global<Endpoint>(worker).endpoint
+    }
+
     /// Return BCS encoding of the worker's PKE encryption key.
     /// Output: [u8 variant=0x00][u8 ULEB128(32)][32B enc_base][u8 ULEB128(32)][32B public_point] = 67 bytes.
     /// Compatible with ts-sdk `pke.EncryptionKey.fromBytes()` and `vss-common` `pke::EncryptionKey::from_bytes()`.

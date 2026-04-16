@@ -121,13 +121,13 @@ module ace::dkg {
     }
 
     public fun completed(session_addr: address): bool {
-        let session = borrow_global<Session>(session_addr);
-        session.state == STATE__DONE
+        if (!exists<Session>(session_addr)) return false;
+        borrow_global<Session>(session_addr).state == STATE__DONE
     }
 
     public fun failed(session_addr: address): bool {
-        let session = borrow_global<Session>(session_addr);
-        session.state == STATE__FAIL
+        if (!exists<Session>(session_addr)) return false;
+        borrow_global<Session>(session_addr).state == STATE__FAIL
     }
 
     public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64) {

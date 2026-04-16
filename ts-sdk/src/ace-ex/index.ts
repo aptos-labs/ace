@@ -8,10 +8,13 @@
  */
 
 import * as AptosSDK from "@aptos-labs/ts-sdk";
-import { AccountAddress, Deserializer, Serializer } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
+import * as dkg from "../dkg";
+import * as tibe from "../t-ibe";
+import { State as NetworkState } from "../network";
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermission } from "./solana";
 
@@ -539,27 +542,113 @@ export class RequestForDecryptionKey {
     }
 }
 
-export function encrypt({keypairId, contractId, domain, plaintext}: {keypairId: AccountAddress, contractId: ContractID, domain: Uint8Array, plaintext: Uint8Array}): Result<{fullDecryptionDomain: FullDecryptionDomain, ciphertext: Uint8Array}> {
-    const task = (extra: Record<string, any>) => {
-        const fullDecryptionDomain = new FullDecryptionDomain({
-            contractId: contractId,
-            domain,
-        });
-        console.log(keypairId, contractId, domain, plaintext, extra, fullDecryptionDomain);
-        //TODO: fetch onchain keypair state, extract base point and public point, convert it to an t-IBE MPK, then tibe.encrypt().
-        //the identity will be the fullDecryptionDomain.toBytes(). it should be straightforward to construct fullDecryptionDomain from input.
-        throw 'not implemented';
-    };
-    return Result.capture({task, recordsExecutionTimeMs: true});
+export async function encrypt({keypairId, contractId, domain, plaintext, aceContract, rpcUrl}: {
+    keypairId: AccountAddress,
+    contractId: ContractID,
+    domain: Uint8Array,
+    plaintext: Uint8Array,
+    aceContract: string,
+    rpcUrl?: string,
+}): Promise<Result<{fullDecryptionDomain: FullDecryptionDomain, ciphertext: Uint8Array}>> {
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(rpcUrl);
+            const fdd = new FullDecryptionDomain({contractId, domain});
+
+            // Fetch DKG session to get master public key (basePoint + resultPk).
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContract}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [keypairId.toStringLong()],
+                },
+            });
+            const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
+            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ace_ex.encrypt: parse DKG session');
+            if (!session.resultPk) throw 'ace_ex.encrypt: DKG session has no resultPk (not yet finalized)';
+
+            const mpk = tibe.MasterPublicKey.newBonehFranklinBls12381ShortPkOtpHmac(session.basePoint, session.resultPk)
+                .unwrapOrThrow('ace_ex.encrypt: construct MPK');
+
+            const ciph = tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
+                .unwrapOrThrow('ace_ex.encrypt: tibe.encrypt failed');
+
+            return {fullDecryptionDomain: fdd, ciphertext: ciph.toBytes()};
+        },
+        recordsExecutionTimeMs: true,
+    });
 }
 
-export function decrypt({keypairId, ContractId, domain, proof, ciphertext}: {keypairId: AccountAddress, ContractId: ContractID, domain: Uint8Array, proof: ProofOfPermission, ciphertext: Uint8Array}): Result<Uint8Array> {
-    const task = (extra: Record<string, any>) => {
-        console.log(keypairId, ContractId, domain, proof, ciphertext, extra);
-        throw 'not implemented';
-        // TODO: fetch current ace worker set. send RequestForDecryptionKey to each worker, collect the responses, and tibe.decrypt().
-    };
-    return Result.capture({task, recordsExecutionTimeMs: true});
+export async function decrypt({keypairId, contractId, domain, proof, ciphertext, aceContract, rpcUrl}: {
+    keypairId: AccountAddress,
+    contractId: ContractID,
+    domain: Uint8Array,
+    proof: ProofOfPermission,
+    ciphertext: Uint8Array,
+    aceContract: string,
+    rpcUrl?: string,
+}): Promise<Result<Uint8Array>> {
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(rpcUrl);
+
+            // Fetch current committee from network state.
+            const [stateHex] = await aptos.view({
+                payload: {
+                    function: `${aceContract}::network::state_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [],
+                },
+            });
+            const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
+            const state = NetworkState.fromBytes(stateBytes).unwrapOrThrow('ace_ex.decrypt: parse network state');
+
+            // Fetch HTTP endpoint for each node in curNodes.
+            const endpoints = await Promise.all(state.curNodes.map(async (nodeAddr) => {
+                const [endpoint] = await aptos.view({
+                    payload: {
+                        function: `${aceContract}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                        typeArguments: [],
+                        functionArguments: [nodeAddr.toStringLong()],
+                    },
+                });
+                return endpoint as string;
+            }));
+
+            // POST RequestForDecryptionKey to all workers concurrently.
+            const reqHex = new RequestForDecryptionKey({keypairId, contractId, domain, proof}).toHex();
+            const idkShares = (await Promise.all(endpoints.map(async (endpoint) => {
+                try {
+                    const ctrl = new AbortController();
+                    const tid = setTimeout(() => ctrl.abort(), 8000);
+                    const resp = await fetch(endpoint, {method: 'POST', body: reqHex, signal: ctrl.signal});
+                    clearTimeout(tid);
+                    if (!resp.ok) return null;
+                    const hexText = (await resp.text()).trim();
+                    return tibe.IdentityDecryptionKeyShare.fromHex(hexText).okValue ?? null;
+                } catch {
+                    return null;
+                }
+            }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);
+
+            if (idkShares.length < state.curThreshold) {
+                throw `ace_ex.decrypt: need ${state.curThreshold} shares, got ${idkShares.length}`;
+            }
+
+            return tibe.decrypt({
+                idkShares,
+                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ace_ex.decrypt: parse ciphertext'),
+            }).unwrapOrThrow('ace_ex.decrypt: tibe.decrypt failed');
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
+function createAptos(rpcUrl?: string): Aptos {
+    return new Aptos(new AptosConfig({
+        network: Network.CUSTOM,
+        fullnode: rpcUrl ?? 'http://localhost:8080/v1',
+    }));
 }
 
 // function getAptosChainName(chainId: number): string {

@@ -16,6 +16,7 @@ use vss_common::{
     normalize_account_addr,
     pke::{pke_decrypt, BcsCiphertext},
     parse_ed25519_signing_key_hex,
+    reconstruct_share,
     AptosRpc,
 };
 
@@ -25,6 +26,7 @@ const STATE_FAIL: u8 = 2;
 #[derive(Debug, Clone)]
 struct DkrSession {
     original_session: String,
+    previous_session: String,
     current_nodes: Vec<String>,
     vss_sessions: Vec<String>,
     state_code: u8,
@@ -54,6 +56,12 @@ fn parse_dkr_session_data(data: &Value) -> Result<DkrSession> {
             .ok_or_else(|| anyhow!("missing original_session in DKR session"))?,
     );
 
+    let previous_session = normalize_account_addr(
+        data["previous_session"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing previous_session in DKR session"))?,
+    );
+
     let current_nodes = data["current_nodes"]
         .as_array()
         .ok_or_else(|| anyhow!("missing current_nodes in DKR session"))?
@@ -74,24 +82,26 @@ fn parse_dkr_session_data(data: &Value) -> Result<DkrSession> {
         _ => return Err(anyhow!("missing or invalid state_code in DKR session")),
     };
 
-    Ok(DkrSession { original_session, current_nodes, vss_sessions, state_code })
+    Ok(DkrSession { original_session, previous_session, current_nodes, vss_sessions, state_code })
 }
 
 /// Reconstruct the old committee member's DKG share by summing decrypted sub-shares
 /// from the contributing DKG VSS sessions.
 ///
-/// The DKG share for member at index `my_dkg_idx` is:
-///   f(my_dkg_idx + 1) = Σ_{k : done_flags[k]} sub_share_k[my_dkg_idx]
-///
-/// where sub_share_k[my_dkg_idx] is the Fr scalar from the k-th DKG VSS session's
-/// private_share_messages[my_dkg_idx], decrypted with `pke_dk_bytes`.
+/// Looks up `my_addr`'s position in the VSS session's `share_holders` so the correct
+/// index is used regardless of which epoch committee is calling.
 async fn reconstruct_dkg_share(
     rpc: &AptosRpc,
     ace: &str,
     original_dkg_session: &str,
-    my_dkg_idx: usize,
+    my_addr: &str,
     pke_dk_bytes: &[u8],
 ) -> Result<[u8; 32]> {
+    let my_addr_bytes: [u8; 32] = hex::decode(my_addr.trim_start_matches("0x"))
+        .map_err(|e| anyhow!("my_addr hex decode '{}': {}", my_addr, e))?
+        .try_into()
+        .map_err(|_| anyhow!("my_addr '{}' must be 32 bytes", my_addr))?;
+
     // Fetch DKG session JSON.
     let dkg_data = rpc
         .get_resource_data(original_dkg_session, &format!("{}::dkg::Session", ace))
@@ -122,6 +132,7 @@ async fn reconstruct_dkg_share(
 
     // Sum sub-shares from contributing VSS sessions.
     let mut dkg_share_fr = Fr::from(0u64);
+    let mut my_dkg_idx: Option<usize> = None;
 
     for (k, vss_addr) in dkg_vss_sessions.iter().enumerate() {
         if !done_flags[k] {
@@ -131,16 +142,28 @@ async fn reconstruct_dkg_share(
         let bcs_session = rpc.get_session_bcs_decoded(ace, vss_addr).await
             .map_err(|e| anyhow!("failed to BCS-decode DKG VSS session {}: {}", vss_addr, e))?;
 
+        // Find my position in share_holders on the first done session.
+        if my_dkg_idx.is_none() {
+            my_dkg_idx = bcs_session.share_holders.iter().position(|h| h == &my_addr_bytes);
+            if my_dkg_idx.is_none() {
+                return Err(anyhow!(
+                    "my_addr {} not found in share_holders of DKG VSS {}",
+                    my_addr, vss_addr
+                ));
+            }
+        }
+        let idx = my_dkg_idx.unwrap();
+
         let dc0 = bcs_session
             .dealer_contribution_0
             .ok_or_else(|| anyhow!("DKG VSS session {} (done_flags[{}]=true) has no DC0", vss_addr, k))?;
 
         let ct = dc0
             .private_share_messages
-            .get(my_dkg_idx)
+            .get(idx)
             .ok_or_else(|| anyhow!(
                 "DKG VSS session {} has only {} share messages, need index {}",
-                vss_addr, dc0.private_share_messages.len(), my_dkg_idx
+                vss_addr, dc0.private_share_messages.len(), idx
             ))?;
 
         let ct_inner = match ct {
@@ -164,6 +187,10 @@ async fn reconstruct_dkg_share(
             .map_err(|_| anyhow!("share bytes wrong length"))?;
 
         dkg_share_fr += fr_from_le_bytes(y_bytes);
+    }
+
+    if my_dkg_idx.is_none() {
+        return Err(anyhow!("no done VSS sessions in DKG {}", original_dkg_session));
     }
 
     Ok(fr_to_le_bytes(dkg_share_fr))
@@ -204,21 +231,23 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         my_src_idx, my_src_idx, session.vss_sessions[my_src_idx]
     );
 
-    // Reconstruct the DKG share (= this old member's secret for the DKR VSS).
-    // The original DKG session's VSS sessions hold the encrypted sub-shares.
+    // Reconstruct this node's scalar share from the previous session (DKG or DKR).
+    // Using the previous_session (not original_session) ensures correctness for
+    // multi-epoch resharing: workers who joined in a later epoch have their share
+    // stored in the DKR session that brought them in, not the original DKG session.
     println!(
-        "dkr-src: reconstructing DKG share from original session={}",
-        session.original_session
+        "dkr-src: reconstructing share from previous session={}",
+        session.previous_session
     );
-    let dkg_share_bytes = reconstruct_dkg_share(
+    let (dkg_share_bytes, _) = reconstruct_share(
         &rpc,
         &ace,
-        &session.original_session,
-        my_src_idx,
+        &session.previous_session,
+        &account_addr,
         &pke_dk_bytes,
     )
     .await?;
-    println!("dkr-src: DKG share reconstructed successfully");
+    println!("dkr-src: share reconstructed successfully");
 
     // Spawn VSS dealer for this old-committee member's VSS session,
     // using the reconstructed DKG share as the VSS secret.

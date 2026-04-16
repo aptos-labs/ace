@@ -40,10 +40,3 @@ export * as ace_ex from "./ace-ex";
 
 // Public Key Encryption
 export * as pke from "./pke";
-
-// Threshold IBE
-export * as threshold_ibe from "./threshold-ibe";
-
-// Threshold ACE
-export * as ace_threshold from "./ace/threshold";
-

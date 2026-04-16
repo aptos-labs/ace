@@ -33,6 +33,9 @@ struct RunArgs {
     /// PKE decryption key hex (0x prefix optional).
     #[arg(long)]
     pke_dk_hex: String,
+    /// TCP port for the UserRequestHandler HTTP server (optional).
+    #[arg(long)]
+    port: Option<u16>,
 }
 
 #[tokio::main]
@@ -46,7 +49,9 @@ async fn main() {
                 account_addr: args.account_addr,
                 account_sk_hex: args.account_sk,
                 pke_dk_hex: args.pke_dk_hex,
+                port: args.port,
             };
+
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
             tokio::spawn(async move {

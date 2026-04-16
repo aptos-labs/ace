@@ -19,9 +19,6 @@
  *   - Bob registers "pong-blob" (pay-to-download) and encrypts "PONG"
  *   - Alice purchases pong-blob and decrypts "PONG"
  *
- * Note: ace_ex.encrypt / ace_ex.decrypt are stubs; the test is expected to
- * fail at Step 10 until the implementations are complete.
- *
  * Run:
  *   cd tests/e2e && pnpm test:enc-dec
  */
@@ -32,14 +29,13 @@ import {
     Ed25519PrivateKey,
     Serializer,
 } from '@aptos-labs/ts-sdk';
-import { ace_ex } from '@aptos-labs/ace-sdk';
+import { ace_ex, pke } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
-import { existsSync, rmSync } from 'fs';
-import * as path from 'path';
 
 import {
     ACCESS_CONTROL_CONTRACT_DIR,
     CHAIN_ID,
+    LOCALNET_URL,
     WORKER_BASE_PORT,
 } from './config';
 import {
@@ -55,12 +51,12 @@ import {
     getNetworkState,
 } from './helpers';
 import {
-    buildWorker,
     deployContract,
-    registerWorker,
-    spawnWorker,
-    waitWorkerHealthy,
 } from './infra';
+import {
+    buildRustWorkspace,
+    spawnNetworkNode,
+} from './network-clients';
 
 const TOTAL_WORKERS = 5;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
@@ -77,12 +73,6 @@ function step(n: string | number, msg: string): void {
 async function main() {
     const workers: ChildProcess[] = [];
     let localnetProc: ChildProcess | null = null;
-
-    // Clean up stale share files from previous runs.
-    for (let i = 0; i < TOTAL_WORKERS; i++) {
-        const jsonPath = path.join(process.cwd(), `worker_shares_${WORKER_BASE_PORT + i}.json`);
-        if (existsSync(jsonPath)) rmSync(jsonPath);
-    }
 
     let exitCode = 0;
     try {
@@ -112,7 +102,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────
@@ -130,11 +120,27 @@ async function main() {
 
         // ── Step 4: Register all workers on-chain ────────────────────────────
         // Must happen BEFORE start_initial_epoch: the contract validates has_pke_enc_key(node).
-        step(4, 'Register all worker endpoints on-chain (before start_initial_epoch)');
+        step(4, 'Register all worker PKE keys and endpoints on-chain (before start_initial_epoch)');
+        const encKeypairs = Array.from({ length: TOTAL_WORKERS }, () => pke.keygen());
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
             console.log(`  Registering worker ${i}: ${endpoint}`);
-            registerWorker(workerKeys[i], endpoint, adminAddr);
+            assertTxnSuccess(
+                await submitTxn({
+                    signer: workerAccounts[i],
+                    entryFunction: `${adminAddr}::worker_config::register_pke_enc_key`,
+                    args: [Array.from(encKeypairs[i].encryptionKey.toBytes())],
+                }),
+                `register_pke_enc_key worker ${i}`,
+            );
+            assertTxnSuccess(
+                await submitTxn({
+                    signer: workerAccounts[i],
+                    entryFunction: `${adminAddr}::worker_config::register_endpoint`,
+                    args: [endpoint],
+                }),
+                `register_endpoint worker ${i}`,
+            );
         }
 
         // ── Step 5: Admin calls start_initial_epoch (epoch 0) ────────────────
@@ -151,20 +157,25 @@ async function main() {
         console.log(`  Epoch 0 committee set (workers ${EPOCH0_WORKER_INDICES}, threshold=${EPOCH0_THRESHOLD})`);
 
         // ── Step 6: Build worker binary ───────────────────────────────────────
-        step(6, 'Build worker binary');
-        buildWorker();
+        step(6, 'Build network-node binary');
+        await buildRustWorkspace();
 
         // ── Step 6b: Spawn all worker processes ───────────────────────────────
-        step('6b', `Spawn ${TOTAL_WORKERS} worker processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1})`);
+        step('6b', `Spawn ${TOTAL_WORKERS} network-node processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1})`);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
-            const proc = spawnWorker(workerKeys[i], WORKER_BASE_PORT + i, adminAddr);
+            const pkeDkBytes = encKeypairs[i].decryptionKey.toBytes();
+            const pkeDkHex = `0x${Buffer.from(pkeDkBytes).toString('hex')}`;
+            const proc = spawnNetworkNode({
+                runAs: workerAccounts[i],
+                pkeDkHex,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
+                port: WORKER_BASE_PORT + i,
+            });
             workers.push(proc);
         }
 
-        step('6c', 'Wait for all workers to become healthy');
-        for (let i = 0; i < TOTAL_WORKERS; i++) {
-            await waitWorkerHealthy(WORKER_BASE_PORT + i);
-        }
+        step('6c', 'Wait for workers to initialize');
         await sleep(2000);
 
         // ── Step 7: Admin creates keypair-0 DKG ──────────────────────────────
@@ -187,6 +198,7 @@ async function main() {
         const state0 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-0 DKG');
         const keypair0Id = state0.secrets[0];
         console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
+        await sleep(10000); // workers derive shares for keypair-0
 
         // ── Step 8: Deploy access_control contract ────────────────────────────
         step(8, 'Deploy and initialize access_control contract');
@@ -230,7 +242,6 @@ async function main() {
         }
 
         // ── Step 10: Alice encrypts "PING" with keypair-0 ────────────────────
-        // NOTE: ace_ex.encrypt is a stub; this step is expected to fail until implemented.
         step(10, 'Alice encrypts "PING" with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
         const contractId = ace_ex.ContractID.newAptos({
@@ -240,11 +251,13 @@ async function main() {
             functionName: 'check_permission',
         });
 
-        const pingEncResult = ace_ex.encrypt({
+        const pingEncResult = await ace_ex.encrypt({
             keypairId: keypair0Id,
             contractId,
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
@@ -269,7 +282,7 @@ async function main() {
             return stateResult.okValue!.epoch === 1;
         }, 120_000);
         console.log('  Epoch advanced to 1');
-        await sleep(6000); // workers re-derive shares for epoch-1 committee
+        await sleep(10000); // workers re-derive shares for epoch-1 committee
 
         // ── Step 12: Bob decrypts "PING" (keypair-0, epoch-1 committee) ───────
         step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee)');
@@ -281,12 +294,14 @@ async function main() {
                 signature: bob.sign(msgToSign),
                 fullMessage: msgToSign,
             });
-            const pingDecResult = ace_ex.decrypt({
+            const pingDecResult = await ace_ex.decrypt({
                 keypairId: keypair0Id,
-                ContractId: contractId,
+                contractId,
                 domain: pingDomain,
                 proof: pingProof,
                 ciphertext: pingCiph,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -311,6 +326,7 @@ async function main() {
         const state1 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-1 DKG');
         const keypair1Id = state1.secrets[1];
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
+        await sleep(10000); // workers derive shares for keypair-1
 
         // ── Step 14: Epoch change 1→2 ─────────────────────────────────────────
         // Workers 2,3,4 form the new committee; worker 1 leaves.
@@ -330,7 +346,7 @@ async function main() {
             return stateResult.okValue!.epoch === 2;
         }, 120_000);
         console.log('  Epoch advanced to 2');
-        await sleep(6000); // workers re-derive shares for epoch-2 committee
+        await sleep(10000); // workers re-derive shares for epoch-2 committee
 
         // ── Step 15: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
         step(15, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');
@@ -360,11 +376,13 @@ async function main() {
             console.log('  pong-blob registered (owner=Bob, pay-to-download price=1)');
         }
 
-        const pongEncResult = ace_ex.encrypt({
+        const pongEncResult = await ace_ex.encrypt({
             keypairId: keypair1Id,
             contractId,
             domain: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pongEncResult.isOk, `encrypt PONG failed: ${pongEncResult.errValue}`);
         const { fullDecryptionDomain: pongFdd, ciphertext: pongCiph } = pongEncResult.okValue!;
@@ -384,7 +402,7 @@ async function main() {
             await submitTxn({
                 signer: alice,
                 entryFunction: `${adminAddr}::access_control::purchase`,
-                args: [Array.from(pongDomain)],
+                args: [new TextDecoder().decode(pongDomain)],
             }),
             'access_control::purchase',
         );
@@ -398,12 +416,14 @@ async function main() {
                 signature: alice.sign(pongMsg),
                 fullMessage: pongMsg,
             });
-            const pongDecResult = ace_ex.decrypt({
+            const pongDecResult = await ace_ex.decrypt({
                 keypairId: keypair1Id,
-                ContractId: contractId,
+                contractId,
                 domain: pongDomain,
                 proof: pongProof,
                 ciphertext: pongCiph,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(pongDecResult.isOk, `decrypt PONG failed: ${pongDecResult.errValue}`);
             assert(new TextDecoder().decode(pongDecResult.okValue!) === 'PONG', 'PONG plaintext mismatch');
@@ -423,10 +443,6 @@ async function main() {
         if (localnetProc) {
             console.log('Stopping localnet...');
             localnetProc.kill('SIGTERM');
-        }
-        for (let i = 0; i < TOTAL_WORKERS; i++) {
-            const jsonPath = path.join(process.cwd(), `worker_shares_${WORKER_BASE_PORT + i}.json`);
-            if (existsSync(jsonPath)) rmSync(jsonPath);
         }
         process.exit(exitCode);
     }

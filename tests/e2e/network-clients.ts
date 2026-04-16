@@ -34,6 +34,8 @@ export type NetworkNodeSpawnInput = {
     /** Published module address (`admin` / ace contract). */
     aceContract: string;
     rpcUrl?: string;
+    /** TCP port for the UserRequestHandler HTTP server. */
+    port?: number;
 };
 
 /**
@@ -61,6 +63,9 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
         '--account-sk', `0x${pkHex}`,
         '--pke-dk-hex', pkeDkHex,
     ];
+    if (opts.port !== undefined) {
+        args.push('--port', String(opts.port));
+    }
     console.log(`  $ ${NETWORK_NODE_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(NETWORK_NODE_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },

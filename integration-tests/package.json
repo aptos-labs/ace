@@ -11,7 +11,8 @@
     "test:network-only": "tsx test-network-protocol.ts",
     "full-happy-path": "tsx full-happy-path.ts",
     "test:access-failures": "tsx test-access-failures.ts",
-    "test:fault-tolerance": "tsx test-fault-tolerance.ts"
+    "test:fault-tolerance": "tsx test-fault-tolerance.ts",
+    "test:auto-epoch": "tsx test-auto-epoch-change.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

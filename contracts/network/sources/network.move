@@ -10,7 +10,7 @@
 ///     Otherwise, try stop all DKR-SRC clients ever started since the beginning of this node process.
 ///   - for every, `State.epoch_change_state.dkr_sessions`, ensure a DKR-DST client has started, if myself is a next epoch node.
 ///     Otherwise, try stop all DKR-DST clients ever started since the beginning of this node process.
-/// 
+///
 module ace::network {
     use std::error;
     use ace::worker_config;
@@ -21,13 +21,13 @@ module ace::network {
     use ace::group;
     use std::bcs;
     use std::signer::address_of;
+    use aptos_framework::object::{Self, ExtendRef};
 
     const E_ONLY_ADMIN_CAN_DO_THIS: u64 = 1;
     const E_INVALID_NODE: u64 = 2;
     const E_EPOCH_CHANGE_ALREADY_IN_PROGRESS: u64 = 3;
     const E_DKGS_IN_PROGRESS: u64 = 4;
-
-    const EPOCH_DURATION_MICROS: u64 = 600_000_000; // 10 minutes
+    const E_ALREADY_INITIALIZED: u64 = 5;
 
     struct EpochChangeState has copy, drop, store {
         nxt_nodes: vector<address>,
@@ -45,9 +45,27 @@ module ace::network {
         epoch_change_state: Option<EpochChangeState>,
     }
 
+    /// Stored at @ace after `initialize()`. Enables automatic epoch rotation.
+    struct AutoEpochChanger has key {
+        extend_ref: ExtendRef,
+        epoch_duration_micros: u64,
+    }
+
     #[view]
     public fun state_bcs(): vector<u8> {
         bcs::to_bytes(borrow_global<State>(@ace))
+    }
+
+    /// Call once, right after contract publish, to enable automatic epoch rotation.
+    entry fun initialize(ace: &signer, epoch_duration_secs: u64) {
+        assert!(@ace == address_of(ace), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        assert!(!exists<AutoEpochChanger>(@ace), error::already_exists(E_ALREADY_INITIALIZED));
+        let object_ref = object::create_sticky_object(@ace);
+        let extend_ref = object::generate_extend_ref(&object_ref);
+        move_to(ace, AutoEpochChanger {
+            extend_ref,
+            epoch_duration_micros: epoch_duration_secs * 1_000_000,
+        });
     }
 
     entry fun start_initial_epoch(ace: &signer, nodes: vector<address>, threshold: u64) {
@@ -66,21 +84,31 @@ module ace::network {
             epoch_change_state: option::none(),
         });
     }
-    
-    entry fun start_epoch_change(ace: &signer, new_nodes: vector<address>, new_threshold: u64) {
-        assert!(@ace == address_of(ace), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
-        let state = borrow_global_mut<State>(@ace);
+
+    fun do_start_epoch_change(
+        caller: &signer,
+        state: &mut State,
+        new_nodes: vector<address>,
+        new_threshold: u64,
+    ) {
         assert!(state.epoch_change_state.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
         assert!(state.dkgs_in_progress.is_empty(), error::invalid_state(E_DKGS_IN_PROGRESS));
-
         state.epoch_change_state = option::some(EpochChangeState {
             nxt_nodes: new_nodes,
             nxt_threshold: new_threshold,
-            dkr_sessions: state.secrets.map(|secret_addr| dkr::new_session(ace, secret_addr, new_nodes, new_threshold)),
+            dkr_sessions: state.secrets.map_ref(|secret_addr| {
+                dkr::new_session(caller, *secret_addr, new_nodes, new_threshold)
+            }),
         });
     }
 
-    entry fun touch() {
+    entry fun start_epoch_change(ace: &signer, new_nodes: vector<address>, new_threshold: u64) acquires State {
+        assert!(@ace == address_of(ace), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        let state = borrow_global_mut<State>(@ace);
+        do_start_epoch_change(ace, state, new_nodes, new_threshold);
+    }
+
+    entry fun touch() acquires State, AutoEpochChanger {
         let state = borrow_global_mut<State>(@ace);
         let now_micros = timestamp::now_microseconds();
         if (state.epoch_change_state.is_some()) {
@@ -97,6 +125,17 @@ module ace::network {
                 state.dkgs_in_progress.remove_value(&dkg);
                 state.secrets.push_back(dkg);
             });
+
+            // Auto epoch change: fire if epoch is stale and no blockers.
+            if (exists<AutoEpochChanger>(@ace) && state.dkgs_in_progress.is_empty()) {
+                let changer = borrow_global<AutoEpochChanger>(@ace);
+                if (now_micros - state.epoch_start_time_micros >= changer.epoch_duration_micros) {
+                    let virtual_signer = object::generate_signer_for_extending(&changer.extend_ref);
+                    let new_nodes = state.cur_nodes.map_ref(|a| *a);
+                    let new_threshold = state.cur_threshold;
+                    do_start_epoch_change(&virtual_signer, state, new_nodes, new_threshold);
+                }
+            }
         }
     }
 

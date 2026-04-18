@@ -206,7 +206,6 @@ fn parse_aptos_proof(bytes: &[u8]) -> Result<AptosProof> {
 // ── Solana Proof Parsing ──────────────────────────────────────────────────────
 
 struct SolanaProof {
-    #[allow(dead_code)]
     inner_scheme: u8, // 0 = legacy/unversioned, 1 = versioned
     txn_bytes: Vec<u8>,
 }
@@ -393,12 +392,19 @@ async fn verify_solana(fdd: &ParsedFdd, proof: &SolanaProof) -> Result<()> {
         _ => return Err(anyhow!("verify_solana: chain is not Solana")),
     };
 
+    // inner_scheme 0 = legacy/unversioned, 1 = versioned (matches TypeScript SCHEME_UNVERSIONED/VERSIONED).
+    // NOTE: do NOT detect is_versioned from the first byte of txn_bytes.  A serialized
+    // VersionedTransaction starts with the compact-u16 signature count (e.g. 0x01 for
+    // one signature), NOT the v0 prefix byte (0x80).  The v0 prefix byte lives inside
+    // the serialised message, after the signatures.  Only `inner_scheme` is reliable.
+    let is_versioned = proof.inner_scheme == 1;
+
     // 1. Structural validation: instruction count, program ID, domain in data.
-    validate_solana_txn(&proof.txn_bytes, expected_program_id, &fdd.domain)?;
+    validate_solana_txn(&proof.txn_bytes, expected_program_id, &fdd.domain, is_versioned)?;
 
     // 2. Signature + program execution via RPC simulation.
     let rpc_url = solana_rpc_url(known_chain_name)?;
-    simulate_solana_txn(&proof.txn_bytes, &rpc_url).await?;
+    simulate_solana_txn(&proof.txn_bytes, &rpc_url, is_versioned).await?;
 
     Ok(())
 }
@@ -408,8 +414,8 @@ fn validate_solana_txn(
     txn: &[u8],
     expected_program_id: &[u8; 32],
     expected_domain: &[u8],
+    is_versioned: bool,
 ) -> Result<()> {
-    let is_versioned = txn.first().map(|&b| b >= 0x80).unwrap_or(false);
     let (account_keys, instructions) = if is_versioned {
         parse_solana_txn_versioned(txn)?
     } else {
@@ -473,9 +479,14 @@ fn parse_solana_txn_legacy(bytes: &[u8]) -> Result<(Vec<[u8; 32]>, Vec<SolanaIns
 }
 
 fn parse_solana_txn_versioned(bytes: &[u8]) -> Result<(Vec<[u8; 32]>, Vec<SolanaInstruction>)> {
-    let mut pos = 1usize; // skip version byte
+    let mut pos = 0usize;
+    // compact-u16 signature count + signatures (same layout as legacy)
     let (num_sigs, n) = read_compact_u16(bytes, pos)?;
     pos += n + num_sigs as usize * 64;
+    // Version prefix byte (0x80 | version, e.g. 0x80 for v0) — sits between
+    // the signatures section and the message header; absent in legacy transactions.
+    if bytes.len() < pos + 1 { return Err(anyhow!("Solana versioned: version byte truncated")); }
+    pos += 1;
     if bytes.len() < pos + 3 { return Err(anyhow!("Solana versioned: header truncated")); }
     pos += 3;
     let (num_keys, n) = read_compact_u16(bytes, pos)?;
@@ -525,7 +536,19 @@ fn read_solana_instructions(bytes: &[u8], pos: &mut usize) -> Result<Vec<SolanaI
 }
 
 /// Mirrors `assertTransactionSimulationPasses` in `ts-sdk/src/ace-ex/solana.ts`.
-async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str) -> Result<()> {
+///
+/// TypeScript behaviour (which we mirror):
+///   - **Versioned** tx: `connection.simulateTransaction(txn, { sigVerify: true })`
+///     → signature-verified simulation, blockhash must still be in the recent cache.
+///   - **Legacy** tx: `connection.simulateTransaction(txn)` (no options)
+///     → web3.js internally fetches a fresh blockhash and replaces the tx's
+///     `recentBlockhash` before simulating, so `sigVerify` is effectively false.
+///     We replicate this with `replaceRecentBlockhash: true, sigVerify: false`.
+///
+/// `is_versioned` must come from `proof.inner_scheme == 1`, NOT from inspecting
+/// the first byte of `txn_bytes`.  A serialised `VersionedTransaction` starts with
+/// the compact-u16 signature count (0x01 for one signature), not the v0 prefix byte.
+async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, is_versioned: bool) -> Result<()> {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
 
@@ -534,11 +557,26 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str) -> Result<()> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
+    // For legacy transactions the Solana test-validator may produce blocks so
+    // quickly that the original recent-blockhash is already gone by the time
+    // we simulate.  Use replaceRecentBlockhash so the simulation succeeds; skip
+    // sigVerify because the replaced blockhash would invalidate old signatures
+    // anyway (matching the web3.js behaviour for unversioned transactions).
+    //
+    // Use "confirmed" commitment so that recently-confirmed (but not yet finalized)
+    // accounts (e.g. the Receipt PDA created by the purchase instruction) are
+    // visible to the simulation.  The TypeScript ace-ex uses Connection('...', 'confirmed').
+    let sim_config = if is_versioned {
+        json!({ "encoding": "base64", "sigVerify": true, "commitment": "confirmed" })
+    } else {
+        json!({ "encoding": "base64", "sigVerify": false, "replaceRecentBlockhash": true, "commitment": "confirmed" })
+    };
+
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "simulateTransaction",
-        "params": [txn_b64, { "encoding": "base64", "sigVerify": true }]
+        "params": [txn_b64, sim_config]
     });
 
     let resp_json: Value = client
@@ -553,7 +591,8 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str) -> Result<()> {
 
     let err_val = &resp_json["result"]["value"]["err"];
     if !err_val.is_null() {
-        return Err(anyhow!("simulateTransaction failed: {}", err_val));
+        let logs = &resp_json["result"]["value"]["logs"];
+        return Err(anyhow!("simulateTransaction failed: {} | logs: {}", err_val, logs));
     }
 
     Ok(())

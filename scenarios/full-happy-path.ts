@@ -20,7 +20,7 @@
  *   - Alice purchases pong-blob and decrypts "PONG"
  *
  * Run:
- *   cd integration-tests && pnpm full-happy-path
+ *   cd scenarios && pnpm full-happy-path
  */
 
 import {

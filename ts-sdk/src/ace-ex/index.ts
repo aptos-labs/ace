@@ -424,15 +424,19 @@ export class ProofOfPermission {
     }
 
     static createSolana({ txn }: { txn: Uint8Array }) {
+        // VersionedTransaction.deserialize() succeeds for BOTH legacy and v0 transactions
+        // without throwing — it wraps a legacy message as version='legacy'.  We must
+        // check .version explicitly; catching exceptions is not sufficient.
         try {
-            // V0 transactions have a version prefix byte
             const versioned = VersionedTransaction.deserialize(txn);
-            return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newVersioned(versioned));
-        } catch {
-            // Legacy transactions don't have the version prefix
-            const legacy = Transaction.from(Buffer.from(txn));
-            return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newUnversioned(legacy));
-        }
+            if (versioned.version !== 'legacy') {
+                // Actual versioned (v0+) transaction
+                return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newVersioned(versioned));
+            }
+        } catch {}
+        // Legacy transaction (or VersionedTransaction wrapping a legacy message)
+        const legacy = Transaction.from(Buffer.from(txn));
+        return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newUnversioned(legacy));
     }
 
     static deserialize(deserializer: Deserializer): Result<ProofOfPermission> {

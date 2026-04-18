@@ -28,7 +28,7 @@
 import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
 import { spawn, type ChildProcess } from 'child_process';
-import { mkdtempSync, openSync } from 'fs';
+import { mkdtempSync, openSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -79,14 +79,20 @@ async function main() {
     log('Deploying contracts...');
     await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
 
-    // ── Register PKE enc keys ────────────────────────────────────────────────
-    log('Registering PKE enc keys for all workers...');
+    // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
+    const WORKER_BASE_PORT = 9000;
+    log('Registering PKE enc keys and HTTP endpoints for all workers...');
     for (let i = 0; i < numWorkers; i++) {
         (await submitTxn({
             signer: workerAccounts[i]!,
             entryFunction: `${aceContract}::worker_config::register_pke_enc_key`,
             args: [encKeypairs[i]!.encryptionKey.toBytes()],
-        })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
+        })).unwrapOrThrow('Failed to register PKE key.').asSuccessOrThrow();
+        (await submitTxn({
+            signer: workerAccounts[i]!,
+            entryFunction: `${aceContract}::worker_config::register_endpoint`,
+            args: [`http://127.0.0.1:${WORKER_BASE_PORT + i}`],
+        })).unwrapOrThrow('Failed to register endpoint.').asSuccessOrThrow();
     }
 
     // ── Enable auto epoch rotation (2-minute epochs) ─────────────────────────
@@ -120,6 +126,7 @@ async function main() {
             '--account-addr', accountAddr,
             '--account-sk', `0x${pkHex}`,
             '--pke-dk-hex', pkeDkHex,
+            '--port', String(WORKER_BASE_PORT + i),
         ];
 
         const proc = spawn(NETWORK_NODE_BINARY, args, {
@@ -150,8 +157,46 @@ async function main() {
         args: [0],
     })).unwrapOrThrow('new_secret failed').asSuccessOrThrow();
 
-    log('Network is live. Workers will drive DKG and auto-rotate epochs every 2 min.');
-    log('Press Ctrl+C to stop.\n');
+    // ── Wait for DKG to complete ─────────────────────────────────────────────
+    log('Waiting for DKG to complete (workers are running)...');
+    const dkgDeadlineMs = Date.now() + 300_000; // 5-minute timeout
+    let networkState: ace.network.State | undefined;
+    while (Date.now() < dkgDeadlineMs) {
+        const maybe = await getNetworkState(adminAccount.accountAddress);
+        if (maybe.isOk) {
+            networkState = maybe.okValue!;
+            if (networkState.dkgsInProgress.length === 0 && networkState.secrets.length >= 1) break;
+        }
+        await sleep(5_000);
+    }
+    if (!networkState || networkState.secrets.length < 1) {
+        throw 'DKG did not complete within 5 minutes.';
+    }
+    const keypairId = networkState.secrets[0]!;
+    log(`DKG complete. keypairId=${keypairId.toStringLong()}`);
+
+    // ── Write config for example scripts ────────────────────────────────────
+    const CONFIG_PATH = '/tmp/ace-localnet-config.json';
+    writeFileSync(CONFIG_PATH, JSON.stringify({
+        aceContract,
+        keypairId: keypairId.toStringLong(),
+        rpcUrl: LOCALNET_URL,
+    }, null, 2));
+
+    log('');
+    log('══════════════════════════════════════════════');
+    log('  ACE local network is READY');
+    log(`  Config: ${CONFIG_PATH}`);
+    log('');
+    log('  Run the Solana example:');
+    log('    cd examples/shelby-access-control-solana');
+    log('    anchor test --provider.cluster localnet');
+    log('');
+    log('  Run the Aptos example:');
+    log('    cd examples/shelby-access-control-aptos/demo-cli-flow');
+    log('    pnpm test:localnet');
+    log('══════════════════════════════════════════════');
+    log('');
 
     // ── Heartbeat loop (run forever) ─────────────────────────────────────────
     while (true) {

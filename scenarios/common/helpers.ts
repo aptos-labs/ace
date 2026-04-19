@@ -4,7 +4,8 @@
 import * as ace from '@aptos-labs/ace-sdk';
 import { Result } from '@aptos-labs/ace-sdk';
 import { Account, AccountAddress, Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
-import { spawn, type ChildProcess } from 'child_process';
+import { execFile, spawn, type ChildProcess } from 'child_process';
+import * as readline from 'readline';
 import {
     cpSync,
     existsSync,
@@ -290,6 +291,101 @@ export function assertTxnSuccess(result: Result<CommittedTxn>, label: string): C
     return v.asSuccessOrThrow();
 }
 
+function urlPort(urlStr: string): number {
+    const u = new URL(urlStr);
+    return u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
+}
+
+/** True when REST and faucet both respond OK (same notion of "healthy" as wait in startLocalnet). */
+async function localnetAndFaucetReachable(): Promise<boolean> {
+    try {
+        const [rpc, faucet] = await Promise.all([
+            fetch(LOCALNET_URL, { signal: AbortSignal.timeout(1000) }),
+            fetch(`${FAUCET_URL}/`, { signal: AbortSignal.timeout(1000) }),
+        ]);
+        return rpc.ok && faucet.ok;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Prompts on a TTY: whether to kill the existing localnet. Resolves after one line of input or 10s with no complete line.
+ */
+function promptKillExistingLocalnet(): Promise<'yes' | 'no' | 'timeout'> {
+    return new Promise(resolve => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const q =
+            `A localnet appears to be running at ${LOCALNET_URL}.\n` +
+            `Kill it and start a fresh one? [y/N] `;
+        let settled = false;
+        const finish = (v: 'yes' | 'no' | 'timeout') => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            rl.close();
+            resolve(v);
+        };
+        const timer = setTimeout(() => finish('timeout'), 10_000);
+        rl.question(q, answer => {
+            const a = answer.trim().toLowerCase();
+            if (a === 'y' || a === 'yes') finish('yes');
+            else finish('no');
+        });
+    });
+}
+
+function lsofListeningPids(port: number): Promise<number[]> {
+    return new Promise(resolve => {
+        execFile(
+            'lsof',
+            ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'],
+            { encoding: 'utf8' },
+            (err, stdout) => {
+                if (err) {
+                    resolve([]);
+                    return;
+                }
+                const pids = stdout
+                    .trim()
+                    .split('\n')
+                    .filter(Boolean)
+                    .map(s => Number(s))
+                    .filter(n => !Number.isNaN(n));
+                resolve([...new Set(pids)]);
+            },
+        );
+    });
+}
+
+async function killListenersOnPort(port: number): Promise<void> {
+    const tryKill = async (signal: NodeJS.Signals) => {
+        const pids = await lsofListeningPids(port);
+        for (const pid of pids) {
+            try {
+                process.kill(pid, signal);
+            } catch {
+                // ESRCH or EPERM — ignore
+            }
+        }
+    };
+    await tryKill('SIGTERM');
+    await sleep(500);
+    await tryKill('SIGKILL');
+}
+
+async function killExistingLocalnetListeners(): Promise<void> {
+    if (process.platform === 'win32') {
+        throw new Error(
+            'Cannot automatically free localnet ports on Windows. Stop the process using the REST/faucet ports, then retry.',
+        );
+    }
+    const restPort = urlPort(LOCALNET_URL);
+    const faucetPort = urlPort(FAUCET_URL);
+    await killListenersOnPort(restPort);
+    await killListenersOnPort(faucetPort);
+}
+
 export async function startLocalnet(): Promise<ChildProcess> {
     const localnetAlreadyUp = await (async () => {
         try {
@@ -300,9 +396,29 @@ export async function startLocalnet(): Promise<ChildProcess> {
         }
     })();
     if (localnetAlreadyUp) {
-        throw new Error(
-            `A localnet is already running at ${LOCALNET_URL}.\n` +
-                `Please shut it down before running this test.`,
+        if (!process.stdin.isTTY) {
+            throw new Error(
+                `A localnet is already running at ${LOCALNET_URL}.\n` +
+                    `Please shut it down before running this test, or re-run in a terminal to be prompted to kill it.\n` +
+                    `Interactive confirmation requires a TTY stdin.`,
+            );
+        }
+        const choice = await promptKillExistingLocalnet();
+        if (choice === 'timeout') {
+            throw new Error(
+                `No response within 10 seconds while a localnet is still running at ${LOCALNET_URL}.\n` +
+                    `Please shut it down before running this test.`,
+            );
+        }
+        if (choice === 'no') {
+            throw new Error('Declined to shut down the existing localnet; aborting.');
+        }
+        await killExistingLocalnetListeners();
+        await waitFor(
+            'existing localnet stopped',
+            async () => !(await localnetAndFaucetReachable()),
+            30_000,
+            500,
         );
     }
 

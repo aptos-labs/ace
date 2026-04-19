@@ -32,7 +32,7 @@ import { mkdtempSync, openSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { NETWORK_NODE_BINARY, LOCALNET_URL } from './config';
+import { NETWORK_NODE_BINARY, LOCALNET_URL } from './common/config';
 import {
     startLocalnet,
     fundAccount,
@@ -42,8 +42,8 @@ import {
     sleep,
     getNetworkState,
     ed25519PrivateKeyHex,
-} from './helpers';
-import { buildRustWorkspace } from './network-clients';
+} from './common/helpers';
+import { buildRustWorkspace } from './common/network-clients';
 
 async function main() {
     const nodeProcs: ChildProcess[] = [];

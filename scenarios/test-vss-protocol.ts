@@ -3,12 +3,12 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getVssSession } from './helpers';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getVssSession } from './common/helpers';
 import {
     buildRustWorkspace,
     spawnVSSDealerRun,
     spawnVSSRecipientRun,
-} from './vss-clients';
+} from './common/vss-clients';
 
 async function main() {
     const localnetProc = await startLocalnet();

@@ -5,14 +5,14 @@
   "type": "module",
   "description": "ACE integration tests",
   "scripts": {
-    "test:vss-only": "tsx test-vss-protocol.ts",
-    "test:dkg-only": "tsx test-dkg-protocol.ts",
-    "test:dkr-only": "tsx test-dkr-protocol.ts",
-    "test:network-only": "tsx test-network-protocol.ts",
+    "test-vss-protocol": "tsx test-vss-protocol.ts",
+    "test-dkg-protocol": "tsx test-dkg-protocol.ts",
+    "test-dkr-protocol": "tsx test-dkr-protocol.ts",
+    "test-network-protocol": "tsx test-network-protocol.ts",
     "full-happy-path": "tsx full-happy-path.ts",
-    "test:access-failures": "tsx test-access-failures.ts",
-    "test:fault-tolerance": "tsx test-fault-tolerance.ts",
-    "test:auto-epoch": "tsx test-auto-epoch-change.ts",
+    "test-access-failures": "tsx test-access-failures.ts",
+    "test-fault-tolerance": "tsx test-fault-tolerance.ts",
+    "test-auto-epoch-change": "tsx test-auto-epoch-change.ts",
     "run-local-network-forever": "tsx run-local-network-forever.ts"
   },
   "dependencies": {

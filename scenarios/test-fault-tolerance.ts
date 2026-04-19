@@ -37,7 +37,7 @@ import {
     CHAIN_ID,
     LOCALNET_URL,
     WORKER_BASE_PORT,
-} from './config';
+} from './common/config';
 import {
     assertTxnSuccess,
     assert,
@@ -49,14 +49,14 @@ import {
     deployContracts,
     startLocalnet,
     getNetworkState,
-} from './helpers';
+} from './common/helpers';
 import {
     deployContract,
-} from './infra';
+} from './common/infra';
 import {
     buildRustWorkspace,
     spawnNetworkNode,
-} from './network-clients';
+} from './common/network-clients';
 
 const TOTAL_WORKERS = 5;
 const EPOCH0_WORKER_INDICES = [0, 1, 2, 3];

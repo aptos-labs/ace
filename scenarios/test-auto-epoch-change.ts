@@ -32,8 +32,8 @@ import {
     getNetworkState,
     getDKGSession,
     getDKRSession,
-} from './helpers';
-import { buildRustWorkspace, spawnNetworkNode } from './network-clients';
+} from './common/helpers';
+import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
 async function main() {
     const localnetProc = await startLocalnet();

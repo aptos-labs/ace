@@ -37,7 +37,7 @@ import {
     CHAIN_ID,
     LOCALNET_URL,
     WORKER_BASE_PORT,
-} from './config';
+} from './common/config';
 import {
     assertTxnSuccess,
     assert,
@@ -49,14 +49,14 @@ import {
     deployContracts,
     startLocalnet,
     getNetworkState,
-} from './helpers';
+} from './common/helpers';
 import {
     deployContract,
-} from './infra';
+} from './common/infra';
 import {
     buildRustWorkspace,
     spawnNetworkNode,
-} from './network-clients';
+} from './common/network-clients';
 
 const TOTAL_WORKERS = 5;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
@@ -198,7 +198,7 @@ async function main() {
         const state0 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-0 DKG');
         const keypair0Id = state0.secrets[0];
         console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
-        await sleep(10000); // workers derive shares for keypair-0
+        await sleep(30000); // workers derive shares for keypair-0
 
         // ── Step 8: Deploy access_control contract ────────────────────────────
         step(8, 'Deploy and initialize access_control contract');
@@ -282,7 +282,7 @@ async function main() {
             return stateResult.okValue!.epoch === 1;
         }, 120_000);
         console.log('  Epoch advanced to 1');
-        await sleep(10000); // workers re-derive shares for epoch-1 committee
+        await sleep(30000); // workers re-derive shares for epoch-1 committee
 
         // ── Step 12: Bob decrypts "PING" (keypair-0, epoch-1 committee) ───────
         step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee)');
@@ -326,7 +326,7 @@ async function main() {
         const state1 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-1 DKG');
         const keypair1Id = state1.secrets[1];
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
-        await sleep(10000); // workers derive shares for keypair-1
+        await sleep(30000); // workers derive shares for keypair-1
 
         // ── Step 14: Epoch change 1→2 ─────────────────────────────────────────
         // Workers 2,3,4 form the new committee; worker 1 leaves.
@@ -346,7 +346,7 @@ async function main() {
             return stateResult.okValue!.epoch === 2;
         }, 120_000);
         console.log('  Epoch advanced to 2');
-        await sleep(10000); // workers re-derive shares for epoch-2 committee
+        await sleep(30000); // workers re-derive shares for epoch-2 committee
 
         // ── Step 15: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
         step(15, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');

@@ -3,8 +3,8 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession } from './helpers';
-import { buildRustWorkspace, spawnDKGRun } from './dkg-clients';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession } from './common/helpers';
+import { buildRustWorkspace, spawnDKGRun } from './common/dkg-clients';
 
 async function main() {
     const localnetProc = await startLocalnet();

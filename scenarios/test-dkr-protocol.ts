@@ -3,9 +3,9 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession, getDKRSession } from './helpers';
-import { spawnDKGRun } from './dkg-clients';
-import { buildRustWorkspace, spawnDKRSrcRun, spawnDKRDstRun } from './dkr-clients';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession, getDKRSession } from './common/helpers';
+import { spawnDKGRun } from './common/dkg-clients';
+import { buildRustWorkspace, spawnDKRSrcRun, spawnDKRDstRun } from './common/dkr-clients';
 
 async function main() {
     const localnetProc = await startLocalnet();

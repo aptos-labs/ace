@@ -102,7 +102,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────

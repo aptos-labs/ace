@@ -304,24 +304,56 @@ export class DealerState {
     }
 }
 
+// ── ResharingDealerChallenge / ResharingDealerResponse ────────────────────────
+
+export interface SigmaDlogEqProof {
+    t0: Element;
+    t1: Element;
+    s: Scalar;
+}
+
+export interface ResharingDealerChallenge {
+    expectedScaledElement: Element;
+    anotherBaseElement: Element;
+}
+
+export interface ResharingDealerResponse {
+    anotherScaledElement: Element;
+    proof: SigmaDlogEqProof;
+}
+
+function deserializeScalar(deserializer: Deserializer): Scalar {
+    const scheme = deserializer.deserializeU8();
+    const inner = Bls12381Fr.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
+    return new Scalar(scheme, inner);
+}
+
+function serializeScalar(serializer: Serializer, s: Scalar): void {
+    serializer.serializeU8(s.scheme);
+    (s.inner as Bls12381Fr.PrivateScalar).serialize(serializer);
+}
+
 // ── DealerContribution0 ───────────────────────────────────────────────────────
 
 export class DealerContribution0 {
     pcsCommitment: PcsCommitment;
     privateShareMessages: pke.Ciphertext[];
     dealerState: pke.Ciphertext | undefined;
+    resharingResponse: ResharingDealerResponse | undefined;
 
-    constructor({ sharingPolyCommitment, privateShareMessages, dealerState }: {
+    constructor({ sharingPolyCommitment, privateShareMessages, dealerState, resharingResponse }: {
         sharingPolyCommitment: PcsCommitment;
         privateShareMessages: pke.Ciphertext[];
         dealerState?: pke.Ciphertext;
+        resharingResponse?: ResharingDealerResponse;
     }) {
         this.pcsCommitment = sharingPolyCommitment;
         this.privateShareMessages = privateShareMessages;
         this.dealerState = dealerState ?? undefined;
+        this.resharingResponse = resharingResponse ?? undefined;
     }
 
-    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] */
+    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] [Option<resharing response>] */
     serialize(serializer: Serializer): void {
         this.pcsCommitment.serialize(serializer);
         serializer.serializeU32AsUleb128(this.privateShareMessages.length);
@@ -331,6 +363,15 @@ export class DealerContribution0 {
         if (this.dealerState !== undefined) {
             serializer.serializeU8(1);
             this.dealerState.serialize(serializer);
+        } else {
+            serializer.serializeU8(0);
+        }
+        if (this.resharingResponse !== undefined) {
+            serializer.serializeU8(1);
+            this.resharingResponse.anotherScaledElement.serialize(serializer);
+            this.resharingResponse.proof.t0.serialize(serializer);
+            this.resharingResponse.proof.t1.serialize(serializer);
+            serializeScalar(serializer, this.resharingResponse.proof.s);
         } else {
             serializer.serializeU8(0);
         }
@@ -354,7 +395,18 @@ export class DealerContribution0 {
                 } else if (dealerStateTag !== 0) {
                     throw `dealerState option tag must be 0 or 1, got ${dealerStateTag}`;
                 }
-                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState });
+                const resharingResponseTag = deserializer.deserializeU8();
+                let resharingResponse: ResharingDealerResponse | undefined;
+                if (resharingResponseTag === 1) {
+                    const anotherScaledElement = Element.deserialize(deserializer).unwrapOrThrow("anotherScaledElement deserialize failed");
+                    const t0 = Element.deserialize(deserializer).unwrapOrThrow("proof.t0 deserialize failed");
+                    const t1 = Element.deserialize(deserializer).unwrapOrThrow("proof.t1 deserialize failed");
+                    const s = deserializeScalar(deserializer);
+                    resharingResponse = { anotherScaledElement, proof: { t0, t1, s } };
+                } else if (resharingResponseTag !== 0) {
+                    throw `resharingResponse option tag must be 0 or 1, got ${resharingResponseTag}`;
+                }
+                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState, resharingResponse });
             },
         });
     }
@@ -473,6 +525,7 @@ export class Session {
     shareHolders: AccountAddress[];
     threshold: number;
     basePoint: Element;
+    resharingChallenge: ResharingDealerChallenge | undefined;
     stateCode: number;
     dealTimeMicros: number;
     dealerContribution0: DealerContribution0 | undefined;
@@ -485,6 +538,7 @@ export class Session {
             shareHolders,
             threshold,
             basePoint,
+            resharingChallenge,
             stateCode,
             dealTimeMicros,
             dealerContribution0,
@@ -495,6 +549,7 @@ export class Session {
             shareHolders: AccountAddress[],
             threshold: number,
             basePoint: Element,
+            resharingChallenge: ResharingDealerChallenge | undefined,
             stateCode: number,
             dealTimeMicros: number,
             dealerContribution0: DealerContribution0 | undefined,
@@ -506,6 +561,7 @@ export class Session {
         this.shareHolders = shareHolders;
         this.threshold = threshold;
         this.basePoint = basePoint;
+        this.resharingChallenge = resharingChallenge;
         this.stateCode = stateCode;
         this.dealTimeMicros = dealTimeMicros;
         this.dealerContribution0 = dealerContribution0;
@@ -521,6 +577,13 @@ export class Session {
         }
         serializer.serializeU64(this.threshold);
         this.basePoint.serialize(serializer);
+        if (this.resharingChallenge !== undefined) {
+            serializer.serializeU8(1);
+            this.resharingChallenge.expectedScaledElement.serialize(serializer);
+            this.resharingChallenge.anotherBaseElement.serialize(serializer);
+        } else {
+            serializer.serializeU8(0);
+        }
         serializer.serializeU8(this.stateCode);
         serializer.serializeU64(this.dealTimeMicros);
         if (this.dealerContribution0 === undefined) {
@@ -553,6 +616,15 @@ export class Session {
                 }
                 const threshold = Number(deserializer.deserializeU64());
                 const basePoint = Element.deserialize(deserializer).unwrapOrThrow("basePoint deserialize failed");
+                const resharingChallengeTag = deserializer.deserializeU8();
+                let resharingChallenge: ResharingDealerChallenge | undefined;
+                if (resharingChallengeTag === 1) {
+                    const expectedScaledElement = Element.deserialize(deserializer).unwrapOrThrow("expectedScaledElement deserialize failed");
+                    const anotherBaseElement = Element.deserialize(deserializer).unwrapOrThrow("anotherBaseElement deserialize failed");
+                    resharingChallenge = { expectedScaledElement, anotherBaseElement };
+                } else if (resharingChallengeTag !== 0) {
+                    throw `resharingChallenge option tag must be 0 or 1, got ${resharingChallengeTag}`;
+                }
                 const stateCode = deserializer.deserializeU8();
                 const dealTimeMicros = Number(deserializer.deserializeU64());
                 const dc0Tag = deserializer.deserializeU8();
@@ -579,6 +651,7 @@ export class Session {
                     shareHolders,
                     threshold,
                     basePoint,
+                    resharingChallenge,
                     stateCode,
                     dealTimeMicros,
                     dealerContribution0,

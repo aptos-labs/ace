@@ -86,6 +86,19 @@ module ace::group {
         }
     }
 
+    public fun element_add(a: &Element, b: &Element): Element {
+        let scheme = element_scheme(a);
+        assert!(scheme == element_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
+        if (scheme == SCHEME__BLS12381G1) {
+            Element::Bls12381G1(group_bls12381_g1::element_add(
+                to_bls12381g1_element(a),
+                to_bls12381g1_element(b),
+            ))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     public fun element_eq(a: &Element, b: &Element): bool {
         let scheme = element_scheme(a);
         assert!(scheme == element_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
@@ -103,6 +116,19 @@ module ace::group {
             Element::Bls12381G1(group_bls12381_g1::scale_point(
                 to_bls12381g1_element(element),
                 to_bls12381g1_scalar(scalar),
+            ))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
+    public fun scalar_add(a: &Scalar, b: &Scalar): Scalar {
+        let scheme = scalar_scheme(a);
+        assert!(scheme == scalar_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
+        if (scheme == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::scalar_add(
+                to_bls12381g1_scalar(a),
+                to_bls12381g1_scalar(b),
             ))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
@@ -152,10 +178,37 @@ module ace::group {
         }
     }
 
+    public fun scheme_bls12381_g1(): u8 { SCHEME__BLS12381G1 }
+
+    public fun hash_to_scalar(scheme: u8, msg: vector<u8>): Scalar {
+        if (scheme == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::hash_to_scalar(&msg))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
+    #[lint::allow_unsafe_randomness]
+    public fun rand_scalar(scheme: u8): Scalar {
+        if (scheme == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::rand_scalar())
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     #[lint::allow_unsafe_randomness]
     public fun rand_element(scheme: u8): Element {
         if (scheme == SCHEME__BLS12381G1) {
             Element::Bls12381G1(group_bls12381_g1::rand_element())
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
+    public fun element_from_hash(scheme: u8, msg: &vector<u8>): Element {
+        if (scheme == SCHEME__BLS12381G1) {
+            Element::Bls12381G1(group_bls12381_g1::element_from_hash(msg))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }

@@ -1,4 +1,5 @@
 module ace::group_bls12381_g1 {
+    use aptos_std::aptos_hash;
     use aptos_std::bcs_stream::{Self, BCSStream};
     use aptos_std::crypto_algebra::{Self, Element};
     use aptos_std::bls12381_algebra::{G1, FormatG1Compr, Fr, FormatFrLsb, HashG1XmdSha256SswuRo};
@@ -13,6 +14,11 @@ module ace::group_bls12381_g1 {
     const G1_COMPRESSED_BYTES: u64 = 48;
     const FR_SCALAR_BYTES: u64 = 32;
     const DST: vector<u8> = b"ace::group_bls12381_g1";
+
+    // r = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+    const FR_ORDER: u256 = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001;
+    // 2^256 mod r (= pow(2, 256, r))
+    const TWO_256_MOD_FR: u256 = 0x1824b159acc5056f998c4fefecbc4ff55884b7fa0003480200000001fffffffe;
 
     struct PrivateScalar has copy, drop, store {
         scalar: vector<u8>,
@@ -49,8 +55,21 @@ module ace::group_bls12381_g1 {
         from_inner_element(&point)
     }
 
+    public fun scalar_add(a: &PrivateScalar, b: &PrivateScalar): PrivateScalar {
+        from_inner_scalar(&crypto_algebra::add(&to_inner_scalar(a), &to_inner_scalar(b)))
+    }
+
     public fun scalar_mul(a: &PrivateScalar, b: &PrivateScalar): PrivateScalar {
         from_inner_scalar(&crypto_algebra::mul(&to_inner_scalar(a), &to_inner_scalar(b)))
+    }
+
+    public fun element_add(a: &PublicPoint, b: &PublicPoint): PublicPoint {
+        from_inner_element(&crypto_algebra::add(&to_inner_element(a), &to_inner_element(b)))
+    }
+
+    #[lint::allow_unsafe_randomness]
+    public fun rand_scalar(): PrivateScalar {
+        hash_to_scalar(&randomness::bytes(64))
     }
 
     public fun scalar_from_u64(x: u64): PrivateScalar {
@@ -70,6 +89,50 @@ module ace::group_bls12381_g1 {
     #[lint::allow_unsafe_randomness]
     public fun rand_element(): PublicPoint {
         from_inner_element(&crypto_algebra::hash_to<G1, HashG1XmdSha256SswuRo>(&DST, &randomness::bytes(32)))
+    }
+
+    public fun element_from_hash(msg: &vector<u8>): PublicPoint {
+        from_inner_element(&crypto_algebra::hash_to<G1, HashG1XmdSha256SswuRo>(&DST, msg))
+    }
+
+    /// Hash arbitrary bytes to a BLS12-381 Fr scalar via SHA2-512.
+    /// The 512-bit digest is split into (hi_256 || lo_256):
+    ///   lo contribution = lo_256 % r  (direct u256 mod)
+    ///   hi contribution = hi_256 * 2^256 mod r  (left-to-right binary method, 256 iters)
+    /// No overflow: r < 2^255 guarantees acc*2 < 2^256 and acc+R < 2^256 at every step.
+    public fun hash_to_scalar(msg: &vector<u8>): PrivateScalar {
+        let hash = aptos_hash::sha2_512(*msg);
+
+        let hi: u256 = 0;
+        let lo: u256 = 0;
+        let i = 0u64;
+        while (i < 32) {
+            hi = (hi << 8) | (*hash.borrow(i) as u256);
+            lo = (lo << 8) | (*hash.borrow(i + 32) as u256);
+            i = i + 1;
+        };
+
+        let lo_mod = lo % FR_ORDER;
+
+        let hi_cont: u256 = 0;
+        let j = 255u64;
+        loop {
+            hi_cont = (hi_cont * 2) % FR_ORDER;
+            if (((hi >> (j as u8)) & 1u256) == 1u256) {
+                hi_cont = (hi_cont + TWO_256_MOD_FR) % FR_ORDER;
+            };
+            if (j == 0) { break; };
+            j = j - 1;
+        };
+
+        let result = (lo_mod + hi_cont) % FR_ORDER;
+        let bytes = vector[];
+        let k = 0u64;
+        while (k < 32) {
+            bytes.push_back(((result >> ((8 * k) as u8)) & 0xffu256) as u8);
+            k = k + 1;
+        };
+        PrivateScalar { scalar: bytes }
     }
 
     fun to_inner_element(element: &PublicPoint): Element<G1> {

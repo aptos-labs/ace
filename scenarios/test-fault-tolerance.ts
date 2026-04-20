@@ -102,7 +102,7 @@ async function main() {
         console.log(`  Bob:   ${bob.accountAddress.toStringLong()}`);
 
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
         console.log('  Contracts deployed');
 
         step(3, `Fund ${TOTAL_WORKERS} worker accounts`);

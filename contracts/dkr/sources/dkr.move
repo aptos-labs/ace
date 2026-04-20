@@ -9,6 +9,7 @@ module ace::dkr {
     use ace::vss;
     use aptos_framework::event;
     use ace::group;
+    use std::option;
 
     const E_SECRET_SRC_NOT_COMPLETED: u64 = 1;
     const E_INVALID_SECRET_SRC: u64 = 2;
@@ -39,6 +40,7 @@ module ace::dkr {
         session_addr: address,
     }
 
+    #[lint::allow_unsafe_randomness]
     public fun new_session(caller: &signer, previous_session: address, new_nodes: vector<address>, new_threshold: u64): address {
         let is_dkg = dkg::completed(previous_session);
         let is_dkr = completed(previous_session);
@@ -53,10 +55,57 @@ module ace::dkr {
             let (base_point, pk, current_nodes, current_threshold) = dkg::params_for_resharing(previous_session);
             (previous_session, base_point, pk, current_nodes, current_threshold)
         };
-        let vss_sessions = current_nodes.map(|share_holder| {
-            vss::new_session(caller, share_holder, new_nodes, new_threshold, public_base_element)
-            // TODO(AI should ignore): dealer in this VSS should prove the secret being dealt is an expected one, not a random one.
-        });
+        let scheme = group::element_scheme(&public_base_element);
+        let share_pks: vector<option::Option<group::Element>> = if (is_dkg) {
+            // Compute per-worker share verification keys from DKG Feldman commitments.
+            // Worker j (0-indexed) has eval point j+1. Their share PK:
+            //   pk_j = Σ_{k: done_flags[k]} eval_feldman(vss_sessions[k], j+1)
+            let (dkg_vss_sessions, done_flags) = dkg::vss_sessions_and_done_flags(previous_session);
+            let n = current_nodes.length();
+            let result = vector[];
+            let j = 0u64;
+            while (j < n) {
+                let x = group::scalar_from_u64(scheme, j + 1);
+                let pk_parts = vector[];
+                let k = 0u64;
+                while (k < dkg_vss_sessions.length()) {
+                    if (done_flags[k]) {
+                        let points = vss::pcs_commitment_points(dkg_vss_sessions[k]);
+                        pk_parts.push_back(feldman_eval_horner(&points, &x));
+                    };
+                    k += 1;
+                };
+                result.push_back(option::some(group::element_sum(&pk_parts)));
+                j += 1;
+            };
+            result
+        } else {
+            // DKR-from-DKR: per-worker share PKs require Lagrange-weighted Feldman evaluation.
+            // Simplified: skip sigma proof for this resharing step.
+            let n = current_nodes.length();
+            let result = vector[];
+            let j = 0u64;
+            while (j < n) {
+                result.push_back(option::none());
+                j += 1;
+            };
+            result
+        };
+        let vss_sessions = vector[];
+        let j2 = 0u64;
+        while (j2 < current_nodes.length()) {
+            let share_holder = current_nodes[j2];
+            let vss_addr = vss::new_session(
+                caller,
+                share_holder,
+                new_nodes,
+                new_threshold,
+                public_base_element,
+                share_pks[j2],
+            );
+            vss_sessions.push_back(vss_addr);
+            j2 += 1;
+        };
         let session = Session {
             caller: caller_addr,
             original_session,
@@ -88,11 +137,12 @@ module ace::dkr {
         }
     }
 
-    public entry fun new_session_entry(caller: &signer, secret_src: address, recipients: vector<address>, threshold: u64) {
+    #[randomness]
+    entry fun new_session_entry(caller: &signer, secret_src: address, recipients: vector<address>, threshold: u64) {
         new_session(caller, secret_src, recipients, threshold);
     }
 
-    public entry fun touch_entry(session_addr: address) acquires Session {
+    entry fun touch_entry(session_addr: address) acquires Session {
         touch(session_addr);
     }
 
@@ -118,8 +168,17 @@ module ace::dkr {
         (session.original_session, session.public_base_element, session.secretly_scaled_element, session.new_nodes, session.new_threshold)
     }
 
-    // fun contains_all_1_submatrix(matrix: vector<vector<u8>>, num_rows: u64, num_cols: u64): bool {
-    //     //TODO
-    //     false
-    // }
+    /// Evaluate a Feldman polynomial at scalar x using Horner's method.
+    /// eval = points[0] + x*points[1] + x^2*points[2] + ...
+    fun feldman_eval_horner(points: &vector<group::Element>, x: &group::Scalar): group::Element {
+        let t = points.length();
+        assert!(t > 0, error::invalid_argument(E_INVALID_SECRET_SRC));
+        let i = t;
+        let eval = points[t - 1];
+        while (i > 1) {
+            i -= 1;
+            eval = group::element_add(&group::scale_element(&eval, x), points.borrow(i - 1));
+        };
+        eval
+    }
 }

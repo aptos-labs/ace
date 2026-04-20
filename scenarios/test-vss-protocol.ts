@@ -26,7 +26,7 @@ async function main() {
         const recipientAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -50,7 +50,8 @@ async function main() {
                 dealerAccount.accountAddress,
                 recipientAccounts.map(w => w.accountAddress),
                 3, // threshold
-                basePointBytes, // base_point: vector<u8>
+                basePointBytes,       // base_point: vector<u8>
+                new Uint8Array(0),    // secretly_scaled_element: empty = None (not a resharing)
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();

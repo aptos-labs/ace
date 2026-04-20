@@ -178,12 +178,35 @@ pub struct BcsPcsCommitment {
     pub points: Vec<BcsElement>,
 }
 
+/// BCS mirror of `sigma_dlog_eq::Proof`.
+#[derive(serde::Deserialize)]
+pub struct BcsSigmaDlogEqProof {
+    pub t0: BcsElement,
+    pub t1: BcsElement,
+    pub s: BcsScalar,
+}
+
+/// BCS mirror of `vss::ResharingDealerResponse`.
+#[derive(serde::Deserialize)]
+pub struct BcsResharingDealerResponse {
+    pub another_scaled_element: BcsElement,
+    pub proof: BcsSigmaDlogEqProof,
+}
+
+/// BCS mirror of `vss::ResharingDealerChallenge`.
+#[derive(serde::Deserialize)]
+pub struct BcsResharingDealerChallenge {
+    pub expected_scaled_element: BcsElement,
+    pub another_base_element: BcsElement,
+}
+
 /// BCS mirror of `vss::DealerContribution0`.
 #[derive(serde::Deserialize)]
 pub struct BcsDealerContribution0 {
     pub pcs_commitment: BcsPcsCommitment,
     pub private_share_messages: Vec<crate::pke::BcsCiphertext>,
     pub dealer_state: Option<crate::pke::BcsCiphertext>,
+    pub resharing_response: Option<BcsResharingDealerResponse>,
 }
 
 /// BCS mirror of `group_bls12381_g1::PrivateScalar`.
@@ -211,6 +234,7 @@ pub struct BcsSession {
     pub share_holders: Vec<[u8; 32]>,
     pub threshold: u64,
     pub base_point: BcsElement,
+    pub resharing_challenge: Option<BcsResharingDealerChallenge>,
     pub state_code: u8,
     pub deal_time_micros: u64,
     pub dealer_contribution_0: Option<BcsDealerContribution0>,

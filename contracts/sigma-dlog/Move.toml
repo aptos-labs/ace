@@ -1,5 +1,5 @@
 [package]
-name = "VSS"
+name = "SigmaDLog"
 version = "1.0.0"
 authors = []
 
@@ -9,17 +9,8 @@ ace = "0xcafe"
 [dependencies.Group]
 local = "../group"
 
-[dependencies.WorkerConfig]
-local = "../worker_config"
-
-[dependencies.PKE]
-local = "../pke"
-
 [dependencies.FiatShamirTransform]
 local = "../fiat-shamir-transform"
-
-[dependencies.SigmaDLogEq]
-local = "../sigma-dlog-eq"
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

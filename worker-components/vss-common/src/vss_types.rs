@@ -120,6 +120,7 @@ pub fn dc0_bytes(
     commitment: &PcsCommitment,
     share_ciphertexts: &[crate::pke::Ciphertext],
     dealer_state_ct: &crate::pke::Ciphertext,
+    resharing_response: Option<(&[u8; 48], &[u8; 48], &[u8; 48], &[u8; 32])>,
 ) -> Vec<u8> {
     let mut out = Vec::new();
     match commitment {
@@ -138,6 +139,16 @@ pub fn dc0_bytes(
     }
     out.push(0x01u8); // Option::Some tag for dealer_state
     out.extend(dealer_state_ct.to_bytes());
+    match resharing_response {
+        None => out.push(0x00),
+        Some((p1, t0, t1, s_fr)) => {
+            out.push(0x01);
+            out.push(0x00); out.push(0x30); out.extend_from_slice(p1);  // another_scaled_element
+            out.push(0x00); out.push(0x30); out.extend_from_slice(t0);  // proof.t0
+            out.push(0x00); out.push(0x30); out.extend_from_slice(t1);  // proof.t1
+            out.push(0x00); out.push(0x20); out.extend_from_slice(s_fr); // proof.s
+        }
+    }
     out
 }
 
@@ -214,6 +225,71 @@ pub fn feldman_verify(
         return Err(anyhow::anyhow!("Feldman verification failed: share does not match commitment"));
     }
     Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pke::Ciphertext;
+
+    fn fake_ciphertext() -> Ciphertext {
+        Ciphertext::ElGamalOtpRistretto255 {
+            c0: [0u8; 32],
+            c1: [0u8; 32],
+            sym_ciph: vec![0xaau8; 4],
+            mac: [0u8; 32],
+        }
+    }
+
+    fn minimal_dc0_base() -> (PcsCommitment, Vec<Ciphertext>, Ciphertext) {
+        let commitment = PcsCommitment::Bls12381Fr { v_values: vec![[0u8; 48]] };
+        let share_cts = vec![];
+        let dealer_ct = fake_ciphertext();
+        (commitment, share_cts, dealer_ct)
+    }
+
+    /// dc0_bytes with no resharing response ends with 0x00.
+    #[test]
+    fn dc0_bytes_resharing_none_appends_zero() {
+        let (c, s, d) = minimal_dc0_base();
+        let out = dc0_bytes(&c, &s, &d, None);
+        assert_eq!(*out.last().unwrap(), 0x00, "last byte should be 0x00 for None");
+    }
+
+    /// dc0_bytes with Some resharing response appends the correct BCS bytes.
+    /// Layout after dealer_state: 0x01 || [0x00,0x30,48B] × 3 || [0x00,0x20,32B]
+    /// = 1 + 50*3 + 34 = 185 bytes.
+    #[test]
+    fn dc0_bytes_resharing_some_appends_correct_bytes() {
+        let (c, s, d) = minimal_dc0_base();
+        let p1 = [0x11u8; 48];
+        let t0 = [0x22u8; 48];
+        let t1 = [0x33u8; 48];
+        let s_fr = [0x44u8; 32];
+
+        let out_none = dc0_bytes(&c, &s, &d, None);
+        let out_some = dc0_bytes(&c, &s, &d, Some((&p1, &t0, &t1, &s_fr)));
+
+        // The Some output should be exactly 184 bytes longer (0x01 + 3×50 + 34 - 1 for the None 0x00)
+        assert_eq!(out_some.len(), out_none.len() + 184);
+
+        let tail = &out_some[out_none.len() - 1..]; // from where 0x00 would be
+        assert_eq!(tail[0], 0x01);
+        // p1 element
+        assert_eq!(&tail[1..3], &[0x00, 0x30]);
+        assert_eq!(&tail[3..51], &p1);
+        // t0 element
+        assert_eq!(&tail[51..53], &[0x00, 0x30]);
+        assert_eq!(&tail[53..101], &t0);
+        // t1 element
+        assert_eq!(&tail[101..103], &[0x00, 0x30]);
+        assert_eq!(&tail[103..151], &t1);
+        // s scalar
+        assert_eq!(&tail[151..153], &[0x00, 0x20]);
+        assert_eq!(&tail[153..185], &s_fr);
+    }
 }
 
 // ── ULEB128 helper ────────────────────────────────────────────────────────────

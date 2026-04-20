@@ -2013,6 +2013,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sha3",
  "tokio",
 ]
@@ -2023,11 +2024,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
+ "ark-ec",
  "ark-ff",
+ "ark-serialize",
  "clap",
  "ed25519-dalek",
  "hex",
+ "rand",
  "serde_json",
+ "sha2",
  "tokio",
  "vss-common",
 ]

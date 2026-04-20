@@ -50,6 +50,20 @@ impl AptosRpc {
         Self { base_url, client }
     }
 
+    pub async fn get_chain_id(&self) -> Result<u8> {
+        let url = self.base_url.trim_end_matches('/');
+        let resp = self.client.get(url).send().await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await?;
+            return Err(anyhow!("ledger info GET failed: {}", body));
+        }
+        let v: Value = resp.json().await?;
+        let id = v["chain_id"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("missing chain_id in ledger info"))?;
+        Ok(id as u8)
+    }
+
     pub async fn get_ledger_timestamp_micros(&self) -> Result<u64> {
         let url = self.base_url.trim_end_matches('/');
         let resp = self.client.get(url).send().await?;

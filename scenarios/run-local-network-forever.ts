@@ -77,7 +77,7 @@ async function main() {
 
     // ── Deploy contracts ─────────────────────────────────────────────────────
     log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'vss', 'dkg', 'dkr', 'network']);
+    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 9000;

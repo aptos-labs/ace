@@ -51,12 +51,22 @@ module ace::dkg {
         session_addr: address,
     }
 
+    #[lint::allow_unsafe_randomness]
     public fun new_session(caller: &signer, workers: vector<address>, threshold: u64, public_base_element: group::Element): address {
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
         let session_addr = object_ref.address_from_constructor_ref();
-        let vss_sessions = workers.map(|worker| vss::new_session(caller, worker, workers, threshold, public_base_element));
+        let vss_sessions = workers.map(|worker| {
+            vss::new_session(
+                caller,
+                worker, // dealer
+                workers, // recipients
+                threshold,
+                public_base_element, // base point
+                option::none(),
+            )
+        });
         let session = Session {
             caller: caller_addr,
             workers,
@@ -72,7 +82,8 @@ module ace::dkg {
         session_addr
     }
 
-    public entry fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
+    #[randomness]
+    entry fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
         let base_point = group::element_from_bytes(base_point_bytes);
         new_session(caller, workers, threshold, base_point);
     }
@@ -136,12 +147,20 @@ module ace::dkg {
         (session.public_base_element, *session.secretly_scaled_element.borrow(), session.workers, session.threshold)
     }
 
+    /// Returns (vss_sessions, done_flags) for the DKG session.
+    /// Used by DKR to compute per-worker share verification keys.
+    public fun vss_sessions_and_done_flags(session_addr: address): (vector<address>, vector<bool>) acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        (session.vss_sessions, session.done_flags)
+    }
+
     #[view]
     public fun get_session_bcs(session_addr: address): vector<u8> acquires Session {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
-    public entry fun touch_entry(session_addr: address) acquires Session {
+    entry fun touch_entry(session_addr: address) acquires Session {
         touch(session_addr);
     }
 }

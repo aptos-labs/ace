@@ -13,11 +13,14 @@ module ace::vss {
     use aptos_framework::object;
     use aptos_framework::event;
     use aptos_framework::timestamp;
+    use aptos_framework::chain_id;
     use ace::group;
     use ace::worker_config;
     use ace::pke;
     use std::option::{Option, Self};
     use aptos_std::bcs_stream::{Self, BCSStream};
+    use ace::fiat_shamir_transform;
+    use ace::sigma_dlog_eq;
 
     // ── Error codes ──────────────────────────────────────────────────────────
 
@@ -35,10 +38,12 @@ module ace::vss {
     const E_INVALID_REVEALED_SHARE: u64 = 29;
     const E_NOT_ALL_RECIPIENTS_COVERED: u64 = 30;
     const E_NOT_COMPLETED: u64 = 32;
+    const E_INVALID_SCALED_ELEMENT_PROOF: u64 = 33;
+    const E_INVALID_COMMITMENT_FOR_RESHARING: u64 = 34;
 
     // ── Protocol constants ───────────────────────────────────────────────────
 
-    const ACK_WINDOW_MICROS: u64 = 5_000_000; // 5 seconds for localnet
+    const ACK_WINDOW_MICROS: u64 = 10_000_000; // 5 seconds for localnet
 
     const STATE__DEALER_DEAL: u8 = 0;
     const STATE__RECIPIENT_ACK: u8 = 1;
@@ -51,10 +56,28 @@ module ace::vss {
         points: vector<group::Element>,
     }
 
+    struct FiatShamirTag has copy, drop, store {
+        chain_id: u8,
+        module_addr: address,
+        module_name: vector<u8>,
+    }
+
+    /// Sometimes the VSS is for resharing a secret, and the caller will want the dealer to prove knowledge of the secret.
+    struct ResharingDealerChallenge has copy, drop, store {
+        expected_scaled_element: group::Element,
+        another_base_element: group::Element,
+    }
+
+    struct ResharingDealerResponse has copy, drop, store {
+        another_scaled_element: group::Element,
+        proof: sigma_dlog_eq::Proof,
+    }
+
     struct DealerContribution0 has copy, drop, store {
         pcs_commitment: PcsCommitment,
         private_share_messages: vector<pke::Ciphertext>,
         dealer_state: Option<pke::Ciphertext>,
+        resharing_response: Option<ResharingDealerResponse>,
     }
 
     struct DealerContribution1 has copy, drop, store {
@@ -66,6 +89,8 @@ module ace::vss {
         share_holders: vector<address>,
         threshold: u64,
         public_base_element: group::Element,
+        /// If present, the dealer must deal the corresponding secret scaler and provide a proof of knowledge of such secret.
+        resharing_challenge: Option<ResharingDealerChallenge>,
         state_code: u8,
         deal_time_micros: u64,
         dealer_contribution_0: Option<DealerContribution0>,
@@ -88,12 +113,14 @@ module ace::vss {
 
     // ── Entry functions ──────────────────────────────────────────────────────
 
+    #[lint::allow_unsafe_randomness]
     public fun new_session(
         caller: &signer,
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
         public_base_element: group::Element,
+        expected_scaled_element: Option<group::Element>,
     ): address {
         assert!(worker_config::has_pke_enc_key(dealer), error::invalid_argument(E_INVALID_DEALER));
         share_holders.for_each(|share_holder| {
@@ -105,11 +132,24 @@ module ace::vss {
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
         let session_addr = object_ref.address_from_constructor_ref();
+        let resharing_challenge = if (expected_scaled_element.is_some()) {
+            let challenge = ResharingDealerChallenge {
+                expected_scaled_element: *expected_scaled_element.borrow(),
+                another_base_element: group::element_from_hash(
+                    group::element_scheme(&public_base_element),
+                    &bcs::to_bytes(expected_scaled_element.borrow()),
+                ),
+            };
+            option::some(challenge)
+        } else {
+            option::none()
+        };
         let session = Session {
             dealer,
             share_holders,
             threshold,
             public_base_element,
+            resharing_challenge,
             deal_time_micros: 0,
             state_code: STATE__DEALER_DEAL,
             dealer_contribution_0: option::none(),
@@ -121,15 +161,22 @@ module ace::vss {
         session_addr
     }
 
-    public entry fun new_session_entry(
+    #[randomness]
+    entry fun new_session_entry(
         caller: &signer,
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        base_point_bytes: vector<u8>,
+        public_base_element: vector<u8>,
+        secretly_scaled_element: vector<u8>,
     ) {
-        let base_point = group::element_from_bytes(base_point_bytes);
-        new_session(caller, dealer, share_holders, threshold, base_point);
+        let public_base_element = group::element_from_bytes(public_base_element);
+        let secretly_scaled_element = if (secretly_scaled_element.length() > 0) {
+            option::some(group::element_from_bytes(secretly_scaled_element))
+        } else {
+            option::none()
+        };
+        new_session(caller, dealer, share_holders, threshold, public_base_element, secretly_scaled_element);
     }
 
     public entry fun on_dealer_contribution_0(
@@ -138,9 +185,31 @@ module ace::vss {
         payload_bytes: vector<u8>,
     ) {
         let session = borrow_global_mut<Session>(session_addr);
-        assert!(session.state_code == STATE__DEALER_DEAL, error::invalid_state(E_NOT_IN_PROGRESS));
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
+        assert!(session.state_code == STATE__DEALER_DEAL, error::invalid_state(E_NOT_IN_PROGRESS));
         let dc0 = dealer_contribution_0_from_bytes(payload_bytes);
+        if (session.resharing_challenge.is_some()) {
+            assert!(dc0.resharing_response.is_some(), error::invalid_argument(E_INVALID_SCALED_ELEMENT_PROOF));
+            let resharing_challenge = session.resharing_challenge.borrow();
+            let resharing_response = dc0.resharing_response.borrow();
+            assert!(group::element_eq(&resharing_challenge.expected_scaled_element, &dc0.pcs_commitment.points[0]), error::invalid_argument(E_INVALID_COMMITMENT_FOR_RESHARING));
+            let trx = fiat_shamir_transform::new_transcript();
+            let domain_tag = FiatShamirTag {
+                chain_id: chain_id::get(),
+                module_addr: @ace,
+                module_name: b"vss",
+            };
+            fiat_shamir_transform::append_raw_bytes(&mut trx, bcs::to_bytes(&domain_tag));
+            let valid = sigma_dlog_eq::verify(
+                &mut trx,
+                &session.public_base_element,
+                &resharing_challenge.expected_scaled_element,
+                &resharing_challenge.another_base_element,
+                &resharing_response.another_scaled_element,
+                &resharing_response.proof,
+            );
+            assert!(valid, error::invalid_argument(E_INVALID_SCALED_ELEMENT_PROOF));
+        };
         session.dealer_contribution_0 = option::some(dc0);
         session.state_code = STATE__RECIPIENT_ACK;
         session.deal_time_micros = timestamp::now_microseconds();
@@ -179,7 +248,7 @@ module ace::vss {
             let revealed = dc1.shares_to_reveal[*i].is_some();
             ack == !revealed
         });
-        assert!(all_recipient_covered, error::invalid_state(E_NOT_ALL_RECIPIENTS_COVERED));
+        assert!(all_recipient_covered, error::invalid_argument(E_NOT_ALL_RECIPIENTS_COVERED));
 
         // Verify the revealed shares in dc1 match the commitment in dc0.
         let n = session.share_holders.length();
@@ -198,7 +267,7 @@ module ace::vss {
                 let revealed_share = dc1.shares_to_reveal[i].borrow();
                 let lhs = group::scale_element(&session.public_base_element, revealed_share);
                 let rhs = group::msm(dc0.pcs_commitment.points, powers_of_x);
-                assert!(group::element_eq(&lhs, &rhs), error::invalid_state(E_INVALID_REVEALED_SHARE));
+                assert!(group::element_eq(&lhs, &rhs), error::invalid_argument(E_INVALID_REVEALED_SHARE));
             }
         });
 
@@ -218,6 +287,13 @@ module ace::vss {
         session.dealer_contribution_0.borrow().pcs_commitment.points[0]
     }
 
+    /// Returns the Feldman commitment points for a completed VSS session.
+    public fun pcs_commitment_points(session_addr: address): vector<group::Element> acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.dealer_contribution_0.borrow().pcs_commitment.points
+    }
+
     public fun ack_vec(session_addr: address): vector<u8> acquires Session {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
@@ -231,13 +307,20 @@ module ace::vss {
         PcsCommitment { points }
     }
 
+    fun deserialize_resharing_dealer_response(stream: &mut BCSStream): ResharingDealerResponse {
+        let another_scaled_element = group::deserialize_element(stream);
+        let proof = sigma_dlog_eq::deserialize_proof(stream);
+        ResharingDealerResponse { another_scaled_element, proof }
+    }
+
     fun dealer_contribution_0_from_bytes(bytes: vector<u8>): DealerContribution0 {
         let stream = bcs_stream::new(bytes);
         let pcs_commitment = deserialize_pcs_commitment(&mut stream);
         let private_share_messages = bcs_stream::deserialize_vector(&mut stream, |s| pke::deserialize_ciphertext(s));
         let dealer_state = bcs_stream::deserialize_option(&mut stream, |s| pke::deserialize_ciphertext(s));
+        let resharing_response = bcs_stream::deserialize_option(&mut stream, |s| deserialize_resharing_dealer_response(s));
         assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_CONTRIBUTION));
-        DealerContribution0 { pcs_commitment, private_share_messages, dealer_state }
+        DealerContribution0 { pcs_commitment, private_share_messages, dealer_state, resharing_response }
     }
 
     fun dealer_contribution_1_from_bytes(bytes: vector<u8>): DealerContribution1 {

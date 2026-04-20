@@ -13,7 +13,8 @@
     "test-access-failures": "tsx test-access-failures.ts",
     "test-fault-tolerance": "tsx test-fault-tolerance.ts",
     "test-auto-epoch-change": "tsx test-auto-epoch-change.ts",
-    "run-local-network-forever": "tsx run-local-network-forever.ts"
+    "run-local-network-forever": "tsx run-local-network-forever.ts",
+    "large-committee": "tsx large-committee.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

@@ -21,6 +21,7 @@ export class Session {
         readonly stateCode: number,
         readonly vssSessions: AccountAddress[],
         readonly vssContributionFlags: boolean[],
+        readonly sharePks: PublicPoint[],
     ) {}
 
     isCompleted(): boolean {
@@ -72,6 +73,12 @@ export class Session {
                     vssContributionFlags.push(deserializer.deserializeBool());
                 }
 
+                const sharePksLen = deserializer.deserializeUleb128AsU32();
+                const sharePks: PublicPoint[] = [];
+                for (let i = 0; i < sharePksLen; i++) {
+                    sharePks.push(PublicPoint.deserialize(deserializer).unwrapOrThrow(`sharePks[${i}] deserialize failed`));
+                }
+
                 return new Session(
                     caller,
                     publicBaseElement,
@@ -85,6 +92,7 @@ export class Session {
                     stateCode,
                     vssSessions,
                     vssContributionFlags,
+                    sharePks,
                 );
             },
         });

@@ -531,6 +531,7 @@ export class Session {
     dealerContribution0: DealerContribution0 | undefined;
     shareHolderAcks: boolean[];
     dealerContribution1: DealerContribution1 | undefined;
+    sharePks: Element[];
 
     private constructor(
         {
@@ -543,7 +544,8 @@ export class Session {
             dealTimeMicros,
             dealerContribution0,
             shareHolderAcks,
-            dealerContribution1
+            dealerContribution1,
+            sharePks,
         }: {
             dealer: AccountAddress,
             shareHolders: AccountAddress[],
@@ -554,7 +556,8 @@ export class Session {
             dealTimeMicros: number,
             dealerContribution0: DealerContribution0 | undefined,
             shareHolderAcks: boolean[],
-            dealerContribution1: DealerContribution1 | undefined
+            dealerContribution1: DealerContribution1 | undefined,
+            sharePks: Element[],
         }
     ) {
         this.dealer = dealer;
@@ -567,6 +570,7 @@ export class Session {
         this.dealerContribution0 = dealerContribution0;
         this.shareHolderAcks = shareHolderAcks;
         this.dealerContribution1 = dealerContribution1;
+        this.sharePks = sharePks;
     }
 
     serialize(serializer: Serializer): void {
@@ -602,6 +606,8 @@ export class Session {
             serializer.serializeU8(1);
             this.dealerContribution1.serialize(serializer);
         }
+        serializer.serializeU32AsUleb128(this.sharePks.length);
+        for (const pk of this.sharePks) pk.serialize(serializer);
     }
 
     static deserialize(deserializer: Deserializer): Result<Session> {
@@ -646,6 +652,11 @@ export class Session {
                 } else if (dc1Tag !== 0) {
                     throw `dealerContribution1 option tag must be 0 or 1, got ${dc1Tag}`;
                 }
+                const sharePksLen = deserializer.deserializeUleb128AsU32();
+                const sharePks: Element[] = [];
+                for (let i = 0; i < sharePksLen; i++) {
+                    sharePks.push(Element.deserialize(deserializer).unwrapOrThrow(`sharePks[${i}] deserialize failed`));
+                }
                 return new Session({
                     dealer,
                     shareHolders,
@@ -657,6 +668,7 @@ export class Session {
                     dealerContribution0,
                     shareHolderAcks,
                     dealerContribution1,
+                    sharePks,
                 });
             },
         });

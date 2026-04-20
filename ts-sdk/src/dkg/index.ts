@@ -30,6 +30,7 @@ export class Session {
         readonly vssSessions: AccountAddress[],
         readonly doneFlags: boolean[],
         readonly resultPk: PublicPoint | undefined,
+        readonly sharePks: PublicPoint[],
     ) {}
 
     isCompleted(): boolean {
@@ -75,7 +76,13 @@ export class Session {
                     throw `resultPk option tag must be 0 or 1, got ${resultPkTag}`;
                 }
 
-                return new Session(caller, workers, threshold, basePoint, state, vssSessions, doneFlags, resultPk);
+                const sharePksLen = deserializer.deserializeUleb128AsU32();
+                const sharePks: PublicPoint[] = [];
+                for (let i = 0; i < sharePksLen; i++) {
+                    sharePks.push(PublicPoint.deserialize(deserializer).unwrapOrThrow(`sharePks[${i}] deserialize failed`));
+                }
+
+                return new Session(caller, workers, threshold, basePoint, state, vssSessions, doneFlags, resultPk, sharePks);
             },
         });
     }

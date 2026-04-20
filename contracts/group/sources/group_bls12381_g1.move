@@ -63,6 +63,18 @@ module ace::group_bls12381_g1 {
         from_inner_scalar(&crypto_algebra::mul(&to_inner_scalar(a), &to_inner_scalar(b)))
     }
 
+    public fun scalar_neg(a: &PrivateScalar): PrivateScalar {
+        from_inner_scalar(&crypto_algebra::neg(&to_inner_scalar(a)))
+    }
+
+    public fun scalar_inv(a: &PrivateScalar): PrivateScalar {
+        from_inner_scalar(&crypto_algebra::inv(&to_inner_scalar(a)).destroy_some())
+    }
+
+    public fun scalar_eq(a: &PrivateScalar, b: &PrivateScalar): bool {
+        crypto_algebra::eq(&to_inner_scalar(a), &to_inner_scalar(b))
+    }
+
     public fun element_add(a: &PublicPoint, b: &PublicPoint): PublicPoint {
         from_inner_element(&crypto_algebra::add(&to_inner_element(a), &to_inner_element(b)))
     }

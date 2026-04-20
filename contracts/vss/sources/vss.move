@@ -40,7 +40,8 @@ module ace::vss {
     const E_NOT_COMPLETED: u64 = 32;
     const E_INVALID_SCALED_ELEMENT_PROOF: u64 = 33;
     const E_INVALID_COMMITMENT_FOR_RESHARING: u64 = 34;
-
+    const E_TOO_EARLY_TO_OPEN: u64 = 35;
+    
     // ── Protocol constants ───────────────────────────────────────────────────
 
     const ACK_WINDOW_MICROS: u64 = 10_000_000; // 5 seconds for localnet
@@ -96,6 +97,9 @@ module ace::vss {
         dealer_contribution_0: Option<DealerContribution0>,
         share_holder_acks: vector<bool>,
         dealer_contribution_1: Option<DealerContribution1>,
+        /// Per-holder share PKs, computed at SUCCESS: share_pks[i] = g^{f(i+1)} where f is the dealer's polynomial.
+        /// Empty until state_code == STATE__SUCCESS.
+        share_pks: vector<group::Element>,
     }
 
     #[event]
@@ -155,6 +159,7 @@ module ace::vss {
             dealer_contribution_0: option::none(),
             share_holder_acks: range(0, num_share_holders).map(|_| false),
             dealer_contribution_1: option::none(),
+            share_pks: vector[],
         };
         move_to(&object_signer, session);
         event::emit(SessionCreated { session_addr });
@@ -235,7 +240,7 @@ module ace::vss {
         let session = borrow_global_mut<Session>(session_addr);
         assert!(session.state_code == STATE__RECIPIENT_ACK, error::invalid_state(E_NOT_IN_PROGRESS));
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
-        assert!(timestamp::now_microseconds() - session.deal_time_micros > ACK_WINDOW_MICROS, error::invalid_state(E_NOT_ENOUGH_ACKS));
+        assert!(timestamp::now_microseconds() - session.deal_time_micros > ACK_WINDOW_MICROS, error::invalid_state(E_TOO_EARLY_TO_OPEN));
         let dc1 = dealer_contribution_1_from_bytes(payload_bytes);
 
         // Should not proceed without enough acks.
@@ -274,6 +279,26 @@ module ace::vss {
         // All checks passed.
         session.dealer_contribution_1 = option::some(dc1);
         session.state_code = STATE__SUCCESS;
+
+        // Compute per-holder share PKs: share_pks[i] = MSM(commitment, [1, x, x², …, x^{t-1}]) at x = i+1.
+        let commitment_points = session.dealer_contribution_0.borrow().pcs_commitment.points;
+        let t = session.threshold;
+        let i = 0u64;
+        while (i < n) {
+            let x = group::scalar_from_u64(scheme, i + 1);
+            session.share_pks.push_back(group::msm(commitment_points, build_powers_of_x(scheme, &x, t)));
+            i += 1;
+        };
+    }
+
+    fun build_powers_of_x(scheme: u8, x: &group::Scalar, t: u64): vector<group::Scalar> {
+        let powers = vector[group::scalar_from_u64(scheme, 1)];
+        let acc = group::scalar_from_u64(scheme, 1);
+        range(0, t - 1).for_each(|_| {
+            acc = group::scalar_mul(&acc, x);
+            powers.push_back(acc);
+        });
+        powers
     }
 
     public fun completed(session_addr: address): bool acquires Session {
@@ -292,6 +317,14 @@ module ace::vss {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.dealer_contribution_0.borrow().pcs_commitment.points
+    }
+
+    /// Returns the per-holder share PKs for a completed VSS session.
+    /// share_pks[i] = g^{f(i+1)} where f is the dealer's polynomial.
+    public fun share_pks(session_addr: address): vector<group::Element> acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.share_pks
     }
 
     public fun ack_vec(session_addr: address): vector<u8> acquires Session {

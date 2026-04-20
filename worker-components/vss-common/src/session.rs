@@ -240,6 +240,7 @@ pub struct BcsSession {
     pub dealer_contribution_0: Option<BcsDealerContribution0>,
     pub share_holder_acks: Vec<bool>,
     pub dealer_contribution_1: Option<BcsDealerContribution1>,
+    pub share_pks: Vec<BcsElement>,
 }
 
 /// Check whether a Move `Option<T>` field (encoded as `{"vec": []}` or `{"vec": [value]}`)

@@ -149,6 +149,32 @@ module ace::group {
         }
     }
 
+    public fun scalar_neg(a: &Scalar): Scalar {
+        if (scalar_scheme(a) == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::scalar_neg(to_bls12381g1_scalar(a)))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
+    public fun scalar_inv(a: &Scalar): Scalar {
+        if (scalar_scheme(a) == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::scalar_inv(to_bls12381g1_scalar(a)))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
+    public fun scalar_eq(a: &Scalar, b: &Scalar): bool {
+        let scheme = scalar_scheme(a);
+        assert!(scheme == scalar_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
+        if (scheme == SCHEME__BLS12381G1) {
+            group_bls12381_g1::scalar_eq(to_bls12381g1_scalar(a), to_bls12381g1_scalar(b))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     public fun scalar_from_u64(scheme: u8, x: u64): Scalar {
         if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::scalar_from_u64(x))

@@ -44,6 +44,9 @@ module ace::dkg {
         /// When we try to conclude this DKG session with enough VSS done, some other may not have finished yet and will thus be ignored.
         done_flags: vector<bool>,
         secretly_scaled_element: Option<group::Element>,
+        /// Per-worker share PKs: share_pks[j] = Σ_{k: contributing} vss_k.share_pks[j].
+        /// Empty until state == STATE__DONE.
+        share_pks: vector<group::Element>,
     }
 
     #[event]
@@ -76,6 +79,7 @@ module ace::dkg {
             vss_sessions,
             done_flags: vector[],
             secretly_scaled_element: option::none(),
+            share_pks: vector[],
         };
         move_to(&object_signer, session);
         event::emit(SessionCreated { session_addr });
@@ -114,6 +118,15 @@ module ace::dkg {
                 let available_sub_pks = done_sessions.map(|vss_session| vss::result_pk(vss_session));
                 session.done_flags = done_flags;
                 session.secretly_scaled_element = option::some(group::element_sum(&available_sub_pks));
+                // Compute per-worker share PKs: sum contributing VSS share_pks per worker.
+                let n = session.workers.length();
+                let j = 0u64;
+                while (j < n) {
+                    session.share_pks.push_back(
+                        group::element_sum(&done_sessions.map_ref(|a| vss::share_pks(*a)[j]))
+                    );
+                    j += 1;
+                };
                 session.state = STATE__DONE;
             }
         };
@@ -141,10 +154,16 @@ module ace::dkg {
         borrow_global<Session>(session_addr).state == STATE__FAIL
     }
 
-    public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64) {
+    public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64, vector<group::Element>) acquires Session {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
-        (session.public_base_element, *session.secretly_scaled_element.borrow(), session.workers, session.threshold)
+        (session.public_base_element, *session.secretly_scaled_element.borrow(), session.workers, session.threshold, session.share_pks)
+    }
+
+    public fun share_pks(session_addr: address): vector<group::Element> acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        session.share_pks
     }
 
     /// Returns (vss_sessions, done_flags) for the DKG session.

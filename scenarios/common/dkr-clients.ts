@@ -27,6 +27,7 @@ function spawnExitZero(cmd: string, args: string[], cwd: string, label: string):
 
 /** Build the repo-root Cargo workspace (all binaries including dkr-src, dkr-dst). */
 export async function buildRustWorkspace(): Promise<void> {
+    if (process.env.ACE_SKIP_CARGO_BUILD) return;
     console.log(`  $ (cwd ${REPO_ROOT}) cargo build`);
     await spawnExitZero('cargo', ['build'], REPO_ROOT, 'cargo build');
 }

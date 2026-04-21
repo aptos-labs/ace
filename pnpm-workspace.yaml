@@ -3,5 +3,5 @@ packages:
   - "worker"
   - "examples/*"
   - "examples/*/demo-cli-flow"
-  - "integration-tests"
+  - "scenarios"
 

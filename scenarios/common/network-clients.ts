@@ -35,6 +35,7 @@ export function killStaleNetworkNodes(): void {
 
 /** Build the repo-root Cargo workspace (all binaries including network-node). */
 export async function buildRustWorkspace(): Promise<void> {
+    if (process.env.ACE_SKIP_CARGO_BUILD) return;
     console.log(`  $ (cwd ${REPO_ROOT}) cargo build`);
     await spawnExitZero('cargo', ['build'], REPO_ROOT, 'cargo build');
 }

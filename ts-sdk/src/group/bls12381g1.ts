@@ -15,8 +15,44 @@ import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bls12_381 } from "@noble/curves/bls12-381";
 import { bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { FR_MODULUS, frMod } from "../shamir_fr";
 import { Result } from "../result";
+
+// ── BLS12-381 Fr field arithmetic ─────────────────────────────────────────────
+
+export const FR_MODULUS = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001n;
+
+export function frMod(a: bigint): bigint {
+    return ((a % FR_MODULUS) + FR_MODULUS) % FR_MODULUS;
+}
+
+export function assertCanonicalFrScalar(label: string, s: bigint): void {
+    if (s < 0n || s >= FR_MODULUS) {
+        throw `${label}: expected canonical Fr scalar in [0, FR_MODULUS)`;
+    }
+}
+
+export function frAdd(a: bigint, b: bigint): bigint {
+    return frMod(a + b);
+}
+
+export function frMul(a: bigint, b: bigint): bigint {
+    return frMod(a * b);
+}
+
+export function frInv(a: bigint): bigint {
+    return modPow(frMod(a), FR_MODULUS - 2n, FR_MODULUS);
+}
+
+function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+    let result = 1n;
+    base = base % mod;
+    while (exp > 0n) {
+        if (exp & 1n) result = (result * base) % mod;
+        exp >>= 1n;
+        base = (base * base) % mod;
+    }
+    return result;
+}
 import { lagrangeAtZero } from "../vss/dealing";
 import { randBytes } from "../utils";
 import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
@@ -396,6 +432,34 @@ export function reconstruct({ indexedShares }: {
             }));
             const sRec = lagrangeAtZero(points);
             return PrivateScalar.fromBigint(sRec).unwrapOrThrow('unreachable');
+        },
+    });
+}
+
+/**
+ * Split a 32-byte LE Fr secret into Shamir shares over BLS12-381 Fr.
+ * Returns `total` shares as 32-byte LE encodings.
+ */
+export function split(secret: Uint8Array, threshold: number, total: number): Result<Uint8Array[]> {
+    return Result.capture({
+        recordsExecutionTimeMs: false,
+        task: () => {
+            if (threshold < 1 || threshold > total) throw 'split: invalid threshold or total';
+            const s = frMod(bytesToNumberLE(secret));
+            const coeffs: bigint[] = [s];
+            for (let i = 1; i < threshold; i++) {
+                coeffs.push(frMod(bytesToNumberLE(randBytes(32))));
+            }
+            return Array.from({ length: total }, (_, i) => {
+                const x = BigInt(i + 1);
+                let y = 0n;
+                let xPow = 1n;
+                for (const c of coeffs) {
+                    y = frAdd(y, frMul(c, xPow));
+                    xPow = frMul(xPow, x);
+                }
+                return numberToBytesLE(y, 32);
+            });
         },
     });
 }

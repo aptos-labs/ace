@@ -8,7 +8,7 @@ import { bls12_381 } from '@noble/curves/bls12-381';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/utils';
 import { WeierstrassPoint } from '@noble/curves/abstract/weierstrass';
 import { Fp2 } from '@noble/curves/abstract/tower';
-import { split } from '../src/shamir_fr';
+import { split } from '../src/group/bls12381g1';
 
 const DST_ID_HASH = new TextEncoder().encode("BONEH_FRANKLIN_BLS12381_SHORT_PK/HASH_ID_TO_CURVE");
 

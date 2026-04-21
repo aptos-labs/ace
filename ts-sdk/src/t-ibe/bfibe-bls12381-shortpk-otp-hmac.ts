@@ -14,7 +14,7 @@ import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
 import { bls12_381 } from "@noble/curves/bls12-381";
 import { bytesToNumberBE, bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 import { bytesToHex, hexToBytes, randomBytes } from "@noble/hashes/utils";
-import { frMod, frMul, frInv } from "../shamir_fr";
+import { frMod, frMul, frInv } from "../group/bls12381g1";
 import { hmac_sha3_256, kdf, xorBytes } from "../utils";
 import { Result } from "../result";
 

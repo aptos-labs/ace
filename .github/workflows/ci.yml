@@ -30,6 +30,41 @@ jobs:
             target/debug/network-node
           retention-days: 1
 
+  unit-tests-ts:
+    name: Unit tests / TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - name: Install JS dependencies
+        run: pnpm install
+      - name: Test
+        run: pnpm --filter @aptos-labs/ace-sdk test -- --run
+
+  unit-tests-rust:
+    name: Unit tests / Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test
+
+  unit-tests-move:
+    name: Unit tests / Move
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo scripts/install-tools.sh
+      - name: Test
+        run: aptos move test --package-dir contracts/vss
+
   scenarios:
     name: scenario / ${{ matrix.scenario }}
     needs: build-rust

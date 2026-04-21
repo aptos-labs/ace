@@ -621,16 +621,28 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
 
             // POST RequestForDecryptionKey to all workers concurrently.
             const reqHex = new RequestForDecryptionKey({keypairId, contractId, domain, proof}).toHex();
-            const idkShares = (await Promise.all(endpoints.map(async (endpoint) => {
+            const idkShares = (await Promise.all(endpoints.map(async (endpoint, i) => {
+                const nodeAddr = state.curNodes[i].toStringLong();
                 try {
                     const ctrl = new AbortController();
                     const tid = setTimeout(() => ctrl.abort(), 8000);
                     const resp = await fetch(endpoint, {method: 'POST', body: reqHex, signal: ctrl.signal});
                     clearTimeout(tid);
-                    if (!resp.ok) return null;
+                    if (!resp.ok) {
+                        const body = await resp.text().catch(() => '');
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
+                        return null;
+                    }
                     const hexText = (await resp.text()).trim();
-                    return tibe.IdentityDecryptionKeyShare.fromHex(hexText).okValue ?? null;
-                } catch {
+                    const share = tibe.IdentityDecryptionKeyShare.fromHex(hexText).okValue ?? null;
+                    if (share === null) {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): parse failed, hex=${hexText.slice(0, 40)}...`);
+                    } else {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK (evalPoint=${share.inner?.evalPoint ?? (share as any).evalPoint})`);
+                    }
+                    return share;
+                } catch (e) {
+                    console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
                     return null;
                 }
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);

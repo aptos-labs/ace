@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Account } from '@aptos-labs/ts-sdk';
-import { spawn, type ChildProcess } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 
 import { NETWORK_NODE_BINARY, LOCALNET_URL, REPO_ROOT } from './config';
 import { ed25519PrivateKeyHex } from './helpers';
@@ -19,6 +19,18 @@ function spawnExitZero(cmd: string, args: string[], cwd: string, label: string):
             }
         });
     });
+}
+
+/**
+ * Kill any stale `network-node run` processes left over from previous test runs.
+ * Stale workers hold their TCP ports open, causing bind failures on the next run.
+ */
+export function killStaleNetworkNodes(): void {
+    try {
+        execSync('pkill -KILL -f "network-node run" 2>/dev/null; sleep 0.3', { stdio: 'ignore' });
+    } catch {
+        // pkill exits non-zero when no processes match — that's fine.
+    }
 }
 
 /** Build the repo-root Cargo workspace (all binaries including network-node). */

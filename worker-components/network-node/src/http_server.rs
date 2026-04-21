@@ -16,7 +16,7 @@ use vss_common::normalize_account_addr;
 /// Shared state for the HTTP handler.
 #[derive(Clone)]
 pub struct AppState {
-    pub keypair_shares: Arc<RwLock<HashMap<String, [u8; 32]>>>,
+    pub keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>>,
     pub cur_nodes: Arc<RwLock<Vec<String>>>,
     pub my_addr: String,
     /// Aptos fullnode URL, used for on-chain proof verification.
@@ -26,7 +26,7 @@ pub struct AppState {
 /// Spawn the axum server on `port`.  Runs until the process exits.
 pub async fn run(
     port: u16,
-    keypair_shares: Arc<RwLock<HashMap<String, [u8; 32]>>>,
+    keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>>,
     cur_nodes: Arc<RwLock<Vec<String>>>,
     my_addr: String,
     rpc_url: String,
@@ -78,7 +78,7 @@ async fn handle_request(
     // 4. Look up the scalar share for this keypairId.
     let scalar_le32 = {
         let shares = state.keypair_shares.read().await;
-        shares.get(&keypair_id).copied()
+        shares.get(&keypair_id).map(|(_, s)| *s)
     }
     .ok_or(StatusCode::NOT_FOUND)?;
 

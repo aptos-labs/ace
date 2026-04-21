@@ -55,6 +55,7 @@ import {
 } from './common/infra';
 import {
     buildRustWorkspace,
+    killStaleNetworkNodes,
     spawnNetworkNode,
 } from './common/network-clients';
 
@@ -162,6 +163,7 @@ async function main() {
 
         // ── Step 6b: Spawn all worker processes ───────────────────────────────
         step('6b', `Spawn ${TOTAL_WORKERS} network-node processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1})`);
+        killStaleNetworkNodes();
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const pkeDkBytes = encKeypairs[i].decryptionKey.toBytes();
             const pkeDkHex = `0x${Buffer.from(pkeDkBytes).toString('hex')}`;
@@ -438,7 +440,7 @@ async function main() {
     } finally {
         console.log('\nCleaning up worker processes...');
         for (const proc of workers) {
-            proc.kill('SIGTERM');
+            proc.kill('SIGKILL');
         }
         if (localnetProc) {
             console.log('Stopping localnet...');

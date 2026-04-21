@@ -24,6 +24,7 @@ pub mod verify;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
@@ -116,8 +117,12 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     );
 
     // Shared state for the HTTP server.
-    let keypair_shares: Arc<RwLock<HashMap<String, [u8; 32]>>> =
+    // Each entry stores (generation, scalar_le32). The generation prevents an old URH
+    // task's cleanup from removing an entry that was already overwritten by a newer task
+    // (which happens when a node appears in both old and new committees after an epoch change).
+    let keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let urh_gen: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let cur_nodes_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
 
     // Spawn HTTP server if a port was configured.
@@ -199,15 +204,24 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             let pke_dk = pke_dk_bytes.clone();
             let my = account_addr.clone();
             let shares = keypair_shares.clone();
+            // Monotonic generation so that if a new task for the same keypair_id starts
+            // before this task's shutdown cleanup runs, the cleanup won't evict the new
+            // entry. This happens when a node is in both old and new committees.
+            let my_gen = urh_gen.fetch_add(1, Ordering::Relaxed);
 
             tokio::spawn(async move {
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
                     Ok((scalar_le32, keypair_id)) => {
-                        shares.write().await.insert(keypair_id.clone(), scalar_le32);
-                        println!("network-node: [urh] registered keypair_id={}", keypair_id);
+                        shares.write().await.insert(keypair_id.clone(), (my_gen, scalar_le32));
+                        println!("network-node: [urh] registered keypair_id={} gen={}", keypair_id, my_gen);
                         let _ = rx.await;
-                        shares.write().await.remove(&keypair_id);
-                        println!("network-node: [urh] unregistered keypair_id={}", keypair_id);
+                        let mut w = shares.write().await;
+                        if w.get(&keypair_id).map_or(false, |(g, _)| *g == my_gen) {
+                            w.remove(&keypair_id);
+                            println!("network-node: [urh] unregistered keypair_id={} gen={}", keypair_id, my_gen);
+                        } else {
+                            println!("network-node: [urh] skipped cleanup keypair_id={} gen={} (superseded)", keypair_id, my_gen);
+                        }
                     }
                     Err(e) => {
                         eprintln!(

@@ -56,18 +56,21 @@ async fn handle_request(
     let req_bytes = hex::decode(body_str.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // 1. Parse keypairId (32 fixed bytes, AccountAddress).
-    if req_bytes.len() < 32 {
+    if req_bytes.len() < 40 {
         return Err(StatusCode::BAD_REQUEST);
     }
     let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(&req_bytes[0..32])));
 
-    // 2. Parse FullDecryptionDomain (contractId + domain = IBE identity).
-    let fdd =
-        crate::verify::parse_fdd(&req_bytes[32..]).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let fdd_bytes = &req_bytes[32..32 + fdd.byte_len];
-    let proof_bytes = &req_bytes[32 + fdd.byte_len..];
+    // 2. Parse epoch (u64 LE, 8 bytes).
+    let _epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
 
-    // 3. Verify the proof (signature, auth-key, on-chain permission).
+    // 3. Parse FullDecryptionDomain (contractId + domain = IBE identity).
+    let fdd =
+        crate::verify::parse_fdd(&req_bytes[40..]).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let fdd_bytes = &req_bytes[40..40 + fdd.byte_len];
+    let proof_bytes = &req_bytes[40 + fdd.byte_len..];
+
+    // 4. Verify the proof (signature, auth-key, on-chain permission).
     crate::verify::verify(&fdd, proof_bytes, &state.rpc_url)
         .await
         .map_err(|e| {
@@ -75,14 +78,14 @@ async fn handle_request(
             StatusCode::FORBIDDEN
         })?;
 
-    // 4. Look up the scalar share for this keypairId.
+    // 5. Look up the scalar share for this keypairId.
     let scalar_le32 = {
         let shares = state.keypair_shares.read().await;
         shares.get(&keypair_id).map(|(_, s)| *s)
     }
     .ok_or(StatusCode::NOT_FOUND)?;
 
-    // 5. Determine this node's eval point (1-based position in cur_nodes).
+    // 6. Determine this node's eval point (1-based position in cur_nodes).
     let eval_point = {
         let nodes = state.cur_nodes.read().await;
         nodes
@@ -92,7 +95,7 @@ async fn handle_request(
     }
     .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    // 6. Compute H_G2(fdd_bytes) ^ scalar and return BCS hex.
+    // 7. Compute H_G2(fdd_bytes) ^ scalar and return BCS hex.
     crate::crypto::partial_extract_idk_share(fdd_bytes, &scalar_le32, eval_point)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

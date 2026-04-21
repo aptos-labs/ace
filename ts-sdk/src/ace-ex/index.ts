@@ -491,12 +491,14 @@ export class ProofOfPermission {
 
 export class RequestForDecryptionKey {
     keypairId: AptosSDK.AccountAddress;
+    epoch: number;
     contractId: ContractID;
     domain: Uint8Array;
     proof: ProofOfPermission;
 
-    constructor({keypairId, contractId, domain, proof}: {keypairId: AptosSDK.AccountAddress, contractId: ContractID, domain: Uint8Array, proof: ProofOfPermission}) {
+    constructor({keypairId, epoch, contractId, domain, proof}: {keypairId: AptosSDK.AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, proof: ProofOfPermission}) {
         this.keypairId = keypairId;
+        this.epoch = epoch;
         this.contractId = contractId;
         this.domain = domain;
         this.proof = proof;
@@ -505,10 +507,11 @@ export class RequestForDecryptionKey {
     static deserialize(deserializer: Deserializer): Result<RequestForDecryptionKey> {
         const task = (_extra: Record<string, any>) => {
             const keypairId = AccountAddress.deserialize(deserializer);
+            const epoch = Number(deserializer.deserializeU64());
             const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ContractID deserialization error');
             const domain = deserializer.deserializeBytes();
             const proof = ProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ProofOfPermission deserialization error');
-            return new RequestForDecryptionKey({keypairId, contractId, domain, proof});
+            return new RequestForDecryptionKey({keypairId, epoch, contractId, domain, proof});
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -530,6 +533,7 @@ export class RequestForDecryptionKey {
 
     serialize(serializer: Serializer): void {
         this.keypairId.serialize(serializer);
+        serializer.serializeU64(BigInt(this.epoch));
         this.contractId.serialize(serializer);
         serializer.serializeBytes(this.domain);
         this.proof.serialize(serializer);
@@ -620,7 +624,7 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
             }));
 
             // POST RequestForDecryptionKey to all workers concurrently.
-            const reqHex = new RequestForDecryptionKey({keypairId, contractId, domain, proof}).toHex();
+            const reqHex = new RequestForDecryptionKey({keypairId, epoch: state.epoch, contractId, domain, proof}).toHex();
             const idkShares = (await Promise.all(endpoints.map(async (endpoint, i) => {
                 const nodeAddr = state.curNodes[i].toStringLong();
                 try {

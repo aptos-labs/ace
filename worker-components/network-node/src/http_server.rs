@@ -16,7 +16,7 @@ use vss_common::normalize_account_addr;
 /// Shared state for the HTTP handler.
 #[derive(Clone)]
 pub struct AppState {
-    pub keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>>,
+    pub keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
     pub cur_nodes: Arc<RwLock<Vec<String>>>,
     pub my_addr: String,
     /// Aptos fullnode URL, used for on-chain proof verification.
@@ -26,7 +26,7 @@ pub struct AppState {
 /// Spawn the axum server on `port`.  Runs until the process exits.
 pub async fn run(
     port: u16,
-    keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>>,
+    keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
     cur_nodes: Arc<RwLock<Vec<String>>>,
     my_addr: String,
     rpc_url: String,
@@ -62,7 +62,7 @@ async fn handle_request(
     let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(&req_bytes[0..32])));
 
     // 2. Parse epoch (u64 LE, 8 bytes).
-    let _epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
+    let epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
 
     // 3. Parse FullDecryptionDomain (contractId + domain = IBE identity).
     let fdd =
@@ -78,10 +78,10 @@ async fn handle_request(
             StatusCode::FORBIDDEN
         })?;
 
-    // 5. Look up the scalar share for this keypairId.
+    // 5. Look up the scalar share for this keypairId at the requested epoch.
     let scalar_le32 = {
         let shares = state.keypair_shares.read().await;
-        shares.get(&keypair_id).map(|(_, s)| *s)
+        shares.get(&keypair_id).and_then(|by_epoch| by_epoch.get(&epoch)).copied()
     }
     .ok_or(StatusCode::NOT_FOUND)?;
 

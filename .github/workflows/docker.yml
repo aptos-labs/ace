@@ -9,9 +9,13 @@ on:
       - 'node/v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Git tag to build (e.g. node/v0.1.0)'
-        required: true
+      ref:
+        description: 'Branch, tag, or commit SHA to build (e.g. main, node/v0.1.0, abc1234)'
+        required: false
+        default: 'main'
+      image_tag:
+        description: 'Image tag to push (e.g. v0.1.0, main, dev). Defaults to short SHA.'
+        required: false
 
 jobs:
   build-and-push:
@@ -21,26 +25,23 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Resolve git tag
-        id: resolve
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.resolve.outputs.tag }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
-      - name: Derive image version
-        id: version
+      - name: Derive image tag
+        id: image_tag
         run: |
-          # node/v0.1.0 → v0.1.0
-          echo "value=${TAG#node/}" >> "$GITHUB_OUTPUT"
-        env:
-          TAG: ${{ steps.resolve.outputs.tag }}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.image_tag }}" ]; then
+              echo "value=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            else
+              echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # push: tags — strip node/ prefix
+            echo "value=${GITHUB_REF_NAME#node/}" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: docker/login-action@v3
         with:
@@ -55,8 +56,6 @@ jobs:
           context: .
           file: worker-components/network-node/Dockerfile
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/network-node:${{ steps.version.outputs.value }}
-            ghcr.io/${{ github.repository_owner }}/network-node:latest
+          tags: ghcr.io/${{ github.repository_owner }}/network-node:${{ steps.image_tag.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

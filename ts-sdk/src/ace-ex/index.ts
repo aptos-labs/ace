@@ -13,6 +13,7 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
 import * as dkg from "../dkg";
+import * as pke from "../pke";
 import * as tibe from "../t-ibe";
 import { State as NetworkState } from "../network";
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
@@ -495,13 +496,15 @@ export class RequestForDecryptionKey {
     contractId: ContractID;
     domain: Uint8Array;
     proof: ProofOfPermission;
+    ephemeralEncKey: pke.EncryptionKey;
 
-    constructor({keypairId, epoch, contractId, domain, proof}: {keypairId: AptosSDK.AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, proof: ProofOfPermission}) {
+    constructor({keypairId, epoch, contractId, domain, proof, ephemeralEncKey}: {keypairId: AptosSDK.AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, proof: ProofOfPermission, ephemeralEncKey: pke.EncryptionKey}) {
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
         this.domain = domain;
         this.proof = proof;
+        this.ephemeralEncKey = ephemeralEncKey;
     }
 
     static deserialize(deserializer: Deserializer): Result<RequestForDecryptionKey> {
@@ -511,7 +514,8 @@ export class RequestForDecryptionKey {
             const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ContractID deserialization error');
             const domain = deserializer.deserializeBytes();
             const proof = ProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ProofOfPermission deserialization error');
-            return new RequestForDecryptionKey({keypairId, epoch, contractId, domain, proof});
+            const ephemeralEncKey = pke.EncryptionKey.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ephemeralEncKey deserialization error');
+            return new RequestForDecryptionKey({keypairId, epoch, contractId, domain, proof, ephemeralEncKey});
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -537,8 +541,11 @@ export class RequestForDecryptionKey {
         this.contractId.serialize(serializer);
         serializer.serializeBytes(this.domain);
         this.proof.serialize(serializer);
+        // Ephemeral enc key appended last (always 67 bytes for scheme 0).
+        // The node slices the last 67 bytes to extract it without needing a length prefix.
+        this.ephemeralEncKey.serialize(serializer);
     }
-    
+
     toBytes(): Uint8Array {
         const serializer = new Serializer();
         this.serialize(serializer);
@@ -611,26 +618,43 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
             const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
             const state = NetworkState.fromBytes(stateBytes).unwrapOrThrow('ace_ex.decrypt: parse network state');
 
-            // Fetch HTTP endpoint for each node in curNodes.
-            const endpoints = await Promise.all(state.curNodes.map(async (nodeAddr) => {
-                const [endpoint] = await aptos.view({
-                    payload: {
-                        function: `${aceContract}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                        typeArguments: [],
-                        functionArguments: [nodeAddr.toStringLong()],
-                    },
-                });
-                return endpoint as string;
+            // Fetch HTTP endpoint and PKE enc key for each node in curNodes.
+            const nodeInfos = await Promise.all(state.curNodes.map(async (nodeAddr) => {
+                const addrStr = nodeAddr.toStringLong();
+                const [[endpoint], [ekHex]] = await Promise.all([
+                    aptos.view({
+                        payload: {
+                            function: `${aceContract}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                    aptos.view({
+                        payload: {
+                            function: `${aceContract}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                ]);
+                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+                    .unwrapOrThrow(`ace_ex.decrypt: parse pke enc key for ${addrStr}`);
+                return { endpoint: endpoint as string, nodeEncKey };
             }));
 
-            // POST RequestForDecryptionKey to all workers concurrently.
-            const reqHex = new RequestForDecryptionKey({keypairId, epoch: state.epoch, contractId, domain, proof}).toHex();
-            const idkShares = (await Promise.all(endpoints.map(async (endpoint, i) => {
+            // Generate a per-call ephemeral keypair; the enc key is included in the request so
+            // each node can encrypt its share response back to us.
+            const { encryptionKey: ephemeralEk, decryptionKey: ephemeralDk } = pke.keygen();
+            const reqBytes = new RequestForDecryptionKey({keypairId, epoch: state.epoch, contractId, domain, proof, ephemeralEncKey: ephemeralEk}).toBytes();
+
+            // POST to all workers concurrently; each request is encrypted to that node's PKE key.
+            const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = state.curNodes[i].toStringLong();
                 try {
+                    const encReqHex = pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes}).toHex();
                     const ctrl = new AbortController();
                     const tid = setTimeout(() => ctrl.abort(), 8000);
-                    const resp = await fetch(endpoint, {method: 'POST', body: reqHex, signal: ctrl.signal});
+                    const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal: ctrl.signal});
                     clearTimeout(tid);
                     if (!resp.ok) {
                         const body = await resp.text().catch(() => '');
@@ -638,9 +662,19 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
                         return null;
                     }
                     const hexText = (await resp.text()).trim();
-                    const share = tibe.IdentityDecryptionKeyShare.fromHex(hexText).okValue ?? null;
+                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                    if (respCt === null) {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed, hex=${hexText.slice(0, 40)}...`);
+                        return null;
+                    }
+                    const shareBytes = pke.decrypt({decryptionKey: ephemeralDk, ciphertext: respCt}).okValue ?? null;
+                    if (shareBytes === null) {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                        return null;
+                    }
+                    const share = tibe.IdentityDecryptionKeyShare.fromBytes(shareBytes).okValue ?? null;
                     if (share === null) {
-                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): parse failed, hex=${hexText.slice(0, 40)}...`);
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): share parse failed`);
                     } else {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK (evalPoint=${share.inner?.evalPoint ?? (share as any).evalPoint})`);
                     }

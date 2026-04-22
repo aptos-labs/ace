@@ -37,6 +37,11 @@ install_solana() {
         ln -sf "/opt/solana-release/bin/${bin}" /usr/local/bin/
     done
 
+    # cargo-build-sbf may need to install/update platform-tools at runtime.
+    # Make the release dir world-writable so it can do so when running as a
+    # non-root user (e.g. the GitHub Actions runner user).
+    chmod -R a+rwX /opt/solana-release/
+
     echo "Solana CLI installed: $(solana --version)"
 }
 

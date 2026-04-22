@@ -16,6 +16,8 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
+use crate::ChainRpcConfig;
+
 // ── Parsed FDD ────────────────────────────────────────────────────────────────
 
 /// Parsed `FullDecryptionDomain` (ContractID + domain), extracted from the request.
@@ -43,10 +45,8 @@ pub enum ParsedChain {
 
 /// Verify `proof_bytes` against `fdd`.
 ///
-/// `aptos_rpc_url` is the worker's own Aptos fullnode URL, used for auth-key and
-/// permission checks.  For Solana proofs the relevant Solana RPC is derived from
-/// the `knownChainName` in the FDD.
-pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], aptos_rpc_url: &str) -> Result<()> {
+/// `chain_rpc` provides per-chain RPC endpoints for auth-key and permission checks.
+pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
     let outer_scheme = proof_bytes
         .first()
         .copied()
@@ -56,11 +56,11 @@ pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], aptos_rpc_url: &str) ->
     match (outer_scheme, &fdd.chain) {
         (0, ParsedChain::Aptos { .. }) => {
             let proof = parse_aptos_proof(inner)?;
-            verify_aptos(fdd, &proof, aptos_rpc_url).await
+            verify_aptos(fdd, &proof, chain_rpc).await
         }
         (1, ParsedChain::Solana { .. }) => {
             let proof = parse_solana_proof(inner)?;
-            verify_solana(fdd, &proof).await
+            verify_solana(fdd, &proof, chain_rpc).await
         }
         (s, chain) => Err(anyhow!(
             "verify: unsupported scheme combination proof={} chain={}",
@@ -234,7 +234,7 @@ fn parse_solana_proof(bytes: &[u8]) -> Result<SolanaProof> {
 
 // ── Aptos Verification ────────────────────────────────────────────────────────
 
-async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, rpc_url: &str) -> Result<()> {
+async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
     // Only legacy Ed25519 (pk_scheme=0, sig_scheme=0) is currently supported.
     if proof.pk_scheme != 0 {
         return Err(anyhow!("verify_aptos: unsupported public key scheme {}", proof.pk_scheme));
@@ -266,10 +266,16 @@ async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, rpc_url: &str) -> Res
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
     verify_aptos_sig(fdd, proof, &vk, &sig)?;
 
+    let chain_id = match &fdd.chain {
+        ParsedChain::Aptos { chain_id, .. } => *chain_id,
+        _ => unreachable!(),
+    };
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
-        check_aptos_auth_key(proof, &vk, rpc_url),
-        check_aptos_permission(fdd, proof, rpc_url),
+        check_aptos_auth_key(proof, &vk, &rpc),
+        check_aptos_permission(fdd, proof, &rpc),
     );
     auth_result?;
     perm_result?;
@@ -323,13 +329,12 @@ fn verify_aptos_sig(
 async fn check_aptos_auth_key(
     proof: &AptosProof,
     vk: &ed25519_dalek::VerifyingKey,
-    rpc_url: &str,
+    rpc: &vss_common::AptosRpc,
 ) -> Result<()> {
     // For legacy Ed25519 (scheme=0): auth_key = SHA3-256(pubkey_bytes || 0x00)
     // This is identical to `vss_common::compute_account_address`.
     let computed = vss_common::compute_account_address(vk);
 
-    let rpc = vss_common::AptosRpc::new(rpc_url.to_string());
     let user_addr_str = format!("0x{}", hex::encode(&proof.user_addr));
     let account = rpc
         .get_account(&user_addr_str)
@@ -353,7 +358,7 @@ async fn check_aptos_auth_key(
 async fn check_aptos_permission(
     fdd: &ParsedFdd,
     proof: &AptosProof,
-    rpc_url: &str,
+    rpc: &vss_common::AptosRpc,
 ) -> Result<()> {
     let (module_addr_bytes, module_name, function_name) = match &fdd.chain {
         ParsedChain::Aptos { module_addr_bytes, module_name, function_name, .. } => {
@@ -362,7 +367,6 @@ async fn check_aptos_permission(
         _ => return Err(anyhow!("check_aptos_permission: chain is not Aptos")),
     };
 
-    let rpc = vss_common::AptosRpc::new(rpc_url.to_string());
     let func = format!("0x{}::{}::{}", hex::encode(module_addr_bytes), module_name, function_name);
     let user_addr = format!("0x{}", hex::encode(&proof.user_addr));
     let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
@@ -384,7 +388,7 @@ async fn check_aptos_permission(
 
 // ── Solana Verification ───────────────────────────────────────────────────────
 
-async fn verify_solana(fdd: &ParsedFdd, proof: &SolanaProof) -> Result<()> {
+async fn verify_solana(fdd: &ParsedFdd, proof: &SolanaProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
     let (known_chain_name, expected_program_id) = match &fdd.chain {
         ParsedChain::Solana { known_chain_name, program_id } => {
             (known_chain_name.as_str(), program_id)
@@ -403,7 +407,7 @@ async fn verify_solana(fdd: &ParsedFdd, proof: &SolanaProof) -> Result<()> {
     validate_solana_txn(&proof.txn_bytes, expected_program_id, &fdd.domain, is_versioned)?;
 
     // 2. Signature + program execution via RPC simulation.
-    let rpc_url = solana_rpc_url(known_chain_name)?;
+    let rpc_url = chain_rpc.solana_rpc_for_chain_name(known_chain_name)?;
     simulate_solana_txn(&proof.txn_bytes, &rpc_url, is_versioned).await?;
 
     Ok(())
@@ -596,16 +600,6 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, is_versioned: bool
     }
 
     Ok(())
-}
-
-fn solana_rpc_url(chain_name: &str) -> Result<String> {
-    Ok(match chain_name {
-        "localnet" | "localhost" => "http://127.0.0.1:8899".to_string(),
-        "devnet" => "https://api.devnet.solana.com".to_string(),
-        "testnet" => "https://api.testnet.solana.com".to_string(),
-        "mainnet-beta" => "https://api.mainnet-beta.solana.com".to_string(),
-        other => return Err(anyhow!("verify_solana: unsupported chain name '{}'", other)),
-    })
 }
 
 // ── FDD pretty-message (Aptos) ────────────────────────────────────────────────

@@ -66,14 +66,14 @@ async function main() {
             runAs: dealerAccount,
             pkeDkHex: `0x${Buffer.from(encKeypairs[0].decryptionKey.toBytes()).toString('hex')}`,
             sessionAddr,
-            aceContract,
+            aceDeploymentAddr: aceContract,
         });
         const recipientProcs = recipientAccounts.map((account, i) =>
             spawnVSSRecipientRun({
                 runAs: account,
                 pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
                 sessionAddr,
-                aceContract,
+                aceDeploymentAddr: aceContract,
             }),
         );
 

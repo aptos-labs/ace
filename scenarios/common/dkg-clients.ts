@@ -38,14 +38,14 @@ export type DKGWorkerSpawnInput = {
     pkeDkHex: string;
     dkgSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
 };
 
 /** Spawn `dkg-worker run` for one committee member. */
 export function spawnDKGRun(opts: DKGWorkerSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const session = typeof opts.dkgSessionAddr === 'string'
         ? opts.dkgSessionAddr
         : opts.dkgSessionAddr.toStringLong();
@@ -53,13 +53,13 @@ export function spawnDKGRun(opts: DKGWorkerSpawnInput): ChildProcess {
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url',
+        '--ace-deployment-api',
         rpc,
-        '--ace-contract',
-        opts.aceContract,
+        '--ace-deployment-addr',
+        opts.aceDeploymentAddr,
         '--dkg-session',
         session,
-        '--pke-dk-hex',
+        '--pke-dk',
         pkeDkHex,
         '--account-addr',
         accountAddr,

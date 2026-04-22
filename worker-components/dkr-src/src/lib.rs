@@ -35,6 +35,7 @@ struct DkrSession {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub rpc_url: String,
+    pub rpc_api_key: Option<String>,
     pub ace_contract: String,
     pub dkr_session: String,
     pub account_addr: String,
@@ -197,7 +198,7 @@ async fn reconstruct_dkg_share(
 }
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new(config.rpc_url.clone());
+    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
@@ -254,6 +255,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let (dealer_shutdown_tx, dealer_shutdown_rx) = oneshot::channel::<()>();
     let dealer_cfg = vss_dealer::RunConfig {
         rpc_url: config.rpc_url.clone(),
+        rpc_api_key: config.rpc_api_key.clone(),
         ace_contract: ace.clone(),
         vss_session: session.vss_sessions[my_src_idx].clone(),
         pke_dk_hex: config.pke_dk_hex.clone(),

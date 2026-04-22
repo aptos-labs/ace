@@ -43,10 +43,21 @@ pub fn json_move_vec_u8_hex(bytes: &[u8]) -> Value {
 
 impl AptosRpc {
     pub fn new(base_url: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
+        Self::new_with_key(base_url, None)
+    }
+
+    pub fn new_with_key(base_url: String, api_key: Option<String>) -> Self {
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(key) = api_key {
+            let mut headers = reqwest::header::HeaderMap::new();
+            let mut val = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", key))
+                .expect("api_key contains invalid header characters");
+            val.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+            builder = builder.default_headers(headers);
+        }
+        let client = builder.build().unwrap();
         Self { base_url, client }
     }
 

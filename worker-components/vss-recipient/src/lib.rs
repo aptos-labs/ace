@@ -17,6 +17,7 @@ pub const POLL_SECS: u64 = 5;
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub rpc_url: String,
+    pub rpc_api_key: Option<String>,
     pub ace_contract: String,
     pub vss_session: String,
     pub account_addr: String,
@@ -32,7 +33,7 @@ pub struct RunConfig {
 /// Exits cleanly on `STATE__SUCCESS`.
 /// Returns `Err` on `STATE__FAILED`, account not in share_holders, or unrecoverable errors.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new(config.rpc_url.clone());
+    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
 

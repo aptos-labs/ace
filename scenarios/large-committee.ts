@@ -55,7 +55,7 @@ async function main() {
             nodeProcs.push(spawnNetworkNode({
                 runAs: workerAccounts[i],
                 pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
-                aceContract,
+                aceDeploymentAddr: aceContract,
             }));
         }
 

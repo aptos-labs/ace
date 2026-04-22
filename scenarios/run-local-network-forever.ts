@@ -121,11 +121,11 @@ async function main() {
 
         const args = [
             'run',
-            '--rpc-url', LOCALNET_URL,
-            '--ace-contract', aceContract,
+            '--ace-deployment-api', LOCALNET_URL,
+            '--ace-deployment-addr', aceContract,
             '--account-addr', accountAddr,
             '--account-sk', `0x${pkHex}`,
-            '--pke-dk-hex', pkeDkHex,
+            '--pke-dk', pkeDkHex,
             '--port', String(WORKER_BASE_PORT + i),
         ];
 

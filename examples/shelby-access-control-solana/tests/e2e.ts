@@ -15,10 +15,12 @@
  * 7. Bob decrypts the GreenBox to recover the RedKey
  * 
  * Prerequisites:
- * - Solana localnet running: solana-test-validator
- * - ACE workers running:
- *   - Terminal 1: cd worker && pnpm start:worker0
- *   - Terminal 2: cd worker && pnpm start:worker1
+ * - ACE global network running (Aptos localnet + workers):
+ *   cd scenarios && pnpm run-local-network-forever
+ *   (wait for "ACE local network is READY" banner)
+ * - Then in a second terminal:
+ *   cd examples/shelby-access-control-solana
+ *   anchor test --provider.cluster localnet
  */
 
 import * as anchor from "@coral-xyz/anchor";
@@ -27,8 +29,9 @@ import { AccessControl } from "../target/types/access_control";
 import { AceHook } from "../target/types/ace_hook";
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { expect } from "chai";
-import { ace as ACE, Result } from "@aptos-labs/ace-sdk";
+import { ace_ex, Result } from "@aptos-labs/ace-sdk";
 import { AccountAddress, Serializer, DerivableAbstractedAccount } from "@aptos-labs/ts-sdk";
+import { readFileSync } from "fs";
 
 // ============================================================================
 // Test Suite
@@ -84,57 +87,43 @@ describe("access-control", () => {
     await fundAccounts(connection, [alice, bob], minBalance);
 
     // ========================================================================
-    // Step 2: Setup ACE Committee
+    // Step 2: Setup ACE (read config from run-local-network-forever)
     // ========================================================================
-    
+
     console.log("=== Setting up ACE ===");
     const fileName = "start-wars.mov";
-    
+
     // RedKey: The symmetric encryption key for the actual file content
     // In a real app, this would be used to encrypt the file (RedBox)
     const redKeyHex = "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a";
     const redKey = hexToBytes(redKeyHex);
 
-    // Detect network and configure workers accordingly
+    // Detect network for knownChainName (used in ContractID)
     const isLocalnet = connection.rpcEndpoint.includes('localhost') || connection.rpcEndpoint.includes('127.0.0.1');
-    
-    let worker0: string;
-    let worker1: string;
-    let knownChainName: string;
-    
-    if (isLocalnet) {
-      // Local workers for development
-      worker0 = process.env.WORKER_0 ?? "http://localhost:9000";
-      worker1 = process.env.WORKER_1 ?? "http://localhost:9001";
-      knownChainName = "localnet";
-      console.log(`Using localnet workers: ${worker0}, ${worker1}`);
+    const knownChainName = isLocalnet ? "localnet" : "testnet";
+
+    // Read ACE global network config written by `pnpm run-local-network-forever`.
+    // Env vars ACE_CONTRACT + KEYPAIR_ID override the config file.
+    let aceContract: string;
+    let keypairId: AccountAddress;
+    if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
+      aceContract = process.env.ACE_CONTRACT;
+      keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
     } else {
-      // Production workers for testnet
-      worker0 = "https://xchain-worker-0-646682240579.europe-west1.run.app";
-      worker1 = "https://xchain-worker-1-646682240579.europe-west1.run.app";
-      knownChainName = "testnet";
-      console.log(`Using testnet workers: ${worker0}, ${worker1}`);
+      const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
+        { aceContract: string; keypairId: string };
+      aceContract = cfg.aceContract;
+      keypairId = AccountAddress.fromString(cfg.keypairId);
     }
-    
-    // Create committee configuration
-    // threshold=2 means both workers must participate for decryption
-    const committee = new ACE.Committee({
-      workerEndpoints: [worker0, worker1],
-      threshold: 2,
-    });
-    
-    // Contract ID points to the ace_hook program
-    // Workers will verify that proof-of-permission transactions call this program
-    const contractId = ACE.ContractID.newSolana({
+    console.log(`ACE contract: ${aceContract}`);
+    console.log(`Keypair ID:   ${keypairId.toString()}`);
+
+    // Contract ID points to the ace_hook program.
+    // Workers verify that proof-of-permission transactions call this program.
+    const contractId = ace_ex.ContractID.newSolana({
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
     });
-    
-    // Fetch the IBE encryption key from the committee
-    console.log("Fetching IBE encryption key from workers...");
-    const encryptionKeyFetchResult = await ACE.EncryptionKey.fetch({ committee });
-    const encryptionKey = encryptionKeyFetchResult.unwrapOrThrow('failed to fetch encryption key');
-    console.log("✓ Encryption key fetched");
     
     // ========================================================================
     // Step 3: Alice Encrypts RedKey → GreenBox
@@ -154,14 +143,16 @@ describe("access-control", () => {
       Buffer.from(fileName),                  // N bytes: file name
     ]);
 
-    // Encrypt RedKey with ACE
-    // The result (GreenBox) can only be decrypted by users who pass the access check
-    const { ciphertext: greenBox } = ACE.encrypt({
-      encryptionKey,
+    // Encrypt RedKey with ACE.
+    // The result (GreenBox) can only be decrypted by users who pass the access check.
+    const { ciphertext: greenBox } = (await ace_ex.encrypt({
+      keypairId,
       contractId,
       domain: fullBlobNameBytes,  // Unique identifier for this blob
       plaintext: redKey,          // The symmetric key to encrypt
-    }).unwrapOrThrow('failed to encrypt');
+      aceContract,
+    })).unwrapOrThrow('failed to encrypt');
+    // greenBox is Uint8Array
     console.log("✓ RedKey encrypted into GreenBox");
 
     // ========================================================================
@@ -171,7 +162,7 @@ describe("access-control", () => {
     console.log("(2a.2) Alice registering GreenBox on-chain...");
     
     const greenBoxScheme = 2;  // Encryption scheme version
-    const greenBoxBytes = greenBox.toBytes();
+    const greenBoxBytes = greenBox; // already Uint8Array
     const price = new anchor.BN(0.0005 * LAMPORTS_PER_SOL);  // 0.0005 SOL per download
     
     // Register creates a BlobMetadata PDA storing:
@@ -240,24 +231,19 @@ describe("access-control", () => {
         txn.sign(bob);
 
         // Create proof-of-permission from the signed transaction
-        const pop = ACE.ProofOfPermission.createSolana({ txn: txn.serialize() });
-        
-        // Request decryption key from workers
-        // Workers will simulate the transaction to verify Bob has access
-        const decryptionKeyFetchResult = await ACE.DecryptionKey.fetch({
-          committee,
+        const pop = ace_ex.ProofOfPermission.createSolana({ txn: txn.serialize() });
+
+        // Request decryption key shares from workers and decrypt.
+        // Workers simulate the transaction to verify Bob has access.
+        const plaintext = (await ace_ex.decrypt({
+          keypairId,
           contractId,
           domain: fullBlobNameBytes,
-          proof: pop
-        });
-        const decryptionKey = decryptionKeyFetchResult.unwrapOrThrow('failed to fetch decryption key');
-        
-        // Decrypt the GreenBox to recover RedKey
-        const plaintext = ACE.decrypt({
-          decryptionKey,
-          ciphertext: greenBox
-        }).unwrapOrThrow('failed to decrypt');
-        
+          proof: pop,
+          ciphertext: greenBox,
+          aceContract,
+        })).unwrapOrThrow('failed to decrypt');
+
         return plaintext;
       };
       return Result.captureAsync({ task, recordsExecutionTimeMs: true });
@@ -290,20 +276,17 @@ describe("access-control", () => {
         const versionedTxn = new VersionedTransaction(messageV0);
         versionedTxn.sign([bob]);
 
-        // Same flow: create proof, request key, decrypt
-        const pop = ACE.ProofOfPermission.createSolana({ txn: versionedTxn.serialize() });
-        const decryptionKeyFetchResult = await ACE.DecryptionKey.fetch({
-          committee,
+        // Same flow: create proof, request key shares, decrypt.
+        const pop = ace_ex.ProofOfPermission.createSolana({ txn: versionedTxn.serialize() });
+        const plaintext = (await ace_ex.decrypt({
+          keypairId,
           contractId,
           domain: fullBlobNameBytes,
-          proof: pop
-        });
-        const decryptionKey = decryptionKeyFetchResult.unwrapOrThrow('failed to fetch decryption key');
-        const plaintext = ACE.decrypt({
-          decryptionKey,
-          ciphertext: greenBox
-        }).unwrapOrThrow('failed to decrypt');
-        
+          proof: pop,
+          ciphertext: greenBox,
+          aceContract,
+        })).unwrapOrThrow('failed to decrypt');
+
         return plaintext;
       };
       return Result.captureAsync({ task, recordsExecutionTimeMs: true });

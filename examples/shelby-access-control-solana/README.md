@@ -70,21 +70,23 @@ shelby-access-control-solana/
 
 1. **Solana CLI** - Install from [Solana docs](https://docs.solana.com/cli/install-solana-cli-tools)
 2. **Anchor CLI** - Install from [Anchor docs](https://www.anchor-lang.com/docs/installation)
-3. **Node.js** (v18+) and **pnpm**
+3. **Node.js 18 or 20** (LTS) and **pnpm** — tests use the standard Anchor `ts-mocha` setup; Node 22+ can trigger ESM errors in the test runner.
 
-### Step 1: Start ACE Workers
+### Step 1: Start the ACE Local Network
 
-In two separate terminals:
+From the repo root:
 
 ```bash
-# Terminal 1 - Worker 0
-cd worker
-pnpm start:worker0
-
-# Terminal 2 - Worker 1
-cd worker
-pnpm start:worker1
+cd scenarios
+pnpm run-local-network-forever
 ```
+
+Wait for the `ACE local network is READY` banner. This deploys the ACE contract to Aptos localnet,
+runs DKG, and starts the workers — writing `aceContract` and `keypairId` to
+`/tmp/ace-localnet-config.json`.
+
+> **Note:** This does **not** start a Solana validator. The Solana validator is started automatically
+> by `anchor test` in Step 2.
 
 ### Step 2: Run the Test
 
@@ -99,6 +101,18 @@ This will:
 2. Build and deploy both Anchor programs
 3. Run the e2e test with automatic airdrop funding
 
+### Run e2e against testnet
+
+If the programs are already deployed on testnet, run the same e2e test against testnet (no local validator, no deploy):
+
+```bash
+cd examples/shelby-access-control-solana
+solana config set --url https://api.testnet.solana.com
+pnpm test:testnet
+```
+
+Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.testnet]`, and ACE workers running (see Step 1). The test will print two addresses (Alice and Bob) to fund on testnet and wait until they have enough SOL, or you can airdrop: `solana airdrop 2 <ADDRESS>`.
+
 ## How It Works
 
 ### The Flow
@@ -109,7 +123,7 @@ This will:
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  1. Generate a symmetric encryption key (RedKey)                            │
 │  2. Encrypt RedKey with ACE → GreenBox (encrypted key)                      │
-│     - Uses committee, encryptionKey, contractId, and fullBlobName           │
+│     - Uses keypairId, aceContract, contractId, and fullBlobName             │
 │  3. Register GreenBox on-chain via access_control::register_blob           │
 │     - Creates BlobMetadata PDA with price                                   │
 │  4. Encrypt file content with RedKey → RedBox (encrypted file)              │
@@ -202,16 +216,17 @@ This allows the same logical identity to be used across both chains.
 const redKey = crypto.getRandomValues(new Uint8Array(32));
 
 // Encrypt RedKey → GreenBox
-const { ciphertext: greenBox } = ACE.encrypt({
-  encryptionKey,
+const { ciphertext: greenBox } = (await ace_ex.encrypt({
+  keypairId,
   contractId,
   domain: fullBlobNameBytes,
   plaintext: redKey,
-}).unwrapOrThrow();
+  aceContract,
+})).unwrapOrThrow();
 
 // Register on-chain
 await program.methods
-  .registerBlob(ownerAptosAddr, fileName, greenBoxScheme, greenBox.toBytes(), price)
+  .registerBlob(ownerAptosAddr, fileName, greenBoxScheme, Buffer.from(greenBox), price)
   .accounts({ owner: alice.publicKey })
   .signers([alice])
   .rpc();
@@ -240,12 +255,9 @@ txn.feePayer = bob.publicKey;
 txn.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 txn.sign(bob);
 
-// Request decryption key
-const pop = ACE.ProofOfPermission.createSolana({ txn: txn.serialize() });
-const decryptionKey = await ACE.DecryptionKey.fetch({
-  committee, contractId, domain: fullBlobNameBytes, proof: pop
-});
-
-// Decrypt GreenBox → RedKey
-const redKey = ACE.decrypt({ decryptionKey, ciphertext: greenBox });
+// Request decryption key and decrypt GreenBox → RedKey
+const pop = ace_ex.ProofOfPermission.createSolana({ txn: txn.serialize() });
+const redKey = (await ace_ex.decrypt({
+  keypairId, contractId, domain: fullBlobNameBytes, proof: pop, ciphertext: greenBox, aceContract,
+})).unwrapOrThrow();
 ```

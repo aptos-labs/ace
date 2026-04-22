@@ -2,7 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Serializer } from "@aptos-labs/ts-sdk";
+import { bytesToNumberLE } from "@noble/curves/utils";
 import { sha3_256 as nobleSha3_256, sha3_512 as nobleSha3_512 } from "@noble/hashes/sha3";
+
+export function randU64(): bigint {
+    return bytesToNumberLE(randBytes(8));
+}
+
+/** Cryptographically strong when `crypto.getRandomValues` is available. */
+export function randBytes(length: number): Uint8Array {
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        return crypto.getRandomValues(new Uint8Array(length));
+    }
+    const bytes = new Uint8Array(length);
+    for (let i = 0; i < length; i++) {
+        bytes[i] = Math.floor(Math.random() * 256);
+    }
+    return bytes;
+}
 
 export function xorBytes(blinder: Uint8Array<ArrayBufferLike>, plaintext: Uint8Array<ArrayBufferLike>): Uint8Array {
     if (blinder.length != plaintext.length) {

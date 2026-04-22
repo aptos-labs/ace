@@ -21,7 +21,7 @@
 
 import * as readline from "readline";
 import { Account, AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { ace as ACE, Result } from "@aptos-labs/ace-sdk";
+import { ace_ex, Result } from "@aptos-labs/ace-sdk";
 import { AccessPolicy, RegistrationInfo, regsToBytes } from "./policy";
 
 // ============================================================================
@@ -167,41 +167,28 @@ async function main() {
     }
     
     // ========================================================================
-    // Step 5: Setup ACE Committee
+    // Step 5: Setup ACE
     // ========================================================================
-    
-    // Worker endpoints - use public test workers by default, configurable via environment variables
-    const worker0 = process.env.WORKER_0 ?? "https://ace-worker-0-646682240579.europe-west1.run.app";
-    const worker1 = process.env.WORKER_1 ?? "https://ace-worker-1-646682240579.europe-west1.run.app";
-    log(`Using ACE workers: ${worker0}, ${worker1}`);
-    
-    // Create the committee configuration
-    // threshold=2 means both workers must participate to decrypt
-    const committee = new ACE.Committee({
-        workerEndpoints: [worker0, worker1],
-        threshold: 2,
-    });
-    
-    // Fetch the IBE public key from the committee
-    log("Fetching IBE encryption key from workers...");
-    const encryptionKeyFetchResult = await ACE.EncryptionKey.fetch({ committee });
-    if (!encryptionKeyFetchResult.isOk) {
-        console.error("ERROR: Failed to fetch encryption key from workers.");
-        console.error(encryptionKeyFetchResult);
-        console.error(encryptionKeyFetchResult.extra['mpkFetchResults'][0]);
+
+    // ACE_CONTRACT and KEYPAIR_ID must be set for testnet.
+    if (!process.env.ACE_CONTRACT || !process.env.KEYPAIR_ID) {
+        console.error("ERROR: Set ACE_CONTRACT and KEYPAIR_ID env vars for testnet.");
         process.exit(1);
     }
-    const encryptionKey = encryptionKeyFetchResult.okValue!;
-    log("✓ Encryption key fetched");
-    
-    // Create the contract ID that points to our check_permission function
-    // Workers will call this function to verify access before releasing key shares
+    const aceContract: string = process.env.ACE_CONTRACT;
+    const keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
+    const rpcUrl = "https://api.testnet.aptoslabs.com/v1";
+    log(`ACE contract: ${aceContract}`);
+    log(`Keypair ID:   ${keypairId.toString()}`);
+
+    // Create the contract ID that points to our check_permission function.
+    // Workers will call this function to verify access before releasing key shares.
     const chainId = await aptos.getChainId();
-    const contractId = ACE.ContractID.newAptos({
+    const contractId = ace_ex.ContractID.newAptos({
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        functionName: "check_permission",  // The view function workers call to verify access
+        functionName: "check_permission",
     });
     
     // ========================================================================
@@ -215,12 +202,14 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const { fullDecryptionDomain, ciphertext } = ACE.encrypt({
-        encryptionKey,
+    const { fullDecryptionDomain, ciphertext } = (await ace_ex.encrypt({
+        keypairId,
         contractId,
-        domain: textEncoder.encode(fullBlobName),  // Unique identifier for this blob
+        domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
-    }).unwrapOrThrow("encryption failed");
+        aceContract,
+        rpcUrl,
+    })).unwrapOrThrow("encryption failed");
     log("✓ Content encrypted");
     
     // Register the blob on-chain with an empty allowlist (only Alice can access)
@@ -245,29 +234,23 @@ async function main() {
      * 5. Bob aggregates key shares and decrypts
      */
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const task = async (extra: Record<string, any>) => {
-            // Step 1: Create proof of permission by signing the domain
+        const task = async (_extra: Record<string, any>) => {
             const msgToSign = fullDecryptionDomain.toPrettyMessage();
-            const proofOfPermission = ACE.ProofOfPermission.createAptos({
+            const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
                 signature: bob.sign(msgToSign),
                 fullMessage: msgToSign,
             });
-            
-            // Step 2: Request decryption key from workers
-            // Workers will verify Bob's permission by calling check_permission on-chain
-            const decryptionKeyFetchResult = await ACE.DecryptionKey.fetch({
-                committee,
+            return (await ace_ex.decrypt({
+                keypairId,
                 contractId: fullDecryptionDomain.contractId,
                 domain: fullDecryptionDomain.domain,
                 proof: proofOfPermission,
-            });
-            extra['decryptionKeyFetchResult'] = decryptionKeyFetchResult;
-            const decryptionKey = decryptionKeyFetchResult.unwrapOrThrow("failed to fetch decryption key");
-            
-            // Step 3: Decrypt the content
-            return ACE.decrypt({ decryptionKey, ciphertext }).unwrapOrThrow("decryption failed");
+                ciphertext,
+                aceContract,
+                rpcUrl,
+            })).unwrapOrThrow("decryption failed");
         };
         return Result.captureAsync({ task, recordsExecutionTimeMs: true });
     }
@@ -303,7 +286,6 @@ async function main() {
     if (!attempt1.isOk) {
         console.error("ERROR: Bob should be able to decrypt now!");
         console.error(attempt1);
-        console.error(attempt1.extra['decryptionKeyFetchResult'].extra['decKeyLoadResults'][0]);
         process.exit(1);
     }
     

@@ -6,14 +6,18 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-access_control = "WhBoxsYfAhJNRRjXGUF7iUEXmBSnPiY72k86AkMSkro"
+access_control = "Csx54S8XVLHgY5KW3peJiMaeYUgTirDoTAAGjqcjq1wu"
+ace_hook = "CUM2ENS7vKsMLvJ9Njsa1qmvwQwBC6ki1YPvrrcTYv8U"
+
+[programs.testnet]
+access_control = "Csx54S8XVLHgY5KW3peJiMaeYUgTirDoTAAGjqcjq1wu"
 ace_hook = "CUM2ENS7vKsMLvJ9Njsa1qmvwQwBC6ki1YPvrrcTYv8U"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "testnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

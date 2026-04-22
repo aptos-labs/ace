@@ -1,0 +1,24 @@
+[package]
+name = "DKR"
+version = "1.0.0"
+authors = []
+
+[addresses]
+ace = "0xcafe"
+
+[dependencies.Group]
+local = "../group"
+
+[dependencies.WorkerConfig]
+local = "../worker_config"
+
+[dependencies.VSS]
+local = '../vss'
+
+[dependencies.DKG]
+local = '../dkg'
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"

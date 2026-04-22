@@ -1,0 +1,18 @@
+[package]
+name = "SigmaDLog"
+version = "1.0.0"
+authors = []
+
+[addresses]
+ace = "0xcafe"
+
+[dependencies.Group]
+local = "../group"
+
+[dependencies.FiatShamirTransform]
+local = "../fiat-shamir-transform"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"

@@ -1,0 +1,25 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "dkg-worker"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain DKG worker client (dealer + recipients)."
+
+[[bin]]
+name = "dkg-worker"
+path = "src/main.rs"
+
+[lib]
+name = "dkg_worker"
+path = "src/lib.rs"
+
+[dependencies]
+vss-common = { path = "../vss-common" }
+vss-dealer = { path = "../vss-dealer" }
+vss-recipient = { path = "../vss-recipient" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"

@@ -17,7 +17,8 @@ This monorepo provides a TypeScript SDK, worker implementation, and examples for
 
 | Term | Description |
 |------|-------------|
-| **Committee** | A set of worker endpoints that collectively manage decryption keys |
+| **aceContract** | Address of the ACE protocol contract on Aptos that holds network state and DKG sessions |
+| **keypairId** | On-chain address identifying the DKG keypair to use for encryption/decryption |
 | **ContractID** | Identifies the on-chain contract that manages decryption permission |
 | **Domain** | Unique ID within the scope of the app of the object to encrypt |
 | **FullDecryptionDomain** | Bundle of contractId + domain; signed to create proof |
@@ -75,39 +76,30 @@ Alice picks a committee of workers and encrypts her album.
 > ⚠️ By picking a committee, Alice assumes the workers do not collude, and at least `t` of them will be available for decryption requests.
 
 ```typescript
-import { ace } from "@aptos-labs/ace-sdk";
-
-// Alice picks a decryption committee (e.g., 2-of-2 threshold)
-// For testing, you can use the public test workers (see below)
-const committee = new ace.Committee({
-  workerEndpoints: ["https://worker1.example.com", "https://worker2.example.com"],
-  threshold: 2,
-});
-
-// Fetch encryption key from the committee
-const encryptionKey = await ace.EncryptionKey.fetch({ committee });
+import { ace_ex } from "@aptos-labs/ace-sdk";
 
 // Point to Alice's album store contract
 // Aptos
-const contractId = ace.ContractID.newAptos({
+const contractId = ace_ex.ContractID.newAptos({
   chainId: 1,
   moduleAddr: "0xcafe",
   moduleName: "album_store",
   functionName: "check_permission",
 });
 // Solana
-const contractId = ace.ContractID.newSolana({
+const contractId = ace_ex.ContractID.newSolana({
   knownChainName: "mainnet-beta", // or "devnet", "localnet"
   programId: "AlbumStoreXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
 });
 
-// Encrypt the album with a unique album ID
-const { fullDecryptionDomain, ciphertext } = ace.encrypt({
-  encryptionKey: encryptionKey.unwrapOrThrow(),
+// Encrypt — workers and DKG session are looked up automatically from aceContract
+const { fullDecryptionDomain, ciphertext } = (await ace_ex.encrypt({
+  keypairId,      // DKG keypair address on the ACE contract
   contractId,
   domain: new TextEncoder().encode("album-001"),
   plaintext: albumData,
-}).unwrapOrThrow();
+  aceContract,    // ACE protocol contract address on Aptos
+})).unwrapOrThrow();
 
 // Alice publishes fullDecryptionDomain + ciphertext (e.g., stores on Shelby)
 ```
@@ -123,31 +115,27 @@ After Bob pays on-chain, he can request the decryption key.
 // Aptos: sign the decryption domain
 const messageToSign = fullDecryptionDomain.toPrettyMessage();
 const signOutput = await signMessage({ message: messageToSign, nonce: "" });
-const proof = ace.ProofOfPermission.createAptos({
+const proof = ace_ex.ProofOfPermission.createAptos({
   userAddr: bob.accountAddress,
   publicKey: bob.publicKey,
   signature: signOutput.signature,
   fullMessage: signOutput.fullMessage,
 });
 // Solana: Bob signs a transaction calling the hook program
-const proof = ace.ProofOfPermission.createSolana({
+const proof = ace_ex.ProofOfPermission.createSolana({
   txn: signedTransaction.serialize(),
 });
 
-// Fetch decryption key (workers query the contract to check permission)
-// Note: committee must be obtained from the same source as encryptionKey
-const decryptionKey = await ace.DecryptionKey.fetch({
-  committee,
+// Decrypt — ace_ex fetches worker endpoints from aceContract, verifies permission,
+// aggregates key shares, and decrypts in one call
+const albumData = (await ace_ex.decrypt({
+  keypairId,
   contractId: fullDecryptionDomain.contractId,
   domain: fullDecryptionDomain.domain,
   proof,
-});
-
-// Bob decrypts the album
-const albumData = ace.decrypt({
-  decryptionKey: decryptionKey.unwrapOrThrow(),
   ciphertext,
-}).unwrapOrThrow();
+  aceContract,
+})).unwrapOrThrow();
 ```
 
 ### Full Examples
@@ -166,15 +154,7 @@ Two public test workers are available for development and testing:
 | Worker 0 | `https://ace-worker-0-646682240579.europe-west1.run.app` |
 | Worker 1 | `https://ace-worker-1-646682240579.europe-west1.run.app` |
 
-```typescript
-const committee = new ace.Committee({
-  workerEndpoints: [
-    "https://ace-worker-0-646682240579.europe-west1.run.app",
-    "https://ace-worker-1-646682240579.europe-west1.run.app",
-  ],
-  threshold: 2,
-});
-```
+With `ace_ex`, you don't configure workers directly — they are discovered automatically from `aceContract`'s on-chain state. For **local testing**, start the full ACE local network (see the examples) which writes `aceContract` and `keypairId` to `/tmp/ace-localnet-config.json`. For **testnet**, set the `ACE_CONTRACT` and `KEYPAIR_ID` env vars pointing to the public ACE testnet deployment.
 
 > ⚠️ **Test only**: These workers are for development/testing purposes. For production, run your own workers (see below).
 

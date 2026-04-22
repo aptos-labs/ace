@@ -5,18 +5,23 @@
  * ACE SDK
  */
 
-// Shamir's Secret Sharing over GF(256)
-export { split, combine } from "./shamir_gf256";
+// Group algebra (BLS12-381 G1 and other curves)
+export * as group from "./group";
+
+// Shamir secret sharing
+export * as vss from "./vss";
+
+export * as dkg from "./dkg";
+
+export * as dkr from "./dkr";
+
+export * as network from "./network";
 
 // Result type for error handling
 export { Result } from "./result";
 
-// Identity-Based Encryption
-export * as ibe from "./ibe";
+// ACE-EX
+export * as ace_ex from "./ace-ex";
 
-// Symmetric Encryption
-export * as sym from "./sym";
-
-// ACE
-export * as ace from "./ace";
-
+// Public Key Encryption
+export * as pke from "./pke";

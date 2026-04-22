@@ -43,26 +43,26 @@ export type VSSDealerSpawnInput = {
     pkeDkHex: string;
     sessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
 };
 
 /** Spawn `vss-dealer run` (skeleton binary). */
 export function spawnVSSDealerRun(opts: VSSDealerSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const session = sessionAddrString(opts.sessionAddr);
     const accountAddr = opts.runAs.accountAddress.toStringLong();
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url',
+        '--ace-deployment-api',
         rpc,
-        '--ace-contract',
-        opts.aceContract,
+        '--ace-deployment-addr',
+        opts.aceDeploymentAddr,
         '--vss-session',
         session,
-        '--pke-dk-hex',
+        '--pke-dk',
         pkeDkHex,
         '--account-addr',
         accountAddr,
@@ -81,26 +81,26 @@ export type VSSRecipientSpawnInput = {
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
     sessionAddr: AccountAddress | string;
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
 };
 
 /** Spawn `vss-recipient run` (skeleton binary). */
 export function spawnVSSRecipientRun(opts: VSSRecipientSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const session = sessionAddrString(opts.sessionAddr);
     const accountAddr = opts.runAs.accountAddress.toStringLong();
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url',
+        '--ace-deployment-api',
         rpc,
-        '--ace-contract',
-        opts.aceContract,
+        '--ace-deployment-addr',
+        opts.aceDeploymentAddr,
         '--vss-session',
         session,
-        '--pke-dk-hex',
+        '--pke-dk',
         pkeDkHex,
         '--account-addr',
         accountAddr,

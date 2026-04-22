@@ -162,8 +162,8 @@ async function main() {
             workers[i] = spawnNetworkNode({
                 runAs: workerAccounts[i],
                 pkeDkHex,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
+                aceDeploymentAddr: adminAddr,
+                aceDeploymentApi: LOCALNET_URL,
                 port: WORKER_BASE_PORT + i,
             });
             console.log(`  Worker ${i}: spawned`);

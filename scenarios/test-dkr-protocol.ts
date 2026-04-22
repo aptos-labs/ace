@@ -76,7 +76,7 @@ async function main() {
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             dkgSessionAddr,
-            aceContract,
+            aceDeploymentAddr: aceContract,
         }));
 
         try {
@@ -120,7 +120,7 @@ async function main() {
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             dkrSessionAddr,
-            aceContract,
+            aceDeploymentAddr: aceContract,
         }));
 
         // dkr-dst: one per new-committee member (B=1, C=2, D=3, E=4 in workerAccounts)
@@ -128,7 +128,7 @@ async function main() {
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[newCommitteeEncKeypairIndices[m]].decryptionKey.toBytes()).toString('hex')}`,
             dkrSessionAddr,
-            aceContract,
+            aceDeploymentAddr: aceContract,
         }));
 
         const allDkrProcs = [...dkrSrcProcs, ...dkrDstProcs];

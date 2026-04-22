@@ -58,7 +58,7 @@ async function main() {
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             dkgSessionAddr: sessionAddr,
-            aceContract,
+            aceDeploymentAddr: aceContract,
         }));
 
         try {

@@ -23,6 +23,7 @@ struct DkrSession {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub rpc_url: String,
+    pub rpc_api_key: Option<String>,
     pub ace_contract: String,
     pub dkr_session: String,
     pub account_addr: String,
@@ -62,7 +63,7 @@ fn parse_dkr_session_data(data: &Value) -> Result<DkrSession> {
 }
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new(config.rpc_url.clone());
+    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
@@ -98,6 +99,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         recipient_shutdown_txs.push(tx);
         let rcfg = vss_recipient::RunConfig {
             rpc_url: config.rpc_url.clone(),
+            rpc_api_key: config.rpc_api_key.clone(),
             ace_contract: ace.clone(),
             vss_session: vss_addr.clone(),
             pke_dk_hex: config.pke_dk_hex.clone(),

@@ -21,7 +21,7 @@ mod crypto;
 mod http_server;
 pub mod verify;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -29,14 +29,65 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
+// ── Per-chain RPC configuration ──────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct AptosNetRpc {
+    pub endpoint: String,
+    pub api_key: Option<String>,
+}
+
+impl AptosNetRpc {
+    pub fn to_rpc(&self) -> AptosRpc {
+        AptosRpc::new_with_key(self.endpoint.clone(), self.api_key.clone())
+    }
+}
+
+/// Per-chain RPC endpoints used for proof-of-permission verification.
+#[derive(Debug, Clone)]
+pub struct ChainRpcConfig {
+    pub aptos_mainnet: AptosNetRpc,   // chain_id=1
+    pub aptos_testnet: AptosNetRpc,   // chain_id=2
+    pub aptos_localnet: AptosNetRpc,  // chain_id=4
+    pub solana_mainnet_beta: String,
+    pub solana_testnet: String,
+    pub solana_devnet: String,
+}
+
+impl ChainRpcConfig {
+    pub fn aptos_rpc_for_chain_id(&self, chain_id: u8) -> Result<AptosRpc> {
+        let net = match chain_id {
+            1 => &self.aptos_mainnet,
+            2 => &self.aptos_testnet,
+            4 => &self.aptos_localnet,
+            _ => return Err(anyhow!("no Aptos RPC configured for chain_id {}", chain_id)),
+        };
+        Ok(net.to_rpc())
+    }
+
+    pub fn solana_rpc_for_chain_name(&self, name: &str) -> Result<String> {
+        Ok(match name {
+            "localnet" | "localhost" => "http://127.0.0.1:8899".to_string(),
+            "devnet" => self.solana_devnet.clone(),
+            "testnet" => self.solana_testnet.clone(),
+            "mainnet-beta" => self.solana_mainnet_beta.clone(),
+            other => return Err(anyhow!("verify_solana: unsupported chain name '{}'", other)),
+        })
+    }
+}
+
+// ── Top-level run configuration ───────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    pub rpc_url: String,
-    pub ace_contract: String,
+    pub ace_deployment_api: String,
+    pub ace_deployment_apikey: Option<String>,
+    pub ace_deployment_addr: String,
     pub account_addr: String,
     pub account_sk_hex: String,
-    pub pke_dk_hex: String,
+    pub pke_dk: String,
     pub port: Option<u16>,
+    pub chain_rpc: ChainRpcConfig,
 }
 
 // ── On-chain state representation ───────────────────────────────────────────
@@ -102,16 +153,19 @@ fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
 // ── Main loop ────────────────────────────────────────────────────────────────
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new(config.rpc_url.clone());
+    let rpc = AptosRpc::new_with_key(
+        config.ace_deployment_api.clone(),
+        config.ace_deployment_apikey.clone(),
+    );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
-    let ace = normalize_account_addr(&config.ace_contract);
+    let ace = normalize_account_addr(&config.ace_deployment_addr);
 
     // Decode PKE decryption key bytes once.
     let pke_dk_bytes: Vec<u8> = {
-        let raw = config.pke_dk_hex.trim().trim_start_matches("0x");
-        hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk_hex decode: {}", e))?
+        let raw = config.pke_dk.trim().trim_start_matches("0x");
+        hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?
     };
 
     println!(
@@ -138,9 +192,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let ks = keypair_shares.clone();
         let cn = cur_nodes_shared.clone();
         let my = account_addr.clone();
-        let rpc = config.rpc_url.clone();
+        let chain_rpc = Arc::new(config.chain_rpc.clone());
         let dk = pke_dk_bytes.clone();
-        tokio::spawn(http_server::run(port, ks, cn, my, rpc, dk));
+        tokio::spawn(http_server::run(port, ks, cn, my, chain_rpc, dk));
     }
 
     // Spawn the share cleanup timer.  Wakes every 5 seconds and evicts expired entries.
@@ -305,12 +359,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 if !dkg_tasks.contains_key(session_addr) {
                     let (tx, rx) = oneshot::channel::<()>();
                     let cfg = dkg_worker::RunConfig {
-                        rpc_url: config.rpc_url.clone(),
+                        rpc_url: config.ace_deployment_api.clone(),
+                        rpc_api_key: config.ace_deployment_apikey.clone(),
                         ace_contract: ace.clone(),
                         dkg_session: session_addr.clone(),
                         account_addr: account_addr.clone(),
                         account_sk_hex: config.account_sk_hex.clone(),
-                        pke_dk_hex: config.pke_dk_hex.clone(),
+                        pke_dk_hex: config.pke_dk.clone(),
                     };
                     tokio::spawn(async move {
                         if let Err(e) = dkg_worker::run(cfg, rx).await {
@@ -338,12 +393,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         if !dkr_src_tasks.contains_key(session_addr) {
                             let (tx, rx) = oneshot::channel::<()>();
                             let cfg = dkr_src::RunConfig {
-                                rpc_url: config.rpc_url.clone(),
+                                rpc_url: config.ace_deployment_api.clone(),
+                                rpc_api_key: config.ace_deployment_apikey.clone(),
                                 ace_contract: ace.clone(),
                                 dkr_session: session_addr.clone(),
                                 account_addr: account_addr.clone(),
                                 account_sk_hex: config.account_sk_hex.clone(),
-                                pke_dk_hex: config.pke_dk_hex.clone(),
+                                pke_dk_hex: config.pke_dk.clone(),
                             };
                             tokio::spawn(async move {
                                 if let Err(e) = dkr_src::run(cfg, rx).await {
@@ -365,12 +421,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         if !dkr_dst_tasks.contains_key(session_addr) {
                             let (tx, rx) = oneshot::channel::<()>();
                             let cfg = dkr_dst::RunConfig {
-                                rpc_url: config.rpc_url.clone(),
+                                rpc_url: config.ace_deployment_api.clone(),
+                                rpc_api_key: config.ace_deployment_apikey.clone(),
                                 ace_contract: ace.clone(),
                                 dkr_session: session_addr.clone(),
                                 account_addr: account_addr.clone(),
                                 account_sk_hex: config.account_sk_hex.clone(),
-                                pke_dk_hex: config.pke_dk_hex.clone(),
+                                pke_dk_hex: config.pke_dk.clone(),
                             };
                             tokio::spawn(async move {
                                 if let Err(e) = dkr_dst::run(cfg, rx).await {

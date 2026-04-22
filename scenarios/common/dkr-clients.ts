@@ -38,14 +38,14 @@ export type DKRSrcSpawnInput = {
     pkeDkHex: string;
     dkrSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
 };
 
 /** Spawn `dkr-src run` for one old-committee member. */
 export function spawnDKRSrcRun(opts: DKRSrcSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const session = typeof opts.dkrSessionAddr === 'string'
         ? opts.dkrSessionAddr
         : opts.dkrSessionAddr.toStringLong();
@@ -53,10 +53,10 @@ export function spawnDKRSrcRun(opts: DKRSrcSpawnInput): ChildProcess {
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url', rpc,
-        '--ace-contract', opts.aceContract,
+        '--ace-deployment-api', rpc,
+        '--ace-deployment-addr', opts.aceDeploymentAddr,
         '--dkr-session', session,
-        '--pke-dk-hex', pkeDkHex,
+        '--pke-dk', pkeDkHex,
         '--account-addr', accountAddr,
         '--account-sk', `0x${pkHex}`,
     ];
@@ -73,14 +73,14 @@ export type DKRDstSpawnInput = {
     pkeDkHex: string;
     dkrSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
 };
 
 /** Spawn `dkr-dst run` for one new-committee member. */
 export function spawnDKRDstRun(opts: DKRDstSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const session = typeof opts.dkrSessionAddr === 'string'
         ? opts.dkrSessionAddr
         : opts.dkrSessionAddr.toStringLong();
@@ -88,10 +88,10 @@ export function spawnDKRDstRun(opts: DKRDstSpawnInput): ChildProcess {
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url', rpc,
-        '--ace-contract', opts.aceContract,
+        '--ace-deployment-api', rpc,
+        '--ace-deployment-addr', opts.aceDeploymentAddr,
         '--dkr-session', session,
-        '--pke-dk-hex', pkeDkHex,
+        '--pke-dk', pkeDkHex,
         '--account-addr', accountAddr,
         '--account-sk', `0x${pkHex}`,
     ];

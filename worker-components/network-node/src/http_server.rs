@@ -16,6 +16,8 @@ use tokio::sync::RwLock;
 use vss_common::normalize_account_addr;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
+use crate::ChainRpcConfig;
+
 /// Serialized size of a `pke::EncryptionKey` for scheme 0 (ElGamal-OTP-Ristretto255):
 /// [0x00 scheme][0x20 ULEB128(32)][32B enc_base][0x20 ULEB128(32)][32B public_point] = 67 bytes.
 const ENC_KEY_SIZE: usize = 67;
@@ -26,8 +28,8 @@ pub struct AppState {
     pub keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
     pub cur_nodes: Arc<RwLock<Vec<String>>>,
     pub my_addr: String,
-    /// Aptos fullnode URL, used for on-chain proof verification.
-    pub rpc_url: String,
+    /// Per-chain RPC config, used for on-chain proof verification.
+    pub chain_rpc: Arc<ChainRpcConfig>,
     /// This node's PKE decryption key bytes, used to decrypt incoming requests.
     pub pke_dk_bytes: Vec<u8>,
 }
@@ -38,10 +40,10 @@ pub async fn run(
     keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
     cur_nodes: Arc<RwLock<Vec<String>>>,
     my_addr: String,
-    rpc_url: String,
+    chain_rpc: Arc<ChainRpcConfig>,
     pke_dk_bytes: Vec<u8>,
 ) {
-    let state = AppState { keypair_shares, cur_nodes, my_addr, rpc_url, pke_dk_bytes };
+    let state = AppState { keypair_shares, cur_nodes, my_addr, chain_rpc, pke_dk_bytes };
     let app = Router::new().route("/", post(handle_request)).with_state(state);
     let addr = format!("0.0.0.0:{}", port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -96,7 +98,7 @@ async fn handle_request(
     let proof_bytes = &req_bytes[40 + fdd.byte_len..ek_start];
 
     // 6. Verify the proof (signature, auth-key, on-chain permission).
-    crate::verify::verify(&fdd, proof_bytes, &state.rpc_url)
+    crate::verify::verify(&fdd, proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             eprintln!("http-server: proof verification failed: {:#}", e);

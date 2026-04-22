@@ -159,8 +159,8 @@ async function main() {
             workers.push(spawnNetworkNode({
                 runAs: workerAccounts[i],
                 pkeDkHex,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
+                aceDeploymentAddr: adminAddr,
+                aceDeploymentApi: LOCALNET_URL,
                 port: WORKER_BASE_PORT + i,
             }));
         }

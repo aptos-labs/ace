@@ -45,8 +45,8 @@ export type NetworkNodeSpawnInput = {
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
     /** Published module address (`admin` / ace contract). */
-    aceContract: string;
-    rpcUrl?: string;
+    aceDeploymentAddr: string;
+    aceDeploymentApi?: string;
     /** TCP port for the UserRequestHandler HTTP server. */
     port?: number;
 };
@@ -65,16 +65,16 @@ export type NetworkNodeSpawnInput = {
  */
 export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
     const pkHex = ed25519PrivateKeyHex(opts.runAs);
-    const rpc = opts.rpcUrl ?? LOCALNET_URL;
+    const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const accountAddr = opts.runAs.accountAddress.toStringLong();
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
     const args = [
         'run',
-        '--rpc-url', rpc,
-        '--ace-contract', opts.aceContract,
+        '--ace-deployment-api', rpc,
+        '--ace-deployment-addr', opts.aceDeploymentAddr,
         '--account-addr', accountAddr,
         '--account-sk', `0x${pkHex}`,
-        '--pke-dk-hex', pkeDkHex,
+        '--pke-dk', pkeDkHex,
     ];
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));

@@ -126,6 +126,19 @@ pub enum BcsCiphertext {
 
 // ── PKE decrypt ───────────────────────────────────────────────────────────────
 
+/// Decrypt a ciphertext from wire bytes `[scheme][BCS inner]` using the given decryption key.
+pub fn pke_decrypt_bytes(dk_bytes: &[u8], ct_bytes: &[u8]) -> Result<Vec<u8>> {
+    if ct_bytes.is_empty() {
+        return Err(anyhow!("empty ciphertext bytes"));
+    }
+    if ct_bytes[0] != SCHEME_ELGAMAL_OTP_RISTRETTO255 {
+        return Err(anyhow!("unsupported PKE scheme {}", ct_bytes[0]));
+    }
+    let ct_inner: BcsCiphertextInner = bcs::from_bytes(&ct_bytes[1..])
+        .map_err(|e| anyhow!("pke_decrypt_bytes: BCS parse: {}", e))?;
+    pke_decrypt(dk_bytes, &ct_inner)
+}
+
 /// Decrypt a ciphertext using the given decryption key.
 ///
 /// `dk_bytes` format: `[0x00 scheme][0x20 ULEB128(32)][32B encBase][0x20 ULEB128(32)][32B privateScalar]` — 67 bytes

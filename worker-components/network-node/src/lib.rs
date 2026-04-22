@@ -139,7 +139,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let cn = cur_nodes_shared.clone();
         let my = account_addr.clone();
         let rpc = config.rpc_url.clone();
-        tokio::spawn(http_server::run(port, ks, cn, my, rpc));
+        let dk = pke_dk_bytes.clone();
+        tokio::spawn(http_server::run(port, ks, cn, my, rpc, dk));
     }
 
     // Spawn the share cleanup timer.  Wakes every 5 seconds and evicts expired entries.

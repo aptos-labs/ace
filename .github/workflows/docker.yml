@@ -16,14 +16,21 @@ on:
       image_tag:
         description: 'Image tag to push (e.g. v0.1.0, main, dev). Defaults to short SHA.'
         required: false
+      dry_run:
+        description: 'If true, skip the Docker Hub copy step'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
-  build-and-push:
-    name: Build and push network-node image
+  build:
+    name: Build and push to GCP
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    outputs:
+      image_tag: ${{ steps.image_tag.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,18 +57,41 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: worker-components/network-node/Dockerfile
           push: true
-          tags: |
-            us-docker.pkg.dev/aptos-registry/docker/ace-node:${{ steps.image_tag.outputs.value }}
-            docker.io/aptoslabs/ace-node:${{ steps.image_tag.outputs.value }}
+          tags: us-docker.pkg.dev/aptos-registry/docker/ace-node:${{ steps.image_tag.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish:
+    name: Copy to Docker Hub
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aptos-labs/actions/gar-auth@main
+        with:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: imjasonh/setup-crane@00c9e93efa4e1138c9a7a5c594acd6c75a2fbf0c # v0.3
+        with:
+          version: v0.15.2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Copy to Docker Hub
+        run: |
+          crane copy \
+            us-docker.pkg.dev/aptos-registry/docker/ace-node:${{ needs.build.outputs.image_tag }} \
+            docker.io/aptoslabs/ace-node:${{ needs.build.outputs.image_tag }}

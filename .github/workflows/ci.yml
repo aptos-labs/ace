@@ -6,10 +6,10 @@ name: CI
 on:
   pull_request:
     branches:
-      - zjma/global-committee-smoke-test
+      - main
   push:
     branches:
-      - zjma/global-committee-smoke-test
+      - main
 
 jobs:
   build-rust:

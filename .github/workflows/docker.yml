@@ -56,6 +56,6 @@ jobs:
           context: .
           file: worker-components/network-node/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/network-node:${{ steps.image_tag.outputs.value }}
+          tags: ghcr.io/${{ github.repository_owner }}/ace-node:${{ steps.image_tag.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

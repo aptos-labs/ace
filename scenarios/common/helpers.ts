@@ -260,7 +260,14 @@ export async function submitTxn(
             });
             const pending = await aptos.signAndSubmitTransaction({ signer, transaction: txn });
             const hash = pending.hash;
-            const waited = await aptos.waitForTransaction({ transactionHash: hash }) as Record<string, unknown>;
+            let waited = await aptos.waitForTransaction({ transactionHash: hash }) as Record<string, unknown>;
+            // On a fast localnet the node sometimes returns the committed transaction
+            // before its events are fully written (race condition).  Re-fetch once to
+            // let the node catch up.
+            if (!((waited.events as unknown[])?.length)) {
+                await new Promise(r => setTimeout(r, 200));
+                waited = await aptos.getTransactionByHash({ transactionHash: hash }) as Record<string, unknown>;
+            }
             const events = (waited.events as unknown[]) ?? [];
             const success = waited.success as boolean;
             const vmStatus = String(waited.vm_status ?? '');

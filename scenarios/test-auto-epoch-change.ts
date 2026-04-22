@@ -20,7 +20,7 @@
  *  10. Assert epoch==1, same committee [A,B,C], threshold==2, PK unchanged.
  */
 
-import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
+import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
 import {
     startLocalnet,

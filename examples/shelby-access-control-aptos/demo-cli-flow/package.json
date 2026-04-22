@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "demo": "tsx src/demo.ts",
     "localnet": "aptos node run-local-testnet --with-faucet --force-restart",
     "test:localnet": "tsx src/test-localnet.ts",

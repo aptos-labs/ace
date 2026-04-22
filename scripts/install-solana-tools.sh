@@ -29,8 +29,8 @@ install_solana() {
     curl -fsSL -o "/tmp/${tarball}" "$target"
     tar -xjf "/tmp/${tarball}" -C /tmp/
 
-    # Install only the binaries anchor needs rather than the full 400 MB release.
-    for bin in solana solana-test-validator cargo-build-sbf; do
+    # Install only the binaries needed rather than the full 400 MB release.
+    for bin in solana solana-keygen solana-test-validator cargo-build-sbf; do
         install -m 755 "/tmp/solana-release/bin/${bin}" /usr/local/bin/
     done
 

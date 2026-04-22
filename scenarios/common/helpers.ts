@@ -260,12 +260,10 @@ export async function submitTxn(
             });
             const pending = await aptos.signAndSubmitTransaction({ signer, transaction: txn });
             const hash = pending.hash;
-            const waited = await aptos.waitForTransaction({ transactionHash: hash });
-            const details = (await aptos.getTransactionByHash({ transactionHash: hash })) as Record<string, unknown>;
-            const events = (details.events as unknown[]) ?? [];
-            const w = waited as Record<string, unknown>;
-            const success = (w.success ?? details.success) as boolean;
-            const vmStatus = String(w.vm_status ?? details.vm_status ?? '');
+            const waited = await aptos.waitForTransaction({ transactionHash: hash }) as Record<string, unknown>;
+            const events = (waited.events as unknown[]) ?? [];
+            const success = waited.success as boolean;
+            const vmStatus = String(waited.vm_status ?? '');
             if (!success) {
                 const parsed = parseMoveAbortCode(vmStatus);
                 return new CommittedTxn(

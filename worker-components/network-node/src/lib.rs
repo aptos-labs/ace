@@ -24,8 +24,8 @@ pub mod verify;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
@@ -47,6 +47,7 @@ struct EpochChangeState {
 }
 
 struct NetworkState {
+    epoch: u64,
     cur_nodes: Vec<String>,
     dkgs_in_progress: Vec<String>,
     epoch_change_state: Option<EpochChangeState>,
@@ -64,6 +65,8 @@ fn parse_addr_array(v: &Value) -> Vec<String> {
 }
 
 fn parse_network_state(data: &Value) -> NetworkState {
+    // Aptos REST API serialises u64 as a JSON string.
+    let epoch = data["epoch"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
     let cur_nodes = parse_addr_array(&data["cur_nodes"]);
     let dkgs_in_progress = parse_addr_array(&data["dkgs_in_progress"]);
     let secrets = parse_addr_array(&data["secrets"]);
@@ -77,7 +80,7 @@ fn parse_network_state(data: &Value) -> NetworkState {
             dkr_sessions: parse_addr_array(&ecs["dkr_sessions"]),
         });
 
-    NetworkState { cur_nodes, dkgs_in_progress, epoch_change_state, secrets }
+    NetworkState { epoch, cur_nodes, dkgs_in_progress, epoch_change_state, secrets }
 }
 
 async fn fetch_network_state(rpc: &AptosRpc, ace: &str) -> Result<NetworkState> {
@@ -116,13 +119,18 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         account_addr, ace
     );
 
-    // Shared state for the HTTP server.
-    // Each entry stores (generation, scalar_le32). The generation prevents an old URH
-    // task's cleanup from removing an entry that was already overwritten by a newer task
-    // (which happens when a node appears in both old and new committees after an epoch change).
-    let keypair_shares: Arc<RwLock<HashMap<String, (u64, [u8; 32])>>> =
+    // keypair_shares: keypair_id → epoch → scalar_le32.
+    // Multiple epoch entries coexist during the ~30-second post-transition buffer window
+    // so that clients who fetched the committee just before an epoch change can still be
+    // served by nodes that have since rotated to the new epoch's shares.
+    let keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>> =
         Arc::new(RwLock::new(HashMap::new()));
-    let urh_gen: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+
+    // Scheduled evictions: (deadline, keypair_id, epoch).  URH tasks push here on
+    // shutdown instead of removing immediately; the cleanup timer does the actual removal.
+    let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+
     let cur_nodes_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
 
     // Spawn HTTP server if a port was configured.
@@ -132,6 +140,42 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let my = account_addr.clone();
         let rpc = config.rpc_url.clone();
         tokio::spawn(http_server::run(port, ks, cn, my, rpc));
+    }
+
+    // Spawn the share cleanup timer.  Wakes every 5 seconds and evicts expired entries.
+    {
+        let ks = keypair_shares.clone();
+        let eq = expiry_queue.clone();
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                let now = Instant::now();
+                let expired: Vec<(String, u64)> = {
+                    let mut q = eq.lock().unwrap();
+                    let (done, pending): (Vec<_>, Vec<_>) =
+                        q.drain(..).partition(|(t, _, _)| *t <= now);
+                    *q = pending;
+                    done.into_iter().map(|(_, k, e)| (k, e)).collect()
+                };
+                if !expired.is_empty() {
+                    let mut w = ks.write().await;
+                    for (keypair_id, epoch) in expired {
+                        if let Some(by_epoch) = w.get_mut(&keypair_id) {
+                            by_epoch.remove(&epoch);
+                            if by_epoch.is_empty() {
+                                w.remove(&keypair_id);
+                            }
+                            println!(
+                                "network-node: [cleanup] evicted keypair_id={} epoch={}",
+                                keypair_id, epoch
+                            );
+                        }
+                    }
+                }
+            }
+        });
     }
 
     let mut dkg_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -204,24 +248,31 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             let pke_dk = pke_dk_bytes.clone();
             let my = account_addr.clone();
             let shares = keypair_shares.clone();
-            // Monotonic generation so that if a new task for the same keypair_id starts
-            // before this task's shutdown cleanup runs, the cleanup won't evict the new
-            // entry. This happens when a node is in both old and new committees.
-            let my_gen = urh_gen.fetch_add(1, Ordering::Relaxed);
+            let expiry = expiry_queue.clone();
+            let epoch = state.epoch;
 
             tokio::spawn(async move {
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
                     Ok((scalar_le32, keypair_id)) => {
-                        shares.write().await.insert(keypair_id.clone(), (my_gen, scalar_le32));
-                        println!("network-node: [urh] registered keypair_id={} gen={}", keypair_id, my_gen);
+                        shares
+                            .write()
+                            .await
+                            .entry(keypair_id.clone())
+                            .or_default()
+                            .insert(epoch, scalar_le32);
+                        println!(
+                            "network-node: [urh] registered keypair_id={} epoch={}",
+                            keypair_id, epoch
+                        );
                         let _ = rx.await;
-                        let mut w = shares.write().await;
-                        if w.get(&keypair_id).map_or(false, |(g, _)| *g == my_gen) {
-                            w.remove(&keypair_id);
-                            println!("network-node: [urh] unregistered keypair_id={} gen={}", keypair_id, my_gen);
-                        } else {
-                            println!("network-node: [urh] skipped cleanup keypair_id={} gen={} (superseded)", keypair_id, my_gen);
-                        }
+                        // Defer removal by 30 s so clients who fetched the committee
+                        // just before an epoch change can still be served.
+                        let deadline = Instant::now() + Duration::from_secs(30);
+                        expiry.lock().unwrap().push((deadline, keypair_id.clone(), epoch));
+                        println!(
+                            "network-node: [urh] scheduled eviction keypair_id={} epoch={} in 30s",
+                            keypair_id, epoch
+                        );
                     }
                     Err(e) => {
                         eprintln!(

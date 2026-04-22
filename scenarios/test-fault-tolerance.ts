@@ -241,8 +241,8 @@ async function main() {
             contractId,
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceDeploymentAddr: adminAddr,
-            aceDeploymentApi: LOCALNET_URL,
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
@@ -283,8 +283,8 @@ async function main() {
                 domain: pingDomain,
                 proof: pingProof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');

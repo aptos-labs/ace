@@ -258,8 +258,8 @@ async function main() {
             contractId,
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceDeploymentAddr: adminAddr,
-            aceDeploymentApi: LOCALNET_URL,
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
@@ -302,8 +302,8 @@ async function main() {
                 domain: pingDomain,
                 proof: pingProof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -383,8 +383,8 @@ async function main() {
             contractId,
             domain: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
-            aceDeploymentAddr: adminAddr,
-            aceDeploymentApi: LOCALNET_URL,
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pongEncResult.isOk, `encrypt PONG failed: ${pongEncResult.errValue}`);
         const { fullDecryptionDomain: pongFdd, ciphertext: pongCiph } = pongEncResult.okValue!;
@@ -424,8 +424,8 @@ async function main() {
                 domain: pongDomain,
                 proof: pongProof,
                 ciphertext: pongCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(pongDecResult.isOk, `decrypt PONG failed: ${pongDecResult.errValue}`);
             assert(new TextDecoder().decode(pongDecResult.okValue!) === 'PONG', 'PONG plaintext mismatch');

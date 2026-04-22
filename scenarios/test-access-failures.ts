@@ -235,8 +235,8 @@ async function main() {
             contractId,
             domain: correctDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceDeploymentAddr: adminAddr,
-            aceDeploymentApi: LOCALNET_URL,
+            aceContract: adminAddr,
+            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
@@ -259,8 +259,8 @@ async function main() {
                 domain: correctDomain,
                 proof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail with nonexistent keypairId, but it succeeded`);
             console.log(`  ✓ decrypt with nonexistent keypairId correctly rejected (${result.errValue})`);
@@ -284,8 +284,8 @@ async function main() {
                 domain: correctDomain,
                 proof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
             console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -310,8 +310,8 @@ async function main() {
                 domain: wrongDomain,
                 proof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
             console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
@@ -333,8 +333,8 @@ async function main() {
                 domain: correctDomain,
                 proof,
                 ciphertext: pingCiph,
-                aceDeploymentAddr: adminAddr,
-                aceDeploymentApi: LOCALNET_URL,
+                aceContract: adminAddr,
+                rpcUrl: LOCALNET_URL,
             });
             assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
             assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');

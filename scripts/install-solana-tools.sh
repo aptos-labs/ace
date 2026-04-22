@@ -27,14 +27,16 @@ install_solana() {
 
     echo "Installing Solana CLI $SOLANA_CLI_VERSION from $target ..."
     curl -fsSL -o "/tmp/${tarball}" "$target"
-    tar -xjf "/tmp/${tarball}" -C /tmp/
+    tar -xjf "/tmp/${tarball}" -C /opt/
+    rm -f "/tmp/${tarball}"
 
-    # Install only the binaries needed rather than the full 400 MB release.
+    # Symlink key binaries to /usr/local/bin so they are on PATH.
+    # The full release directory is kept in /opt/solana-release so that
+    # cargo-build-sbf can locate platform-tools-sdk/ next to itself.
     for bin in solana solana-keygen solana-test-validator cargo-build-sbf; do
-        install -m 755 "/tmp/solana-release/bin/${bin}" /usr/local/bin/
+        ln -sf "/opt/solana-release/bin/${bin}" /usr/local/bin/
     done
 
-    rm -rf "/tmp/${tarball}" /tmp/solana-release
     echo "Solana CLI installed: $(solana --version)"
 }
 

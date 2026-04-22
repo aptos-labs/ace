@@ -16,7 +16,7 @@
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
     "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

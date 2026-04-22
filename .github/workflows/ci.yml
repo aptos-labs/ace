@@ -34,6 +34,21 @@ jobs:
             target/debug/network-node
           retention-days: 1
 
+  typecheck-scenarios:
+    name: Typecheck / Scenarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - name: Install JS dependencies
+        run: pnpm install
+      - name: Typecheck
+        run: pnpm --filter ace-scenarios typecheck
+
   unit-tests-ts:
     name: Unit tests / TypeScript
     runs-on: ubuntu-latest
@@ -68,6 +83,47 @@ jobs:
         run: sudo scripts/install-tools.sh
       - name: Test
         run: aptos move test --package-dir contracts/vss
+
+  solana-example:
+    name: scenario / solana-example
+    needs: build-rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Download Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries
+          path: target/debug/
+
+      - name: Make binaries executable
+        run: chmod +x target/debug/*
+
+      - name: Install tools
+        run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
+
+      - name: Cache Solana SBF platform tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: solana-sbf-tools-${{ runner.os }}
+
+      - name: Run solana-example
+        env:
+          ACE_SKIP_CARGO_BUILD: "1"
+        run: pnpm --filter ace-scenarios test-solana-example
 
   scenarios:
     name: scenario / ${{ matrix.scenario }}
@@ -115,4 +171,4 @@ jobs:
       - name: Run ${{ matrix.scenario }}
         env:
           ACE_SKIP_CARGO_BUILD: "1"
-        run: pnpm --filter ace-integration-tests ${{ matrix.scenario }}
+        run: pnpm --filter ace-scenarios ${{ matrix.scenario }}

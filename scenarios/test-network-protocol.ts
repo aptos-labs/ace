@@ -24,7 +24,7 @@
  *       run `cargo build` at the repo root and then `pnpm test:network-only`.
  */
 
-import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
+import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
 import {
     startLocalnet,
@@ -63,9 +63,6 @@ async function main() {
         // New committee: [B, C, D, E] = workers[1..4], threshold=3
         const newCommittee = workerAccounts.slice(1, 5);
         const newThreshold = 3;
-
-        // enc keypair index per worker: A→0, B→1, C→2, D→3, E→4
-        const newCommitteeEncKeypairIndices = [1, 2, 3, 4];
 
         log('Deploy contracts.');
         await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);

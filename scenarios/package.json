@@ -1,5 +1,5 @@
 {
-  "name": "ace-integration-tests",
+  "name": "ace-scenarios",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,9 @@
     "test-fault-tolerance": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-fault-tolerance.ts",
     "test-auto-epoch-change": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-auto-epoch-change.ts",
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",
-    "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts"
+    "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
+    "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",
@@ -22,6 +24,7 @@
     "tsx": "^4.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
   }
 }

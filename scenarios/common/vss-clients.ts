@@ -1,7 +1,6 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { Result } from '@aptos-labs/ace-sdk';
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import { spawn, type ChildProcess } from 'child_process';
 

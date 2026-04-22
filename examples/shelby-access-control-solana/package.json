@@ -6,15 +6,17 @@
   "scripts": {
     "test:localnet": "anchor test --provider.cluster localnet",
     "test:testnet": "anchor test --skip-local-validator --skip-deploy --provider.cluster testnet",
+    "typecheck": "tsc --noEmit",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@aptos-labs/ace-sdk": "workspace:*",
-    "@aptos-labs/ts-sdk": "5.1.1"
+    "@aptos-labs/ts-sdk": "^5.2.0"
   },
   "devDependencies": {
+    "@solana/web3.js": "^1.95.0",
     "chai": "^4.3.4",
     "mocha": "^9.0.3",
     "ts-mocha": "^10.0.0",

@@ -25,6 +25,7 @@
     "build": "npm run build:clean && tsup",
     "dev": "tsup --watch",
     "test": "vitest",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "prepublishOnly": "npm run build"
   },

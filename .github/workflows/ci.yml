@@ -5,7 +5,11 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - zjma/global-committee-smoke-test
   push:
+    branches:
+      - zjma/global-committee-smoke-test
 
 jobs:
   build-rust:

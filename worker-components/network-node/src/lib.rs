@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, RwLock, Semaphore};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
@@ -64,6 +64,45 @@ impl ChainRpcConfig {
     }
 }
 
+// ── Memory-based concurrency limit ───────────────────────────────────────────
+
+/// Reads the container's memory limit from cgroup (v2 then v1 fallback).
+/// Returns `None` when running outside a cgroup or when no explicit limit is set.
+fn read_cgroup_memory_limit() -> Option<usize> {
+    // cgroup v2: a plain integer or the string "max" (= unlimited)
+    if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        let s = s.trim();
+        if s != "max" {
+            if let Ok(n) = s.parse::<usize>() {
+                return Some(n);
+            }
+        }
+        return None; // "max" → no limit
+    }
+    // cgroup v1: values ≥ 2^62 indicate "no limit"
+    if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n < (1usize << 62) {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+/// Derives `max_concurrent_requests` from a cgroup memory limit.
+///
+/// Constants come from `bench-request-mem` (release build, macOS M-series),
+/// scaled up by 1.5× for headroom against real Linux + TLS workloads:
+///   measured per-request ≈ 66 KiB  →  100 KiB used
+///   measured baseline    ≈ 182 KiB →  256 KiB used
+fn derive_max_concurrent(memory_limit: usize) -> usize {
+    const BASELINE: usize = 256 * 1024;
+    const PER_REQUEST: usize = 100 * 1024;
+    const MIN: usize = 10;
+    (memory_limit.saturating_sub(BASELINE) / PER_REQUEST).max(MIN)
+}
+
 // ── Top-level run configuration ───────────────────────────────────────────────
 
 pub struct RunConfig {
@@ -75,6 +114,9 @@ pub struct RunConfig {
     pub pke_dk: String,
     pub port: Option<u16>,
     pub chain_rpc: ChainRpcConfig,
+    /// Maximum concurrent in-flight HTTP requests.
+    /// `None` = auto-derive from cgroup memory limit.
+    pub max_concurrent: Option<usize>,
 }
 
 // ── On-chain state representation ───────────────────────────────────────────
@@ -176,12 +218,35 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
     // Spawn HTTP server if a port was configured.
     if let Some(port) = config.port {
+        const DEFAULT_MAX_CONCURRENT: usize = 100;
+        let max_concurrent = config.max_concurrent.unwrap_or_else(|| {
+            match read_cgroup_memory_limit() {
+                Some(limit) => {
+                    let mc = derive_max_concurrent(limit);
+                    println!(
+                        "network-node: cgroup memory limit {:.0} MiB → max_concurrent_requests={}",
+                        limit as f64 / (1024.0 * 1024.0),
+                        mc,
+                    );
+                    mc
+                }
+                None => {
+                    println!(
+                        "network-node: no cgroup memory limit detected, \
+                         max_concurrent_requests={DEFAULT_MAX_CONCURRENT} (default)"
+                    );
+                    DEFAULT_MAX_CONCURRENT
+                }
+            }
+        });
+        let concurrency = Arc::new(Semaphore::new(max_concurrent));
+
         let ks = keypair_shares.clone();
         let cn = cur_nodes_shared.clone();
         let my = account_addr.clone();
         let chain_rpc = Arc::new(config.chain_rpc);
         let dk = pke_dk_bytes.clone();
-        tokio::spawn(http_server::run(port, ks, cn, my, chain_rpc, dk));
+        tokio::spawn(http_server::run(port, ks, cn, my, chain_rpc, dk, concurrency));
     }
 
     // Spawn the share cleanup timer.  Wakes every 5 seconds and evicts expired entries.

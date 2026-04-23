@@ -1,97 +1,119 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { Command } from 'commander';
-import { newProfile } from './new-profile.js';
+import { input, select } from '@inquirer/prompts';
+import { writeFileSync } from 'fs';
+import { generateProfile, formatEnvFile } from './new-profile.js';
 import { register } from './register.js';
-import { run } from './run.js';
-import { readProfile } from './profile.js';
 
-const program = new Command();
+async function main(): Promise<void> {
+  console.log('\n  ACE Node Setup\n');
 
-program
-  .name('ace-node')
-  .description('CLI for ACE node operators')
-  .version('0.1.0')
-  .enablePositionalOptions();
+  // ── Step 1: Profile ────────────────────────────────────────────────────────
+  console.log('Step 1 · Generate your node profile\n');
+  const profile = generateProfile();
+  console.log(`  Account address : ${profile.accountAddr}`);
+  console.log(`  PKE enc key     : ${profile.pkeEk}\n`);
 
-// ── new-profile ───────────────────────────────────────────────────────────────
+  const savePath = await input({ message: 'Save profile to', default: './ace-node.env' });
+  writeFileSync(savePath, formatEnvFile(profile), { mode: 0o600 });
+  console.log(`  ✓ Saved to ${savePath}  (keep it secret — contains private keys)\n`);
 
-program
-  .command('new-profile')
-  .description(
-    'Generate a new node profile: Ed25519 account keypair + PKE keypair.\n' +
-    'Outputs .env format to stdout; human summary to stderr.\n\n' +
-    'Usage: ace-node new-profile > ace-node.env',
-  )
-  .action(() => {
-    newProfile();
+  // ── Step 2: Deployment details ─────────────────────────────────────────────
+  console.log('Step 2 · ACE deployment details  (get these from the ACE deployer)\n');
+  const rpcUrl        = await input({ message: 'Deployment API URL' });
+  const aceAddr       = await input({ message: 'Contract address' });
+  const rpcApikey     = (await input({ message: 'API key          (Enter to skip)' })) || undefined;
+  const gasStationKey = (await input({ message: 'Gas station key  (Enter to skip)' })) || undefined;
+  const image         = await input({ message: 'Node image', default: 'aptoslabs/ace-node:latest' });
+  console.log();
+
+  // ── Step 3: Platform ───────────────────────────────────────────────────────
+  console.log('Step 3 · Start your node\n');
+  const platform = await select<'gcp' | 'docker'>({
+    message: 'Where will you run your node?',
+    choices: [
+      { name: 'Google Cloud Platform (Cloud Run)', value: 'gcp'    },
+      { name: 'My own machine (Docker)',            value: 'docker' },
+    ],
   });
 
-// ── register ──────────────────────────────────────────────────────────────────
+  let endpoint: string;
 
-program
-  .command('register')
-  .description(
-    'Register this node on-chain at an ACE deployment.\n' +
-    'Submits two transactions: register_endpoint and register_pke_enc_key.',
-  )
-  .option('--profile <path>',         'Profile .env file (default: read ACE_* env vars)')
-  .requiredOption('--rpc-url <url>',   'Aptos fullnode URL for the ACE deployment')
-  .option('--rpc-apikey <key>',        'Geomi node API key (Authorization: Bearer header, avoids rate limits)')
-  .requiredOption('--ace-addr <addr>', 'ACE contract address on Aptos')
-  .requiredOption('--endpoint <url>',  'Public HTTP URL this node will serve, e.g. https://mynode.example.com:9000')
-  .option('--gas-station-key <key>',   'Geomi gas station API key (when set the deployer pays gas; otherwise the operator does)')
-  .action(async (opts) => {
-    try {
-      const profile = readProfile(opts.profile);
-      await register(profile, {
-        rpcUrl:          opts.rpcUrl,
-        rpcApikey:       opts.rpcApikey,
-        aceAddr:         opts.aceAddr,
-        endpoint:        opts.endpoint,
-        gasStationKey:   opts.gasStationKey,
-      });
-    } catch (e) {
-      process.stderr.write(`Error: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exit(1);
-    }
-  });
+  if (platform === 'gcp') {
+    const project     = await input({ message: 'GCP project ID' });
+    const region      = await input({ message: 'Region', default: 'us-central1' });
+    const serviceName = await input({ message: 'Service name', default: 'ace-node' });
 
-// ── run ───────────────────────────────────────────────────────────────────────
+    const nodeArgs = [
+      'run',
+      `--ace-deployment-api=${rpcUrl}`,
+      `--ace-deployment-addr=${aceAddr}`,
+      ...(rpcApikey     ? [`--ace-deployment-apikey=${rpcApikey}`]     : []),
+      ...(gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
+      `--account-addr=${profile.accountAddr}`,
+      `--account-sk=${profile.accountSk}`,
+      `--pke-dk=${profile.pkeDk}`,
+      '--port=8080',
+    ].join(',');
 
-program
-  .command('run')
-  .description(
-    'Run the ACE node Docker image, translating the profile into network-node flags.\n\n' +
-    'Any arguments after -- are forwarded verbatim to the network-node binary.\n\n' +
-    'Usage: ace-node run --profile ace-node.env --rpc-url ... --ace-addr ... -- --max-concurrent 200',
-  )
-  .option('--profile <path>',         'Profile .env file (default: read ACE_* env vars)')
-  .requiredOption('--rpc-url <url>',   'Aptos fullnode URL for the ACE deployment')
-  .option('--rpc-apikey <key>',        'Geomi node API key (Authorization: Bearer header)')
-  .requiredOption('--ace-addr <addr>', 'ACE contract address on Aptos')
-  .option('--gas-station-key <key>',   'Geomi gas station API key')
-  .option('--port <port>',             'Host port to expose and pass to the binary', parseInt)
-  .option('--image <image>',           'Docker image to run', 'aptoslabs/ace-node:latest')
-  .passThroughOptions()
-  .argument('[extraArgs...]',          'Extra arguments forwarded to network-node run (after --)')
-  .action((extraArgs: string[], opts) => {
-    try {
-      const profile = readProfile(opts.profile);
-      run(profile, {
-        rpcUrl:        opts.rpcUrl,
-        rpcApikey:     opts.rpcApikey,
-        aceAddr:       opts.aceAddr,
-        gasStationKey: opts.gasStationKey,
-        port:          opts.port,
-        image:         opts.image,
-        extraArgs,
-      });
-    } catch (e) {
-      process.stderr.write(`Error: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exit(1);
-    }
-  });
+    const cmd = [
+      `gcloud run deploy ${serviceName}`,
+      `  --image docker.io/${image}`,
+      `  --project ${project}`,
+      `  --region ${region}`,
+      `  --no-allow-unauthenticated`,
+      `  --min-instances 1`,
+      `  --no-cpu-throttling`,
+      `  --args "${nodeArgs}"`,
+    ].join(' \\\n');
 
-program.parse();
+    console.log('\nRun this command to deploy your node:\n');
+    console.log(cmd);
+    console.log();
+
+    endpoint = await input({ message: 'Cloud Run service URL (paste after deploy completes)' });
+
+  } else {
+    const port = await input({ message: 'Port', default: '9000' });
+
+    const cmd = [
+      'docker run -d --platform linux/amd64',
+      `  -p ${port}:${port}`,
+      `  ${image}`,
+      `  run`,
+      `  --ace-deployment-api ${rpcUrl}`,
+      `  --ace-deployment-addr ${aceAddr}`,
+      ...(rpcApikey     ? [`  --ace-deployment-apikey ${rpcApikey}`]     : []),
+      ...(gasStationKey ? [`  --ace-deployment-gaskey ${gasStationKey}`] : []),
+      `  --account-addr ${profile.accountAddr}`,
+      `  --account-sk ${profile.accountSk}`,
+      `  --pke-dk ${profile.pkeDk}`,
+      `  --port ${port}`,
+    ].join(' \\\n');
+
+    console.log('\nRun this command to start your node:\n');
+    console.log(cmd);
+    console.log();
+
+    endpoint = await input({ message: "Your node's public URL (e.g. https://mynode.example.com:9000)" });
+  }
+
+  // ── Step 4: Register ───────────────────────────────────────────────────────
+  console.log('\nStep 4 · Register on-chain\n');
+  await register(profile, { rpcUrl, rpcApikey, aceAddr, endpoint, gasStationKey });
+
+  // ── Step 5: Done ───────────────────────────────────────────────────────────
+  console.log('\nStep 5 · All done!\n');
+  console.log('Share your account address with the ACE deployer to be added to the network:\n');
+  console.log(`  ${profile.accountAddr}\n`);
+}
+
+main().catch((e: unknown) => {
+  if ((e as any)?.name === 'ExitPromptError') {
+    console.log('\nSetup cancelled.');
+    process.exit(0);
+  }
+  process.stderr.write(`\nError: ${e instanceof Error ? e.message : String(e)}\n`);
+  process.exit(1);
+});

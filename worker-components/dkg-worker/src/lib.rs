@@ -6,9 +6,9 @@
 //! (for all VSS sessions — they are a share holder in every session, including their own).
 
 use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::oneshot;
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
+use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
 fn shutdown_all(dealer: oneshot::Sender<()>, recipients: Vec<oneshot::Sender<()>>) {
     let _ = dealer.send(());
@@ -30,6 +30,7 @@ struct DkgSession {
 pub struct RunConfig {
     pub rpc_url: String,
     pub rpc_api_key: Option<String>,
+    pub rpc_gas_key: Option<String>,
     pub ace_contract: String,
     pub dkg_session: String,
     pub account_addr: String,
@@ -71,7 +72,7 @@ fn parse_dkg_session_data(data: &Value) -> Result<DkgSession> {
 }
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
@@ -110,6 +111,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let dealer_cfg = vss_dealer::RunConfig {
         rpc_url: config.rpc_url.clone(),
         rpc_api_key: config.rpc_api_key.clone(),
+        rpc_gas_key: config.rpc_gas_key.clone(),
         ace_contract: ace.clone(),
         vss_session: session.vss_sessions[my_idx].clone(),
         pke_dk_hex: config.pke_dk_hex.clone(),
@@ -133,6 +135,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let rcfg = vss_recipient::RunConfig {
             rpc_url: config.rpc_url.clone(),
             rpc_api_key: config.rpc_api_key.clone(),
+            rpc_gas_key: config.rpc_gas_key.clone(),
             ace_contract: ace.clone(),
             vss_session: vss_addr.clone(),
             pke_dk_hex: config.pke_dk_hex.clone(),
@@ -165,7 +168,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         if let Err(e) = rpc.submit_txn(
             &sk, &vk, &account_addr,
             &format!("{}::dkg::touch_entry", ace), &[],
-            &[json!(dkg_session_addr.as_str())],
+            &[TxnArg::Address(&dkg_session_addr)],
         ).await {
             eprintln!("dkg-worker: touch_entry error: {:#}", e);
         }

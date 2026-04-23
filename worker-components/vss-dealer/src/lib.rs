@@ -11,10 +11,9 @@ use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::RngCore;
 use sha2::{Digest, Sha512};
-use serde_json::json;
 use tokio::sync::oneshot;
-use vss_common::aptos::json_move_vec_u8_hex;
 use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed_with_base, pke_encrypt, poly_eval};
+use vss_common::TxnArg;
 use vss_common::session::{ACK_WINDOW_MICROS, BcsElement, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
 use vss_common::vss_types::{
     dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsCommitment, SecretShare,
@@ -27,6 +26,7 @@ pub const POLL_SECS: u64 = 5;
 pub struct RunConfig {
     pub rpc_url: String,
     pub rpc_api_key: Option<String>,
+    pub rpc_gas_key: Option<String>,
     pub ace_contract: String,
     pub vss_session: String,
     pub account_addr: String,
@@ -48,7 +48,7 @@ pub struct RunConfig {
 /// Exits cleanly when the session reaches `STATE__SUCCESS`.
 /// Returns `Err` on `STATE__FAILED`, wrong dealer, or unrecoverable errors.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
 
@@ -336,7 +336,7 @@ async fn build_and_submit_dc0(
         payload.len(), n, threshold
     );
 
-    let args = [json!(session_addr), json_move_vec_u8_hex(&payload)];
+    let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
     rpc.submit_txn(
         sk,
         vk,
@@ -513,7 +513,7 @@ async fn build_and_submit_dc1(
     let payload = dc1_bytes(&shares_to_reveal);
     println!("vss-dealer: dc1 payload {} bytes", payload.len());
 
-    let args = [json!(session_addr), json_move_vec_u8_hex(&payload)];
+    let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
     rpc.submit_txn(
         sk,
         vk,

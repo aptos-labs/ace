@@ -10,7 +10,7 @@ pub mod session;
 pub mod share_reconstruction;
 pub mod vss_types;
 
-pub use aptos::AptosRpc;
+pub use aptos::{AptosRpc, TxnArg};
 pub use session::Session;
 pub use share_reconstruction::reconstruct_share;
 

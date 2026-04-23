@@ -46,6 +46,7 @@ async fn main() {
             let cfg = dkg_worker::RunConfig {
                 rpc_url: args.ace_deployment_api,
                 rpc_api_key: args.ace_deployment_apikey,
+                rpc_gas_key: None,
                 ace_contract: args.ace_deployment_addr,
                 dkg_session: args.dkg_session,
                 pke_dk_hex: args.pke_dk,

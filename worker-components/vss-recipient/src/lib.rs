@@ -5,12 +5,11 @@
 //! `main.rs` is a thin CLI wrapper over [`run`].
 
 use anyhow::{anyhow, Result};
-use serde_json::json;
 use tokio::sync::oneshot;
 use vss_common::pke::{pke_decrypt, BcsCiphertext};
 use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
 use vss_common::vss_types::feldman_verify;
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
+use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
 pub const POLL_SECS: u64 = 5;
 
@@ -18,6 +17,7 @@ pub const POLL_SECS: u64 = 5;
 pub struct RunConfig {
     pub rpc_url: String,
     pub rpc_api_key: Option<String>,
+    pub rpc_gas_key: Option<String>,
     pub ace_contract: String,
     pub vss_session: String,
     pub account_addr: String,
@@ -33,7 +33,7 @@ pub struct RunConfig {
 /// Exits cleanly on `STATE__SUCCESS`.
 /// Returns `Err` on `STATE__FAILED`, account not in share_holders, or unrecoverable errors.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_key(config.rpc_url.clone(), config.rpc_api_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
 
@@ -133,7 +133,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         continue;
                     }
                     println!("vss-recipient: Feldman verification passed, submitting on_share_holder_ack");
-                    let args = [json!(session_addr)];
+                    let args = [TxnArg::Address(session_addr.as_str())];
                     match rpc
                         .submit_txn(
                             &sk,

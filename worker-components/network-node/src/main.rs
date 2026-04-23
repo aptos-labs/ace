@@ -29,6 +29,9 @@ struct RunArgs {
     /// Optional API key for the ACE deployment Aptos fullnode.
     #[arg(long)]
     ace_deployment_apikey: Option<String>,
+    /// Gas station API key for fee-sponsored transactions on the ACE deployment chain.
+    #[arg(long)]
+    ace_deployment_gaskey: Option<String>,
     /// ACE contract address on Aptos.
     #[arg(long)]
     ace_deployment_addr: String,
@@ -90,6 +93,7 @@ async fn main() {
             let cfg = network_node::RunConfig {
                 ace_deployment_api: args.ace_deployment_api,
                 ace_deployment_apikey: args.ace_deployment_apikey,
+                ace_deployment_gaskey: args.ace_deployment_gaskey,
                 ace_deployment_addr: args.ace_deployment_addr,
                 account_addr: args.account_addr,
                 account_sk_hex: args.account_sk,

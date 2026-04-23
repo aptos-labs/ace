@@ -1,5 +1,5 @@
 {
-  "name": "@aptos-labs/ace-node",
+  "name": "@aptos-labs/ace-node-onboarding",
   "version": "0.1.0",
   "description": "CLI for ACE node operators: generate keys, register on-chain, run the Docker node",
   "license": "Apache-2.0",

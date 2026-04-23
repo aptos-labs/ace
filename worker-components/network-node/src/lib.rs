@@ -108,6 +108,7 @@ fn derive_max_concurrent(memory_limit: usize) -> usize {
 pub struct RunConfig {
     pub ace_deployment_api: String,
     pub ace_deployment_apikey: Option<String>,
+    pub ace_deployment_gaskey: Option<String>,
     pub ace_deployment_addr: String,
     pub account_addr: String,
     pub account_sk_hex: String,
@@ -182,9 +183,10 @@ fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
 // ── Main loop ────────────────────────────────────────────────────────────────
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_key(
+    let rpc = AptosRpc::new_with_gas_key(
         config.ace_deployment_api.clone(),
         config.ace_deployment_apikey.clone(),
+        config.ace_deployment_gaskey.clone(),
     );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
@@ -316,11 +318,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
         // Call network::touch() to advance state (move completed DKGs to secrets,
         // or advance the epoch when all DKR sessions are done).
-        let no_args: &[Value] = &[];
         if let Err(e) = rpc.submit_txn(
             &sk, &vk, &account_addr,
             &format!("{}::network::touch", ace), &[],
-            no_args,
+            &[],
         ).await {
             eprintln!("network-node: touch error: {:#}", e);
         }
@@ -413,6 +414,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     let cfg = dkg_worker::RunConfig {
                         rpc_url: config.ace_deployment_api.clone(),
                         rpc_api_key: config.ace_deployment_apikey.clone(),
+                        rpc_gas_key: config.ace_deployment_gaskey.clone(),
                         ace_contract: ace.clone(),
                         dkg_session: session_addr.clone(),
                         account_addr: account_addr.clone(),
@@ -447,6 +449,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             let cfg = dkr_src::RunConfig {
                                 rpc_url: config.ace_deployment_api.clone(),
                                 rpc_api_key: config.ace_deployment_apikey.clone(),
+                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
                                 ace_contract: ace.clone(),
                                 dkr_session: session_addr.clone(),
                                 account_addr: account_addr.clone(),
@@ -475,6 +478,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             let cfg = dkr_dst::RunConfig {
                                 rpc_url: config.ace_deployment_api.clone(),
                                 rpc_api_key: config.ace_deployment_apikey.clone(),
+                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
                                 ace_contract: ace.clone(),
                                 dkr_session: session_addr.clone(),
                                 account_addr: account_addr.clone(),

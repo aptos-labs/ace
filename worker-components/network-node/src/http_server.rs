@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use vss_common::normalize_account_addr;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
@@ -32,6 +32,8 @@ pub struct AppState {
     pub chain_rpc: Arc<ChainRpcConfig>,
     /// This node's PKE decryption key bytes, used to decrypt incoming requests.
     pub pke_dk_bytes: Vec<u8>,
+    /// Bounds the number of simultaneously in-flight requests.
+    pub concurrency: Arc<Semaphore>,
 }
 
 /// Spawn the axum server on `port`.  Runs until the process exits.
@@ -42,8 +44,9 @@ pub async fn run(
     my_addr: String,
     chain_rpc: Arc<ChainRpcConfig>,
     pke_dk_bytes: Vec<u8>,
+    concurrency: Arc<Semaphore>,
 ) {
-    let state = AppState { keypair_shares, cur_nodes, my_addr, chain_rpc, pke_dk_bytes };
+    let state = AppState { keypair_shares, cur_nodes, my_addr, chain_rpc, pke_dk_bytes, concurrency };
     let app = Router::new().route("/", post(handle_request)).with_state(state);
     let addr = format!("0.0.0.0:{}", port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -65,6 +68,13 @@ async fn handle_request(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<String, StatusCode> {
+    // Acquire a concurrency permit before doing any work.  If all permits are
+    // taken the node is at its memory-derived concurrency limit; return 429 so
+    // callers can retry rather than queuing indefinitely.
+    let _permit = Arc::clone(&state.concurrency)
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+
     let body_str = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let ct_bytes = hex::decode(body_str.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
 

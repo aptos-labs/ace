@@ -43,6 +43,11 @@ struct RunArgs {
     /// TCP port for the UserRequestHandler HTTP server (optional).
     #[arg(long)]
     port: Option<u16>,
+    /// Maximum concurrent in-flight HTTP requests (optional).
+    /// Defaults to a value derived from the cgroup memory limit.
+    /// Use this to override when running outside a container or to tune manually.
+    #[arg(long)]
+    max_concurrent: Option<usize>,
     // ── Per-chain Aptos RPC endpoints (for proof-of-permission verification) ──
     #[arg(long, default_value = "https://api.mainnet.aptoslabs.com/v1")]
     aptos_mainnet_api: String,
@@ -91,6 +96,7 @@ async fn main() {
                 pke_dk: args.pke_dk,
                 port: args.port,
                 chain_rpc,
+                max_concurrent: args.max_concurrent,
             };
 
 

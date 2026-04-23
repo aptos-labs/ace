@@ -70,6 +70,34 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  operator-cli:
+    dependencies:
+      '@aptos-labs/ace-sdk':
+        specifier: workspace:*
+        version: link:../ts-sdk
+      '@aptos-labs/gas-station-client':
+        specifier: ^2.0.3
+        version: 2.0.3(got@11.8.6)
+      '@aptos-labs/ts-sdk':
+        specifier: ^5.2.0
+        version: 5.2.1(got@11.8.6)
+      commander:
+        specifier: ^12.0.0
+        version: 12.1.0
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.30
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   scenarios:
     dependencies:
       '@aptos-labs/ace-sdk':
@@ -131,6 +159,9 @@ packages:
     engines: {node: '>=20.0.0'}
     peerDependencies:
       got: ^11.8.6
+
+  '@aptos-labs/gas-station-client@2.0.3':
+    resolution: {integrity: sha512-zKy/gy6rHE9q9+58Oi+AjLukv1rGhVopAlBreil5TDvjVZvpIV4S05cXSRBVgo1UK7c+ClrXgKqCFgGn/q7udg==}
 
   '@aptos-labs/ts-sdk@5.2.1':
     resolution: {integrity: sha512-kazYjqfsPCBx2UJI+nYUOb6Ov7q7brSgYEfxp2sP27IeJWdDNa50lfs0WIpDJ92kQxdtlm9q3ZWw7Toh9f1gxQ==}
@@ -1793,6 +1824,12 @@ snapshots:
   '@aptos-labs/aptos-client@2.1.0(got@11.8.6)':
     dependencies:
       got: 11.8.6
+
+  '@aptos-labs/gas-station-client@2.0.3(got@11.8.6)':
+    dependencies:
+      '@aptos-labs/ts-sdk': 5.2.1(got@11.8.6)
+    transitivePeerDependencies:
+      - got
 
   '@aptos-labs/ts-sdk@5.2.1(got@11.8.6)':
     dependencies:

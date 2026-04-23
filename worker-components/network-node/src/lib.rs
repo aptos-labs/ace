@@ -17,7 +17,7 @@
 //! sender in a `HashMap`; calling `stop_tasks` drains the map and fires each
 //! sender (errors are silently ignored because the task may have already exited).
 
-mod crypto;
+pub mod crypto;
 mod http_server;
 pub mod verify;
 

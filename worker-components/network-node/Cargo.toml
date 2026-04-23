@@ -11,6 +11,10 @@ description = "On-chain network-node supervisor: manages DKG, DKR-src, and DKR-d
 name = "network-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "bench-request-mem"
+path = "src/bin/bench_request_mem.rs"
+
 [lib]
 name = "network_node"
 path = "src/lib.rs"

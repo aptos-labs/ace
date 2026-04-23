@@ -1,0 +1,30 @@
+{
+  "name": "@aptos-labs/ace-node",
+  "version": "0.1.0",
+  "description": "CLI for ACE node operators: generate keys, register on-chain, run the Docker node",
+  "license": "Apache-2.0",
+  "bin": {
+    "ace-node": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/gas-station-client": "^2.0.3",
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

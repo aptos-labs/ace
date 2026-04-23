@@ -4,7 +4,9 @@
 //! `network-node` binary — thin CLI over [`network_node::run`].
 
 use clap::{Parser, Subcommand};
+use std::time::Duration;
 use tokio::sync::oneshot;
+use vss_common::AptosRpc;
 
 #[derive(Parser)]
 #[command(name = "network-node", version, about)]
@@ -69,21 +71,16 @@ async fn main() {
     match cli.command {
         Commands::Run(args) => {
             let chain_rpc = network_node::ChainRpcConfig {
-                aptos_mainnet: network_node::AptosNetRpc {
-                    endpoint: args.aptos_mainnet_api,
-                    api_key: args.aptos_mainnet_apikey,
-                },
-                aptos_testnet: network_node::AptosNetRpc {
-                    endpoint: args.aptos_testnet_api,
-                    api_key: args.aptos_testnet_apikey,
-                },
-                aptos_localnet: network_node::AptosNetRpc {
-                    endpoint: args.aptos_localnet_api,
-                    api_key: args.aptos_localnet_apikey,
-                },
+                aptos_mainnet: AptosRpc::new_with_key(args.aptos_mainnet_api, args.aptos_mainnet_apikey),
+                aptos_testnet: AptosRpc::new_with_key(args.aptos_testnet_api, args.aptos_testnet_apikey),
+                aptos_localnet: AptosRpc::new_with_key(args.aptos_localnet_api, args.aptos_localnet_apikey),
                 solana_mainnet_beta: args.solana_mainnet_beta_rpc,
                 solana_testnet: args.solana_testnet_rpc,
                 solana_devnet: args.solana_devnet_rpc,
+                solana_client: reqwest::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .expect("failed to build Solana HTTP client"),
             };
             let cfg = network_node::RunConfig {
                 ace_deployment_api: args.ace_deployment_api,

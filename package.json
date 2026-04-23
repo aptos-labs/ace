@@ -9,7 +9,7 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r clean",
-    "ace-node": "pnpm --filter @aptos-labs/ace-node-onboarding exec tsx src/index.ts"
+    "ace-node-onboarding": "pnpm --filter @aptos-labs/ace-node-onboarding exec tsx src/index.ts"
   },
   "keywords": [
     "ace",

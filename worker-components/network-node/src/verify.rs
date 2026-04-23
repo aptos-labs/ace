@@ -274,8 +274,8 @@ async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, chain_rpc: &ChainRpcC
 
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
-        check_aptos_auth_key(proof, &vk, &rpc),
-        check_aptos_permission(fdd, proof, &rpc),
+        check_aptos_auth_key(proof, &vk, rpc),
+        check_aptos_permission(fdd, proof, rpc),
     );
     auth_result?;
     perm_result?;
@@ -408,7 +408,7 @@ async fn verify_solana(fdd: &ParsedFdd, proof: &SolanaProof, chain_rpc: &ChainRp
 
     // 2. Signature + program execution via RPC simulation.
     let rpc_url = chain_rpc.solana_rpc_for_chain_name(known_chain_name)?;
-    simulate_solana_txn(&proof.txn_bytes, &rpc_url, is_versioned).await?;
+    simulate_solana_txn(&proof.txn_bytes, &rpc_url, is_versioned, &chain_rpc.solana_client).await?;
 
     Ok(())
 }
@@ -552,14 +552,11 @@ fn read_solana_instructions(bytes: &[u8], pos: &mut usize) -> Result<Vec<SolanaI
 /// `is_versioned` must come from `proof.inner_scheme == 1`, NOT from inspecting
 /// the first byte of `txn_bytes`.  A serialised `VersionedTransaction` starts with
 /// the compact-u16 signature count (0x01 for one signature), not the v0 prefix byte.
-async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, is_versioned: bool) -> Result<()> {
+async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, is_versioned: bool, client: &reqwest::Client) -> Result<()> {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
 
     let txn_b64 = B64.encode(txn_bytes);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
 
     // For legacy transactions the Solana test-validator may produce blocks so
     // quickly that the original recent-blockhash is already gone by the time

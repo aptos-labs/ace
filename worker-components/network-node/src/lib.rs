@@ -31,38 +31,26 @@ use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct AptosNetRpc {
-    pub endpoint: String,
-    pub api_key: Option<String>,
-}
-
-impl AptosNetRpc {
-    pub fn to_rpc(&self) -> AptosRpc {
-        AptosRpc::new_with_key(self.endpoint.clone(), self.api_key.clone())
-    }
-}
-
-/// Per-chain RPC endpoints used for proof-of-permission verification.
-#[derive(Debug, Clone)]
+/// Pre-built RPC clients for all supported chains.
+/// Clients are constructed once at startup and shared across all requests.
 pub struct ChainRpcConfig {
-    pub aptos_mainnet: AptosNetRpc,   // chain_id=1
-    pub aptos_testnet: AptosNetRpc,   // chain_id=2
-    pub aptos_localnet: AptosNetRpc,  // chain_id=4
+    pub aptos_mainnet: AptosRpc,   // chain_id=1
+    pub aptos_testnet: AptosRpc,   // chain_id=2
+    pub aptos_localnet: AptosRpc,  // chain_id=4
     pub solana_mainnet_beta: String,
     pub solana_testnet: String,
     pub solana_devnet: String,
+    pub solana_client: reqwest::Client,
 }
 
 impl ChainRpcConfig {
-    pub fn aptos_rpc_for_chain_id(&self, chain_id: u8) -> Result<AptosRpc> {
-        let net = match chain_id {
+    pub fn aptos_rpc_for_chain_id(&self, chain_id: u8) -> Result<&AptosRpc> {
+        Ok(match chain_id {
             1 => &self.aptos_mainnet,
             2 => &self.aptos_testnet,
             4 => &self.aptos_localnet,
             _ => return Err(anyhow!("no Aptos RPC configured for chain_id {}", chain_id)),
-        };
-        Ok(net.to_rpc())
+        })
     }
 
     pub fn solana_rpc_for_chain_name(&self, name: &str) -> Result<String> {
@@ -78,7 +66,6 @@ impl ChainRpcConfig {
 
 // ── Top-level run configuration ───────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
 pub struct RunConfig {
     pub ace_deployment_api: String,
     pub ace_deployment_apikey: Option<String>,
@@ -192,7 +179,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let ks = keypair_shares.clone();
         let cn = cur_nodes_shared.clone();
         let my = account_addr.clone();
-        let chain_rpc = Arc::new(config.chain_rpc.clone());
+        let chain_rpc = Arc::new(config.chain_rpc);
         let dk = pke_dk_bytes.clone();
         tokio::spawn(http_server::run(port, ks, cn, my, chain_rpc, dk));
     }

@@ -704,6 +704,6 @@ export class Session {
     }
 
     isCompleted(): boolean {
-        return this.stateCode === 2; // STATE__SUCCESS
+        return this.stateCode === 3; // STATE__SUCCESS
     }
 }

@@ -151,7 +151,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
     // --- Poll DKG session until DONE, FAIL, or shutdown ---
     let mut interval =
-        tokio::time::interval(tokio::time::Duration::from_secs(5));
+        tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {

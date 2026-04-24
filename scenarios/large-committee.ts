@@ -39,7 +39,7 @@ async function main() {
         log(`Large-committee smoke test: NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
 
         log('Register PKE enc keys.');
         for (let i = 0; i < NUM_WORKERS; i++) {
@@ -68,12 +68,10 @@ async function main() {
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
         log('Admin: propose new_secret(scheme=0); threshold approvers sign.');
-        await proposeAndApprove(
-            adminAccount,
-            workerAccounts.slice(0, THRESHOLD),
-            aceContract,
-            serializeNewSecretProposal(0),
-        );
+        {
+            const approvers = workerAccounts.slice(0, THRESHOLD);
+            await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(0));
+        }
 
         log('Poll until DKG epoch change completes (deadline: 5 min).');
         const dkgDeadlineMillis = Date.now() + 300_000;
@@ -82,7 +80,7 @@ async function main() {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
             if (maybeState.isOk) {
                 networkState = maybeState.okValue!;
-                if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
+                if (networkState.epochChangeInfo === null && networkState.secrets.length >= 1) break;
             }
             await sleep(5_000);
         }
@@ -99,15 +97,18 @@ async function main() {
 
         // After new_secret, cur_nodes = same workers, cur_epoch = 1. Propose CommitteeChange (same workers).
         log(`Admin: propose CommitteeChange(same ${NUM_WORKERS} workers, threshold=${THRESHOLD}); threshold approvers sign.`);
-        await proposeAndApprove(
-            adminAccount,
-            workerAccounts.slice(0, THRESHOLD),
-            aceContract,
-            serializeCommitteeChangeProposal(
-                workerAccounts.map(w => w.accountAddress),
-                THRESHOLD,
-            ),
-        );
+        {
+            const approvers = workerAccounts.slice(0, THRESHOLD);
+            await proposeAndApprove(
+                approvers[0]!,
+                approvers,
+                aceContract,
+                serializeCommitteeChangeProposal(
+                    workerAccounts.map(w => w.accountAddress),
+                    THRESHOLD,
+                ),
+            );
+        }
 
         log('Poll until epoch advances to 2 (deadline: 5 min).');
         const dkrDeadlineMillis = Date.now() + 300_000;

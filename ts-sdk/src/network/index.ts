@@ -4,41 +4,21 @@
 import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 
-export class EpochChangeState {
+/** Mirrors `ace::network::EpochChangeInfo`. */
+export class EpochChangeInfo {
     constructor(
         readonly nxtNodes: AccountAddress[],
-        readonly nxtThreshold: number,
-        readonly nxtEpochDurationMicros: bigint,
-        readonly dkgSession: AccountAddress | null,
-        readonly dkrSessions: AccountAddress[],
+        readonly session: AccountAddress,
     ) {}
 
-    static deserialize(deserializer: Deserializer): EpochChangeState {
+    static deserialize(deserializer: Deserializer): EpochChangeInfo {
         const nxtNodesLen = deserializer.deserializeUleb128AsU32();
         const nxtNodes: AccountAddress[] = [];
         for (let i = 0; i < nxtNodesLen; i++) {
             nxtNodes.push(AccountAddress.deserialize(deserializer));
         }
-
-        const nxtThreshold = Number(deserializer.deserializeU64());
-        const nxtEpochDurationMicros = deserializer.deserializeU64();
-
-        // Option<address>: 0x00 = None, 0x01 + payload = Some
-        const dkgTag = deserializer.deserializeU8();
-        let dkgSession: AccountAddress | null = null;
-        if (dkgTag === 1) {
-            dkgSession = AccountAddress.deserialize(deserializer);
-        } else if (dkgTag !== 0) {
-            throw `dkg_session option tag must be 0 or 1, got ${dkgTag}`;
-        }
-
-        const dkrSessionsLen = deserializer.deserializeUleb128AsU32();
-        const dkrSessions: AccountAddress[] = [];
-        for (let i = 0; i < dkrSessionsLen; i++) {
-            dkrSessions.push(AccountAddress.deserialize(deserializer));
-        }
-
-        return new EpochChangeState(nxtNodes, nxtThreshold, nxtEpochDurationMicros, dkgSession, dkrSessions);
+        const session = AccountAddress.deserialize(deserializer);
+        return new EpochChangeInfo(nxtNodes, session);
     }
 }
 
@@ -51,11 +31,11 @@ export class State {
         readonly curThreshold: number,
         readonly secrets: AccountAddress[],
         readonly pendingProposals: AccountAddress[],
-        readonly epochChangeState: EpochChangeState | null,
+        readonly epochChangeInfo: EpochChangeInfo | null,
     ) {}
 
     isEpochChanging(): boolean {
-        return this.epochChangeState !== null;
+        return this.epochChangeInfo !== null;
     }
 
     static deserialize(deserializer: Deserializer): Result<State> {
@@ -86,13 +66,13 @@ export class State {
                     pendingProposals.push(AccountAddress.deserialize(deserializer));
                 }
 
-                // Option<EpochChangeState>: 0x00 = None, 0x01 + payload = Some
+                // Option<EpochChangeInfo>: 0x00 = None, 0x01 + payload = Some
                 const optionTag = deserializer.deserializeU8();
-                let epochChangeState: EpochChangeState | null = null;
+                let epochChangeInfo: EpochChangeInfo | null = null;
                 if (optionTag === 1) {
-                    epochChangeState = EpochChangeState.deserialize(deserializer);
+                    epochChangeInfo = EpochChangeInfo.deserialize(deserializer);
                 } else if (optionTag !== 0) {
-                    throw `epoch_change_state option tag must be 0 or 1, got ${optionTag}`;
+                    throw `epoch_change_info option tag must be 0 or 1, got ${optionTag}`;
                 }
 
                 return new State(
@@ -103,7 +83,7 @@ export class State {
                     curThreshold,
                     secrets,
                     pendingProposals,
-                    epochChangeState,
+                    epochChangeInfo,
                 );
             },
         });

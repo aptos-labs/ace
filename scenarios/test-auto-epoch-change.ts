@@ -57,7 +57,7 @@ async function main() {
         const threshold = 2;
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
 
         log('Register PKE enc keys for all workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -90,12 +90,10 @@ async function main() {
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
         log('Admin: propose new_secret(scheme=0); A,B approve.');
-        await proposeAndApprove(
-            adminAccount,
-            committee.slice(0, threshold),
-            aceContract,
-            serializeNewSecretProposal(0),
-        );
+        {
+            const approvers = committee.slice(0, threshold);
+            await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(0));
+        }
 
         // ── Wait for DKG epoch change to complete (epoch 0→1) ──────────────────
 
@@ -159,7 +157,7 @@ async function main() {
         if (finalState.secrets.length !== 1) {
             throw `Expected 1 secret after epoch change, got ${finalState.secrets.length}`;
         }
-        if (finalState.epochChangeState !== null) {
+        if (finalState.epochChangeInfo !== null) {
             throw 'Expected epoch_change_state to be None after epoch advance';
         }
 

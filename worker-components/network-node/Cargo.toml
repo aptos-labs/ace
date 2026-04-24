@@ -5,7 +5,7 @@
 name = "network-node"
 version = "0.1.0"
 edition = "2021"
-description = "On-chain network-node supervisor: manages DKG, DKR-src, and DKR-dst sub-tasks."
+description = "Network node: URH, HTTP, and network::touch. Epoch-change DKR/DKG runs in epoch-change-cur / epoch-change-nxt."
 
 [[bin]]
 name = "network-node"
@@ -21,9 +21,8 @@ path = "src/lib.rs"
 
 [dependencies]
 vss-common = { path = "../vss-common" }
-dkg-worker = { path = "../dkg-worker" }
-dkr-src = { path = "../dkr-src" }
-dkr-dst = { path = "../dkr-dst" }
+epoch-change-cur = { path = "../epoch-change-cur" }
+epoch-change-nxt = { path = "../epoch-change-nxt" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 clap = { version = "4", features = ["derive"] }

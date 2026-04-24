@@ -1,16 +1,3 @@
-/// A network node is supposed to do the following.
-/// - Input includes a worker account, its private key, and a PKE decryption key.
-/// - Fetch `State` every 5 secs.
-/// - After each fetch,
-///   - for every secret in `State.secrets`, ensure a UserRequestHandler has started, if myself is a current epoch node.
-///     Otherwise, stop all UserRequestHandlers ever started since the beginning of this node process.
-///   - for every secret in `State.dkgs_in_progress`, ensure a DKG client has started, if myself is a current epoch node.
-///     Otherwise, try stop all DKG clients ever started since the beginning of this node process.
-///   - for every `State.epoch_change_state.dkr_sessions`, ensure a DKR-SRC client has started, if myself is a current epoch node.
-///     Otherwise, try stop all DKR-SRC clients ever started since the beginning of this node process.
-///   - for every, `State.epoch_change_state.dkr_sessions`, ensure a DKR-DST client has started, if myself is a next epoch node.
-///     Otherwise, try stop all DKR-DST clients ever started since the beginning of this node process.
-///
 module ace::network {
     use std::error;
     use ace::worker_config;
@@ -19,6 +6,7 @@ module ace::network {
     use std::option::{Option, Self};
     use ace::dkg;
     use ace::group;
+    use ace::epoch_change;
     use std::bcs;
     use std::signer::address_of;
     use aptos_framework::object::{Self, ExtendRef};
@@ -44,12 +32,9 @@ module ace::network {
     const E_INVALID_RESHARING_INTERVAL: u64 = 17;
     const E_PROPOSAL_IS_NOT_CURRENT: u64 = 18;
     
-    struct EpochChangeState has copy, drop, store {
+    struct EpochChangeInfo has copy, drop, store {
         nxt_nodes: vector<address>,
-        nxt_threshold: u64,
-        nxt_epoch_duration_micros: u64,
-        dkg_session: Option<address>,
-        dkr_sessions: vector<address>,
+        session: address,
     }
 
     struct State has key {
@@ -60,7 +45,7 @@ module ace::network {
         cur_threshold: u64,
         secrets: vector<address>,
         pending_proposals: vector<address>,
-        epoch_change_state: Option<EpochChangeState>,
+        epoch_change_info: Option<EpochChangeInfo>,
     }
 
     struct SignerStore has key {
@@ -89,7 +74,7 @@ module ace::network {
     }
 
     #[event]
-    struct ProposalResolved has drop, store {
+    struct ProposalAccepted has drop, store {
         addr: address,
     }
 
@@ -123,7 +108,7 @@ module ace::network {
             cur_threshold: threshold,
             secrets: vector[],
             pending_proposals: vector[],
-            epoch_change_state: option::none(),
+            epoch_change_info: option::none(),
         });
     }
 
@@ -136,113 +121,53 @@ module ace::network {
         }
     }
 
-    /// Start a new epoch change: clear pending proposals, start new DKR sessions, start new DKG session if needed.
-    fun do_start_epoch_change(
-        state: &mut State,
-        new_nodes: vector<address>,
-        new_threshold: u64,
-        new_epoch_duration_micros: u64,
-        old_secrets_to_untrack: vector<address>,
-        new_secret_scheme: Option<u8>,
-    ) {
-        let signer_store = borrow_global<SignerStore>(@ace);
-        let caller = signer_store.extend_ref.generate_signer_for_extending();
-
-        state.pending_proposals = vector[];
-
-        assert!(state.epoch_change_state.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
-        let dkr_sessions = state.secrets
-            .filter(|secret_addr| {
-                let original_dkg = original_dkg_session(*secret_addr);
-                !old_secrets_to_untrack.contains(&original_dkg)
-            }).map_ref(|secret_addr| {
-                dkr::new_session(&caller, *secret_addr, new_nodes, new_threshold)
-            });
-        state.epoch_change_state = option::some(EpochChangeState {
-            nxt_nodes: new_nodes,
-            nxt_threshold: new_threshold,
-            dkg_session: new_secret_scheme.map(|scheme| dkg::new_session(&caller, new_nodes, new_threshold, group::rand_element(scheme))),
-            dkr_sessions,
-            nxt_epoch_duration_micros: new_epoch_duration_micros,
-        });
-    }
-
     #[randomness]
+    /// Node should call this only after the current epoch is older than the epoch duration.
     entry fun touch() {
         let state = borrow_global_mut<State>(@ace);
         let now_micros = timestamp::now_microseconds();
-        if (state.epoch_change_state.is_some()) {
-            let all_dkg_completed = state.epoch_change_state.borrow().dkg_session.is_none() || dkg::completed(*state.epoch_change_state.borrow().dkg_session.borrow());
-            let all_dkr_completed = state.epoch_change_state.borrow().dkr_sessions.all(|session| dkr::completed(*session));
-            if (all_dkg_completed && all_dkr_completed) {
-                let EpochChangeState { nxt_nodes, nxt_threshold, dkr_sessions, dkg_session, nxt_epoch_duration_micros } = state.epoch_change_state.extract();
-                let new_secrets = dkr_sessions;
-                if (dkg_session.is_some()) new_secrets.push_back(dkg_session.destroy_some());
+        if (state.epoch_change_info.is_some()) {
+            let EpochChangeInfo { nxt_nodes, session } = *state.epoch_change_info.borrow();
+            if (epoch_change::completed(session)) {
+                let (nodes, threshold, secrets, epoch_duration_micros) = epoch_change::results(session);
+                assert!(nodes == nxt_nodes, error::internal(E_UNREACHABLE));
                 state.epoch += 1;
                 state.epoch_start_time_micros = now_micros;
-                state.cur_nodes = nxt_nodes;
-                state.cur_threshold = nxt_threshold;
-                state.secrets = new_secrets;
-                state.epoch_duration_micros = nxt_epoch_duration_micros;
+                state.cur_nodes = nodes;
+                state.cur_threshold = threshold;
+                state.secrets = secrets;
+                state.epoch_duration_micros = epoch_duration_micros;
+                state.epoch_change_info = option::none();
             }
         } else {
-
-            // if there is an over-threshold approved proposal, execute it and discard the others.
-            let num_proposals = state.pending_proposals.length();
-            for (i in 0..num_proposals) {
-                let proposal_addr = state.pending_proposals[i];
-                let proposal_state = borrow_global_mut<ProposalState>(proposal_addr);
-                if (proposal_state.voters.length() >= state.cur_threshold) {
-                    proposal_state.executed = true;
-                    event::emit(ProposalResolved { addr: proposal_addr });
-                    let (new_nodes, new_threshold, new_epoch_duration_micros, new_secret_scheme, old_secrets_to_untrack) = match (&proposal_state.proposal) {
-                        Proposal::CommitteeChange { nodes, threshold } => {
-                            (*nodes, *threshold, state.epoch_duration_micros, option::none(), vector[])
-                        }
-                        Proposal::ResharingIntervalUpdate { new_interval_secs } => {
-                            (state.cur_nodes, state.cur_threshold, *new_interval_secs * 1_000_000, option::none(), vector[])
-                        }
-                        Proposal::NewSecret { scheme } => {
-                            (state.cur_nodes, state.cur_threshold, state.epoch_duration_micros, option::some(*scheme), vector[])
-                        }
-                        Proposal::SecretDeactivation { original_dkg_addr } => {
-                            (state.cur_nodes, state.cur_threshold, state.epoch_duration_micros, option::none(), vector[*original_dkg_addr])
-                        }
-                    };
-                    do_start_epoch_change(
-                        state,
-                        new_nodes,
-                        new_threshold,
-                        new_epoch_duration_micros,
-                        old_secrets_to_untrack,
-                        new_secret_scheme,
-                    );
-                    return;
-                }
-            };
-
-            // Auto epoch change: fire if epoch is stale and no blockers.
             if (now_micros - state.epoch_start_time_micros >= state.epoch_duration_micros) {
-                let new_nodes = state.cur_nodes;
-                let new_threshold = state.cur_threshold;
-                let epoch_duration_micros = state.epoch_duration_micros;
-                do_start_epoch_change(
-                    state,
-                    new_nodes,
-                    new_threshold,
-                    epoch_duration_micros,
-                    vector[],
-                    option::none(),
+                let signer_store = borrow_global<SignerStore>(@ace);
+                let caller = signer_store.extend_ref.generate_signer_for_extending();
+                let epoch_change_session = epoch_change::new_session(
+                    &caller,
+                    state.cur_nodes,
+                    state.cur_threshold,
+                    state.cur_nodes, // nxt_nodes
+                    state.cur_threshold, // nxt_threshold
+                    state.epoch_duration_micros, // nxt_epoch_duration_micros
+                    state.secrets, // secrets_to_reshare
+                    option::none(), // new_secret_scheme
                 );
+                state.epoch_change_info = option::some(EpochChangeInfo {
+                    nxt_nodes: state.cur_nodes,
+                    session: epoch_change_session,
+                });
+                state.pending_proposals = vector[];
             }
         }
     }
 
+    #[randomness]
     entry fun new_proposal(proposer: &signer, proposal_bcs: vector<u8>) {
         let state = borrow_global_mut<State>(@ace);
         let proposer_addr = address_of(proposer);
         assert!(@ace == proposer_addr || state.cur_nodes.contains(&proposer_addr), error::permission_denied(E_ONLY_ADMIN_OR_CURRENT_NODE_CAN_PROPOSE));
-        assert!(state.epoch_change_state.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
+        assert!(state.epoch_change_info.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
         let proposal = proposal_from_bcs(proposal_bcs);
         validate_proposal(state, &proposal);
         let object_ref = object::create_sticky_object(proposer_addr);
@@ -257,19 +182,24 @@ module ace::network {
         });
         state.pending_proposals.push_back(object_addr);
         event::emit(ProposalCreated { addr: object_addr });
+
+        // Self-approve.
+        approve_proposal(proposer, object_addr);
     }
 
-    entry fun approve_proposal(reviewer: &signer, proposal_addr: address) {
-        let network_state = borrow_global<State>(@ace);
-        let reviewer_addr = address_of(reviewer);
-        assert!(network_state.cur_nodes.contains(&reviewer_addr), error::permission_denied(E_ONLY_CURRENT_NODE_CAN_PROPOSE));
+    #[randomness]
+    entry fun approve_proposal(node: &signer, proposal_addr: address) {
+        let network_state = borrow_global_mut<State>(@ace);
+        let node_addr = address_of(node);
+        assert!(network_state.cur_nodes.contains(&node_addr), error::permission_denied(E_ONLY_CURRENT_NODE_CAN_PROPOSE));
         assert!(network_state.pending_proposals.contains(&proposal_addr), error::invalid_argument(E_PROPOSAL_NOT_PENDING));
 
         let proposal_state = borrow_global_mut<ProposalState>(proposal_addr);
         assert!(proposal_state.epoch == network_state.epoch, error::invalid_argument(E_PROPOSAL_IS_NOT_CURRENT));
         assert!(!proposal_state.executed, error::invalid_argument(E_PROPOSAL_ALREADY_EXECUTED));
-        assert!(!proposal_state.voters.contains(&reviewer_addr), error::invalid_argument(E_ALREADY_VOTED));
-        proposal_state.voters.push_back(address_of(reviewer));
+        assert!(!proposal_state.voters.contains(&node_addr), error::invalid_argument(E_ALREADY_VOTED));
+        proposal_state.voters.push_back(address_of(node));
+        maybe_start_epoch_change(network_state, proposal_state);
     }
 
     fun proposal_from_bcs(proposal_bcs: vector<u8>): Proposal {
@@ -314,6 +244,44 @@ module ace::network {
             Proposal::SecretDeactivation { original_dkg_addr } => {
                 assert!(state.secrets.any(|secret_addr| original_dkg_session(*secret_addr) == *original_dkg_addr), error::invalid_argument(E_NOT_AN_ACTIVE_SECRET));
             }
+        }
+    }
+
+    fun maybe_start_epoch_change(network_state: &mut State, proposal_state: &mut ProposalState) {
+        if (proposal_state.voters.length() >= network_state.cur_threshold) {
+            proposal_state.executed = true;
+            let (new_nodes, new_threshold, new_epoch_duration_micros, new_secret_scheme, secrets_to_reshare) = match (&proposal_state.proposal) {
+                Proposal::CommitteeChange { nodes, threshold } => {
+                    (*nodes, *threshold, network_state.epoch_duration_micros, option::none(), network_state.secrets)
+                }
+                Proposal::ResharingIntervalUpdate { new_interval_secs } => {
+                    (network_state.cur_nodes, network_state.cur_threshold, *new_interval_secs * 1_000_000, option::none(), network_state.secrets)
+                }
+                Proposal::NewSecret { scheme } => {
+                    (network_state.cur_nodes, network_state.cur_threshold, network_state.epoch_duration_micros, option::some(*scheme), network_state.secrets)
+                }
+                Proposal::SecretDeactivation { original_dkg_addr } => {
+                    let secrets_to_reshare = network_state.secrets.filter(|secret_addr| original_dkg_session(*secret_addr) != *original_dkg_addr);
+                    (network_state.cur_nodes, network_state.cur_threshold, network_state.epoch_duration_micros, option::none(), secrets_to_reshare)
+                }
+            };
+            let signer_store = borrow_global<SignerStore>(@ace);
+            let caller = signer_store.extend_ref.generate_signer_for_extending();
+            let session = epoch_change::new_session(
+                &caller,
+                network_state.cur_nodes,
+                network_state.cur_threshold,
+                new_nodes,
+                new_threshold,
+                new_epoch_duration_micros,
+                secrets_to_reshare,
+                new_secret_scheme,
+            );
+            network_state.epoch_change_info = option::some(EpochChangeInfo {
+                nxt_nodes: new_nodes,
+                session,
+            });
+            network_state.pending_proposals = vector[];
         }
     }
 }

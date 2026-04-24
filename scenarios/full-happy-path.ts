@@ -108,7 +108,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────
@@ -188,7 +188,7 @@ async function main() {
         step(7, 'Admin proposes keypair-0 (scheme=0, BLS12-381 G1); workers 0,1 approve');
         const epoch0ApproverAccounts = EPOCH0_WORKER_INDICES.slice(0, EPOCH0_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
-            adminAccount,
+            epoch0ApproverAccounts[0]!,
             epoch0ApproverAccounts,
             adminAddr,
             serializeNewSecretProposal(0),
@@ -271,7 +271,7 @@ async function main() {
         step(11, `Epoch change 1→2 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD})`);
         // Still epoch 1 committee [0,1,2], threshold=2
         await proposeAndApprove(
-            adminAccount,
+            epoch0ApproverAccounts[0]!,
             epoch0ApproverAccounts,
             adminAddr,
             serializeCommitteeChangeProposal(
@@ -315,7 +315,7 @@ async function main() {
         step(13, 'Admin proposes keypair-1 in epoch 2; workers 1,2,3 approve');
         const epoch1ApproverAccounts = EPOCH1_WORKER_INDICES.slice(0, EPOCH1_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
-            adminAccount,
+            epoch1ApproverAccounts[0]!,
             epoch1ApproverAccounts,
             adminAddr,
             serializeNewSecretProposal(0),
@@ -334,7 +334,7 @@ async function main() {
         step(14, `Epoch change 3→4 (workers ${EPOCH2_WORKER_INDICES}, threshold=${EPOCH2_THRESHOLD})`);
         // Still epoch 3 committee [1,2,3,4], threshold=3
         await proposeAndApprove(
-            adminAccount,
+            epoch1ApproverAccounts[0]!,
             epoch1ApproverAccounts,
             adminAddr,
             serializeCommitteeChangeProposal(

@@ -11,7 +11,7 @@
  * Flow:
  *   1. Start localnet.
  *   2. Fund 1 admin + 3 worker accounts.
- *   3. Deploy pke, worker_config, group, vss, dkg, dkr, network.
+ *   3. Deploy pke, worker_config, group, vss, dkg, dkr, epoch-change, network.
  *   4. Register PKE enc keys for all 3 workers.
  *   5. Build Rust workspace.
  *   6. Spawn one network-node per worker; each writes to its own tmp log file.
@@ -79,7 +79,7 @@ async function main() {
 
     // ── Deploy contracts ─────────────────────────────────────────────────────
     log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 9000;
@@ -146,12 +146,10 @@ async function main() {
 
     // ── Propose new_secret ───────────────────────────────────────────────────
     log('Admin: propose new_secret(scheme=0); A,B approve...');
-    await proposeAndApprove(
-        adminAccount,
-        workerAccounts.slice(0, threshold),
-        aceContract,
-        serializeNewSecretProposal(0),
-    );
+    {
+        const approvers = workerAccounts.slice(0, threshold);
+        await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(0));
+    }
 
     // ── Wait for DKG epoch change to complete ────────────────────────────────
     log('Waiting for DKG epoch change to complete (workers are running)...');
@@ -161,7 +159,7 @@ async function main() {
         const maybe = await getNetworkState(adminAccount.accountAddress);
         if (maybe.isOk) {
             networkState = maybe.okValue!;
-            if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
+            if (networkState.epochChangeInfo === null && networkState.secrets.length >= 1) break;
         }
         await sleep(5_000);
     }
@@ -200,7 +198,7 @@ async function main() {
         const maybeState = await getNetworkState(adminAccount.accountAddress);
         if (maybeState.isOk) {
             const s = maybeState.okValue!;
-            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.epochChangeState !== null ? 'in_progress' : 'none'}`);
+            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.epochChangeInfo !== null ? 'in_progress' : 'none'}`);
         } else {
             log(`(could not read network state: ${maybeState.errValue})`);
         }

@@ -1,5 +1,5 @@
 [package]
-name = "Network"
+name = "EpochChange"
 version = "1.0.0"
 authors = []
 
@@ -20,9 +20,6 @@ local = '../dkg'
 
 [dependencies.DKR]
 local = '../dkr'
-
-[dependencies.EpochChange]
-local = '../epoch-change'
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

@@ -1,0 +1,25 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "epoch-change-nxt"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain epoch-change next-committee client: touch + DKR-dst + optional DKG for one Session."
+
+[[bin]]
+name = "epoch-change-nxt"
+path = "src/main.rs"
+
+[lib]
+name = "epoch_change_nxt"
+path = "src/lib.rs"
+
+[dependencies]
+vss-common = { path = "../vss-common" }
+dkr-dst = { path = "../dkr-dst" }
+dkg-worker = { path = "../dkg-worker" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"

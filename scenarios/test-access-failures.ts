@@ -107,7 +107,7 @@ async function main() {
         console.log(`  Charlie: ${charlie.accountAddress.toStringLong()} (NOT on allowlist)`);
 
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
         console.log('  Contracts deployed');
 
         step(3, `Fund ${TOTAL_WORKERS} worker accounts`);
@@ -170,12 +170,10 @@ async function main() {
 
         step(7, 'Admin proposes keypair-0; workers 0,1 approve');
         const epoch0WorkerAccounts = EPOCH0_WORKER_INDICES.map(i => workerAccounts[i]);
-        await proposeAndApprove(
-            adminAccount,
-            epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD),
-            adminAddr,
-            serializeNewSecretProposal(0),
-        );
+        {
+            const approvers = epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD);
+            await proposeAndApprove(approvers[0]!, approvers, adminAddr, serializeNewSecretProposal(0));
+        }
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);

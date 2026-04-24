@@ -11,7 +11,7 @@ use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, 
 use vss_common::vss_types::feldman_verify;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
-pub const POLL_SECS: u64 = 5;
+pub const POLL_SECS: u64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {

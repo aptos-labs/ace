@@ -21,8 +21,8 @@ use vss_common::{
     TxnArg,
 };
 
-const STATE_DONE: u8 = 1;
-const STATE_FAIL: u8 = 2;
+const STATE_DONE: u8 = 3;
+const STATE_FAIL: u8 = 4;
 
 #[derive(Debug, Clone)]
 struct DkrSession {
@@ -273,7 +273,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     });
 
     // Poll DKR session until DONE, FAIL, or shutdown.
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {

@@ -15,9 +15,11 @@ module ace::dkr {
     const E_SECRET_SRC_NOT_COMPLETED: u64 = 1;
     const E_INVALID_SECRET_SRC: u64 = 2;
 
-    const STATE__IN_PROGRESS: u8 = 0;
-    const STATE__DONE: u8 = 1;
-    const STATE__FAIL: u8 = 2;
+    const STATE__VSS_IN_PROGRESS: u8 = 0;
+    const STATE__CALC_LAGRANGE_COEFFS: u8 = 1;
+    const STATE__AGGREGATE_SHARE_PKS: u8 = 2;
+    const STATE__DONE: u8 = 3;
+    const STATE__FAIL: u8 = 4;
 
     struct Session has key {
         caller: address,
@@ -34,14 +36,19 @@ module ace::dkr {
         state_code: u8,
         vss_sessions: vector<address>,
         vss_contribution_flags: vector<bool>,
-        /// Per-new-member share PKs, computed when state_code == STATE__DONE.
-        /// share_pks[m] = g^{y_m} where y_m is new member m's Shamir share of the secret.
-        /// Empty until DONE.
+        /// Derived from `vss_contribution_flags` once that is finalized.
+        /// `vss_contribution_flags == [true, false, true]` ==> `old_eval_points == [1, 3]`.
+        lagrange_coeffs_at_zero: vector<group::Scalar>,
         share_pks: vector<group::Element>,
     }
 
     #[event]
     struct SessionCreated has drop, store {
+        session_addr: address,
+    }
+
+    #[event]
+    struct SessionCompleted has drop, store {
         session_addr: address,
     }
 
@@ -90,9 +97,10 @@ module ace::dkr {
             new_threshold,
             public_base_element,
             secretly_scaled_element,
-            state_code: STATE__IN_PROGRESS,
+            state_code: STATE__VSS_IN_PROGRESS,
             vss_sessions,
             vss_contribution_flags: vector[],
+            lagrange_coeffs_at_zero: vector[],
             share_pks: vector[],
         };
         move_to(&object_signer, session);
@@ -102,30 +110,32 @@ module ace::dkr {
 
     public fun touch(session_addr: address) acquires Session {
         let session = borrow_global_mut<Session>(session_addr);
-        if (session.state_code == STATE__IN_PROGRESS) {
+        if (session.state_code == STATE__VSS_IN_PROGRESS) {
             let vss_completion_flags = session.vss_sessions.map(|sess| vss::completed(sess));
             let num_completed = vss_completion_flags.filter(|flag| *flag).length();
             if (num_completed >= session.current_threshold) {
                 session.vss_contribution_flags = vss_completion_flags;
+                session.state_code = STATE__CALC_LAGRANGE_COEFFS;
+            }
+        } else if (session.state_code == STATE__CALC_LAGRANGE_COEFFS) {
+            let scheme = group::element_scheme(&session.public_base_element);
+            let n_old = session.current_nodes.length();
+            let old_eval_points = range(0, n_old)
+                .filter(|idx_old| session.vss_contribution_flags[*idx_old])
+                .map(|idx_old| group::scalar_from_u64(scheme, idx_old + 1));
+            session.lagrange_coeffs_at_zero = lagrange_coeffs_at_zero(scheme, &old_eval_points);
+            session.state_code = STATE__AGGREGATE_SHARE_PKS;
+        } else if (session.state_code == STATE__AGGREGATE_SHARE_PKS) {
+            let n_new = session.new_nodes.length();
+            let idx_new = session.share_pks.length();
+            if (idx_new >= n_new) {
                 session.state_code = STATE__DONE;
-
-                // Compute new-committee share PKs via Lagrange-weighted MSM over contributing VSS sessions.
-                let scheme = group::element_scheme(&session.public_base_element);
-                let contrib: vector<u64> = vector[];
-                let j = 0u64;
-                while (j < session.vss_contribution_flags.length()) {
-                    if (session.vss_contribution_flags[j]) { contrib.push_back(j); };
-                    j += 1;
-                };
-                let evals: vector<group::Scalar> = contrib.map(|j_idx| group::scalar_from_u64(scheme, j_idx + 1));
-                let lambdas = lagrange_coeffs_at_zero(scheme, &evals);
-                let n_new = session.new_nodes.length();
-                let m = 0u64;
-                while (m < n_new) {
-                    let bases: vector<group::Element> = contrib.map(|j_idx| vss::share_pks(session.vss_sessions[j_idx])[m]);
-                    session.share_pks.push_back(group::msm(bases, copy lambdas));
-                    m += 1;
-                };
+                event::emit(SessionCompleted { session_addr });
+            } else {
+                let n_old = session.current_nodes.length();
+                let sub_share_pks: vector<group::Element> = range(0, n_old).filter(|idx_old| session.vss_contribution_flags[*idx_old]).map(|idx_old| vss::share_pks(session.vss_sessions[idx_old])[idx_new]);
+                let share_pk = group::msm(sub_share_pks, session.lagrange_coeffs_at_zero);
+                session.share_pks.push_back(share_pk);
             }
         }
     }

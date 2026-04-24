@@ -1,10 +1,10 @@
 {
-  "name": "@aptos-labs/ace-node-onboarding",
+  "name": "@aptos-labs/ace-cli",
   "version": "0.1.0",
-  "description": "Guided onboarding experience for ACE node operators",
+  "description": "ACE network operator CLI",
   "license": "Apache-2.0",
   "bin": {
-    "ace-node": "./dist/index.js"
+    "ace": "./dist/index.js"
   },
   "files": [
     "dist"
@@ -19,7 +19,8 @@
     "@aptos-labs/ace-sdk": "workspace:*",
     "@aptos-labs/gas-station-client": "^2.0.3",
     "@aptos-labs/ts-sdk": "^5.2.0",
-    "@inquirer/prompts": "^7.0.0"
+    "@inquirer/prompts": "^7.0.0",
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

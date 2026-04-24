@@ -4,6 +4,81 @@
 import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 
+export type ProposalVariant =
+    | { kind: 'CommitteeChange'; nodes: AccountAddress[]; threshold: number }
+    | { kind: 'ResharingIntervalUpdate'; newIntervalSecs: bigint }
+    | { kind: 'NewSecret'; scheme: number }
+    | { kind: 'SecretDeactivation'; originalDkgAddr: AccountAddress };
+
+export class ProposalState {
+    constructor(
+        readonly epoch: number,
+        readonly proposer: AccountAddress,
+        readonly proposal: ProposalVariant,
+        readonly voters: AccountAddress[],
+        readonly executed: boolean,
+    ) {}
+
+    static deserialize(deserializer: Deserializer): Result<ProposalState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const epoch = Number(deserializer.deserializeU64());
+                const proposer = AccountAddress.deserialize(deserializer);
+
+                const variant = deserializer.deserializeUleb128AsU32();
+                let proposal: ProposalVariant;
+                switch (variant) {
+                    case 0: {
+                        const len = deserializer.deserializeUleb128AsU32();
+                        const nodes: AccountAddress[] = [];
+                        for (let i = 0; i < len; i++) nodes.push(AccountAddress.deserialize(deserializer));
+                        const threshold = Number(deserializer.deserializeU64());
+                        proposal = { kind: 'CommitteeChange', nodes, threshold };
+                        break;
+                    }
+                    case 1: {
+                        const newIntervalSecs = deserializer.deserializeU64();
+                        proposal = { kind: 'ResharingIntervalUpdate', newIntervalSecs };
+                        break;
+                    }
+                    case 2: {
+                        const scheme = deserializer.deserializeU8();
+                        proposal = { kind: 'NewSecret', scheme };
+                        break;
+                    }
+                    case 3: {
+                        const originalDkgAddr = AccountAddress.deserialize(deserializer);
+                        proposal = { kind: 'SecretDeactivation', originalDkgAddr };
+                        break;
+                    }
+                    default:
+                        throw `Unknown Proposal variant: ${variant}`;
+                }
+
+                const votersLen = deserializer.deserializeUleb128AsU32();
+                const voters: AccountAddress[] = [];
+                for (let i = 0; i < votersLen; i++) voters.push(AccountAddress.deserialize(deserializer));
+
+                const executed = deserializer.deserializeBool();
+                return new ProposalState(epoch, proposer, proposal, voters, executed);
+            },
+        });
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<ProposalState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = ProposalState.deserialize(deserializer).unwrapOrThrow('deserialize failed');
+                if (deserializer.remaining() !== 0) throw 'trailing bytes';
+                return obj;
+            },
+        });
+    }
+}
+
 /** Mirrors `ace::network::EpochChangeInfo`. */
 export class EpochChangeInfo {
     constructor(

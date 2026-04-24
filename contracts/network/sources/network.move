@@ -83,6 +83,11 @@ module ace::network {
         bcs::to_bytes(borrow_global<State>(@ace))
     }
 
+    #[view]
+    public fun get_proposal_state_bcs(addr: address): vector<u8> acquires ProposalState {
+        bcs::to_bytes(borrow_global<ProposalState>(addr))
+    }
+
     entry fun start_initial_epoch(ace: &signer, nodes: vector<address>, threshold: u64, resharing_interval_secs: u64) {
         assert!(@ace == address_of(ace), error::invalid_argument(E_ONLY_ADMIN_CAN_DO_THIS));
         let n = nodes.length();

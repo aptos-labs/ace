@@ -5,7 +5,7 @@ module ace::dkr {
     use std::bcs;
     use std::error;
     use std::signer::address_of;
-    use aptos_framework::object;
+    use aptos_framework::object::{Self, ExtendRef};
     use ace::vss;
     use aptos_framework::event;
     use ace::group;
@@ -15,11 +15,13 @@ module ace::dkr {
     const E_SECRET_SRC_NOT_COMPLETED: u64 = 1;
     const E_INVALID_SECRET_SRC: u64 = 2;
 
-    const STATE__VSS_IN_PROGRESS: u8 = 0;
-    const STATE__CALC_LAGRANGE_COEFFS: u8 = 1;
-    const STATE__AGGREGATE_SHARE_PKS: u8 = 2;
-    const STATE__DONE: u8 = 3;
-    const STATE__FAIL: u8 = 4;
+    /// VSS sessions are being created one per touch().
+    const STATE__START_VSSS: u8 = 0;
+    const STATE__VSS_IN_PROGRESS: u8 = 1;
+    const STATE__CALC_LAGRANGE_COEFFS: u8 = 2;
+    const STATE__AGGREGATE_SHARE_PKS: u8 = 3;
+    const STATE__DONE: u8 = 4;
+    const STATE__FAIL: u8 = 5;
 
     struct Session has key {
         caller: address,
@@ -34,12 +36,19 @@ module ace::dkr {
         new_nodes: vector<address>,
         new_threshold: u64,
         state_code: u8,
+        /// Per-current-node share PKs from the previous session, stored here so
+        /// touch() can create VSS sessions lazily without re-reading previous_session.
+        src_share_pks: vector<group::Element>,
         vss_sessions: vector<address>,
         vss_contribution_flags: vector<bool>,
         /// Derived from `vss_contribution_flags` once that is finalized.
         /// `vss_contribution_flags == [true, false, true]` ==> `old_eval_points == [1, 3]`.
         lagrange_coeffs_at_zero: vector<group::Scalar>,
         share_pks: vector<group::Element>,
+    }
+
+    struct SignerStore has key {
+        extend_ref: ExtendRef,
     }
 
     #[event]
@@ -60,6 +69,7 @@ module ace::dkr {
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
+        let extend_ref = object_ref.generate_extend_ref();
         let session_addr = object_ref.address_from_constructor_ref();
 
         // Retrieve source session params and pre-computed old-committee share PKs.
@@ -70,23 +80,7 @@ module ace::dkr {
             (previous_session, base_point, pk, nodes, thresh, share_pks)
         };
 
-        // Wrap share PKs as Option for vss::new_session (Some = resharing challenge required).
-        let share_pks_opt: vector<option::Option<group::Element>> = src_share_pks.map(|pk| option::some(pk));
-
-        let vss_sessions = vector[];
-        let j = 0u64;
-        while (j < current_nodes.length()) {
-            let vss_addr = vss::new_session(
-                caller,
-                current_nodes[j],
-                new_nodes,
-                new_threshold,
-                public_base_element,
-                share_pks_opt[j],
-            );
-            vss_sessions.push_back(vss_addr);
-            j += 1;
-        };
+        // VSS sessions are created lazily via touch() to stay within per-tx gas limits.
         let session = Session {
             caller: caller_addr,
             original_session,
@@ -97,20 +91,39 @@ module ace::dkr {
             new_threshold,
             public_base_element,
             secretly_scaled_element,
-            state_code: STATE__VSS_IN_PROGRESS,
-            vss_sessions,
+            state_code: STATE__START_VSSS,
+            src_share_pks,
+            vss_sessions: vector[],
             vss_contribution_flags: vector[],
             lagrange_coeffs_at_zero: vector[],
             share_pks: vector[],
         };
         move_to(&object_signer, session);
+        move_to(&object_signer, SignerStore { extend_ref });
         event::emit(SessionCreated { session_addr });
         session_addr
     }
 
-    public fun touch(session_addr: address) acquires Session {
+    public fun touch(session_addr: address) acquires Session, SignerStore {
         let session = borrow_global_mut<Session>(session_addr);
-        if (session.state_code == STATE__VSS_IN_PROGRESS) {
+        if (session.state_code == STATE__START_VSSS) {
+            let idx = session.vss_sessions.length();
+            if (idx >= session.current_nodes.length()) {
+                session.state_code = STATE__VSS_IN_PROGRESS;
+                return;
+            };
+            let signer_store = borrow_global<SignerStore>(session_addr);
+            let caller = signer_store.extend_ref.generate_signer_for_extending();
+            let vss_addr = vss::new_session(
+                &caller,
+                session.current_nodes[idx],
+                session.new_nodes,
+                session.new_threshold,
+                session.public_base_element,
+                option::some(session.src_share_pks[idx]),
+            );
+            session.vss_sessions.push_back(vss_addr);
+        } else if (session.state_code == STATE__VSS_IN_PROGRESS) {
             let vss_completion_flags = session.vss_sessions.map(|sess| vss::completed(sess));
             let num_completed = vss_completion_flags.filter(|flag| *flag).length();
             if (num_completed >= session.current_threshold) {
@@ -145,7 +158,7 @@ module ace::dkr {
         new_session(caller, secret_src, recipients, threshold);
     }
 
-    entry fun touch_entry(session_addr: address) acquires Session {
+    entry fun touch_entry(session_addr: address) acquires Session, SignerStore {
         touch(session_addr);
     }
 

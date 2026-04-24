@@ -18,7 +18,7 @@ import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import { PublicPoint } from "../vss/index";
 
-const STATE_DONE = 1;
+const STATE_DONE = 3;
 
 export class Session {
     constructor(

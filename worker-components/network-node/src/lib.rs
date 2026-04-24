@@ -1,21 +1,15 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Supervisor process for one committee member.
+//! Supervisor for one worker: polls `network::State`, **URH** (share reconstruction for
+//! `State.secrets` when in `cur_nodes`), optional **HTTP** server, and
+//! **`network::touch`** only while `State.epoch_change_info` is `Some` (so global `State`
+//! can apply a finished `epoch_change` session).
 //!
-//! Polls `network::State` from `@ace` every 5 seconds and manages sub-tasks:
+//! DKR / DKG / `epoch_change::touch` for the child session are **not** run here; use
+//! `epoch-change-cur` and `epoch-change-nxt` (or equivalent processes) for that.
 //!
-//! * **DKR-src tasks** (`dkr_src::run`) — started for every session in
-//!   `EpochChangeState.dkr_sessions` when this node is in `cur_nodes`.
-//! * **DKR-dst tasks** (`dkr_dst::run`) — started for every session in
-//!   `EpochChangeState.dkr_sessions` when this node is in `nxt_nodes`.
-//! * **DKG tasks** (`dkg_worker::run`) — started for `EpochChangeState.dkg_session`
-//!   (at most one per epoch change) when this node is in `nxt_nodes`.
-//!
-//! Sub-tasks receive a `oneshot::Receiver<()>` shutdown channel and exit on
-//! their own when the protocol session completes.  The supervisor keeps the
-//! sender in a `HashMap`; calling `stop_tasks` drains the map and fires each
-//! sender (errors are silently ignored because the task may have already exited).
+//! URH sub-tasks use a `oneshot::Receiver<()>` shutdown; `stop_tasks` drains the map.
 
 pub mod crypto;
 mod http_server;
@@ -122,16 +116,18 @@ pub struct RunConfig {
 
 // ── On-chain state representation ───────────────────────────────────────────
 
-struct EpochChangeState {
+/// Mirrors `ace::network::EpochChangeInfo`.
+struct EpochChangeInfo {
     nxt_nodes: Vec<String>,
-    dkr_sessions: Vec<String>,
-    dkg_session: Option<String>,
+    session: String,
 }
 
 struct NetworkState {
     epoch: u64,
+    epoch_start_time_micros: u64,
+    epoch_duration_micros: u64,
     cur_nodes: Vec<String>,
-    epoch_change_state: Option<EpochChangeState>,
+    epoch_change_info: Option<EpochChangeInfo>,
     secrets: Vec<String>,
 }
 
@@ -145,30 +141,34 @@ fn parse_addr_array(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn parse_u64_field(data: &Value, key: &str) -> u64 {
+    data[key].as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 fn parse_network_state(data: &Value) -> NetworkState {
-    // Aptos REST API serialises u64 as a JSON string.
-    let epoch = data["epoch"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let epoch = parse_u64_field(data, "epoch");
+    let epoch_start_time_micros = parse_u64_field(data, "epoch_start_time_micros");
+    let epoch_duration_micros = parse_u64_field(data, "epoch_duration_micros");
     let cur_nodes = parse_addr_array(&data["cur_nodes"]);
     let secrets = parse_addr_array(&data["secrets"]);
 
-    // Move `Option<T>` encodes as `{"vec": []}` (None) or `{"vec": [<T>]}` (Some).
-    let epoch_change_state = data["epoch_change_state"]["vec"]
+    // Move `Option<EpochChangeInfo>` is serialised as `{"vec": []}` or `{"vec": [item]}`.
+    let epoch_change_info = data["epoch_change_info"]["vec"]
         .as_array()
-        .and_then(|arr| arr.first())
-        .map(|ecs| {
-            let dkg_session = ecs["dkg_session"]["vec"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_str())
-                .map(|s| normalize_account_addr(s));
-            EpochChangeState {
-                nxt_nodes: parse_addr_array(&ecs["nxt_nodes"]),
-                dkr_sessions: parse_addr_array(&ecs["dkr_sessions"]),
-                dkg_session,
-            }
+        .and_then(|a| a.first())
+        .map(|item| EpochChangeInfo {
+            nxt_nodes: parse_addr_array(&item["nxt_nodes"]),
+            session: normalize_account_addr(item["session"].as_str().unwrap_or("")),
         });
 
-    NetworkState { epoch, cur_nodes, epoch_change_state, secrets }
+    NetworkState {
+        epoch,
+        epoch_start_time_micros,
+        epoch_duration_micros,
+        cur_nodes,
+        epoch_change_info,
+        secrets,
+    }
 }
 
 async fn fetch_network_state(rpc: &AptosRpc, ace: &str) -> Result<NetworkState> {
@@ -205,6 +205,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let raw = config.pke_dk.trim().trim_start_matches("0x");
         hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?
     };
+
+    // Fields forwarded verbatim to epoch-change-cur / epoch-change-nxt RunConfigs.
+    let ec_rpc_url = config.ace_deployment_api.clone();
+    let ec_rpc_api_key = config.ace_deployment_apikey.clone();
+    let ec_rpc_gas_key = config.ace_deployment_gaskey.clone();
+    let ec_account_sk_hex = config.account_sk_hex.clone();
+    let ec_pke_dk_hex = config.pke_dk.clone();
 
     println!(
         "network-node: starting (account={} ace={})",
@@ -294,10 +301,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         });
     }
 
-    let mut dkg_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-    let mut dkr_src_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-    let mut dkr_dst_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    // Keyed by epoch_change session address so re-entrant ticks are idempotent.
+    let mut epoch_change_cur_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    let mut epoch_change_nxt_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -306,10 +313,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         tokio::select! {
             _ = &mut shutdown_rx => {
                 println!("network-node: shutdown signal received.");
-                stop_tasks(&mut dkg_tasks);
-                stop_tasks(&mut dkr_src_tasks);
-                stop_tasks(&mut dkr_dst_tasks);
                 stop_tasks(&mut urh_tasks);
+                stop_tasks(&mut epoch_change_cur_tasks);
+                stop_tasks(&mut epoch_change_nxt_tasks);
                 return Ok(());
             }
             _ = interval.tick() => {}
@@ -323,17 +329,95 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             }
         };
 
-        // Call network::touch() to advance state (move completed DKGs to secrets,
-        // or advance the epoch when all DKR sessions are done).
-        if let Err(e) = rpc.submit_txn(
-            &sk, &vk, &account_addr,
-            &format!("{}::network::touch", ace), &[],
-            &[],
-        ).await {
-            eprintln!("network-node: touch error: {:#}", e);
+        let in_cur_nodes = state.cur_nodes.iter().any(|n| n == &account_addr);
+
+        // Submit network::touch only when useful:
+        // - epoch_change_info is Some: apply results once child session reaches STATE__DONE.
+        // - epoch_change_info is None and epoch has timed out: trigger auto epoch-change.
+        let epoch_timed_out = {
+            let now_micros = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
+            now_micros >= state.epoch_start_time_micros.saturating_add(state.epoch_duration_micros)
+        };
+        if state.epoch_change_info.is_some() || epoch_timed_out {
+            if let Err(e) = rpc
+                .submit_txn(
+                    &sk,
+                    &vk,
+                    &account_addr,
+                    &format!("{}::network::touch", ace),
+                    &[],
+                    &[],
+                )
+                .await
+            {
+                eprintln!("network-node: network::touch error: {:#}", e);
+            }
         }
 
-        let in_cur_nodes = state.cur_nodes.iter().any(|n| n == &account_addr);
+        match &state.epoch_change_info {
+            Some(info) => {
+
+                // epoch-change-cur: cur_nodes drive DKR-src + touch.
+                if in_cur_nodes {
+                    if !epoch_change_cur_tasks.contains_key(&info.session) {
+                        let (tx, rx) = oneshot::channel::<()>();
+                        epoch_change_cur_tasks.insert(info.session.clone(), tx);
+                        let cfg = epoch_change_cur::RunConfig {
+                            rpc_url: ec_rpc_url.clone(),
+                            rpc_api_key: ec_rpc_api_key.clone(),
+                            rpc_gas_key: ec_rpc_gas_key.clone(),
+                            ace_contract: ace.clone(),
+                            epoch_change_session: info.session.clone(),
+                            account_addr: account_addr.clone(),
+                            account_sk_hex: ec_account_sk_hex.clone(),
+                            pke_dk_hex: ec_pke_dk_hex.clone(),
+                        };
+                        tokio::spawn(async move {
+                            if let Err(e) = epoch_change_cur::run(cfg, rx).await {
+                                eprintln!("network-node: epoch-change-cur error: {:#}", e);
+                            }
+                        });
+                        println!("network-node: started epoch-change-cur for session={}", info.session);
+                    }
+                } else {
+                    stop_tasks(&mut epoch_change_cur_tasks);
+                }
+
+                // epoch-change-nxt: nxt_nodes drive DKR-dst + optional DKG + touch.
+                let in_nxt_nodes = info.nxt_nodes.iter().any(|n| n == &account_addr);
+                if in_nxt_nodes {
+                    if !epoch_change_nxt_tasks.contains_key(&info.session) {
+                        let (tx, rx) = oneshot::channel::<()>();
+                        epoch_change_nxt_tasks.insert(info.session.clone(), tx);
+                        let cfg = epoch_change_nxt::RunConfig {
+                            rpc_url: ec_rpc_url.clone(),
+                            rpc_api_key: ec_rpc_api_key.clone(),
+                            rpc_gas_key: ec_rpc_gas_key.clone(),
+                            ace_contract: ace.clone(),
+                            epoch_change_session: info.session.clone(),
+                            account_addr: account_addr.clone(),
+                            account_sk_hex: ec_account_sk_hex.clone(),
+                            pke_dk_hex: ec_pke_dk_hex.clone(),
+                        };
+                        tokio::spawn(async move {
+                            if let Err(e) = epoch_change_nxt::run(cfg, rx).await {
+                                eprintln!("network-node: epoch-change-nxt error: {:#}", e);
+                            }
+                        });
+                        println!("network-node: started epoch-change-nxt for session={}", info.session);
+                    }
+                } else {
+                    stop_tasks(&mut epoch_change_nxt_tasks);
+                }
+            }
+            None => {
+                stop_tasks(&mut epoch_change_cur_tasks);
+                stop_tasks(&mut epoch_change_nxt_tasks);
+            }
+        }
 
         // Update cur_nodes for the HTTP server's eval-point lookup.
         *cur_nodes_shared.write().await = state.cur_nodes.clone();
@@ -409,118 +493,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             if let Some(tx) = urh_tasks.remove(&k) {
                 let _ = tx.send(());
                 println!("network-node: stopped URH task for secret={}", k);
-            }
-        }
-
-        // ── DKR + DKG sub-tasks ─────────────────────────────────────────────
-
-        match state.epoch_change_state {
-            Some(ecs) => {
-                let in_nxt_nodes = ecs.nxt_nodes.iter().any(|n| n == &account_addr);
-
-                // DKR-src: old-committee members deal their DKG share into a DKR VSS.
-                if in_cur_nodes {
-                    for session_addr in &ecs.dkr_sessions {
-                        if !dkr_src_tasks.contains_key(session_addr) {
-                            let (tx, rx) = oneshot::channel::<()>();
-                            let cfg = dkr_src::RunConfig {
-                                rpc_url: config.ace_deployment_api.clone(),
-                                rpc_api_key: config.ace_deployment_apikey.clone(),
-                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
-                                ace_contract: ace.clone(),
-                                dkr_session: session_addr.clone(),
-                                account_addr: account_addr.clone(),
-                                account_sk_hex: config.account_sk_hex.clone(),
-                                pke_dk_hex: config.pke_dk.clone(),
-                            };
-                            tokio::spawn(async move {
-                                if let Err(e) = dkr_src::run(cfg, rx).await {
-                                    eprintln!("network-node: dkr-src sub-task error: {:#}", e);
-                                }
-                            });
-                            dkr_src_tasks.insert(session_addr.clone(), tx);
-                            println!("network-node: started dkr-src for session={}", session_addr);
-                        }
-                    }
-                } else if !dkr_src_tasks.is_empty() {
-                    println!("network-node: stopping all dkr-src tasks (not in cur_nodes).");
-                    stop_tasks(&mut dkr_src_tasks);
-                }
-
-                // DKR-dst + DKG: new-committee members receive DKR shares and run DKG if needed.
-                if in_nxt_nodes {
-                    for session_addr in &ecs.dkr_sessions {
-                        if !dkr_dst_tasks.contains_key(session_addr) {
-                            let (tx, rx) = oneshot::channel::<()>();
-                            let cfg = dkr_dst::RunConfig {
-                                rpc_url: config.ace_deployment_api.clone(),
-                                rpc_api_key: config.ace_deployment_apikey.clone(),
-                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
-                                ace_contract: ace.clone(),
-                                dkr_session: session_addr.clone(),
-                                account_addr: account_addr.clone(),
-                                account_sk_hex: config.account_sk_hex.clone(),
-                                pke_dk_hex: config.pke_dk.clone(),
-                            };
-                            tokio::spawn(async move {
-                                if let Err(e) = dkr_dst::run(cfg, rx).await {
-                                    eprintln!("network-node: dkr-dst sub-task error: {:#}", e);
-                                }
-                            });
-                            dkr_dst_tasks.insert(session_addr.clone(), tx);
-                            println!("network-node: started dkr-dst for session={}", session_addr);
-                        }
-                    }
-                    if let Some(session_addr) = &ecs.dkg_session {
-                        if !dkg_tasks.contains_key(session_addr) {
-                            let (tx, rx) = oneshot::channel::<()>();
-                            let cfg = dkg_worker::RunConfig {
-                                rpc_url: config.ace_deployment_api.clone(),
-                                rpc_api_key: config.ace_deployment_apikey.clone(),
-                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
-                                ace_contract: ace.clone(),
-                                dkg_session: session_addr.clone(),
-                                account_addr: account_addr.clone(),
-                                account_sk_hex: config.account_sk_hex.clone(),
-                                pke_dk_hex: config.pke_dk.clone(),
-                            };
-                            tokio::spawn(async move {
-                                if let Err(e) = dkg_worker::run(cfg, rx).await {
-                                    eprintln!("network-node: dkg-worker sub-task error: {:#}", e);
-                                }
-                            });
-                            dkg_tasks.insert(session_addr.clone(), tx);
-                            println!("network-node: started dkg-worker for session={}", session_addr);
-                        }
-                    } else if !dkg_tasks.is_empty() {
-                        println!("network-node: stopping all dkg tasks (no new secret in epoch change).");
-                        stop_tasks(&mut dkg_tasks);
-                    }
-                } else {
-                    if !dkr_dst_tasks.is_empty() {
-                        println!("network-node: stopping all dkr-dst tasks (not in nxt_nodes).");
-                        stop_tasks(&mut dkr_dst_tasks);
-                    }
-                    if !dkg_tasks.is_empty() {
-                        println!("network-node: stopping all dkg tasks (not in nxt_nodes).");
-                        stop_tasks(&mut dkg_tasks);
-                    }
-                }
-            }
-            None => {
-                // No epoch change in progress — stop any lingering tasks.
-                if !dkr_src_tasks.is_empty() {
-                    println!("network-node: stopping all dkr-src tasks (no epoch change).");
-                    stop_tasks(&mut dkr_src_tasks);
-                }
-                if !dkr_dst_tasks.is_empty() {
-                    println!("network-node: stopping all dkr-dst tasks (no epoch change).");
-                    stop_tasks(&mut dkr_dst_tasks);
-                }
-                if !dkg_tasks.is_empty() {
-                    println!("network-node: stopping all dkg tasks (no epoch change).");
-                    stop_tasks(&mut dkg_tasks);
-                }
             }
         }
     }

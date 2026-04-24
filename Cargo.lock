@@ -578,6 +578,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "epoch-change-cur"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dkr-src",
+ "serde_json",
+ "tokio",
+ "vss-common",
+]
+
+[[package]]
+name = "epoch-change-nxt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dkg-worker",
+ "dkr-dst",
+ "serde_json",
+ "tokio",
+ "vss-common",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1165,10 +1190,9 @@ dependencies = [
  "axum",
  "base64",
  "clap",
- "dkg-worker",
- "dkr-dst",
- "dkr-src",
  "ed25519-dalek",
+ "epoch-change-cur",
+ "epoch-change-nxt",
  "hex",
  "reqwest",
  "serde_json",

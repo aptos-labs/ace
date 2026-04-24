@@ -4,20 +4,27 @@
 /**
  * Full happy-path E2E test: covers SDK, network, DKG, epoch transitions, and encrypt/decrypt.
  *
- * Epoch layout:
- *   Epoch 0: workers 0,1,2  threshold=2  (initial)
- *   Epoch 1: workers 0,1,2  threshold=2  (after new_secret DKG)
- *   Epoch 2: workers 1,2,3,4  threshold=3  (after CommitteeChange 0→1)
- *   Epoch 3: workers 1,2,3,4  threshold=3  (after new_secret DKG in epoch 2)
- *   Epoch 4: workers 2,3,4  threshold=3  (after CommitteeChange 1→2)
+ * Epoch layout (epoch_duration = 90 s so epoch 1 times out before any manual proposal):
+ *   Epoch 0: committee {0,1,2}    threshold=2  (initial)
+ *     ↓ new_secret proposal → keypair-0 DKG
+ *   Epoch 1: committee {0,1,2}    threshold=2
+ *     ↓ timeout (no proposal; epoch 1 expires after 90 s)
+ *   Epoch 2: committee {0,1,2}    threshold=2
+ *     ↓ CommitteeChange: add workers 3&4, drop worker 0
+ *   Epoch 3: committee {1,2,3,4}  threshold=3
+ *     ↓ new_secret proposal → keypair-1 DKG
+ *   Epoch 4: committee {1,2,3,4}  threshold=3
+ *     ↓ CommitteeChange: drop worker 1
+ *   Epoch 5: committee {2,3,4}    threshold=3
  *
  * Flow:
- *   - Admin creates keypair-0 (epoch 0→1 DKG)
+ *   - Worker 0 proposes keypair-0 (epoch 0→1 DKG; workers 0,1 approve)
+ *   - Epoch 1→2 auto-reshare (same committee, epoch duration expires)
  *   - Alice encrypts "PING" for keypair-0 (allowlist: Bob)
- *   - Epoch change 1→2 (CommitteeChange to workers 1,2,3,4)
- *   - Bob decrypts "PING" (keypair-0, epoch-2 committee)
- *   - Admin creates keypair-1 (epoch 2→3 DKG)
- *   - Epoch change 3→4 (CommitteeChange to workers 2,3,4)
+ *   - Epoch 2→3 CommitteeChange to {1,2,3,4} (workers 0,1 approve from epoch-2 committee)
+ *   - Bob decrypts "PING" (keypair-0, epoch-3 committee)
+ *   - Worker 1 proposes keypair-1 (epoch 3→4 DKG; workers 1,2 approve)
+ *   - Epoch 4→5 CommitteeChange to {2,3,4}
  *   - Bob registers "pong-blob" (pay-to-download) and encrypts "PONG"
  *   - Alice purchases pong-blob and decrypts "PONG"
  *
@@ -65,12 +72,17 @@ import {
 } from './common/network-clients';
 
 const TOTAL_WORKERS = 5;
-const EPOCH0_WORKER_INDICES = [0, 1, 2];
-const EPOCH0_THRESHOLD = 2;
-const EPOCH1_WORKER_INDICES = [1, 2, 3, 4];
-const EPOCH1_THRESHOLD = 3;
-const EPOCH2_WORKER_INDICES = [2, 3, 4];
-const EPOCH2_THRESHOLD = 3;
+// Three overlapping committees referenced by worker indices (not epoch numbers).
+const COMMITTEE_A_INDICES = [0, 1, 2];   // epochs 0, 1, 2
+const COMMITTEE_A_THRESHOLD = 2;
+const COMMITTEE_B_INDICES = [1, 2, 3, 4]; // epochs 3, 4
+const COMMITTEE_B_THRESHOLD = 3;
+const COMMITTEE_C_INDICES = [2, 3, 4];   // epoch 5
+const COMMITTEE_C_THRESHOLD = 3;
+
+// Short enough for epoch 1 to time out before the CommitteeChange proposal in step 12.
+// Long enough for workers to complete the keypair-0 DKG (~30 s at n=3) before timeout.
+const EPOCH_DURATION_SECS = 90;
 
 function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
@@ -108,7 +120,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────
@@ -149,17 +161,17 @@ async function main() {
         }
 
         // ── Step 5: Admin calls start_initial_epoch (epoch 0) ────────────────
-        step(5, `Admin: start_initial_epoch (workers ${EPOCH0_WORKER_INDICES}, threshold=${EPOCH0_THRESHOLD})`);
-        const epoch0Addrs = EPOCH0_WORKER_INDICES.map(i => workerAccounts[i].accountAddress.toStringLong());
+        step(5, `Admin: start_initial_epoch (committee A = workers ${COMMITTEE_A_INDICES}, threshold=${COMMITTEE_A_THRESHOLD})`);
+        const committeeAAddrs = COMMITTEE_A_INDICES.map(i => workerAccounts[i].accountAddress.toStringLong());
         assertTxnSuccess(
             await submitTxn({
                 signer: adminAccount,
                 entryFunction: `${adminAddr}::network::start_initial_epoch`,
-                args: [epoch0Addrs, EPOCH0_THRESHOLD, 600],
+                args: [committeeAAddrs, COMMITTEE_A_THRESHOLD, EPOCH_DURATION_SECS],
             }),
             'network::start_initial_epoch',
         );
-        console.log(`  Epoch 0 committee set (workers ${EPOCH0_WORKER_INDICES}, threshold=${EPOCH0_THRESHOLD})`);
+        console.log(`  Epoch 0 started (committee A = workers ${COMMITTEE_A_INDICES}, threshold=${COMMITTEE_A_THRESHOLD}, duration=${EPOCH_DURATION_SECS}s)`);
 
         // ── Step 6: Build worker binary ───────────────────────────────────────
         step(6, 'Build network-node binary');
@@ -184,12 +196,13 @@ async function main() {
         step('6c', 'Wait for workers to initialize');
         await sleep(2000);
 
-        // ── Step 7: Admin proposes keypair-0 (new_secret) ────────────────────
-        step(7, 'Admin proposes keypair-0 (scheme=0, BLS12-381 G1); workers 0,1 approve');
-        const epoch0ApproverAccounts = EPOCH0_WORKER_INDICES.slice(0, EPOCH0_THRESHOLD).map(i => workerAccounts[i]);
+        // ── Step 7: Worker 0 proposes keypair-0 (new_secret, epoch 0→1) ──────
+        // Proposer and approvers are all from committee A (workers 0,1,2; threshold=2).
+        step(7, `Worker 0 proposes keypair-0 (scheme=0, BLS12-381 G1); workers 0,1 approve`);
+        const committeeAApprovers = COMMITTEE_A_INDICES.slice(0, COMMITTEE_A_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
-            adminAccount,
-            epoch0ApproverAccounts,
+            committeeAApprovers[0]!,
+            committeeAApprovers,
             adminAddr,
             serializeNewSecretProposal(0),
         );
@@ -204,8 +217,20 @@ async function main() {
         console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-0
 
-        // ── Step 8: Deploy access_control contract ────────────────────────────
-        step(8, 'Deploy and initialize access_control contract');
+        // ── Step 8: Wait for epoch 1→2 auto-reshare (timeout-triggered) ──────
+        // Epoch 1 has the same ${EPOCH_DURATION_SECS}s duration. Once it expires,
+        // network::touch triggers a same-committee reshare with no manual proposal needed.
+        step(8, `Wait for epoch 1→2 auto-reshare (epoch ${EPOCH_DURATION_SECS}s timer expires; same committee A)`);
+        await waitFor('auto-reshare done (epoch advances to 2)', async () => {
+            const stateResult = await getNetworkState(adminAccountAddress);
+            if (!stateResult.isOk) return false;
+            return stateResult.okValue!.epoch === 2;
+        }, 300_000);
+        console.log('  Epoch advanced to 2 (timeout-triggered reshare)');
+        await sleep(10000); // workers derive shares for epoch-2 committee
+
+        // ── Step 9: Deploy access_control contract ────────────────────────────
+        step(9, 'Deploy and initialize access_control contract');
         await deployContract(ACCESS_CONTROL_CONTRACT_DIR, adminAddr, adminKeyHex);
         assertTxnSuccess(
             await submitTxn({
@@ -217,8 +242,8 @@ async function main() {
         );
         console.log('  access_control deployed and initialized');
 
-        // ── Step 9: Alice registers "ping-blob" (allowlist: [Bob]) ───────────
-        step(9, 'Alice registers "ping-blob" (allowlist: [Bob])');
+        // ── Step 10: Alice registers "ping-blob" (allowlist: [Bob]) ──────────
+        step(10, 'Alice registers "ping-blob" (allowlist: [Bob])');
         {
             const regSer = new Serializer();
             regSer.serializeStr('ping-blob');
@@ -245,8 +270,8 @@ async function main() {
             console.log('  ping-blob registered (owner=Alice, allowlist=[Bob])');
         }
 
-        // ── Step 10: Alice encrypts "PING" with keypair-0 ────────────────────
-        step(10, 'Alice encrypts "PING" with keypair-0');
+        // ── Step 11: Alice encrypts "PING" with keypair-0 ────────────────────
+        step(11, 'Alice encrypts "PING" with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
         const contractId = ace_ex.ContractID.newAptos({
             chainId: CHAIN_ID,
@@ -267,28 +292,29 @@ async function main() {
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
-        // ── Step 11: Epoch change 1→2 (CommitteeChange to workers 1,2,3,4) ───
-        step(11, `Epoch change 1→2 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD})`);
-        // Still epoch 1 committee [0,1,2], threshold=2
+        // ── Step 12: CommitteeChange epoch 2→3 (committee B = workers 1,2,3,4) ─
+        // Still in epoch 2 (committee A = {0,1,2}, threshold=2); propose and approve
+        // before the epoch-2 ${EPOCH_DURATION_SECS}s timer expires.
+        step(12, `Epoch 2→3 CommitteeChange to committee B = workers ${COMMITTEE_B_INDICES}, threshold=${COMMITTEE_B_THRESHOLD}`);
         await proposeAndApprove(
-            adminAccount,
-            epoch0ApproverAccounts,
+            committeeAApprovers[0]!,
+            committeeAApprovers,
             adminAddr,
             serializeCommitteeChangeProposal(
-                EPOCH1_WORKER_INDICES.map(i => workerAccounts[i].accountAddress),
-                EPOCH1_THRESHOLD,
+                COMMITTEE_B_INDICES.map(i => workerAccounts[i].accountAddress),
+                COMMITTEE_B_THRESHOLD,
             ),
         );
-        await waitFor('epoch 2', async () => {
+        await waitFor('epoch 3', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 2;
+            return stateResult.okValue!.epoch === 3;
         }, 120_000);
-        console.log('  Epoch advanced to 2');
-        await sleep(30000); // workers re-derive shares for epoch-2 committee
+        console.log('  Epoch advanced to 3 (committee B active)');
+        await sleep(30000); // workers re-derive shares for epoch-3 committee
 
-        // ── Step 12: Bob decrypts "PING" (keypair-0, epoch-2 committee) ───────
-        step(12, 'Bob decrypts "PING" (keypair-0, epoch-2 committee)');
+        // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
+        step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
             const msgToSign = pingFdd.toPrettyMessage();
             const pingProof = ace_ex.ProofOfPermission.createAptos({
@@ -311,47 +337,47 @@ async function main() {
             console.log('  Bob decrypted PING ✓');
         }
 
-        // ── Step 13: Admin proposes keypair-1 in epoch 2 ─────────────────────
-        step(13, 'Admin proposes keypair-1 in epoch 2; workers 1,2,3 approve');
-        const epoch1ApproverAccounts = EPOCH1_WORKER_INDICES.slice(0, EPOCH1_THRESHOLD).map(i => workerAccounts[i]);
+        // ── Step 14: Worker 1 proposes keypair-1 (epoch 3→4) ─────────────────
+        // Proposer and approvers are from committee B (workers 1,2,3,4; threshold=3).
+        step(14, 'Worker 1 proposes keypair-1 in epoch 3; workers 1,2,3 approve');
+        const committeeBApprovers = COMMITTEE_B_INDICES.slice(0, COMMITTEE_B_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
-            adminAccount,
-            epoch1ApproverAccounts,
+            committeeBApprovers[0]!,
+            committeeBApprovers,
             adminAddr,
             serializeNewSecretProposal(0),
         );
-        await waitFor('keypair-1 DKG done (epoch advances to 3)', async () => {
+        await waitFor('keypair-1 DKG done (epoch advances to 4)', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 3;
+            return stateResult.okValue!.epoch === 4;
         }, 90_000);
         const state1 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-1 DKG');
         const keypair1Id = state1.secrets[1];
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-1
 
-        // ── Step 14: Epoch change 3→4 (CommitteeChange to workers 2,3,4) ─────
-        step(14, `Epoch change 3→4 (workers ${EPOCH2_WORKER_INDICES}, threshold=${EPOCH2_THRESHOLD})`);
-        // Still epoch 3 committee [1,2,3,4], threshold=3
+        // ── Step 15: CommitteeChange epoch 4→5 (committee C = workers 2,3,4) ──
+        step(15, `Epoch 4→5 CommitteeChange to committee C = workers ${COMMITTEE_C_INDICES}, threshold=${COMMITTEE_C_THRESHOLD}`);
         await proposeAndApprove(
-            adminAccount,
-            epoch1ApproverAccounts,
+            committeeBApprovers[0]!,
+            committeeBApprovers,
             adminAddr,
             serializeCommitteeChangeProposal(
-                EPOCH2_WORKER_INDICES.map(i => workerAccounts[i].accountAddress),
-                EPOCH2_THRESHOLD,
+                COMMITTEE_C_INDICES.map(i => workerAccounts[i].accountAddress),
+                COMMITTEE_C_THRESHOLD,
             ),
         );
-        await waitFor('epoch 4', async () => {
+        await waitFor('epoch 5', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 4;
+            return stateResult.okValue!.epoch === 5;
         }, 120_000);
-        console.log('  Epoch advanced to 4');
-        await sleep(30000); // workers re-derive shares for epoch-4 committee
+        console.log('  Epoch advanced to 5 (committee C active)');
+        await sleep(30000); // workers re-derive shares for epoch-5 committee
 
-        // ── Step 15: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
-        step(15, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');
+        // ── Step 16: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
+        step(16, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');
         const pongDomain = new TextEncoder().encode(`@${bob.accountAddress.toStringLong().slice(2)}/pong-blob`);
         {
             const regSer = new Serializer();
@@ -390,8 +416,8 @@ async function main() {
         const { fullDecryptionDomain: pongFdd, ciphertext: pongCiph } = pongEncResult.okValue!;
         console.log('  Encrypted PONG');
 
-        // ── Step 16: Alice purchases pong-blob and decrypts "PONG" ───────────
-        step(16, 'Alice purchases pong-blob and decrypts "PONG"');
+        // ── Step 17: Alice purchases pong-blob and decrypts "PONG" ───────────
+        step(17, 'Alice purchases pong-blob and decrypts "PONG"');
         assertTxnSuccess(
             await submitTxn({
                 signer: alice,

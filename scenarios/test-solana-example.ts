@@ -75,7 +75,7 @@ async function main() {
 
         // ── Deploy contracts ─────────────────────────────────────────────────
         log('Deploying ACE contracts...');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
 
         // ── Register PKE enc keys + HTTP endpoints ───────────────────────────
         log('Registering PKE enc keys and HTTP endpoints...');
@@ -118,9 +118,10 @@ async function main() {
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
         log('Admin: propose new_secret; workers 0,1 approve...');
+        const newSecretApprovers = workerAccounts.slice(0, 2);
         await proposeAndApprove(
-            adminAccount,
-            workerAccounts.slice(0, 2),
+            newSecretApprovers[0]!,
+            newSecretApprovers,
             aceContract,
             serializeNewSecretProposal(0),
         );
@@ -132,7 +133,7 @@ async function main() {
             const maybe = await getNetworkState(adminAccount.accountAddress);
             if (maybe.isOk) {
                 networkState = maybe.okValue!;
-                if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
+                if (networkState.epochChangeInfo === null && networkState.secrets.length >= 1) break;
             }
             await sleep(5_000);
         }

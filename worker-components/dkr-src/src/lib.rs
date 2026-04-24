@@ -6,6 +6,9 @@
 //!   1. Reconstructs their DKG share by decrypting sub-shares from DKG VSS sessions.
 //!   2. Spawns one VSS dealer (for their DKR VSS session), using the DKG share as the secret.
 //!   3. Polls the DKR session until it completes.
+//!
+//! VSS sessions are created lazily on-chain (one per `dkr::touch`), so the dealer is only
+//! spawned once `vss_sessions[my_src_idx]` appears on-chain.
 
 use anyhow::{anyhow, Result};
 use ark_bls12_381::Fr;
@@ -21,8 +24,8 @@ use vss_common::{
     TxnArg,
 };
 
-const STATE_DONE: u8 = 3;
-const STATE_FAIL: u8 = 4;
+const STATE_DONE: u8 = 4;
+const STATE_FAIL: u8 = 5;
 
 #[derive(Debug, Clone)]
 struct DkrSession {
@@ -221,27 +224,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         .current_nodes
         .iter()
         .position(|n| *n == account_addr)
-        .ok_or_else(|| {
-            anyhow!(
-                "account {} not found in DKR current_nodes {:?}",
-                account_addr,
-                session.current_nodes
-            )
-        })?;
+        .ok_or_else(|| anyhow!("account {} not found in DKR current_nodes", account_addr))?;
 
-    println!(
-        "dkr-src: my_src_idx={}, dealing vss_sessions[{}]={}",
-        my_src_idx, my_src_idx, session.vss_sessions[my_src_idx]
-    );
-
-    // Reconstruct this node's scalar share from the previous session (DKG or DKR).
-    // Using the previous_session (not original_session) ensures correctness for
-    // multi-epoch resharing: workers who joined in a later epoch have their share
-    // stored in the DKR session that brought them in, not the original DKG session.
-    println!(
-        "dkr-src: reconstructing share from previous session={}",
-        session.previous_session
-    );
+    // Reconstruct share immediately — previous_session is always DONE when dkr::new_session runs.
+    println!("dkr-src: reconstructing share from previous session={}", session.previous_session);
     let (dkg_share_bytes, _) = reconstruct_share(
         &rpc,
         &ace,
@@ -250,29 +236,11 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         &pke_dk_bytes,
     )
     .await?;
-    println!("dkr-src: share reconstructed successfully");
+    println!("dkr-src: share reconstructed successfully (my_src_idx={})", my_src_idx);
 
-    // Spawn VSS dealer for this old-committee member's VSS session,
-    // using the reconstructed DKG share as the VSS secret.
-    let (dealer_shutdown_tx, dealer_shutdown_rx) = oneshot::channel::<()>();
-    let dealer_cfg = vss_dealer::RunConfig {
-        rpc_url: config.rpc_url.clone(),
-        rpc_api_key: config.rpc_api_key.clone(),
-        rpc_gas_key: config.rpc_gas_key.clone(),
-        ace_contract: ace.clone(),
-        vss_session: session.vss_sessions[my_src_idx].clone(),
-        pke_dk_hex: config.pke_dk_hex.clone(),
-        account_addr: account_addr.clone(),
-        account_sk_hex: config.account_sk_hex.clone(),
-        secret_override: Some(dkg_share_bytes),
-    };
-    tokio::spawn(async move {
-        if let Err(e) = vss_dealer::run(dealer_cfg, dealer_shutdown_rx).await {
-            eprintln!("dkr-src: dealer sub-task error: {:#}", e);
-        }
-    });
+    // Dealer is spawned once vss_sessions[my_src_idx] appears on-chain (lazy VSS fan-out).
+    let mut dealer_shutdown_tx: Option<oneshot::Sender<()>> = None;
 
-    // Poll DKR session until DONE, FAIL, or shutdown.
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -280,13 +248,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         tokio::select! {
             _ = &mut shutdown_rx => {
                 println!("dkr-src: shutdown signal received.");
-                let _ = dealer_shutdown_tx.send(());
+                if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
                 return Ok(());
             }
             _ = interval.tick() => {}
         }
 
-        // Call touch_entry to trigger DKR state finalization when enough VSS sessions complete.
+        // touch advances START_VSSS (one VSS per call) and later other DKR states.
         if let Err(e) = rpc.submit_txn(
             &sk, &vk, &account_addr,
             &format!("{}::dkr::touch_entry", ace), &[],
@@ -295,20 +263,43 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             eprintln!("dkr-src: touch_entry error: {:#}", e);
         }
 
-        match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
-            Err(e) => eprintln!("dkr-src: poll error: {:#}", e),
-            Ok(s) if s.state_code == STATE_DONE => {
-                println!("dkr-src: DKR session reached DONE.");
-                let _ = dealer_shutdown_tx.send(());
-                return Ok(());
-            }
-            Ok(s) if s.state_code >= STATE_FAIL => {
-                let _ = dealer_shutdown_tx.send(());
-                return Err(anyhow!("dkr-src: DKR session failed (state_code={})", s.state_code));
-            }
-            Ok(s) => {
-                println!("dkr-src: DKR in progress (state_code={})", s.state_code);
-            }
+        let session = match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
+            Ok(s) => s,
+            Err(e) => { eprintln!("dkr-src: poll error: {:#}", e); continue; }
+        };
+
+        // Spawn dealer for vss_sessions[my_src_idx] once it appears.
+        if dealer_shutdown_tx.is_none() && session.vss_sessions.len() > my_src_idx {
+            let (tx, rx) = oneshot::channel::<()>();
+            dealer_shutdown_tx = Some(tx);
+            let dealer_cfg = vss_dealer::RunConfig {
+                rpc_url: config.rpc_url.clone(),
+                rpc_api_key: config.rpc_api_key.clone(),
+                rpc_gas_key: config.rpc_gas_key.clone(),
+                ace_contract: ace.clone(),
+                vss_session: session.vss_sessions[my_src_idx].clone(),
+                pke_dk_hex: config.pke_dk_hex.clone(),
+                account_addr: account_addr.clone(),
+                account_sk_hex: config.account_sk_hex.clone(),
+                secret_override: Some(dkg_share_bytes),
+            };
+            println!("dkr-src: spawning dealer for vss_sessions[{}]={}", my_src_idx, session.vss_sessions[my_src_idx]);
+            tokio::spawn(async move {
+                if let Err(e) = vss_dealer::run(dealer_cfg, rx).await {
+                    eprintln!("dkr-src: dealer sub-task error: {:#}", e);
+                }
+            });
         }
+
+        if session.state_code == STATE_DONE {
+            println!("dkr-src: DKR session reached DONE.");
+            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
+            return Ok(());
+        }
+        if session.state_code >= STATE_FAIL {
+            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
+            return Err(anyhow!("dkr-src: DKR session failed (state_code={})", session.state_code));
+        }
+        println!("dkr-src: DKR in progress (state_code={}, vss_sessions={})", session.state_code, session.vss_sessions.len());
     }
 }

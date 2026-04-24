@@ -105,7 +105,7 @@ async function main() {
         console.log(`  Bob:   ${bob.accountAddress.toStringLong()}`);
 
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
         console.log('  Contracts deployed');
 
         step(3, `Fund ${TOTAL_WORKERS} worker accounts`);
@@ -178,7 +178,7 @@ async function main() {
         step(7, 'Admin proposes keypair-0 (epoch 0, worker 0 offline); workers 1,2,3 approve');
         const onlineEpoch0Workers = [1, 2, 3].map(i => workerAccounts[i]);
         await proposeAndApprove(
-            adminAccount,
+            onlineEpoch0Workers[0]!,
             onlineEpoch0Workers,
             adminAddr,
             serializeNewSecretProposal(0),
@@ -255,7 +255,7 @@ async function main() {
         // After new_secret, cur_nodes=[0,1,2,3], threshold=3. Worker 0 is still offline.
         step(11, `Epoch change 1→2 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD}, worker 4 offline)`);
         await proposeAndApprove(
-            adminAccount,
+            onlineEpoch0Workers[0]!,
             onlineEpoch0Workers, // workers 1,2,3 (cur_nodes minus offline worker 0)
             adminAddr,
             serializeCommitteeChangeProposal(

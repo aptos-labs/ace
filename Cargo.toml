@@ -10,5 +10,7 @@ members = [
     "worker-components/dkg-worker",
     "worker-components/dkr-src",
     "worker-components/dkr-dst",
+    "worker-components/epoch-change-cur",
+    "worker-components/epoch-change-nxt",
     "worker-components/network-node",
 ]

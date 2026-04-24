@@ -135,7 +135,10 @@ export function ed25519PrivateKeyHex(account: Account): string {
     return Buffer.from(pk.toUint8Array()).toString('hex');
 }
 
-/** Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder). */
+/**
+ * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
+ * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
+ */
 export async function deployContracts(adminAccount: Account, packageFolders: string[]): Promise<void> {
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
@@ -547,8 +550,11 @@ export function serializeCommitteeChangeProposal(nodes: AccountAddress[], thresh
 
 /**
  * Submit a network proposal and collect threshold approvals.
- * - proposer: must be admin (@ace) or a cur_node
- * - approvers: cur_node accounts that will each call approve_proposal (pass exactly threshold of them)
+ * `new_proposal` self-approves once, so the proposer must be either `@ace` (deploy address) *or* a
+ * `cur_node`; only `cur_node` may call `approve_proposal`, so if the deployer is not in
+ * `cur_nodes`, use a committee member as `proposer`.
+ * - approvers: each calls `approve_proposal` (entries equal to `proposer` are skipped; they
+ *   already voted in `new_proposal`). Pass a superset of cur_nodes to reach `cur_threshold` together.
  */
 export async function proposeAndApprove(
     proposer: Account,
@@ -556,6 +562,7 @@ export async function proposeAndApprove(
     aceContract: string,
     proposalBcs: Uint8Array,
 ): Promise<void> {
+    const proposerStr = proposer.accountAddress.toString();
     const txnResult = assertTxnSuccess(
         await submitTxn({
             signer: proposer,
@@ -572,6 +579,9 @@ export async function proposeAndApprove(
     const proposalAddr = (event.data as { addr: string }).addr;
 
     for (const approver of approvers) {
+        if (approver.accountAddress.toString() === proposerStr) {
+            continue;
+        }
         assertTxnSuccess(
             await submitTxn({
                 signer: approver,

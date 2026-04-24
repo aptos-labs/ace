@@ -8,7 +8,7 @@
 /// - term_rx: this allows upper-level apps to send stop cmd.
 ///
 /// The main logic is the following.
-/// - It should "touch" the session (trigger any due update and fetch the latest state) every 5 secs.
+/// - It should "touch" the session (trigger any due update and fetch the latest state) every 1 sec.
 /// - Every time we fetch the latest state `session`, we:
 ///   - first ensure it is still in progress and we are one of the workers (Otherwise, we shutdown all sub-clients then stop ourselves);
 ///   - ensure the vss client for each `session.vss_sessions` is running:
@@ -22,14 +22,20 @@ module ace::dkg {
     use ace::group;
     use std::option::{Option, Self};
     use aptos_framework::event;
-    use aptos_framework::object;
+    use aptos_framework::object::{Self, ExtendRef};
     use std::signer::address_of;
     use std::error;
     use std::bcs;
+    use std::vector::range;
 
-    const STATE__VSS_IN_PROGRESS: u8 = 0;
-    const STATE__DONE: u8 = 1;
-    const STATE__FAIL: u8 = 2;
+    /// VSS sessions are being created one per touch().
+    const STATE__START_VSSS: u8 = 0;
+    /// All VSS sessions exist; waiting for threshold of them to complete.
+    const STATE__VSS_IN_PROGRESS: u8 = 1;
+    /// Threshold VSS sessions are done; aggregating per-worker share PKs one per touch().
+    const STATE__AGGREGATE_SHARE_PKS: u8 = 2;
+    const STATE__DONE: u8 = 3;
+    const STATE__FAIL: u8 = 4;
 
     const E_ONLY_CALLER_CAN_DO_THIS: u64 = 1;
     const E_SESSION_NOT_COMPLETED: u64 = 2;
@@ -41,12 +47,16 @@ module ace::dkg {
         public_base_element: group::Element,
         state: u8,
         vss_sessions: vector<address>,
-        /// When we try to conclude this DKG session with enough VSS done, some other may not have finished yet and will thus be ignored.
+        /// Which VSS sessions contributed when we finalised. Empty until state >= AGGREGATE_SHARE_PKS.
         done_flags: vector<bool>,
         secretly_scaled_element: Option<group::Element>,
         /// Per-worker share PKs: share_pks[j] = Σ_{k: contributing} vss_k.share_pks[j].
-        /// Empty until state == STATE__DONE.
+        /// Built one entry per touch() in AGGREGATE_SHARE_PKS; complete when state == DONE.
         share_pks: vector<group::Element>,
+    }
+
+    struct SignerStore has key {
+        extend_ref: ExtendRef,
     }
 
     #[event]
@@ -59,29 +69,22 @@ module ace::dkg {
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
+        let extend_ref = object_ref.generate_extend_ref();
         let session_addr = object_ref.address_from_constructor_ref();
-        let vss_sessions = workers.map(|worker| {
-            vss::new_session(
-                caller,
-                worker, // dealer
-                workers, // recipients
-                threshold,
-                public_base_element, // base point
-                option::none(),
-            )
-        });
+        // VSS sessions are created lazily, one per touch(), to stay within per-tx gas limits.
         let session = Session {
             caller: caller_addr,
             workers,
             threshold,
             public_base_element,
-            state: STATE__VSS_IN_PROGRESS,
-            vss_sessions,
+            state: STATE__START_VSSS,
+            vss_sessions: vector[],
             done_flags: vector[],
             secretly_scaled_element: option::none(),
             share_pks: vector[],
         };
         move_to(&object_signer, session);
+        move_to(&object_signer, SignerStore { extend_ref });
         event::emit(SessionCreated { session_addr });
         session_addr
     }
@@ -98,10 +101,26 @@ module ace::dkg {
         session_bcs: vector<u8>,
     }
 
-    public fun touch(session_addr: address) acquires Session {
+    public fun touch(session_addr: address) acquires Session, SignerStore {
         let session = borrow_global_mut<Session>(session_addr);
-        if (session.state == STATE__VSS_IN_PROGRESS) {
-            // if t or more sessions are done, we can finalize the aggregated public key
+        if (session.state == STATE__START_VSSS) {
+            let idx = session.vss_sessions.length();
+            if (idx >= session.workers.length()) {
+                session.state = STATE__VSS_IN_PROGRESS;
+                return;
+            };
+            let signer_store = borrow_global<SignerStore>(session_addr);
+            let caller = signer_store.extend_ref.generate_signer_for_extending();
+            let vss_addr = vss::new_session(
+                &caller,
+                session.workers[idx],   // dealer
+                session.workers,        // recipients
+                session.threshold,
+                session.public_base_element,
+                option::none(),
+            );
+            session.vss_sessions.push_back(vss_addr);
+        } else if (session.state == STATE__VSS_IN_PROGRESS) {
             let done_flags = vector[];
             let num_done = 0;
             let done_sessions = vector[];
@@ -112,22 +131,25 @@ module ace::dkg {
                     done_sessions.push_back(vss_session);
                 };
                 done_flags.push_back(done);
-
             });
             if (num_done >= session.threshold) {
                 let available_sub_pks = done_sessions.map(|vss_session| vss::result_pk(vss_session));
                 session.done_flags = done_flags;
                 session.secretly_scaled_element = option::some(group::element_sum(&available_sub_pks));
-                // Compute per-worker share PKs: sum contributing VSS share_pks per worker.
-                let n = session.workers.length();
-                let j = 0u64;
-                while (j < n) {
-                    session.share_pks.push_back(
-                        group::element_sum(&done_sessions.map_ref(|a| vss::share_pks(*a)[j]))
-                    );
-                    j += 1;
-                };
+                session.state = STATE__AGGREGATE_SHARE_PKS;
+            }
+        } else if (session.state == STATE__AGGREGATE_SHARE_PKS) {
+            let n = session.workers.length();
+            let j = session.share_pks.length();
+            if (j >= n) {
                 session.state = STATE__DONE;
+            } else {
+                // One share PK per touch: sum contributing VSS share_pks for worker j.
+                let n_vss = session.vss_sessions.length();
+                let sub_share_pks = range(0, n_vss)
+                    .filter(|i| session.done_flags[*i])
+                    .map(|i| vss::share_pks(session.vss_sessions[i])[j]);
+                session.share_pks.push_back(group::element_sum(&sub_share_pks));
             }
         };
         event::emit(SessionTouched {
@@ -179,7 +201,7 @@ module ace::dkg {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
-    entry fun touch_entry(session_addr: address) acquires Session {
+    entry fun touch_entry(session_addr: address) acquires Session, SignerStore {
         touch(session_addr);
     }
 }

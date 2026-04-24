@@ -6,7 +6,7 @@ import { Result } from "../result";
 import { PublicPoint } from "../vss/index";
 import { Scalar } from "../group";
 
-const STATE_DONE = 3;
+const STATE_DONE = 4;
 
 export class Session {
     constructor(
@@ -61,6 +61,12 @@ export class Session {
                 const newThreshold = Number(deserializer.deserializeU64());
 
                 const stateCode = deserializer.deserializeU8();
+
+                // src_share_pks: internal field for lazy VSS creation; read and discard.
+                const srcSharePksLen = deserializer.deserializeUleb128AsU32();
+                for (let i = 0; i < srcSharePksLen; i++) {
+                    PublicPoint.deserialize(deserializer).unwrapOrThrow(`srcSharePks[${i}] deserialize failed`);
+                }
 
                 const vssLen = deserializer.deserializeUleb128AsU32();
                 const vssSessions: AccountAddress[] = [];

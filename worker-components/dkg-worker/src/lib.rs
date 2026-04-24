@@ -4,20 +4,18 @@
 //! Programmatic API for the on-chain DKG worker client.
 //! Each worker spawns one VSS dealer (for their own VSS session) and n VSS recipients
 //! (for all VSS sessions — they are a share holder in every session, including their own).
+//!
+//! VSS sessions are created lazily on-chain (one per `dkg::touch`), so dealer/recipient
+//! sub-tasks are reconciled each tick as new sessions appear in `vss_sessions`.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
-fn shutdown_all(dealer: oneshot::Sender<()>, recipients: Vec<oneshot::Sender<()>>) {
-    let _ = dealer.send(());
-    for tx in recipients {
-        let _ = tx.send(());
-    }
-}
-
-const STATE_DONE: u8 = 1;
+const STATE_DONE: u8 = 3;
+const STATE_FAIL: u8 = 4;
 
 #[derive(Debug, Clone)]
 struct DkgSession {
@@ -84,87 +82,36 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         account_addr, dkg_session_addr, ace
     );
 
-    // Fetch DKG session once to learn workers list and VSS session addresses.
-    let session = fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await?;
-    let n = session.workers.len();
-
-    // Find this worker's index in the committee.
-    let my_idx = session
+    // Fetch once to find my_idx — workers list is fixed for the session lifetime.
+    let initial = fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await?;
+    let my_idx = initial
         .workers
         .iter()
         .position(|w| *w == account_addr)
-        .ok_or_else(|| {
-            anyhow!(
-                "account {} not found in DKG workers list {:?}",
-                account_addr,
-                session.workers
-            )
-        })?;
+        .ok_or_else(|| anyhow!("account {} not found in DKG workers list", account_addr))?;
+    let n = initial.workers.len();
+    println!("dkg-worker: my_idx={} (n={})", my_idx, n);
 
-    println!(
-        "dkg-worker: my_idx={} (n={}), dealing vss_sessions[{}]={}",
-        my_idx, n, my_idx, session.vss_sessions[my_idx]
-    );
+    // Dealer is spawned once vss_sessions[my_idx] appears on-chain.
+    let mut dealer_shutdown_tx: Option<oneshot::Sender<()>> = None;
+    // Recipients keyed by VSS session address; spawned as sessions appear.
+    let mut recipient_shutdown_txs: HashMap<String, oneshot::Sender<()>> = HashMap::new();
 
-    // --- Spawn VSS dealer for my own VSS session ---
-    let (dealer_shutdown_tx, dealer_shutdown_rx) = oneshot::channel::<()>();
-    let dealer_cfg = vss_dealer::RunConfig {
-        rpc_url: config.rpc_url.clone(),
-        rpc_api_key: config.rpc_api_key.clone(),
-        rpc_gas_key: config.rpc_gas_key.clone(),
-        ace_contract: ace.clone(),
-        vss_session: session.vss_sessions[my_idx].clone(),
-        pke_dk_hex: config.pke_dk_hex.clone(),
-        account_addr: account_addr.clone(),
-        account_sk_hex: config.account_sk_hex.clone(),
-        secret_override: None, // DKG dealers pick their own random secret from the DK.
-    };
-    tokio::spawn(async move {
-        if let Err(e) = vss_dealer::run(dealer_cfg, dealer_shutdown_rx).await {
-            eprintln!("dkg-worker: dealer sub-task error: {:#}", e);
-        }
-    });
-
-    // --- Spawn VSS recipient for ALL VSS sessions ---
-    // This worker is a share holder in every session (including their own as dealer).
-    // They must ack in all sessions to avoid their share being publicly revealed in DC1.
-    let mut recipient_shutdown_txs: Vec<oneshot::Sender<()>> = Vec::with_capacity(n);
-    for (j, vss_addr) in session.vss_sessions.iter().enumerate() {
-        let (tx, rx) = oneshot::channel::<()>();
-        recipient_shutdown_txs.push(tx);
-        let rcfg = vss_recipient::RunConfig {
-            rpc_url: config.rpc_url.clone(),
-            rpc_api_key: config.rpc_api_key.clone(),
-            rpc_gas_key: config.rpc_gas_key.clone(),
-            ace_contract: ace.clone(),
-            vss_session: vss_addr.clone(),
-            pke_dk_hex: config.pke_dk_hex.clone(),
-            account_addr: account_addr.clone(),
-            account_sk_hex: config.account_sk_hex.clone(),
-        };
-        tokio::spawn(async move {
-            if let Err(e) = vss_recipient::run(rcfg, rx).await {
-                eprintln!("dkg-worker: recipient sub-task (vss={}) error: {:#}", j, e);
-            }
-        });
-    }
-
-    // --- Poll DKG session until DONE, FAIL, or shutdown ---
-    let mut interval =
-        tokio::time::interval(tokio::time::Duration::from_secs(1));
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
                 println!("dkg-worker: shutdown signal received, stopping sub-tasks.");
-                shutdown_all(dealer_shutdown_tx, recipient_shutdown_txs);
+                if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
+                for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
                 return Ok(());
             }
             _ = interval.tick() => {}
         }
 
-        // Call touch_entry to trigger DKG state finalization when enough VSS sessions complete.
+        // touch advances START_VSSS (one VSS per call) and later finalises the DKG.
         if let Err(e) = rpc.submit_txn(
             &sk, &vk, &account_addr,
             &format!("{}::dkg::touch_entry", ace), &[],
@@ -173,20 +120,70 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             eprintln!("dkg-worker: touch_entry error: {:#}", e);
         }
 
-        match fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await {
-            Err(e) => eprintln!("dkg-worker: poll error: {:#}", e),
-            Ok(s) if s.state == STATE_DONE => {
-                println!("dkg-worker: DKG session reached DONE.");
-                shutdown_all(dealer_shutdown_tx, recipient_shutdown_txs);
-                return Ok(());
-            }
-            Ok(s) if s.state > STATE_DONE => {
-                shutdown_all(dealer_shutdown_tx, recipient_shutdown_txs);
-                return Err(anyhow!("dkg-worker: DKG session failed (state={})", s.state));
-            }
-            Ok(s) => {
-                println!("dkg-worker: DKG in progress (state={})", s.state);
-            }
+        let session = match fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await {
+            Ok(s) => s,
+            Err(e) => { eprintln!("dkg-worker: poll error: {:#}", e); continue; }
+        };
+
+        // Spawn dealer for vss_sessions[my_idx] as soon as it appears.
+        if dealer_shutdown_tx.is_none() && session.vss_sessions.len() > my_idx {
+            let (tx, rx) = oneshot::channel::<()>();
+            dealer_shutdown_tx = Some(tx);
+            let dealer_cfg = vss_dealer::RunConfig {
+                rpc_url: config.rpc_url.clone(),
+                rpc_api_key: config.rpc_api_key.clone(),
+                rpc_gas_key: config.rpc_gas_key.clone(),
+                ace_contract: ace.clone(),
+                vss_session: session.vss_sessions[my_idx].clone(),
+                pke_dk_hex: config.pke_dk_hex.clone(),
+                account_addr: account_addr.clone(),
+                account_sk_hex: config.account_sk_hex.clone(),
+                secret_override: None,
+            };
+            println!("dkg-worker: spawning dealer for vss_sessions[{}]={}", my_idx, session.vss_sessions[my_idx]);
+            tokio::spawn(async move {
+                if let Err(e) = vss_dealer::run(dealer_cfg, rx).await {
+                    eprintln!("dkg-worker: dealer sub-task error: {:#}", e);
+                }
+            });
         }
+
+        // Reconcile recipients: spawn one per VSS session as they appear on-chain.
+        for (j, vss_addr) in session.vss_sessions.iter().enumerate() {
+            if recipient_shutdown_txs.contains_key(vss_addr) {
+                continue;
+            }
+            let (tx, rx) = oneshot::channel::<()>();
+            recipient_shutdown_txs.insert(vss_addr.clone(), tx);
+            let rcfg = vss_recipient::RunConfig {
+                rpc_url: config.rpc_url.clone(),
+                rpc_api_key: config.rpc_api_key.clone(),
+                rpc_gas_key: config.rpc_gas_key.clone(),
+                ace_contract: ace.clone(),
+                vss_session: vss_addr.clone(),
+                pke_dk_hex: config.pke_dk_hex.clone(),
+                account_addr: account_addr.clone(),
+                account_sk_hex: config.account_sk_hex.clone(),
+            };
+            println!("dkg-worker: spawning recipient for vss_sessions[{}]={}", j, vss_addr);
+            tokio::spawn(async move {
+                if let Err(e) = vss_recipient::run(rcfg, rx).await {
+                    eprintln!("dkg-worker: recipient sub-task (vss_idx={}) error: {:#}", j, e);
+                }
+            });
+        }
+
+        if session.state == STATE_DONE {
+            println!("dkg-worker: DKG session reached DONE.");
+            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
+            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
+            return Ok(());
+        }
+        if session.state >= STATE_FAIL {
+            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
+            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
+            return Err(anyhow!("dkg-worker: DKG session failed (state={})", session.state));
+        }
+        println!("dkg-worker: DKG in progress (state={}, vss_sessions={})", session.state, session.vss_sessions.len());
     }
 }

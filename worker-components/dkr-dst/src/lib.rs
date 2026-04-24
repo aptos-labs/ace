@@ -4,14 +4,18 @@
 //! Programmatic API for the DKR new-committee recipient client.
 //! Each new-committee member acts as a VSS recipient in ALL of the DKR VSS sessions
 //! (one per old-committee member) and polls the DKR session until it completes.
+//!
+//! VSS sessions are created lazily on-chain (one per `dkr::touch`), so recipient
+//! sub-tasks are reconciled each tick as new sessions appear in `vss_sessions`.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
-const STATE_DONE: u8 = 3;
-const STATE_FAIL: u8 = 4;
+const STATE_DONE: u8 = 4;
+const STATE_FAIL: u8 = 5;
 
 #[derive(Debug, Clone)]
 struct DkrSession {
@@ -76,46 +80,15 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         account_addr, dkr_session_addr, ace
     );
 
-    let session = fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await?;
-
-    // Verify this account is in the new committee.
-    if !session.new_nodes.iter().any(|n| *n == account_addr) {
-        return Err(anyhow!(
-            "account {} not found in DKR new_nodes {:?}",
-            account_addr,
-            session.new_nodes
-        ));
+    // Fetch once to verify membership — new_nodes is fixed for the session lifetime.
+    let initial = fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await?;
+    if !initial.new_nodes.iter().any(|n| *n == account_addr) {
+        return Err(anyhow!("account {} not found in DKR new_nodes", account_addr));
     }
 
-    let num_vss = session.vss_sessions.len();
-    println!(
-        "dkr-dst: joining {} VSS sessions as recipient",
-        num_vss
-    );
+    // Recipients keyed by VSS session address; spawned as sessions appear on-chain.
+    let mut recipient_shutdown_txs: HashMap<String, oneshot::Sender<()>> = HashMap::new();
 
-    // Spawn a VSS recipient for every VSS session (one per old-committee member).
-    let mut recipient_shutdown_txs: Vec<oneshot::Sender<()>> = Vec::with_capacity(num_vss);
-    for (j, vss_addr) in session.vss_sessions.iter().enumerate() {
-        let (tx, rx) = oneshot::channel::<()>();
-        recipient_shutdown_txs.push(tx);
-        let rcfg = vss_recipient::RunConfig {
-            rpc_url: config.rpc_url.clone(),
-            rpc_api_key: config.rpc_api_key.clone(),
-            rpc_gas_key: config.rpc_gas_key.clone(),
-            ace_contract: ace.clone(),
-            vss_session: vss_addr.clone(),
-            pke_dk_hex: config.pke_dk_hex.clone(),
-            account_addr: account_addr.clone(),
-            account_sk_hex: config.account_sk_hex.clone(),
-        };
-        tokio::spawn(async move {
-            if let Err(e) = vss_recipient::run(rcfg, rx).await {
-                eprintln!("dkr-dst: recipient sub-task (vss={}) error: {:#}", j, e);
-            }
-        });
-    }
-
-    // Poll DKR session until DONE, FAIL, or shutdown.
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -123,15 +96,13 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         tokio::select! {
             _ = &mut shutdown_rx => {
                 println!("dkr-dst: shutdown signal received.");
-                for tx in recipient_shutdown_txs {
-                    let _ = tx.send(());
-                }
+                for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
                 return Ok(());
             }
             _ = interval.tick() => {}
         }
 
-        // Call touch_entry to trigger DKR state finalization when enough VSS sessions complete.
+        // touch advances START_VSSS (one VSS per call) and later other DKR states.
         if let Err(e) = rpc.submit_txn(
             &sk, &vk, &account_addr,
             &format!("{}::dkr::touch_entry", ace), &[],
@@ -140,24 +111,45 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             eprintln!("dkr-dst: touch_entry error: {:#}", e);
         }
 
-        match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
-            Err(e) => eprintln!("dkr-dst: poll error: {:#}", e),
-            Ok(s) if s.state_code == STATE_DONE => {
-                println!("dkr-dst: DKR session reached DONE.");
-                for tx in recipient_shutdown_txs {
-                    let _ = tx.send(());
+        let session = match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
+            Ok(s) => s,
+            Err(e) => { eprintln!("dkr-dst: poll error: {:#}", e); continue; }
+        };
+
+        // Reconcile recipients: spawn one per VSS session as they appear on-chain.
+        for (j, vss_addr) in session.vss_sessions.iter().enumerate() {
+            if recipient_shutdown_txs.contains_key(vss_addr) {
+                continue;
+            }
+            let (tx, rx) = oneshot::channel::<()>();
+            recipient_shutdown_txs.insert(vss_addr.clone(), tx);
+            let rcfg = vss_recipient::RunConfig {
+                rpc_url: config.rpc_url.clone(),
+                rpc_api_key: config.rpc_api_key.clone(),
+                rpc_gas_key: config.rpc_gas_key.clone(),
+                ace_contract: ace.clone(),
+                vss_session: vss_addr.clone(),
+                pke_dk_hex: config.pke_dk_hex.clone(),
+                account_addr: account_addr.clone(),
+                account_sk_hex: config.account_sk_hex.clone(),
+            };
+            println!("dkr-dst: spawning recipient for vss_sessions[{}]={}", j, vss_addr);
+            tokio::spawn(async move {
+                if let Err(e) = vss_recipient::run(rcfg, rx).await {
+                    eprintln!("dkr-dst: recipient sub-task (vss_idx={}) error: {:#}", j, e);
                 }
-                return Ok(());
-            }
-            Ok(s) if s.state_code >= STATE_FAIL => {
-                for tx in recipient_shutdown_txs {
-                    let _ = tx.send(());
-                }
-                return Err(anyhow!("dkr-dst: DKR session failed (state_code={})", s.state_code));
-            }
-            Ok(s) => {
-                println!("dkr-dst: DKR in progress (state_code={})", s.state_code);
-            }
+            });
         }
+
+        if session.state_code == STATE_DONE {
+            println!("dkr-dst: DKR session reached DONE.");
+            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
+            return Ok(());
+        }
+        if session.state_code >= STATE_FAIL {
+            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
+            return Err(anyhow!("dkr-dst: DKR session failed (state_code={})", session.state_code));
+        }
+        println!("dkr-dst: DKR in progress (state_code={}, vss_sessions={})", session.state_code, session.vss_sessions.len());
     }
 }

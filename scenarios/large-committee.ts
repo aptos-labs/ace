@@ -20,7 +20,7 @@ import {
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
-const NUM_WORKERS = 13;
+const NUM_WORKERS = 20;
 const THRESHOLD = Math.floor(NUM_WORKERS / 2) + 1;
 
 async function main() {

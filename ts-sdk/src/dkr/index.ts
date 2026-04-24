@@ -4,8 +4,9 @@
 import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import { PublicPoint } from "../vss/index";
+import { Scalar } from "../group";
 
-const STATE_DONE = 1;
+const STATE_DONE = 3;
 
 export class Session {
     constructor(
@@ -71,6 +72,11 @@ export class Session {
                 const vssContributionFlags: boolean[] = [];
                 for (let i = 0; i < flagsLen; i++) {
                     vssContributionFlags.push(deserializer.deserializeBool());
+                }
+
+                const lagrangeLen = deserializer.deserializeUleb128AsU32();
+                for (let i = 0; i < lagrangeLen; i++) {
+                    Scalar.deserialize(deserializer).unwrapOrThrow(`lagrangeCoeffsAtZero[${i}] deserialize failed`);
                 }
 
                 const sharePksLen = deserializer.deserializeUleb128AsU32();

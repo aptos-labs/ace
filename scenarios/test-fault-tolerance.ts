@@ -49,6 +49,9 @@ import {
     deployContracts,
     startLocalnet,
     getNetworkState,
+    proposeAndApprove,
+    serializeNewSecretProposal,
+    serializeCommitteeChangeProposal,
 } from './common/helpers';
 import {
     deployContract,
@@ -146,7 +149,7 @@ async function main() {
             await submitTxn({
                 signer: adminAccount,
                 entryFunction: `${adminAddr}::network::start_initial_epoch`,
-                args: [epoch0Addrs, EPOCH0_THRESHOLD],
+                args: [epoch0Addrs, EPOCH0_THRESHOLD, 600],
             }),
             'network::start_initial_epoch',
         );
@@ -171,14 +174,14 @@ async function main() {
         await sleep(2000);
 
         // ── Epoch 0 ─────────────────────────────────────────────────────────────
-        step(7, 'Admin creates keypair-0 DKG (epoch 0, worker 0 offline)');
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::new_secret`,
-                args: [0],
-            }),
-            'network::new_secret (keypair-0)',
+        // Worker 0 is offline; approvers are workers 1,2,3 (all online, threshold=3).
+        step(7, 'Admin proposes keypair-0 (epoch 0, worker 0 offline); workers 1,2,3 approve');
+        const onlineEpoch0Workers = [1, 2, 3].map(i => workerAccounts[i]);
+        await proposeAndApprove(
+            adminAccount,
+            onlineEpoch0Workers,
+            adminAddr,
+            serializeNewSecretProposal(0),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done', async () => {
@@ -248,23 +251,24 @@ async function main() {
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
-        // ── Epoch change 0→1 ────────────────────────────────────────────────────
-        step(11, `Epoch change 0→1 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD}, worker 4 offline)`);
-        const epoch1Addrs = EPOCH1_WORKER_INDICES.map(i => workerAccounts[i].accountAddress.toStringLong());
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::start_epoch_change`,
-                args: [epoch1Addrs, EPOCH1_THRESHOLD],
-            }),
-            'network::start_epoch_change (0→1)',
+        // ── Epoch change 1→2 (CommitteeChange) ─────────────────────────────────
+        // After new_secret, cur_nodes=[0,1,2,3], threshold=3. Worker 0 is still offline.
+        step(11, `Epoch change 1→2 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD}, worker 4 offline)`);
+        await proposeAndApprove(
+            adminAccount,
+            onlineEpoch0Workers, // workers 1,2,3 (cur_nodes minus offline worker 0)
+            adminAddr,
+            serializeCommitteeChangeProposal(
+                EPOCH1_WORKER_INDICES.map(i => workerAccounts[i].accountAddress),
+                EPOCH1_THRESHOLD,
+            ),
         );
-        await waitFor('epoch 1', async () => {
+        await waitFor('epoch 2', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 1;
+            return stateResult.okValue!.epoch === 2;
         }, 120_000);
-        console.log('  ✓ DKR completed — epoch advanced to 1 (worker 4 offline)');
+        console.log('  ✓ DKR completed — epoch advanced to 2 (worker 4 offline)');
         await sleep(10000);
 
         // ── Decrypt in epoch 1 (workers 1,2,3 online, worker 4 offline) ─────────

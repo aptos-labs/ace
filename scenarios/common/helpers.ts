@@ -3,7 +3,7 @@
 
 import * as ace from '@aptos-labs/ace-sdk';
 import { Result } from '@aptos-labs/ace-sdk';
-import { Account, AccountAddress, Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, AptosConfig, Network, Serializer } from '@aptos-labs/ts-sdk';
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import {
@@ -525,4 +525,60 @@ export async function getDKRSession(aceContractAddr: AccountAddress, sessionAddr
             return ace.dkr.Session.fromBytes(bytes).unwrapOrThrow('Failed to parse DKR session.');
         },
     });
+}
+
+export function serializeNewSecretProposal(scheme: number): Uint8Array {
+    const ser = new Serializer();
+    ser.serializeU8(2); // NewSecret variant
+    ser.serializeU8(scheme);
+    return ser.toUint8Array();
+}
+
+export function serializeCommitteeChangeProposal(nodes: AccountAddress[], threshold: number): Uint8Array {
+    const ser = new Serializer();
+    ser.serializeU8(0); // CommitteeChange variant
+    ser.serializeU32AsUleb128(nodes.length);
+    for (const node of nodes) {
+        ser.serialize(node);
+    }
+    ser.serializeU64(threshold);
+    return ser.toUint8Array();
+}
+
+/**
+ * Submit a network proposal and collect threshold approvals.
+ * - proposer: must be admin (@ace) or a cur_node
+ * - approvers: cur_node accounts that will each call approve_proposal (pass exactly threshold of them)
+ */
+export async function proposeAndApprove(
+    proposer: Account,
+    approvers: Account[],
+    aceContract: string,
+    proposalBcs: Uint8Array,
+): Promise<void> {
+    const txnResult = assertTxnSuccess(
+        await submitTxn({
+            signer: proposer,
+            entryFunction: `${aceContract}::network::new_proposal`,
+            args: [Array.from(proposalBcs)],
+        }),
+        'new_proposal',
+    );
+
+    const event = txnResult.events.find(
+        (e: any) => typeof e.type === 'string' && e.type.endsWith('::network::ProposalCreated'),
+    );
+    if (!event) throw new Error('ProposalCreated event not found in new_proposal txn');
+    const proposalAddr = (event.data as { addr: string }).addr;
+
+    for (const approver of approvers) {
+        assertTxnSuccess(
+            await submitTxn({
+                signer: approver,
+                entryFunction: `${aceContract}::network::approve_proposal`,
+                args: [proposalAddr],
+            }),
+            `approve_proposal by ${approver.accountAddress.toStringLong()}`,
+        );
+    }
 }

@@ -5,12 +5,12 @@
 //!
 //! Polls `network::State` from `@ace` every 5 seconds and manages sub-tasks:
 //!
-//! * **DKG tasks** (`dkg_worker::run`) — started for every session in
-//!   `State.dkgs_in_progress` when this node is in `cur_nodes`.
 //! * **DKR-src tasks** (`dkr_src::run`) — started for every session in
 //!   `EpochChangeState.dkr_sessions` when this node is in `cur_nodes`.
 //! * **DKR-dst tasks** (`dkr_dst::run`) — started for every session in
 //!   `EpochChangeState.dkr_sessions` when this node is in `nxt_nodes`.
+//! * **DKG tasks** (`dkg_worker::run`) — started for `EpochChangeState.dkg_session`
+//!   (at most one per epoch change) when this node is in `nxt_nodes`.
 //!
 //! Sub-tasks receive a `oneshot::Receiver<()>` shutdown channel and exit on
 //! their own when the protocol session completes.  The supervisor keeps the
@@ -125,12 +125,12 @@ pub struct RunConfig {
 struct EpochChangeState {
     nxt_nodes: Vec<String>,
     dkr_sessions: Vec<String>,
+    dkg_session: Option<String>,
 }
 
 struct NetworkState {
     epoch: u64,
     cur_nodes: Vec<String>,
-    dkgs_in_progress: Vec<String>,
     epoch_change_state: Option<EpochChangeState>,
     secrets: Vec<String>,
 }
@@ -149,19 +149,26 @@ fn parse_network_state(data: &Value) -> NetworkState {
     // Aptos REST API serialises u64 as a JSON string.
     let epoch = data["epoch"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
     let cur_nodes = parse_addr_array(&data["cur_nodes"]);
-    let dkgs_in_progress = parse_addr_array(&data["dkgs_in_progress"]);
     let secrets = parse_addr_array(&data["secrets"]);
 
     // Move `Option<T>` encodes as `{"vec": []}` (None) or `{"vec": [<T>]}` (Some).
     let epoch_change_state = data["epoch_change_state"]["vec"]
         .as_array()
         .and_then(|arr| arr.first())
-        .map(|ecs| EpochChangeState {
-            nxt_nodes: parse_addr_array(&ecs["nxt_nodes"]),
-            dkr_sessions: parse_addr_array(&ecs["dkr_sessions"]),
+        .map(|ecs| {
+            let dkg_session = ecs["dkg_session"]["vec"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+                .map(|s| normalize_account_addr(s));
+            EpochChangeState {
+                nxt_nodes: parse_addr_array(&ecs["nxt_nodes"]),
+                dkr_sessions: parse_addr_array(&ecs["dkr_sessions"]),
+                dkg_session,
+            }
         });
 
-    NetworkState { epoch, cur_nodes, dkgs_in_progress, epoch_change_state, secrets }
+    NetworkState { epoch, cur_nodes, epoch_change_state, secrets }
 }
 
 async fn fetch_network_state(rpc: &AptosRpc, ace: &str) -> Result<NetworkState> {
@@ -405,37 +412,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             }
         }
 
-        // ── DKG sub-tasks ───────────────────────────────────────────────────
-
-        if in_cur_nodes {
-            for session_addr in &state.dkgs_in_progress {
-                if !dkg_tasks.contains_key(session_addr) {
-                    let (tx, rx) = oneshot::channel::<()>();
-                    let cfg = dkg_worker::RunConfig {
-                        rpc_url: config.ace_deployment_api.clone(),
-                        rpc_api_key: config.ace_deployment_apikey.clone(),
-                        rpc_gas_key: config.ace_deployment_gaskey.clone(),
-                        ace_contract: ace.clone(),
-                        dkg_session: session_addr.clone(),
-                        account_addr: account_addr.clone(),
-                        account_sk_hex: config.account_sk_hex.clone(),
-                        pke_dk_hex: config.pke_dk.clone(),
-                    };
-                    tokio::spawn(async move {
-                        if let Err(e) = dkg_worker::run(cfg, rx).await {
-                            eprintln!("network-node: dkg-worker sub-task error: {:#}", e);
-                        }
-                    });
-                    dkg_tasks.insert(session_addr.clone(), tx);
-                    println!("network-node: started dkg-worker for session={}", session_addr);
-                }
-            }
-        } else if !dkg_tasks.is_empty() {
-            println!("network-node: stopping all dkg-worker tasks (not in cur_nodes).");
-            stop_tasks(&mut dkg_tasks);
-        }
-
-        // ── DKR sub-tasks ───────────────────────────────────────────────────
+        // ── DKR + DKG sub-tasks ─────────────────────────────────────────────
 
         match state.epoch_change_state {
             Some(ecs) => {
@@ -470,7 +447,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     stop_tasks(&mut dkr_src_tasks);
                 }
 
-                // DKR-dst: new-committee members receive shares from all DKR VSS sessions.
+                // DKR-dst + DKG: new-committee members receive DKR shares and run DKG if needed.
                 if in_nxt_nodes {
                     for session_addr in &ecs.dkr_sessions {
                         if !dkr_dst_tasks.contains_key(session_addr) {
@@ -494,13 +471,44 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             println!("network-node: started dkr-dst for session={}", session_addr);
                         }
                     }
-                } else if !dkr_dst_tasks.is_empty() {
-                    println!("network-node: stopping all dkr-dst tasks (not in nxt_nodes).");
-                    stop_tasks(&mut dkr_dst_tasks);
+                    if let Some(session_addr) = &ecs.dkg_session {
+                        if !dkg_tasks.contains_key(session_addr) {
+                            let (tx, rx) = oneshot::channel::<()>();
+                            let cfg = dkg_worker::RunConfig {
+                                rpc_url: config.ace_deployment_api.clone(),
+                                rpc_api_key: config.ace_deployment_apikey.clone(),
+                                rpc_gas_key: config.ace_deployment_gaskey.clone(),
+                                ace_contract: ace.clone(),
+                                dkg_session: session_addr.clone(),
+                                account_addr: account_addr.clone(),
+                                account_sk_hex: config.account_sk_hex.clone(),
+                                pke_dk_hex: config.pke_dk.clone(),
+                            };
+                            tokio::spawn(async move {
+                                if let Err(e) = dkg_worker::run(cfg, rx).await {
+                                    eprintln!("network-node: dkg-worker sub-task error: {:#}", e);
+                                }
+                            });
+                            dkg_tasks.insert(session_addr.clone(), tx);
+                            println!("network-node: started dkg-worker for session={}", session_addr);
+                        }
+                    } else if !dkg_tasks.is_empty() {
+                        println!("network-node: stopping all dkg tasks (no new secret in epoch change).");
+                        stop_tasks(&mut dkg_tasks);
+                    }
+                } else {
+                    if !dkr_dst_tasks.is_empty() {
+                        println!("network-node: stopping all dkr-dst tasks (not in nxt_nodes).");
+                        stop_tasks(&mut dkr_dst_tasks);
+                    }
+                    if !dkg_tasks.is_empty() {
+                        println!("network-node: stopping all dkg tasks (not in nxt_nodes).");
+                        stop_tasks(&mut dkg_tasks);
+                    }
                 }
             }
             None => {
-                // No epoch change in progress — stop any lingering DKR tasks.
+                // No epoch change in progress — stop any lingering tasks.
                 if !dkr_src_tasks.is_empty() {
                     println!("network-node: stopping all dkr-src tasks (no epoch change).");
                     stop_tasks(&mut dkr_src_tasks);
@@ -508,6 +516,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 if !dkr_dst_tasks.is_empty() {
                     println!("network-node: stopping all dkr-dst tasks (no epoch change).");
                     stop_tasks(&mut dkr_dst_tasks);
+                }
+                if !dkg_tasks.is_empty() {
+                    println!("network-node: stopping all dkg tasks (no epoch change).");
+                    stop_tasks(&mut dkg_tasks);
                 }
             }
         }

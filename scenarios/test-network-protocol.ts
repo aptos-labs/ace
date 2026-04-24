@@ -12,16 +12,12 @@
  *   1. Deploy pke, worker_config, group, vss, dkg, dkr, network.
  *   2. Register PKE enc keys for all 5 workers.
  *   3. Start network-node for each of A–E (workers watch chain BEFORE admin acts).
- *   4. Admin calls start_initial_epoch([A,B,C], 2).
- *   5. Admin calls new_secret(0)  →  DKG session created; A,B,C's nodes drive it.
- *   6. Poll network::touch until DKG completes (dkgs_in_progress empty, secrets.length==1).
- *   7. Admin calls start_epoch_change([B,C,D,E], 3)  →  DKR session created; nodes drive it.
- *   8. Poll network::touch until epoch advances to 1.
- *   9. Assert epoch==1, cur_nodes==[B,C,D,E], cur_threshold==3, PK unchanged.
- *
- * NOTE: This test requires the `network-node` binary to be built and available at
- *       NETWORK_NODE_BINARY. The binary is not yet implemented; once available,
- *       run `cargo build` at the repo root and then `pnpm test:network-only`.
+ *   4. Admin calls start_initial_epoch([A,B,C], 2, resharing_interval_secs=600).
+ *   5. Admin proposes new_secret(0); A,B approve; workers drive epoch change (DKG).
+ *   6. Poll until epoch advances to 1 (DKG complete, secrets.length==1).
+ *   7. Admin proposes CommitteeChange([B,C,D,E], 3); A,B approve; workers drive DKR.
+ *   8. Poll until epoch advances to 2.
+ *   9. Assert epoch==2, cur_nodes==[B,C,D,E], cur_threshold==3, PK unchanged.
  */
 
 import { Account } from '@aptos-labs/ts-sdk';
@@ -36,6 +32,9 @@ import {
     getNetworkState,
     getDKGSession,
     getDKRSession,
+    proposeAndApprove,
+    serializeNewSecretProposal,
+    serializeCommitteeChangeProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
@@ -86,38 +85,40 @@ async function main() {
             }));
         }
 
-        log('Admin: start_initial_epoch([A,B,C], threshold=2).');
+        log('Admin: start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=600).');
         (await submitTxn({
             signer: adminAccount,
             entryFunction: `${aceContract}::network::start_initial_epoch`,
             args: [
                 oldCommittee.map(w => w.accountAddress),
                 oldThreshold,
+                600,
             ],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        log('Admin: new_secret(scheme=0) — BLS12-381 G1, randomness on-chain.');
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::new_secret`,
-            args: [0],
-        })).unwrapOrThrow('new_secret failed').asSuccessOrThrow();
+        log('Admin: propose new_secret(scheme=0); A,B approve.');
+        await proposeAndApprove(
+            adminAccount,
+            oldCommittee.slice(0, oldThreshold),
+            aceContract,
+            serializeNewSecretProposal(0),
+        );
 
-        // ── Wait for DKG to complete ────────────────────────────────────────────
+        // ── Wait for DKG epoch change to complete (epoch 0→1) ──────────────────
 
-        log('Poll network::touch until DKG completes (workers drive it).');
+        log('Poll network::touch until epoch advances to 1 (DKG complete).');
         const dkgDeadlineMillis = Date.now() + 120_000;
         let networkState: ace.network.State | undefined;
         while (Date.now() < dkgDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
             if (maybeState.isOk) {
                 networkState = maybeState.okValue!;
-                if (networkState.dkgsInProgress.length === 0 && networkState.secrets.length >= 1) break;
+                if (networkState.epoch === 1) break;
             }
             await sleep(5_000);
         }
-        if (!networkState || networkState.dkgsInProgress.length !== 0 || networkState.secrets.length < 1) {
-            throw 'DKG did not complete in time.';
+        if (!networkState || networkState.epoch !== 1) {
+            throw 'DKG epoch change did not complete in time.';
         }
 
         const dkgSessionAddr = networkState.secrets[0]!;
@@ -129,32 +130,33 @@ async function main() {
         if (!baselinePk) throw 'DKG session resultPk is absent despite state=DONE';
         log(`DKG resultPk (secretlyScaledElement): ${baselinePk.toHex()}`);
 
-        // ── Start epoch change ──────────────────────────────────────────────────
+        // ── Propose CommitteeChange ──────────────────────────────────────────────
 
-        log('Admin: start_epoch_change([B,C,D,E], threshold=3).');
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::start_epoch_change`,
-            args: [
+        log('Admin: propose CommitteeChange([B,C,D,E], threshold=3); A,B approve.');
+        await proposeAndApprove(
+            adminAccount,
+            oldCommittee.slice(0, oldThreshold),
+            aceContract,
+            serializeCommitteeChangeProposal(
                 newCommittee.map(w => w.accountAddress),
                 newThreshold,
-            ],
-        })).unwrapOrThrow('start_epoch_change failed').asSuccessOrThrow();
+            ),
+        );
 
-        // ── Wait for epoch change to complete ───────────────────────────────────
+        // ── Wait for epoch change to complete (epoch 1→2) ───────────────────────
 
-        log('Poll network::touch until epoch advances to 1 (workers drive DKR).');
+        log('Poll network::touch until epoch advances to 2 (workers drive DKR).');
         const dkrDeadlineMillis = Date.now() + 120_000;
         let finalState: ace.network.State | undefined;
         while (Date.now() < dkrDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
             if (maybeState.isOk) {
                 finalState = maybeState.okValue!;
-                if (finalState.epoch === 1) break;
+                if (finalState.epoch === 2) break;
             }
             await sleep(5_000);
         }
-        if (!finalState || finalState.epoch !== 1) {
+        if (!finalState || finalState.epoch !== 2) {
             throw 'Epoch change did not complete in time.';
         }
 
@@ -176,9 +178,6 @@ async function main() {
         }
         if (finalState.secrets.length !== 1) {
             throw `Expected 1 secret after epoch change, got ${finalState.secrets.length}`;
-        }
-        if (finalState.dkgsInProgress.length !== 0) {
-            throw `Expected 0 dkgs_in_progress, got ${finalState.dkgsInProgress.length}`;
         }
         if (finalState.epochChangeState !== null) {
             throw 'Expected epoch_change_state to be None after epoch advance';

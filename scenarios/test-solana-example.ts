@@ -36,6 +36,8 @@ import {
     submitTxn,
     sleep,
     getNetworkState,
+    proposeAndApprove,
+    serializeNewSecretProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
@@ -90,14 +92,6 @@ async function main() {
             })).unwrapOrThrow('register_endpoint failed').asSuccessOrThrow();
         }
 
-        // ── Initialize network (long epoch — no auto-rotation during test) ───
-        log('Admin: initialize(epoch_duration_secs=3600)...');
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::initialize`,
-            args: [3600],
-        })).unwrapOrThrow('initialize failed').asSuccessOrThrow();
-
         // ── Build Rust workspace ─────────────────────────────────────────────
         log('Building Rust workspace...');
         await buildRustWorkspace();
@@ -114,27 +108,31 @@ async function main() {
             }));
         }
 
-        // ── Start initial epoch + DKG ────────────────────────────────────────
-        log('Admin: start_initial_epoch + new_secret...');
+        // ── Start initial epoch + propose new_secret ─────────────────────────
+        // resharing_interval_secs=3600: no auto-rotation during test
+        log('Admin: start_initial_epoch (resharing_interval_secs=3600)...');
         (await submitTxn({
             signer: adminAccount,
             entryFunction: `${aceContract}::network::start_initial_epoch`,
-            args: [workerAccounts.map(w => w.accountAddress), 2],
+            args: [workerAccounts.map(w => w.accountAddress), 2, 3600],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::new_secret`,
-            args: [0],
-        })).unwrapOrThrow('new_secret failed').asSuccessOrThrow();
 
-        log('Waiting for DKG to complete...');
+        log('Admin: propose new_secret; workers 0,1 approve...');
+        await proposeAndApprove(
+            adminAccount,
+            workerAccounts.slice(0, 2),
+            aceContract,
+            serializeNewSecretProposal(0),
+        );
+
+        log('Waiting for DKG epoch change to complete...');
         const deadline = Date.now() + 300_000;
         let networkState: ace.network.State | undefined;
         while (Date.now() < deadline) {
             const maybe = await getNetworkState(adminAccount.accountAddress);
             if (maybe.isOk) {
                 networkState = maybe.okValue!;
-                if (networkState.dkgsInProgress.length === 0 && networkState.secrets.length >= 1) break;
+                if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
             }
             await sleep(5_000);
         }

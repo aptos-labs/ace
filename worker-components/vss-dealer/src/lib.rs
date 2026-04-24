@@ -14,13 +14,13 @@ use sha2::{Digest, Sha512};
 use tokio::sync::oneshot;
 use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed_with_base, pke_encrypt, poly_eval};
 use vss_common::TxnArg;
-use vss_common::session::{ACK_WINDOW_MICROS, BcsElement, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
+use vss_common::session::{ACK_WINDOW_MICROS, BcsElement, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
 use vss_common::vss_types::{
     dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsCommitment, SecretShare,
 };
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
-pub const POLL_SECS: u64 = 5;
+pub const POLL_SECS: u64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -153,6 +153,15 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         "vss-dealer: waiting for ack window (ledger_ts={} open_after={})",
                         ledger_ts, open_after
                     );
+                }
+            }
+            STATE_VERIFY_DEALER_OPENING => {
+                if let Err(e) = rpc.submit_txn(
+                    &sk, &vk, &account_addr,
+                    &format!("{}::vss::touch", ace), &[],
+                    &[vss_common::TxnArg::Address(session_addr.as_str())],
+                ).await {
+                    eprintln!("vss-dealer: touch error: {:#}", e);
                 }
             }
             STATE_SUCCESS => {

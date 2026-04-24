@@ -48,8 +48,9 @@ module ace::vss {
 
     const STATE__DEALER_DEAL: u8 = 0;
     const STATE__RECIPIENT_ACK: u8 = 1;
-    const STATE__SUCCESS: u8 = 2;
-    const STATE__FAILED: u8 = 3;
+    const STATE__VERIFY_DEALER_OPENING: u8 = 2;
+    const STATE__SUCCESS: u8 = 3;
+    const STATE__FAILED: u8 = 4;
 
     // ── On-chain session state ────────────────────────────────────────────────
 
@@ -232,7 +233,7 @@ module ace::vss {
         session.share_holder_acks[idx] = true;
     }
 
-    public entry fun on_dealer_open(
+    entry fun on_dealer_open(
         dealer: &signer,
         session_addr: address,
         payload_bytes: vector<u8>,
@@ -254,29 +255,32 @@ module ace::vss {
             ack == !revealed
         });
         assert!(all_recipient_covered, error::invalid_argument(E_NOT_ALL_RECIPIENTS_COVERED));
+        session.dealer_contribution_1 = option::some(dc1);
+        session.state_code = STATE__VERIFY_DEALER_OPENING;
+    }
 
-        // Single pass: verify revealed shares against commitment AND compute all share_pks.
-        // share_pks[i] = MSM(commitment, [1, x, x², …]) at x = i+1; reused as the lhs check for revealed shares.
+    entry fun touch(session_addr: address) {
+        let session = borrow_global_mut<Session>(session_addr);
+        if (session.state_code != STATE__VERIFY_DEALER_OPENING) return;
         let n = session.share_holders.length();
+        let i = session.share_pks.length();
+        if (i >= n) {
+            session.state_code = STATE__SUCCESS;
+            return;
+        };
+
         let scheme = group::element_scheme(&session.public_base_element);
         let commitment_points = session.dealer_contribution_0.borrow().pcs_commitment.points;
         let t = session.threshold;
-        let i = 0u64;
-        while (i < n) {
-            let x = group::scalar_from_u64(scheme, i + 1);
-            let share_pk = group::msm(commitment_points, build_powers_of_x(scheme, &x, t));
-            if (dc1.shares_to_reveal[i].is_some()) {
-                let revealed_share = dc1.shares_to_reveal[i].borrow();
-                let lhs = group::scale_element(&session.public_base_element, revealed_share);
-                assert!(group::element_eq(&lhs, &share_pk), error::invalid_argument(E_INVALID_REVEALED_SHARE));
-            };
-            session.share_pks.push_back(share_pk);
-            i += 1;
-        };
 
-        // All checks passed.
-        session.dealer_contribution_1 = option::some(dc1);
-        session.state_code = STATE__SUCCESS;
+        let x = group::scalar_from_u64(scheme, i + 1);
+        let share_pk = group::msm(commitment_points, build_powers_of_x(scheme, &x, t));
+        if (session.dealer_contribution_1.borrow().shares_to_reveal[i].is_some()) {
+            let revealed_share = session.dealer_contribution_1.borrow().shares_to_reveal[i].borrow();
+            let lhs = group::scale_element(&session.public_base_element, revealed_share);
+            assert!(group::element_eq(&lhs, &share_pk), error::invalid_argument(E_INVALID_REVEALED_SHARE));
+        };
+        session.share_pks.push_back(share_pk);
     }
 
     fun build_powers_of_x(scheme: u8, x: &group::Scalar, t: u64): vector<group::Scalar> {

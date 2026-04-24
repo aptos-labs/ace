@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use tokio::sync::oneshot;
 use vss_common::pke::{pke_decrypt, BcsCiphertext};
-use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS};
+use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
 use vss_common::vss_types::feldman_verify;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
@@ -89,6 +89,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         match session.state_code {
             STATE_DEALER_DEAL => {
                 println!("vss-recipient: session in DEALER_DEAL, waiting...");
+            }
+            STATE_VERIFY_DEALER_OPENING => {
+                println!("vss-recipient: session in VERIFY_DEALER_OPENING, waiting...");
             }
             STATE_RECIPIENT_ACK => {
                 let already_acked = session

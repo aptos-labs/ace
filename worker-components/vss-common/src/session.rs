@@ -11,8 +11,9 @@ pub const SCHEME_BLS12381G2: u8 = 1;
 
 pub const STATE_DEALER_DEAL: u8 = 0;
 pub const STATE_RECIPIENT_ACK: u8 = 1;
-pub const STATE_SUCCESS: u8 = 2;
-pub const STATE_FAILED: u8 = 3;
+pub const STATE_VERIFY_DEALER_OPENING: u8 = 2;
+pub const STATE_SUCCESS: u8 = 3;
+pub const STATE_FAILED: u8 = 4;
 
 pub const ACK_WINDOW_MICROS: u64 = 5_000_000;
 
@@ -154,7 +155,7 @@ impl Session {
     /// Active states where the skeleton client should keep working.
     #[inline]
     pub fn is_in_progress(&self) -> bool {
-        matches!(self.state_code, STATE_DEALER_DEAL | STATE_RECIPIENT_ACK)
+        matches!(self.state_code, STATE_DEALER_DEAL | STATE_RECIPIENT_ACK | STATE_VERIFY_DEALER_OPENING)
     }
 }
 

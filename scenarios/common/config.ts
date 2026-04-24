@@ -52,4 +52,4 @@ export const CHAIN_ID = 4; // localnet
 
 export const NUM_WORKERS = 4;
 export const THRESHOLD = 3;
-export const WORKER_BASE_PORT = 9000;
+export const WORKER_BASE_PORT = 19000;

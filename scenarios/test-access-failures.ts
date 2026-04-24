@@ -51,6 +51,8 @@ import {
     deployContracts,
     startLocalnet,
     getNetworkState,
+    proposeAndApprove,
+    serializeNewSecretProposal,
 } from './common/helpers';
 import {
     deployContract,
@@ -147,7 +149,7 @@ async function main() {
             await submitTxn({
                 signer: adminAccount,
                 entryFunction: `${adminAddr}::network::start_initial_epoch`,
-                args: [epoch0Addrs, EPOCH0_THRESHOLD],
+                args: [epoch0Addrs, EPOCH0_THRESHOLD, 600],
             }),
             'network::start_initial_epoch',
         );
@@ -166,14 +168,13 @@ async function main() {
         }
         await sleep(2000);
 
-        step(7, 'Admin creates keypair-0 DKG');
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::new_secret`,
-                args: [0],
-            }),
-            'network::new_secret (keypair-0)',
+        step(7, 'Admin proposes keypair-0; workers 0,1 approve');
+        const epoch0WorkerAccounts = EPOCH0_WORKER_INDICES.map(i => workerAccounts[i]);
+        await proposeAndApprove(
+            adminAccount,
+            epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD),
+            adminAddr,
+            serializeNewSecretProposal(0),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done', async () => {

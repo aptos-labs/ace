@@ -5,7 +5,7 @@
  * Long-running local network for development / manual exploration.
  *
  * Scenario:
- *   Committee: [A, B, C]  threshold=2  epoch_duration_secs=120 (2 min)
+ *   Committee: [A, B, C]  threshold=2  resharing_interval_secs=120 (2 min)
  *   Secrets: 1 (scheme=0, BLS12-381 G1)
  *
  * Flow:
@@ -13,13 +13,13 @@
  *   2. Fund 1 admin + 3 worker accounts.
  *   3. Deploy pke, worker_config, group, vss, dkg, dkr, network.
  *   4. Register PKE enc keys for all 3 workers.
- *   5. Admin calls initialize(epoch_duration_secs=120) — enables auto-rotation.
- *   6. Build Rust workspace.
- *   7. Spawn one network-node per worker; each writes to its own tmp log file.
+ *   5. Build Rust workspace.
+ *   6. Spawn one network-node per worker; each writes to its own tmp log file.
  *      Log paths are printed so you can `tail -f` them.
- *   8. Admin calls start_initial_epoch([A,B,C], threshold=2).
- *   9. Admin calls new_secret(0).
- *  10. Print heartbeat (epoch / secrets / dkgs) every 30 s — run until Ctrl+C.
+ *   7. Admin calls start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=120).
+ *   8. Admin proposes new_secret(0); A,B approve.
+ *   9. Wait for epoch to advance to 1 (DKG complete).
+ *  10. Print heartbeat (epoch / secrets / epoch_change) every 30 s — run until Ctrl+C.
  *
  * Usage:
  *   pnpm run-local-network-forever
@@ -42,6 +42,8 @@ import {
     sleep,
     getNetworkState,
     ed25519PrivateKeyHex,
+    proposeAndApprove,
+    serializeNewSecretProposal,
 } from './common/helpers';
 import { buildRustWorkspace } from './common/network-clients';
 
@@ -95,14 +97,6 @@ async function main() {
         })).unwrapOrThrow('Failed to register endpoint.').asSuccessOrThrow();
     }
 
-    // ── Enable auto epoch rotation (2-minute epochs) ─────────────────────────
-    log('Admin: initialize(epoch_duration_secs=120)...');
-    (await submitTxn({
-        signer: adminAccount,
-        entryFunction: `${aceContract}::network::initialize`,
-        args: [120],
-    })).unwrapOrThrow('initialize failed').asSuccessOrThrow();
-
     // ── Build Rust workspace ─────────────────────────────────────────────────
     log('Building Rust workspace...');
     await buildRustWorkspace();
@@ -139,33 +133,35 @@ async function main() {
     }
 
     // ── Start initial epoch ──────────────────────────────────────────────────
-    log('Admin: start_initial_epoch([A,B,C], threshold=2)...');
+    log('Admin: start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=120)...');
     (await submitTxn({
         signer: adminAccount,
         entryFunction: `${aceContract}::network::start_initial_epoch`,
         args: [
             workerAccounts.map(w => w.accountAddress),
             threshold,
+            120,
         ],
     })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-    // ── Create 1 secret ──────────────────────────────────────────────────────
-    log('Admin: new_secret(scheme=0)...');
-    (await submitTxn({
-        signer: adminAccount,
-        entryFunction: `${aceContract}::network::new_secret`,
-        args: [0],
-    })).unwrapOrThrow('new_secret failed').asSuccessOrThrow();
+    // ── Propose new_secret ───────────────────────────────────────────────────
+    log('Admin: propose new_secret(scheme=0); A,B approve...');
+    await proposeAndApprove(
+        adminAccount,
+        workerAccounts.slice(0, threshold),
+        aceContract,
+        serializeNewSecretProposal(0),
+    );
 
-    // ── Wait for DKG to complete ─────────────────────────────────────────────
-    log('Waiting for DKG to complete (workers are running)...');
+    // ── Wait for DKG epoch change to complete ────────────────────────────────
+    log('Waiting for DKG epoch change to complete (workers are running)...');
     const dkgDeadlineMs = Date.now() + 300_000; // 5-minute timeout
     let networkState: ace.network.State | undefined;
     while (Date.now() < dkgDeadlineMs) {
         const maybe = await getNetworkState(adminAccount.accountAddress);
         if (maybe.isOk) {
             networkState = maybe.okValue!;
-            if (networkState.dkgsInProgress.length === 0 && networkState.secrets.length >= 1) break;
+            if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
         }
         await sleep(5_000);
     }
@@ -204,7 +200,7 @@ async function main() {
         const maybeState = await getNetworkState(adminAccount.accountAddress);
         if (maybeState.isOk) {
             const s = maybeState.okValue!;
-            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  dkgs_in_progress=${s.dkgsInProgress.length}  epoch_change=${s.epochChangeState !== null ? 'in_progress' : 'none'}`);
+            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.epochChangeState !== null ? 'in_progress' : 'none'}`);
         } else {
             log(`(could not read network state: ${maybeState.errValue})`);
         }

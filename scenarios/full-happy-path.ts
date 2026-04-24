@@ -5,17 +5,19 @@
  * Full happy-path E2E test: covers SDK, network, DKG, epoch transitions, and encrypt/decrypt.
  *
  * Epoch layout:
- *   Epoch 0: workers 0,1,2  threshold=2
- *   Epoch 1: workers 1,2,3,4  threshold=3
- *   Epoch 2: workers 2,3,4  threshold=3
+ *   Epoch 0: workers 0,1,2  threshold=2  (initial)
+ *   Epoch 1: workers 0,1,2  threshold=2  (after new_secret DKG)
+ *   Epoch 2: workers 1,2,3,4  threshold=3  (after CommitteeChange 0→1)
+ *   Epoch 3: workers 1,2,3,4  threshold=3  (after new_secret DKG in epoch 2)
+ *   Epoch 4: workers 2,3,4  threshold=3  (after CommitteeChange 1→2)
  *
  * Flow:
- *   - Admin creates keypair-0 (epoch 0 DKG)
+ *   - Admin creates keypair-0 (epoch 0→1 DKG)
  *   - Alice encrypts "PING" for keypair-0 (allowlist: Bob)
- *   - Epoch change 0→1
- *   - Bob decrypts "PING" (keypair-0, epoch-1 committee)
- *   - Admin creates keypair-1 (epoch 1 DKG)
- *   - Epoch change 1→2
+ *   - Epoch change 1→2 (CommitteeChange to workers 1,2,3,4)
+ *   - Bob decrypts "PING" (keypair-0, epoch-2 committee)
+ *   - Admin creates keypair-1 (epoch 2→3 DKG)
+ *   - Epoch change 3→4 (CommitteeChange to workers 2,3,4)
  *   - Bob registers "pong-blob" (pay-to-download) and encrypts "PONG"
  *   - Alice purchases pong-blob and decrypts "PONG"
  *
@@ -49,6 +51,9 @@ import {
     deployContracts,
     startLocalnet,
     getNetworkState,
+    proposeAndApprove,
+    serializeNewSecretProposal,
+    serializeCommitteeChangeProposal,
 } from './common/helpers';
 import {
     deployContract,
@@ -120,7 +125,6 @@ async function main() {
         }
 
         // ── Step 4: Register all workers on-chain ────────────────────────────
-        // Must happen BEFORE start_initial_epoch: the contract validates has_pke_enc_key(node).
         step(4, 'Register all worker PKE keys and endpoints on-chain (before start_initial_epoch)');
         const encKeypairs = Array.from({ length: TOTAL_WORKERS }, () => pke.keygen());
         for (let i = 0; i < TOTAL_WORKERS; i++) {
@@ -151,7 +155,7 @@ async function main() {
             await submitTxn({
                 signer: adminAccount,
                 entryFunction: `${adminAddr}::network::start_initial_epoch`,
-                args: [epoch0Addrs, EPOCH0_THRESHOLD],
+                args: [epoch0Addrs, EPOCH0_THRESHOLD, 600],
             }),
             'network::start_initial_epoch',
         );
@@ -180,22 +184,20 @@ async function main() {
         step('6c', 'Wait for workers to initialize');
         await sleep(2000);
 
-        // ── Step 7: Admin creates keypair-0 DKG ──────────────────────────────
-        // Workers watch chain state and complete the DKG automatically (call touch() when done).
-        step(7, 'Admin creates keypair-0 DKG (scheme=0, BLS12-381 G1)');
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::new_secret`,
-                args: [0 /* scheme: BLS12-381 G1 */],
-            }),
-            'network::new_secret (keypair-0)',
+        // ── Step 7: Admin proposes keypair-0 (new_secret) ────────────────────
+        step(7, 'Admin proposes keypair-0 (scheme=0, BLS12-381 G1); workers 0,1 approve');
+        const epoch0ApproverAccounts = EPOCH0_WORKER_INDICES.slice(0, EPOCH0_THRESHOLD).map(i => workerAccounts[i]);
+        await proposeAndApprove(
+            adminAccount,
+            epoch0ApproverAccounts,
+            adminAddr,
+            serializeNewSecretProposal(0),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
-        await waitFor('keypair-0 DKG done (secrets.length >= 1)', async () => {
+        await waitFor('keypair-0 DKG done (epoch advances to 1)', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.secrets.length >= 1;
+            return stateResult.okValue!.epoch === 1;
         }, 90_000);
         const state0 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-0 DKG');
         const keypair0Id = state0.secrets[0];
@@ -265,29 +267,28 @@ async function main() {
         const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
-        // ── Step 11: Epoch change 0→1 ─────────────────────────────────────────
-        // Workers 1,2,3,4 form the new committee; worker 0 leaves.
-        step(11, `Epoch change 0→1 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD})`);
-        const epoch1Addrs = EPOCH1_WORKER_INDICES.map(i => workerAccounts[i].accountAddress.toStringLong());
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::start_epoch_change`,
-                args: [epoch1Addrs, EPOCH1_THRESHOLD],
-            }),
-            'network::start_epoch_change (0→1)',
+        // ── Step 11: Epoch change 1→2 (CommitteeChange to workers 1,2,3,4) ───
+        step(11, `Epoch change 1→2 (workers ${EPOCH1_WORKER_INDICES}, threshold=${EPOCH1_THRESHOLD})`);
+        // Still epoch 1 committee [0,1,2], threshold=2
+        await proposeAndApprove(
+            adminAccount,
+            epoch0ApproverAccounts,
+            adminAddr,
+            serializeCommitteeChangeProposal(
+                EPOCH1_WORKER_INDICES.map(i => workerAccounts[i].accountAddress),
+                EPOCH1_THRESHOLD,
+            ),
         );
-        // Workers run DKR automatically and call touch() when done.
-        await waitFor('epoch 1', async () => {
+        await waitFor('epoch 2', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 1;
+            return stateResult.okValue!.epoch === 2;
         }, 120_000);
-        console.log('  Epoch advanced to 1');
-        await sleep(30000); // workers re-derive shares for epoch-1 committee
+        console.log('  Epoch advanced to 2');
+        await sleep(30000); // workers re-derive shares for epoch-2 committee
 
-        // ── Step 12: Bob decrypts "PING" (keypair-0, epoch-1 committee) ───────
-        step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee)');
+        // ── Step 12: Bob decrypts "PING" (keypair-0, epoch-2 committee) ───────
+        step(12, 'Bob decrypts "PING" (keypair-0, epoch-2 committee)');
         {
             const msgToSign = pingFdd.toPrettyMessage();
             const pingProof = ace_ex.ProofOfPermission.createAptos({
@@ -310,45 +311,44 @@ async function main() {
             console.log('  Bob decrypted PING ✓');
         }
 
-        // ── Step 13: Admin creates keypair-1 DKG in epoch 1 ──────────────────
-        step(13, 'Admin creates keypair-1 DKG in epoch 1');
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::new_secret`,
-                args: [0 /* scheme: BLS12-381 G1 */],
-            }),
-            'network::new_secret (keypair-1)',
+        // ── Step 13: Admin proposes keypair-1 in epoch 2 ─────────────────────
+        step(13, 'Admin proposes keypair-1 in epoch 2; workers 1,2,3 approve');
+        const epoch1ApproverAccounts = EPOCH1_WORKER_INDICES.slice(0, EPOCH1_THRESHOLD).map(i => workerAccounts[i]);
+        await proposeAndApprove(
+            adminAccount,
+            epoch1ApproverAccounts,
+            adminAddr,
+            serializeNewSecretProposal(0),
         );
-        await waitFor('keypair-1 DKG done (secrets.length >= 2)', async () => {
+        await waitFor('keypair-1 DKG done (epoch advances to 3)', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.secrets.length >= 2;
+            return stateResult.okValue!.epoch === 3;
         }, 90_000);
         const state1 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-1 DKG');
         const keypair1Id = state1.secrets[1];
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-1
 
-        // ── Step 14: Epoch change 1→2 ─────────────────────────────────────────
-        // Workers 2,3,4 form the new committee; worker 1 leaves.
-        step(14, `Epoch change 1→2 (workers ${EPOCH2_WORKER_INDICES}, threshold=${EPOCH2_THRESHOLD})`);
-        const epoch2Addrs = EPOCH2_WORKER_INDICES.map(i => workerAccounts[i].accountAddress.toStringLong());
-        assertTxnSuccess(
-            await submitTxn({
-                signer: adminAccount,
-                entryFunction: `${adminAddr}::network::start_epoch_change`,
-                args: [epoch2Addrs, EPOCH2_THRESHOLD],
-            }),
-            'network::start_epoch_change (1→2)',
+        // ── Step 14: Epoch change 3→4 (CommitteeChange to workers 2,3,4) ─────
+        step(14, `Epoch change 3→4 (workers ${EPOCH2_WORKER_INDICES}, threshold=${EPOCH2_THRESHOLD})`);
+        // Still epoch 3 committee [1,2,3,4], threshold=3
+        await proposeAndApprove(
+            adminAccount,
+            epoch1ApproverAccounts,
+            adminAddr,
+            serializeCommitteeChangeProposal(
+                EPOCH2_WORKER_INDICES.map(i => workerAccounts[i].accountAddress),
+                EPOCH2_THRESHOLD,
+            ),
         );
-        await waitFor('epoch 2', async () => {
+        await waitFor('epoch 4', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
             if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 2;
+            return stateResult.okValue!.epoch === 4;
         }, 120_000);
-        console.log('  Epoch advanced to 2');
-        await sleep(30000); // workers re-derive shares for epoch-2 committee
+        console.log('  Epoch advanced to 4');
+        await sleep(30000); // workers re-derive shares for epoch-4 committee
 
         // ── Step 15: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
         step(15, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');

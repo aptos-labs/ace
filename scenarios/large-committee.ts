@@ -16,6 +16,7 @@ import * as ace from '@aptos-labs/ace-sdk';
 import {
     startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep,
     getNetworkState, getDKGSession, getDKRSession,
+    proposeAndApprove, serializeNewSecretProposal, serializeCommitteeChangeProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
@@ -63,28 +64,29 @@ async function main() {
         (await submitTxn({
             signer: adminAccount,
             entryFunction: `${aceContract}::network::start_initial_epoch`,
-            args: [workerAccounts.map(w => w.accountAddress), THRESHOLD],
+            args: [workerAccounts.map(w => w.accountAddress), THRESHOLD, 600],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        log('Admin: new_secret(scheme=0).');
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::new_secret`,
-            args: [0],
-        })).unwrapOrThrow('new_secret failed').asSuccessOrThrow();
+        log('Admin: propose new_secret(scheme=0); threshold approvers sign.');
+        await proposeAndApprove(
+            adminAccount,
+            workerAccounts.slice(0, THRESHOLD),
+            aceContract,
+            serializeNewSecretProposal(0),
+        );
 
-        log('Poll until DKG completes (deadline: 5 min).');
+        log('Poll until DKG epoch change completes (deadline: 5 min).');
         const dkgDeadlineMillis = Date.now() + 300_000;
         let networkState: ace.network.State | undefined;
         while (Date.now() < dkgDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
             if (maybeState.isOk) {
                 networkState = maybeState.okValue!;
-                if (networkState.dkgsInProgress.length === 0 && networkState.secrets.length >= 1) break;
+                if (networkState.epochChangeState === null && networkState.secrets.length >= 1) break;
             }
             await sleep(5_000);
         }
-        if (!networkState || networkState.dkgsInProgress.length !== 0 || networkState.secrets.length < 1) {
+        if (!networkState || networkState.secrets.length < 1) {
             throw `DKG did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 
@@ -95,25 +97,30 @@ async function main() {
         if (!baselinePk) throw 'DKG resultPk absent despite state=DONE';
         log(`DKG complete. resultPk=${baselinePk.toHex()}`);
 
-        log(`Admin: start_epoch_change(same ${NUM_WORKERS} workers, threshold=${THRESHOLD}).`);
-        (await submitTxn({
-            signer: adminAccount,
-            entryFunction: `${aceContract}::network::start_epoch_change`,
-            args: [workerAccounts.map(w => w.accountAddress), THRESHOLD],
-        })).unwrapOrThrow('start_epoch_change failed').asSuccessOrThrow();
+        // After new_secret, cur_nodes = same workers, cur_epoch = 1. Propose CommitteeChange (same workers).
+        log(`Admin: propose CommitteeChange(same ${NUM_WORKERS} workers, threshold=${THRESHOLD}); threshold approvers sign.`);
+        await proposeAndApprove(
+            adminAccount,
+            workerAccounts.slice(0, THRESHOLD),
+            aceContract,
+            serializeCommitteeChangeProposal(
+                workerAccounts.map(w => w.accountAddress),
+                THRESHOLD,
+            ),
+        );
 
-        log('Poll until epoch advances to 1 (deadline: 5 min).');
+        log('Poll until epoch advances to 2 (deadline: 5 min).');
         const dkrDeadlineMillis = Date.now() + 300_000;
         let finalState: ace.network.State | undefined;
         while (Date.now() < dkrDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
             if (maybeState.isOk) {
                 finalState = maybeState.okValue!;
-                if (finalState.epoch === 1) break;
+                if (finalState.epoch === 2) break;
             }
             await sleep(5_000);
         }
-        if (!finalState || finalState.epoch !== 1) {
+        if (!finalState || finalState.epoch !== 2) {
             throw `Epoch change did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 

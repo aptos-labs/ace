@@ -33,6 +33,10 @@ module ace::group {
 
     // ── Scheme accessors ─────────────────────────────────────────────────────
 
+    public fun scheme_supported(scheme: u8): bool {
+        scheme == SCHEME__BLS12381G1
+    }
+
     public fun scalar_scheme(s: &Scalar): u8 {
         match (s) {
             Scalar::Bls12381G1(_) => SCHEME__BLS12381G1,

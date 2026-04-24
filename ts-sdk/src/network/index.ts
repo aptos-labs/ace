@@ -8,6 +8,8 @@ export class EpochChangeState {
     constructor(
         readonly nxtNodes: AccountAddress[],
         readonly nxtThreshold: number,
+        readonly nxtEpochDurationMicros: bigint,
+        readonly dkgSession: AccountAddress | null,
         readonly dkrSessions: AccountAddress[],
     ) {}
 
@@ -19,6 +21,16 @@ export class EpochChangeState {
         }
 
         const nxtThreshold = Number(deserializer.deserializeU64());
+        const nxtEpochDurationMicros = deserializer.deserializeU64();
+
+        // Option<address>: 0x00 = None, 0x01 + payload = Some
+        const dkgTag = deserializer.deserializeU8();
+        let dkgSession: AccountAddress | null = null;
+        if (dkgTag === 1) {
+            dkgSession = AccountAddress.deserialize(deserializer);
+        } else if (dkgTag !== 0) {
+            throw `dkg_session option tag must be 0 or 1, got ${dkgTag}`;
+        }
 
         const dkrSessionsLen = deserializer.deserializeUleb128AsU32();
         const dkrSessions: AccountAddress[] = [];
@@ -26,7 +38,7 @@ export class EpochChangeState {
             dkrSessions.push(AccountAddress.deserialize(deserializer));
         }
 
-        return new EpochChangeState(nxtNodes, nxtThreshold, dkrSessions);
+        return new EpochChangeState(nxtNodes, nxtThreshold, nxtEpochDurationMicros, dkgSession, dkrSessions);
     }
 }
 
@@ -34,10 +46,11 @@ export class State {
     constructor(
         readonly epoch: number,
         readonly epochStartTimeMicros: bigint,
+        readonly epochDurationMicros: bigint,
         readonly curNodes: AccountAddress[],
         readonly curThreshold: number,
         readonly secrets: AccountAddress[],
-        readonly dkgsInProgress: AccountAddress[],
+        readonly pendingProposals: AccountAddress[],
         readonly epochChangeState: EpochChangeState | null,
     ) {}
 
@@ -51,6 +64,7 @@ export class State {
             task: () => {
                 const epoch = Number(deserializer.deserializeU64());
                 const epochStartTimeMicros = deserializer.deserializeU64();
+                const epochDurationMicros = deserializer.deserializeU64();
 
                 const curNodesLen = deserializer.deserializeUleb128AsU32();
                 const curNodes: AccountAddress[] = [];
@@ -66,10 +80,10 @@ export class State {
                     secrets.push(AccountAddress.deserialize(deserializer));
                 }
 
-                const dkgsInProgressLen = deserializer.deserializeUleb128AsU32();
-                const dkgsInProgress: AccountAddress[] = [];
-                for (let i = 0; i < dkgsInProgressLen; i++) {
-                    dkgsInProgress.push(AccountAddress.deserialize(deserializer));
+                const pendingProposalsLen = deserializer.deserializeUleb128AsU32();
+                const pendingProposals: AccountAddress[] = [];
+                for (let i = 0; i < pendingProposalsLen; i++) {
+                    pendingProposals.push(AccountAddress.deserialize(deserializer));
                 }
 
                 // Option<EpochChangeState>: 0x00 = None, 0x01 + payload = Some
@@ -84,10 +98,11 @@ export class State {
                 return new State(
                     epoch,
                     epochStartTimeMicros,
+                    epochDurationMicros,
                     curNodes,
                     curThreshold,
                     secrets,
-                    dkgsInProgress,
+                    pendingProposals,
                     epochChangeState,
                 );
             },

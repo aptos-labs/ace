@@ -334,6 +334,26 @@ impl AptosRpc {
         Session::try_from_resource_json(&v)
     }
 
+    pub async fn get_apt_balance(&self, addr: &str) -> Result<u64> {
+        let url = format!("{}/view", self.base_url.trim_end_matches('/'));
+        let body = json!({
+            "function": "0x1::coin::balance",
+            "type_arguments": ["0x1::aptos_coin::AptosCoin"],
+            "arguments": [addr.trim()]
+        });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            return Err(anyhow!("get_apt_balance view failed: {}", text));
+        }
+        let v: Value = resp.json().await?;
+        let raw = v.as_array()
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("unexpected balance view response: {}", v))?;
+        raw.parse::<u64>().map_err(|e| anyhow!("parse balance: {}", e))
+    }
+
     pub async fn get_account(&self, addr: &str) -> Result<AccountInfo> {
         let url = format!(
             "{}/accounts/{}",
@@ -430,6 +450,12 @@ impl AptosRpc {
         txn_body.insert("payload".to_string(), Value::Object(payload));
         let txn_body = Value::Object(txn_body);
 
+        let balance_str = match self.get_apt_balance(sender_addr).await {
+            Ok(b) => format!("{} octas", b),
+            Err(_) => "unknown".to_string(),
+        };
+        println!("[submit] {} sender={} balance={}", function, sender_addr, balance_str);
+
         let encode_url = format!(
             "{}/transactions/encode_submission",
             self.base_url.trim_end_matches('/')
@@ -437,7 +463,7 @@ impl AptosRpc {
         let encode_resp = self.client.post(&encode_url).json(&txn_body).send().await?;
         if !encode_resp.status().is_success() {
             let body = encode_resp.text().await?;
-            return Err(anyhow!("encode_submission failed: {}", body));
+            return Err(anyhow!("[{}] encode_submission failed: {}", function, body));
         }
         let signing_msg_hex: String = encode_resp.json().await?;
         let signing_bytes = hex::decode(signing_msg_hex.trim_start_matches("0x"))?;
@@ -458,7 +484,7 @@ impl AptosRpc {
         let submit_resp = self.client.post(&submit_url).json(&submit_body).send().await?;
         if !submit_resp.status().is_success() {
             let body = submit_resp.text().await?;
-            return Err(anyhow!("submit transaction failed: {}", body));
+            return Err(anyhow!("[{}] submit transaction failed: {}", function, body));
         }
         let result: Value = submit_resp.json().await?;
         let hash = result["hash"]
@@ -466,7 +492,8 @@ impl AptosRpc {
             .ok_or_else(|| anyhow!("no hash in transaction response"))?
             .to_string();
 
-        self.wait_for_txn(&hash).await?;
+        self.wait_for_txn(&hash).await
+            .map_err(|e| anyhow!("[{}] {}", function, e))?;
         Ok(hash)
     }
 

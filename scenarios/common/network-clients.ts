@@ -3,9 +3,19 @@
 
 import { Account } from '@aptos-labs/ts-sdk';
 import { execSync, spawn, type ChildProcess } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 import { NETWORK_NODE_BINARY, LOCALNET_URL, REPO_ROOT } from './config';
 import { ed25519PrivateKeyHex } from './helpers';
+
+const _nodeLogPaths: string[] = [];
+process.on('exit', () => {
+    if (_nodeLogPaths.length === 0) return;
+    console.log('\nNode log files:');
+    for (const p of _nodeLogPaths) console.log(`  ${p}`);
+});
 
 function spawnExitZero(cmd: string, args: string[], cwd: string, label: string): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -79,9 +89,14 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));
     }
+    const logPath = path.join(os.tmpdir(), `ace-node-${accountAddr}.log`);
+    const logFd = fs.openSync(logPath, 'w');
+    _nodeLogPaths.push(logPath);
     console.log(`  $ ${NETWORK_NODE_BINARY} ${args.join(' ')} (spawn)`);
-    return spawn(NETWORK_NODE_BINARY, args, {
+    const child = spawn(NETWORK_NODE_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },
-        stdio: 'inherit',
+        stdio: ['ignore', logFd, logFd],
     });
+    fs.closeSync(logFd);
+    return child;
 }

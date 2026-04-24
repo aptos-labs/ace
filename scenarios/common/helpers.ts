@@ -157,7 +157,7 @@ export async function fundAccount(address: AccountAddress): Promise<void> {
     const aptos = createAptos();
     // Call the faucet directly so we can wait on the REST API (no indexer needed).
     const resp = await fetch(
-        `${FAUCET_URL}/mint?amount=1000000000&address=${address.toStringLong()}`,
+        `${FAUCET_URL}/mint?amount=100000000000&address=${address.toStringLong()}`,
         { method: 'POST' },
     );
     if (!resp.ok) throw new Error(`Faucet error: ${resp.status} ${await resp.text()}`);

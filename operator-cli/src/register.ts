@@ -32,11 +32,25 @@ function inferNetwork(rpcUrl: string): Network {
   return Network.CUSTOM;
 }
 
+function localFaucetUrl(rpcUrl: string): string {
+  // Derive faucet URL from the node URL (replace path and port with faucet port 8081).
+  try {
+    const u = new URL(rpcUrl);
+    u.port = '8081';
+    u.pathname = '/';
+    return u.origin;
+  } catch {
+    return 'http://127.0.0.1:8081';
+  }
+}
+
 function buildAptos(opts: RegisterOptions): Aptos {
   const network = inferNetwork(opts.rpcUrl);
   const clientConfig = opts.rpcApikey
     ? { HEADERS: { Authorization: `Bearer ${opts.rpcApikey}` } }
     : undefined;
+  // The SDK's built-in LOCAL faucet URL doesn't match the actual localnet port (8081).
+  const faucet = network === Network.LOCAL ? localFaucetUrl(opts.rpcUrl) : undefined;
 
   if (opts.gasStationKey) {
     const gasStation = new GasStationTransactionSubmitter({
@@ -46,12 +60,13 @@ function buildAptos(opts: RegisterOptions): Aptos {
     return new Aptos(new AptosConfig({
       network,
       fullnode: opts.rpcUrl,
+      faucet,
       clientConfig,
       pluginSettings: { TRANSACTION_SUBMITTER: gasStation },
     }));
   }
 
-  return new Aptos(new AptosConfig({ network, fullnode: opts.rpcUrl, clientConfig }));
+  return new Aptos(new AptosConfig({ network, fullnode: opts.rpcUrl, faucet, clientConfig }));
 }
 
 /** Call a view function; returns the result array or null if the resource doesn't exist. */

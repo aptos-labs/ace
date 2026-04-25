@@ -10,9 +10,15 @@ import type { TrackedNode } from './config.js';
 export async function runOnboarding(existingNames: string[]): Promise<TrackedNode> {
     console.log('\n  ACE Node Setup\n');
 
+    const defaultName = (() => {
+        if (!existingNames.includes('my-node')) return 'my-node';
+        let i = 2;
+        while (existingNames.includes(`my-node-${i}`)) i++;
+        return `my-node-${i}`;
+    })();
     const name = await input({
         message: 'Profile name',
-        default: 'my-node',
+        default: defaultName,
         validate: v => (existingNames.includes(v) ? `Profile "${v}" already exists` : true),
     });
 

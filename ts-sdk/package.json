@@ -7,7 +7,7 @@
   "types": "dist/common/index.d.ts",
   "exports": {
     ".": {
-      "source": "./src/index.ts",
+      "ace-source": "./src/index.ts",
       "require": {
         "types": "./dist/common/index.d.ts",
         "default": "./dist/common/index.js"

@@ -64,7 +64,7 @@ export async function runOnboarding(existingProfiles: Record<string, TrackedNode
         const usedPorts = new Set(
             Object.values(existingProfiles).map(p => p.docker?.port).filter(Boolean),
         );
-        let defaultPort = 9000;
+        let defaultPort = 19000;
         while (usedPorts.has(String(defaultPort))) defaultPort++;
 
         const usedContainerNames = new Set(

@@ -10,7 +10,7 @@ const program = new Command();
 program.name('ace').description('ACE network operator CLI').version('0.1.0');
 
 program
-    .command('node')
+    .command('nodes')
     .description('Manage your ACE nodes (add, update, delete, set default)')
     .action(() => runNodeCommand().catch(exitOnError));
 

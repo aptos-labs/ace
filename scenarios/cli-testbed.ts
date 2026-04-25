@@ -7,8 +7,8 @@
  * Flow:
  *   1. Start localnet and deploy all contracts.
  *   2. Print the RPC URL and contract address so operators can fill them
- *      into `ace node` → Add new node.
- *   3. Wait while the user runs `ace node` for each committee member
+ *      into `ace nodes` → Add new node.
+ *   3. Wait while the user runs `ace nodes` for each committee member
  *      (that wizard registers PKE enc keys and endpoints on-chain).
  *   4. Prompt for the initial committee: space-separated addresses,
  *      threshold, and epoch duration.
@@ -70,18 +70,18 @@ async function main() {
     // ── 3. Print connection info ─────────────────────────────────────────────
     log('');
     log('══════════════════════════════════════════════════════════');
-    log('  Contracts deployed. Set these in `ace node` → Add new node:');
+    log('  Contracts deployed. Set these in `ace nodes` → Add new node:');
     log('');
     log(`  Deployment API URL : ${LOCALNET_URL}`);
     log(`  Contract address   : ${aceContract}`);
     log('');
-    log('  Run `ace node` for each committee member to register their');
+    log('  Run `ace nodes` for each committee member to register their');
     log('  PKE enc key and endpoint on-chain, then return here.');
     log('══════════════════════════════════════════════════════════');
     log('');
 
     // ── 4. Collect initial epoch parameters from the user ────────────────────
-    await ask('Press Enter when all nodes have been registered via `ace node`... ');
+    await ask('Press Enter when all nodes have been registered via `ace nodes`... ');
 
     const rawAddrs = await ask('Committee addresses (space-separated): ');
     const nodeAddresses = rawAddrs

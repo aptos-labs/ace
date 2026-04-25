@@ -8,7 +8,10 @@
     "skipLibCheck": true,
     "declaration": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "paths": {
+      "@aptos-labs/ace-sdk": ["../ts-sdk/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

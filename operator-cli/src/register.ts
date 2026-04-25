@@ -109,7 +109,7 @@ export async function register(profile: NodeProfile, opts: RegisterOptions): Pro
   // Fund via faucet on localnet so the account can pay gas.
   if (inferNetwork(opts.rpcUrl) === Network.LOCAL) {
     process.stderr.write(`\nFunding account via localnet faucet...\n`);
-    await aptos.fundAccount({ accountAddress: account.accountAddress, amount: 100_000_000 });
+    await aptos.fundAccount({ accountAddress: account.accountAddress, amount: 100_000_000, options: { waitForIndexer: false } });
     process.stderr.write(`  ✓ Funded\n`);
   }
 

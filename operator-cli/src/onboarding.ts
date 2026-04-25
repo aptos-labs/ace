@@ -7,7 +7,8 @@ import { register } from './register.js';
 import { selectImage } from './docker-hub.js';
 import type { TrackedNode } from './config.js';
 
-export async function runOnboarding(existingNames: string[]): Promise<TrackedNode> {
+export async function runOnboarding(existingProfiles: Record<string, TrackedNode>): Promise<TrackedNode> {
+    const existingNames = Object.keys(existingProfiles);
     console.log('\n  ACE Node Setup\n');
 
     const defaultName = (() => {
@@ -60,8 +61,24 @@ export async function runOnboarding(existingNames: string[]): Promise<TrackedNod
         console.log();
         endpoint = await input({ message: 'Cloud Run service URL (paste after deploy completes)' });
     } else {
-        const port          = await input({ message: 'Port', default: '9000' });
-        const containerName = await input({ message: 'Container name', default: 'ace-node' });
+        const usedPorts = new Set(
+            Object.values(existingProfiles).map(p => p.docker?.port).filter(Boolean),
+        );
+        let defaultPort = 9000;
+        while (usedPorts.has(String(defaultPort))) defaultPort++;
+
+        const usedContainerNames = new Set(
+            Object.values(existingProfiles).map(p => p.docker?.containerName).filter(Boolean),
+        );
+        const defaultContainerName = (() => {
+            if (!usedContainerNames.has('ace-node')) return 'ace-node';
+            let i = 2;
+            while (usedContainerNames.has(`ace-node-${i}`)) i++;
+            return `ace-node-${i}`;
+        })();
+
+        const port          = await input({ message: 'Port', default: String(defaultPort) });
+        const containerName = await input({ message: 'Container name', default: defaultContainerName });
         dockerCfg = { containerName, port };
 
         console.log('\nRun this command to start your node:\n');

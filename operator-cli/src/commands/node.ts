@@ -25,7 +25,7 @@ export async function runNodeCommand(): Promise<void> {
         });
 
         if (selected === '__new__') {
-            const node = await runOnboarding(names);
+            const node = await runOnboarding(config.profiles);
             const cfg = loadConfig();
             cfg.profiles[node.name] = node;
             if (Object.keys(cfg.profiles).length === 1) cfg.defaultProfile = node.name;

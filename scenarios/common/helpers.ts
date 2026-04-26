@@ -170,6 +170,40 @@ export async function fundAccount(address: AccountAddress): Promise<void> {
     }
 }
 
+const KEEP_FUNDED_THRESHOLD = 500_000_000n;     // 5 APT — top up below this
+const KEEP_FUNDED_TOPUP    = 10_000_000_000n;   // 100 APT per top-up
+
+/**
+ * Starts a background interval that tops up each address via the faucet
+ * whenever its balance drops below the threshold. Returns a cancel function.
+ */
+export function keepFunded(addresses: AccountAddress[], intervalMs = 60_000): () => void {
+    const aptos = createAptos();
+    let cancelled = false;
+
+    async function tick() {
+        if (cancelled) return;
+        for (const addr of addresses) {
+            try {
+                const [{ coin: { value } }] = await aptos.getAccountCoinsData({
+                    accountAddress: addr,
+                    options: { where: { asset_type: { _eq: '0x1::aptos_coin::AptosCoin' } } },
+                }) as any;
+                if (BigInt(value) < KEEP_FUNDED_THRESHOLD) {
+                    await fetch(`${FAUCET_URL}/mint?amount=${KEEP_FUNDED_TOPUP}&address=${addr.toStringLong()}`, { method: 'POST' });
+                    log(`keepFunded: topped up ${addr.toStringLong().slice(0, 10)}...`);
+                }
+            } catch {
+                // non-fatal — try again next tick
+            }
+        }
+        if (!cancelled) setTimeout(tick, intervalMs);
+    }
+
+    setTimeout(tick, intervalMs);
+    return () => { cancelled = true; };
+}
+
 export async function callView(aptos: Aptos, contractAddr: string, mod: string, fn: string, extraArgs: any[]): Promise<any[]> {
     return aptos.view({
         payload: {

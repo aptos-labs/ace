@@ -36,6 +36,7 @@ import { NETWORK_NODE_BINARY, LOCALNET_URL } from './common/config';
 import {
     startLocalnet,
     fundAccount,
+    keepFunded,
     log,
     deployContracts,
     submitTxn,
@@ -131,6 +132,9 @@ async function main() {
 
         log(`Worker ${i} (${accountAddr.slice(0, 10)}...) log: tail -f ${logPath}`);
     }
+
+    // ── Keep all accounts funded ─────────────────────────────────────────────
+    keepFunded(accounts.map(a => a.accountAddress));
 
     // ── Start initial epoch ──────────────────────────────────────────────────
     log('Admin: start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=120)...');

@@ -7,6 +7,7 @@
   "types": "dist/common/index.d.ts",
   "exports": {
     ".": {
+
       "require": {
         "types": "./dist/common/index.d.ts",
         "default": "./dist/common/index.js"

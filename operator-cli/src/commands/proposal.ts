@@ -1,26 +1,35 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { select, input, confirm } from '@inquirer/prompts';
+import { input, confirm } from '@inquirer/prompts';
+import {
+    createPrompt, useState, useKeypress,
+    isUpKey, isDownKey, isEnterKey,
+} from '@inquirer/core';
+import { escSelect, isEscapeKey, useResizeClear } from '../esc-select.js';
+import { timedSelect } from '../timed-select.js';
 import { AccountAddress } from '@aptos-labs/ts-sdk';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
-import { loadConfig, resolveProfile } from '../config.js';
+import { loadConfig, type TrackedNode } from '../config.js';
 import { NetworkClient, type ProposalInput } from '../network-client.js';
 
-export async function runProposalCommand(opts: { profile?: string }): Promise<void> {
-    const config = loadConfig();
-    const profile = resolveProfile(config, opts.profile);
-    const client = new NetworkClient(profile).withSigner();
+export async function runProposalCommand(node: TrackedNode): Promise<void> {
+    const client = NetworkClient.fromNode(node);
+    const activeAddr = node.accountAddr;
 
-    let state = await client.getNetworkState();
+    let state: aceNetwork.State;
+    try {
+        state = await client.getNetworkState();
+    } catch (e) {
+        const msg = String((e as any)?.message ?? e);
+        const notFound = msg.includes('resource_not_found') || msg.includes('RESOURCE_DOES_NOT_EXIST') || msg.includes('NOT_FOUND') || (e as any)?.data?.vm_error_code === 4008;
+        console.log(notFound ? '\n  Network not initialized.\n' : `\n  Error: ${msg}\n`);
+        return;
+    }
 
-    // eslint-disable-next-line no-constant-condition
     while (true) {
-        const isCommitteeMember = state.curNodes.some(
-            n => n.toStringLong() === profile.accountAddr,
-        );
+        const isCommitteeMember = state.curNodes.some(n => n.toStringLong() === activeAddr);
 
-        // Fetch proposal details for the list view
         const proposalItems = await Promise.all(
             state.pendingProposals.map(async addr => {
                 try {
@@ -39,16 +48,19 @@ export async function runProposalCommand(opts: { profile?: string }): Promise<vo
             console.log('  ⚠  Epoch change in progress — no new proposals until next epoch\n');
         }
 
-        const selected = await select<string>({
+        const selected = await timedSelect({
             message: `Proposals  (epoch ${state.epoch})`,
+            getTimerLabel: () => epochTimer(state),
             choices: [
                 ...proposalItems,
                 { name: '+ Create new proposal', value: '__new__' },
-                { name: '← Exit',                value: '__exit__' },
+                { name: '↺ Refresh',             value: '__refresh__' },
+                { name: '← Back',                value: '__back__' },
             ],
         });
 
-        if (selected === '__exit__') return;
+        if (selected === null || selected === '__back__') return;
+        if (selected === '__refresh__') { state = await client.getNetworkState(); continue; }
 
         if (selected === '__new__') {
             if (!isCommitteeMember) {
@@ -59,42 +71,47 @@ export async function runProposalCommand(opts: { profile?: string }): Promise<vo
                 const proposal = await buildProposal(state);
                 if (proposal) {
                     console.log('\n  Submitting proposal...');
-                    const { hash, proposalAddr } = await client.submitNewProposal(proposal);
-                    console.log(`  ✓ Proposal submitted (txn: ${hash})`);
-                    if (proposalAddr) {
-                        console.log(`  Proposal address: ${proposalAddr}`);
-                        console.log('  Share this address in your coordination channel so committee members can approve.\n');
+                    try {
+                        const { hash, proposalAddr } = await client.submitNewProposal(proposal);
+                        console.log(`  ✓ Proposal submitted (txn: ${hash})`);
+                        if (proposalAddr) {
+                            console.log(`  Proposal address: ${proposalAddr}`);
+                            console.log('  Share this address with committee members so they can approve.');
+                        }
+                    } catch (e) {
+                        console.error(`  ✗ Failed to submit proposal: ${e instanceof Error ? e.message : String(e)}`);
                     }
+                    console.log();
                 }
             }
             state = await client.getNetworkState();
             continue;
         }
 
-        // Proposal detail view
         const addr = AccountAddress.fromString(selected);
         try {
             const ps = await client.getProposalState(addr);
-            printProposalDetails(ps, addr, state.curThreshold, config.profiles);
+            const cfg = loadConfig();
 
-            const alreadyVoted = ps.voters.some(v => v.toStringLong() === profile.accountAddr);
+            const alreadyVoted = ps.voters.some(v => v.toStringLong() === activeAddr);
             const canApprove = isCommitteeMember && !alreadyVoted && !ps.executed;
 
-            type DetailAction = 'approve' | 'back';
-            const action = await select<DetailAction>({
-                message: 'Action',
-                choices: [
-                    ...(canApprove ? [{ name: 'Approve', value: 'approve' as DetailAction }] : []),
-                    { name: '← Back', value: 'back' },
-                ],
+            const action = await proposalDetailView({
+                ps, addr, threshold: state.curThreshold,
+                nodes: cfg.nodes, rpcUrl: node.rpcUrl, aceAddr: node.aceAddr, canApprove,
             });
 
             if (action === 'approve') {
                 const ok = await confirm({ message: 'Send approval transaction?', default: true });
                 if (ok) {
                     console.log('\n  Submitting approval...');
-                    const hash = await client.submitApproveProposal(addr);
-                    console.log(`  ✓ Approved (txn: ${hash})\n`);
+                    try {
+                        const hash = await client.submitApproveProposal(addr);
+                        console.log(`  ✓ Approved (txn: ${hash})`);
+                    } catch (e) {
+                        console.error(`  ✗ Failed to approve: ${e instanceof Error ? e.message : String(e)}`);
+                    }
+                    console.log();
                 }
             }
         } catch (e) {
@@ -103,6 +120,93 @@ export async function runProposalCommand(opts: { profile?: string }): Promise<vo
 
         state = await client.getNetworkState();
     }
+}
+
+// ── Proposal detail view (createPrompt-based) ─────────────────────────────────
+
+type ProposalDetailAction = 'approve' | 'back';
+
+interface ProposalDetailViewConfig {
+    ps: aceNetwork.ProposalState;
+    addr: AccountAddress;
+    threshold: number;
+    nodes: Record<string, TrackedNode>;
+    rpcUrl: string;
+    aceAddr: string;
+    canApprove: boolean;
+}
+
+const proposalDetailView: (cfg: ProposalDetailViewConfig) => Promise<ProposalDetailAction> =
+    createPrompt<ProposalDetailAction, ProposalDetailViewConfig>((cfg, done) => {
+        useResizeClear();
+        const [cursor, setCursor] = useState(0);
+
+        const { ps, addr, threshold, nodes, rpcUrl, aceAddr, canApprove } = cfg;
+
+        const choices: Array<{ name: string; value: ProposalDetailAction }> = [
+            ...(canApprove ? [{ name: 'Approve', value: 'approve' as ProposalDetailAction }] : []),
+            { name: '← Back', value: 'back' as ProposalDetailAction },
+        ];
+        const safeCursor = Math.min(cursor, choices.length - 1);
+
+        useKeypress(key => {
+            if (isEscapeKey(key)) done('back');
+            if (isUpKey(key))    setCursor(Math.max(0, safeCursor - 1));
+            if (isDownKey(key))  setCursor(Math.min(choices.length - 1, safeCursor + 1));
+            if (isEnterKey(key)) done(choices[safeCursor]!.value);
+        });
+
+        const lines: string[] = [];
+        lines.push(`Proposal : ${addr.toStringLong()}`);
+        lines.push(`Epoch    : ${ps.epoch}`);
+        lines.push(`Proposer : ${addrWithName(ps.proposer.toStringLong(), nodes, rpcUrl, aceAddr)}`);
+        lines.push(`Type     : ${ps.proposal.kind}`);
+
+        switch (ps.proposal.kind) {
+            case 'CommitteeChange':
+                lines.push('Nodes    :');
+                for (const n of ps.proposal.nodes) {
+                    lines.push(`  ${addrWithName(n.toStringLong(), nodes, rpcUrl, aceAddr)}`);
+                }
+                lines.push(`Threshold: ${ps.proposal.threshold}`);
+                break;
+            case 'ResharingIntervalUpdate':
+                lines.push(`Interval : ${ps.proposal.newIntervalSecs}s`);
+                break;
+            case 'NewSecret':
+                lines.push(`Scheme   : ${ps.proposal.scheme}  (${schemeDesc(ps.proposal.scheme)})`);
+                break;
+            case 'SecretDeactivation':
+                lines.push(`Keypair  : ${ps.proposal.originalDkgAddr.toStringLong()}`);
+                break;
+        }
+
+        lines.push(`Votes    : ${ps.voters.length}/${threshold}`);
+        for (const v of ps.voters) {
+            lines.push(`  ${addrWithName(v.toStringLong(), nodes, rpcUrl, aceAddr)}`);
+        }
+        lines.push(`Executed : ${ps.executed}`);
+
+        lines.push('');
+        lines.push('─'.repeat(50));
+        for (let i = 0; i < choices.length; i++) {
+            lines.push(i === safeCursor ? `\x1b[36m❯ ${choices[i]!.name}\x1b[0m` : `  ${choices[i]!.name}`);
+        }
+
+        return lines.join('\n');
+    });
+
+function epochTimer(state: aceNetwork.State): string {
+    if (state.isEpochChanging()) return 'epoch change in progress';
+    const nowMs = Date.now();
+    const startMs = Number(state.epochStartTimeMicros / 1000n);
+    const durationMs = Number(state.epochDurationMicros / 1000n);
+    const remainingMs = durationMs - (nowMs - startMs);
+    if (remainingMs <= 0) return 'epoch expired';
+    const s = Math.round(remainingMs / 1000);
+    if (s < 60)   return `${s}s left`;
+    if (s < 3600) return `${Math.round(s / 60)}m left`;
+    return `${Math.round(s / 3600)}h left`;
 }
 
 function proposalLabel(p: aceNetwork.ProposalVariant): string {
@@ -118,42 +222,8 @@ function proposalLabel(p: aceNetwork.ProposalVariant): string {
     }
 }
 
-function printProposalDetails(
-    ps: aceNetwork.ProposalState,
-    addr: AccountAddress,
-    threshold: number,
-    profiles: Record<string, { accountAddr: string; name: string }>,
-): void {
-    console.log();
-    console.log(`  Proposal : ${addr.toStringLong()}`);
-    console.log(`  Epoch    : ${ps.epoch}`);
-    console.log(`  Proposer : ${addrWithName(ps.proposer.toStringLong(), profiles)}`);
-    console.log(`  Type     : ${ps.proposal.kind}`);
-    switch (ps.proposal.kind) {
-        case 'CommitteeChange':
-            console.log('  Nodes    :');
-            for (const n of ps.proposal.nodes) console.log(`    ${addrWithName(n.toStringLong(), profiles)}`);
-            console.log(`  Threshold: ${ps.proposal.threshold}`);
-            break;
-        case 'ResharingIntervalUpdate':
-            console.log(`  Interval : ${ps.proposal.newIntervalSecs}s`);
-            break;
-        case 'NewSecret':
-            console.log(`  Scheme   : ${ps.proposal.scheme}  (${schemeDesc(ps.proposal.scheme)})`);
-            break;
-        case 'SecretDeactivation':
-            console.log(`  Keypair  : ${ps.proposal.originalDkgAddr.toStringLong()}`);
-            break;
-    }
-    console.log(`  Votes    : ${ps.voters.length}/${threshold}`);
-    for (const v of ps.voters) console.log(`    ${addrWithName(v.toStringLong(), profiles)}`);
-    console.log(`  Executed : ${ps.executed}`);
-    console.log();
-}
-
 async function buildProposal(state: aceNetwork.State): Promise<ProposalInput | null> {
-    type ProposalKind = ProposalInput['kind'] | 'cancel';
-    const kind = await select<ProposalKind>({
+    const kind = await escSelect({
         message: 'Proposal type',
         choices: [
             { name: 'NewSecret — generate a new keypair',               value: 'NewSecret' },
@@ -164,18 +234,19 @@ async function buildProposal(state: aceNetwork.State): Promise<ProposalInput | n
         ],
     });
 
-    if (kind === 'cancel') return null;
+    if (kind === null || kind === 'cancel') return null;
 
     switch (kind) {
         case 'NewSecret': {
-            const scheme = await select<number>({
+            const scheme = await escSelect({
                 message: 'Scheme',
                 choices: [
-                    { name: '0 — BF BLS12-381 (short public key)', value: 0 },
-                    { name: '1 — BF BLS12-381 (short identity)',   value: 1 },
+                    { name: '0 — BF BLS12-381 (short public key)', value: '0' },
+                    { name: '1 — BF BLS12-381 (short identity)',   value: '1' },
                 ],
             });
-            return { kind: 'NewSecret', scheme };
+            if (scheme === null) return null;
+            return { kind: 'NewSecret', scheme: Number(scheme) };
         }
 
         case 'CommitteeChange': {
@@ -220,7 +291,7 @@ async function buildProposal(state: aceNetwork.State): Promise<ProposalInput | n
 
         case 'SecretDeactivation': {
             if (state.secrets.length > 0) {
-                console.log('\nActive keypairs (original DKG session address = keypair ID):');
+                console.log('\nActive keypairs:');
                 for (const s of state.secrets) console.log(`  ${s.toStringLong()}`);
                 console.log();
             } else {
@@ -228,19 +299,21 @@ async function buildProposal(state: aceNetwork.State): Promise<ProposalInput | n
                 return null;
             }
             const addr = await input({
-                message: 'Original DKG session address (keypair ID)',
+                message: 'Keypair ID (original DKG session address)',
                 validate: v => {
                     try { AccountAddress.fromString(v.trim()); return true; } catch { return 'Invalid address'; }
                 },
             });
             return { kind: 'SecretDeactivation', originalDkgAddr: AccountAddress.fromString(addr.trim()) };
         }
+
+        default: return null;
     }
 }
 
-function addrWithName(addr: string, profiles: Record<string, { accountAddr: string; name: string }>): string {
-    const match = Object.values(profiles).find(p => p.accountAddr === addr);
-    return match ? `${addr}  "${match.name}"` : addr;
+function addrWithName(addr: string, nodes: Record<string, TrackedNode>, rpcUrl: string, aceAddr: string): string {
+    const match = Object.values(nodes).find(n => n.accountAddr === addr && n.rpcUrl === rpcUrl && n.aceAddr === aceAddr);
+    return match?.alias ? `${addr}  "${match.alias}"` : addr;
 }
 
 function shortAddr(addr: string): string {

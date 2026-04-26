@@ -24,7 +24,7 @@ import * as readline from 'readline';
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import { type ChildProcess } from 'child_process';
 
-import { LOCALNET_URL } from './common/config';
+import { LOCALNET_URL, FAUCET_URL } from './common/config';
 import {
     startLocalnet,
     fundAccount,
@@ -128,13 +128,22 @@ async function main() {
     log('══════════════════════════════════════════════════════════');
     log('');
 
-    // ── Heartbeat ────────────────────────────────────────────────────────────
+    // ── Heartbeat + fund current-epoch nodes ─────────────────────────────────
     while (true) {
         await sleep(30_000);
         const maybe = await getNetworkState(adminAccount.accountAddress);
         if (maybe.isOk) {
             const s = maybe.okValue!;
             log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.isEpochChanging() ? 'in_progress' : 'none'}  pending_proposals=${s.pendingProposals.length}`);
+
+            // Fund every node in the current committee so touch() never runs dry.
+            for (const node of s.curNodes) {
+                try {
+                    const addr = node.toStringLong();
+                    const resp = await fetch(`${FAUCET_URL}/mint?amount=1000000000&address=${addr}`, { method: 'POST' });
+                    if (resp.ok) log(`funded ${addr.slice(0, 10)}...`);
+                } catch { /* non-fatal */ }
+            }
         } else {
             log(`(could not read network state: ${maybe.errValue})`);
         }

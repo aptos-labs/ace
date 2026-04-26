@@ -45,21 +45,6 @@ export function serializeProposal(proposal: ProposalInput): number[] {
     return Array.from(ser.toUint8Array());
 }
 
-function buildAptos(profile: TrackedNode): Aptos {
-    const network = inferNetwork(profile.rpcUrl);
-    const clientConfig = profile.rpcApiKey
-        ? { HEADERS: { Authorization: `Bearer ${profile.rpcApiKey}` } }
-        : undefined;
-    if (profile.gasStationKey) {
-        const gs = new GasStationTransactionSubmitter({ network, apiKey: profile.gasStationKey });
-        return new Aptos(new AptosConfig({
-            network, fullnode: profile.rpcUrl, clientConfig,
-            pluginSettings: { TRANSACTION_SUBMITTER: gs },
-        }));
-    }
-    return new Aptos(new AptosConfig({ network, fullnode: profile.rpcUrl, clientConfig }));
-}
-
 function inferNetwork(rpcUrl: string): Network {
     const url = rpcUrl.toLowerCase();
     if (url.includes('mainnet')) return Network.MAINNET;
@@ -73,20 +58,42 @@ function hexToBytes(hex: string): Uint8Array {
     return new Uint8Array(Buffer.from(hex.replace(/^0x/, ''), 'hex'));
 }
 
+function buildAptos(rpcUrl: string, rpcApiKey?: string, gasStationKey?: string): Aptos {
+    const network = inferNetwork(rpcUrl);
+    const clientConfig = rpcApiKey
+        ? { HEADERS: { Authorization: `Bearer ${rpcApiKey}` } }
+        : undefined;
+    if (gasStationKey) {
+        const gs = new GasStationTransactionSubmitter({ network, apiKey: gasStationKey });
+        return new Aptos(new AptosConfig({
+            network, fullnode: rpcUrl, clientConfig,
+            pluginSettings: { TRANSACTION_SUBMITTER: gs },
+        }));
+    }
+    return new Aptos(new AptosConfig({ network, fullnode: rpcUrl, clientConfig }));
+}
+
 export class NetworkClient {
     private aptos: Aptos;
     private aceAddr: string;
     private account: Account | undefined;
 
-    constructor(private profile: TrackedNode) {
-        this.aceAddr = profile.aceAddr;
-        this.aptos = buildAptos(profile);
+    static fromNode(node: TrackedNode): NetworkClient {
+        const client = new NetworkClient(node.rpcUrl, node.aceAddr, node.rpcApiKey, node.gasStationKey);
+        if (node.accountSk) {
+            const sk = new Ed25519PrivateKey(node.accountSk);
+            client.account = Account.fromPrivateKey({ privateKey: sk });
+        }
+        return client;
     }
 
-    withSigner(): this {
-        const sk = new Ed25519PrivateKey(this.profile.accountSk);
-        this.account = Account.fromPrivateKey({ privateKey: sk });
-        return this;
+    constructor(rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string) {
+        this.aceAddr = aceAddr;
+        this.aptos   = buildAptos(rpcUrl, rpcApiKey, gasStationKey);
+    }
+
+    signerAddress(): string | undefined {
+        return this.account?.accountAddress.toStringLong();
     }
 
     async getNetworkState(): Promise<aceNetwork.State> {
@@ -111,6 +118,26 @@ export class NetworkClient {
         });
         return aceNetwork.ProposalState.fromBytes(hexToBytes(hex as string))
             .unwrapOrThrow('Failed to parse ProposalState');
+    }
+
+    async getAccountBalance(addr: string): Promise<bigint> {
+        const octas = await this.aptos.getAccountAPTAmount({ accountAddress: AccountAddress.fromString(addr) });
+        return BigInt(octas);
+    }
+
+    async getWorkerEndpoint(addr: string): Promise<string | null> {
+        try {
+            const [result] = await this.aptos.view({
+                payload: {
+                    function: `${this.aceAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [addr],
+                },
+            });
+            return result as string;
+        } catch {
+            return null;
+        }
     }
 
     async submitNewProposal(proposal: ProposalInput): Promise<{ hash: string; proposalAddr?: string }> {
@@ -149,7 +176,7 @@ export class NetworkClient {
     }
 
     private requireSigner(): Account {
-        if (!this.account) throw new Error('Call withSigner() first');
+        if (!this.account) throw new Error('No signer — node has no private key');
         return this.account;
     }
 }

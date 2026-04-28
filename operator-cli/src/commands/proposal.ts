@@ -30,19 +30,10 @@ export async function runProposalCommand(node: TrackedNode): Promise<void> {
     while (true) {
         const isCommitteeMember = state.curNodes.some(n => n.toStringLong() === activeAddr);
 
-        const proposalItems = await Promise.all(
-            state.pendingProposals.map(async addr => {
-                try {
-                    const ps = await client.getProposalState(addr);
-                    return {
-                        name: `${proposalLabel(ps.proposal)}  (${ps.voters.length}/${state.curThreshold} votes)`,
-                        value: addr.toStringLong(),
-                    };
-                } catch {
-                    return { name: addr.toStringLong(), value: addr.toStringLong() };
-                }
-            }),
-        );
+        const proposalItems = state.activeProposals().map((pv, i) => ({
+            name: `${proposalLabel(pv.proposal)}  (${pv.voteCount()}/${state.curThreshold} votes)`,
+            value: pv.votingSession.toStringLong(),
+        }));
 
         if (state.isEpochChanging()) {
             console.log('  ⚠  Epoch change in progress — no new proposals until next epoch\n');
@@ -72,12 +63,9 @@ export async function runProposalCommand(node: TrackedNode): Promise<void> {
                 if (proposal) {
                     console.log('\n  Submitting proposal...');
                     try {
-                        const { hash, proposalAddr } = await client.submitNewProposal(proposal);
+                        const { hash } = await client.submitNewProposal(proposal);
                         console.log(`  ✓ Proposal submitted (txn: ${hash})`);
-                        if (proposalAddr) {
-                            console.log(`  Proposal address: ${proposalAddr}`);
-                            console.log('  Share this address with committee members so they can approve.');
-                        }
+                        console.log('  Other committee members can vote via the Proposals menu.');
                     } catch (e) {
                         console.error(`  ✗ Failed to submit proposal: ${e instanceof Error ? e.message : String(e)}`);
                     }
@@ -88,34 +76,30 @@ export async function runProposalCommand(node: TrackedNode): Promise<void> {
             continue;
         }
 
-        const addr = AccountAddress.fromString(selected);
-        try {
-            const ps = await client.getProposalState(addr);
-            const cfg = loadConfig();
+        const pv = state.activeProposals().find(p => p.votingSession.toStringLong() === selected);
+        if (!pv) { state = await client.getNetworkState(); continue; }
+        const cfg = loadConfig();
 
-            const alreadyVoted = ps.voters.some(v => v.toStringLong() === activeAddr);
-            const canApprove = isCommitteeMember && !alreadyVoted && !ps.executed;
+        const alreadyVoted = pv.hasVoted(activeAddr, state.curNodes);
+        const canVote = isCommitteeMember && !alreadyVoted && !pv.votingPassed;
 
-            const action = await proposalDetailView({
-                ps, addr, threshold: state.curThreshold,
-                nodes: cfg.nodes, rpcUrl: node.rpcUrl, aceAddr: node.aceAddr, canApprove,
-            });
+        const action = await proposalDetailView({
+            pv, threshold: state.curThreshold,
+            nodes: cfg.nodes, rpcUrl: node.rpcUrl, aceAddr: node.aceAddr, canVote,
+        });
 
-            if (action === 'approve') {
-                const ok = await confirm({ message: 'Send approval transaction?', default: true });
-                if (ok) {
-                    console.log('\n  Submitting approval...');
-                    try {
-                        const hash = await client.submitApproveProposal(addr);
-                        console.log(`  ✓ Approved (txn: ${hash})`);
-                    } catch (e) {
-                        console.error(`  ✗ Failed to approve: ${e instanceof Error ? e.message : String(e)}`);
-                    }
-                    console.log();
+        if (action === 'vote') {
+            const ok = await confirm({ message: 'Send vote transaction?', default: true });
+            if (ok) {
+                console.log('\n  Submitting vote...');
+                try {
+                    const hash = await client.submitVote(pv.votingSession);
+                    console.log(`  ✓ Vote submitted (txn: ${hash})`);
+                } catch (e) {
+                    console.error(`  ✗ Failed to vote: ${e instanceof Error ? e.message : String(e)}`);
                 }
+                console.log();
             }
-        } catch (e) {
-            console.error(`\n  Could not fetch proposal: ${e}\n`);
         }
 
         state = await client.getNetworkState();
@@ -124,16 +108,15 @@ export async function runProposalCommand(node: TrackedNode): Promise<void> {
 
 // ── Proposal detail view (createPrompt-based) ─────────────────────────────────
 
-type ProposalDetailAction = 'approve' | 'back';
+type ProposalDetailAction = 'vote' | 'back';
 
 interface ProposalDetailViewConfig {
-    ps: aceNetwork.ProposalState;
-    addr: AccountAddress;
+    pv: aceNetwork.ProposalView;
     threshold: number;
     nodes: Record<string, TrackedNode>;
     rpcUrl: string;
     aceAddr: string;
-    canApprove: boolean;
+    canVote: boolean;
 }
 
 const proposalDetailView: (cfg: ProposalDetailViewConfig) => Promise<ProposalDetailAction> =
@@ -141,10 +124,10 @@ const proposalDetailView: (cfg: ProposalDetailViewConfig) => Promise<ProposalDet
         useResizeClear();
         const [cursor, setCursor] = useState(0);
 
-        const { ps, addr, threshold, nodes, rpcUrl, aceAddr, canApprove } = cfg;
+        const { pv, threshold, nodes, rpcUrl, aceAddr, canVote } = cfg;
 
         const choices: Array<{ name: string; value: ProposalDetailAction }> = [
-            ...(canApprove ? [{ name: 'Approve', value: 'approve' as ProposalDetailAction }] : []),
+            ...(canVote ? [{ name: 'Vote', value: 'vote' as ProposalDetailAction }] : []),
             { name: '← Back', value: 'back' as ProposalDetailAction },
         ];
         const safeCursor = Math.min(cursor, choices.length - 1);
@@ -157,35 +140,30 @@ const proposalDetailView: (cfg: ProposalDetailViewConfig) => Promise<ProposalDet
         });
 
         const lines: string[] = [];
-        lines.push(`Proposal : ${addr.toStringLong()}`);
-        lines.push(`Epoch    : ${ps.epoch}`);
-        lines.push(`Proposer : ${addrWithName(ps.proposer.toStringLong(), nodes, rpcUrl, aceAddr)}`);
-        lines.push(`Type     : ${ps.proposal.kind}`);
+        lines.push(`Session  : ${pv.votingSession.toStringLong()}`);
+        lines.push(`Type     : ${pv.proposal.kind}`);
 
-        switch (ps.proposal.kind) {
+        switch (pv.proposal.kind) {
             case 'CommitteeChange':
                 lines.push('Nodes    :');
-                for (const n of ps.proposal.nodes) {
+                for (const n of pv.proposal.nodes) {
                     lines.push(`  ${addrWithName(n.toStringLong(), nodes, rpcUrl, aceAddr)}`);
                 }
-                lines.push(`Threshold: ${ps.proposal.threshold}`);
+                lines.push(`Threshold: ${pv.proposal.threshold}`);
                 break;
             case 'ResharingIntervalUpdate':
-                lines.push(`Interval : ${ps.proposal.newIntervalSecs}s`);
+                lines.push(`Interval : ${pv.proposal.newIntervalSecs}s`);
                 break;
             case 'NewSecret':
-                lines.push(`Scheme   : ${ps.proposal.scheme}  (${schemeDesc(ps.proposal.scheme)})`);
+                lines.push(`Scheme   : ${pv.proposal.scheme}  (${schemeDesc(pv.proposal.scheme)})`);
                 break;
             case 'SecretDeactivation':
-                lines.push(`Keypair  : ${ps.proposal.originalDkgAddr.toStringLong()}`);
+                lines.push(`Keypair  : ${pv.proposal.originalDkgAddr.toStringLong()}`);
                 break;
         }
 
-        lines.push(`Votes    : ${ps.voters.length}/${threshold}`);
-        for (const v of ps.voters) {
-            lines.push(`  ${addrWithName(v.toStringLong(), nodes, rpcUrl, aceAddr)}`);
-        }
-        lines.push(`Executed : ${ps.executed}`);
+        lines.push(`Votes    : ${pv.voteCount()}/${threshold}`);
+        lines.push(`Passed   : ${pv.votingPassed}`);
 
         lines.push('');
         lines.push('─'.repeat(50));

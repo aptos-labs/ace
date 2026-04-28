@@ -21,6 +21,9 @@ local = '../dkg'
 [dependencies.DKR]
 local = '../dkr'
 
+[dependencies.Voting]
+local = '../voting'
+
 [dependencies.EpochChange]
 local = '../epoch-change'
 

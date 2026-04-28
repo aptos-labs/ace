@@ -16,7 +16,6 @@ mod http_server;
 pub mod verify;
 
 use anyhow::{anyhow, Result};
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -114,68 +113,63 @@ pub struct RunConfig {
     pub max_concurrent: Option<usize>,
 }
 
-// ── On-chain state representation ───────────────────────────────────────────
+// ── BCS mirror of ace::network::StateViewV0 ─────────────────────────────────
 
-/// Mirrors `ace::network::EpochChangeInfo`.
-struct EpochChangeInfo {
-    nxt_nodes: Vec<String>,
-    session: String,
+#[allow(dead_code)]
+#[derive(serde::Deserialize)]
+enum BcsProposal {
+    CommitteeChange { nodes: Vec<[u8; 32]>, threshold: u64 },
+    ResharingIntervalUpdate { new_interval_secs: u64 },
+    NewSecret { scheme: u8 },
+    SecretDeactivation { original_dkg_addr: [u8; 32] },
 }
 
-struct NetworkState {
+#[allow(dead_code)]
+#[derive(serde::Deserialize)]
+struct BcsProposalView {
+    proposal: BcsProposal,
+    voting_session: [u8; 32],
+    votes: Vec<bool>,
+    voting_passed: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct BcsEpochChangeView {
+    #[allow(dead_code)]
+    triggering_proposal_idx: Option<u64>,
+    session_addr: [u8; 32],
+    nxt_nodes: Vec<[u8; 32]>,
+    #[allow(dead_code)]
+    nxt_threshold: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct BcsStateViewV0 {
     epoch: u64,
     epoch_start_time_micros: u64,
     epoch_duration_micros: u64,
-    cur_nodes: Vec<String>,
-    epoch_change_info: Option<EpochChangeInfo>,
-    secrets: Vec<String>,
+    cur_nodes: Vec<[u8; 32]>,
+    #[allow(dead_code)]
+    cur_threshold: u64,
+    secrets: Vec<[u8; 32]>,
+    proposals: Vec<Option<BcsProposalView>>,
+    epoch_change_info: Option<BcsEpochChangeView>,
 }
 
-fn parse_addr_array(v: &Value) -> Vec<String> {
-    v.as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|a| normalize_account_addr(a.as_str().unwrap_or("")))
-                .collect()
-        })
-        .unwrap_or_default()
+fn addr_bytes_to_string(addr: &[u8; 32]) -> String {
+    format!("0x{}", hex::encode(addr))
 }
 
-fn parse_u64_field(data: &Value, key: &str) -> u64 {
-    data[key].as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
-}
-
-fn parse_network_state(data: &Value) -> NetworkState {
-    let epoch = parse_u64_field(data, "epoch");
-    let epoch_start_time_micros = parse_u64_field(data, "epoch_start_time_micros");
-    let epoch_duration_micros = parse_u64_field(data, "epoch_duration_micros");
-    let cur_nodes = parse_addr_array(&data["cur_nodes"]);
-    let secrets = parse_addr_array(&data["secrets"]);
-
-    // Move `Option<EpochChangeInfo>` is serialised as `{"vec": []}` or `{"vec": [item]}`.
-    let epoch_change_info = data["epoch_change_info"]["vec"]
-        .as_array()
-        .and_then(|a| a.first())
-        .map(|item| EpochChangeInfo {
-            nxt_nodes: parse_addr_array(&item["nxt_nodes"]),
-            session: normalize_account_addr(item["session"].as_str().unwrap_or("")),
-        });
-
-    NetworkState {
-        epoch,
-        epoch_start_time_micros,
-        epoch_duration_micros,
-        cur_nodes,
-        epoch_change_info,
-        secrets,
-    }
-}
-
-async fn fetch_network_state(rpc: &AptosRpc, ace: &str) -> Result<NetworkState> {
-    let data = rpc
-        .get_resource_data(ace, &format!("{}::network::State", ace))
+async fn fetch_state_view_v0(rpc: &AptosRpc, ace: &str) -> Result<BcsStateViewV0> {
+    let result = rpc
+        .call_view(&format!("{}::network::state_view_v0_bcs", ace), &[])
         .await?;
-    Ok(parse_network_state(&data))
+    let hex = result
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("expected string in state_view_v0_bcs result"))?;
+    let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+    bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode StateViewV0: {}", e))
 }
 
 // ── Task lifecycle helpers ───────────────────────────────────────────────────
@@ -321,27 +315,28 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             _ = interval.tick() => {}
         }
 
-        let state = match fetch_network_state(&rpc, &ace).await {
+        let state = match fetch_state_view_v0(&rpc, &ace).await {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("network-node: fetch state error: {:#}", e);
+                eprintln!("network-node: fetch state view error: {:#}", e);
                 continue;
             }
         };
 
-        let in_cur_nodes = state.cur_nodes.iter().any(|n| n == &account_addr);
+        let in_cur_nodes = state.cur_nodes.iter().any(|n| addr_bytes_to_string(n) == account_addr);
 
-        // Submit network::touch only when useful:
-        // - epoch_change_info is Some: apply results once child session reaches STATE__DONE.
-        // - epoch_change_info is None and epoch has timed out: trigger auto epoch-change.
-        let epoch_timed_out = {
-            let now_micros = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64;
-            now_micros >= state.epoch_start_time_micros.saturating_add(state.epoch_duration_micros)
-        };
-        if state.epoch_change_info.is_some() || epoch_timed_out {
+        // Derive touch condition entirely from the view — no extra calls needed.
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let epoch_timed_out =
+            now_micros >= state.epoch_start_time_micros.saturating_add(state.epoch_duration_micros);
+        let has_approved_proposal = state
+            .proposals
+            .iter()
+            .any(|p| p.as_ref().is_some_and(|pv| pv.voting_passed));
+        if state.epoch_change_info.is_some() || epoch_timed_out || has_approved_proposal {
             if let Err(e) = rpc
                 .submit_txn(
                     &sk,
@@ -359,18 +354,19 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
         match &state.epoch_change_info {
             Some(info) => {
+                let session = addr_bytes_to_string(&info.session_addr);
 
                 // epoch-change-cur: cur_nodes drive DKR-src + touch.
                 if in_cur_nodes {
-                    if !epoch_change_cur_tasks.contains_key(&info.session) {
+                    if !epoch_change_cur_tasks.contains_key(&session) {
                         let (tx, rx) = oneshot::channel::<()>();
-                        epoch_change_cur_tasks.insert(info.session.clone(), tx);
+                        epoch_change_cur_tasks.insert(session.clone(), tx);
                         let cfg = epoch_change_cur::RunConfig {
                             rpc_url: ec_rpc_url.clone(),
                             rpc_api_key: ec_rpc_api_key.clone(),
                             rpc_gas_key: ec_rpc_gas_key.clone(),
                             ace_contract: ace.clone(),
-                            epoch_change_session: info.session.clone(),
+                            epoch_change_session: session.clone(),
                             account_addr: account_addr.clone(),
                             account_sk_hex: ec_account_sk_hex.clone(),
                             pke_dk_hex: ec_pke_dk_hex.clone(),
@@ -380,24 +376,24 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                                 eprintln!("network-node: epoch-change-cur error: {:#}", e);
                             }
                         });
-                        println!("network-node: started epoch-change-cur for session={}", info.session);
+                        println!("network-node: started epoch-change-cur for session={}", session);
                     }
                 } else {
                     stop_tasks(&mut epoch_change_cur_tasks);
                 }
 
-                // epoch-change-nxt: nxt_nodes drive DKR-dst + optional DKG + touch.
-                let in_nxt_nodes = info.nxt_nodes.iter().any(|n| n == &account_addr);
+                // epoch-change-nxt: nxt_nodes from the view — no extra RPC call needed.
+                let in_nxt_nodes = info.nxt_nodes.iter().any(|n| addr_bytes_to_string(n) == account_addr);
                 if in_nxt_nodes {
-                    if !epoch_change_nxt_tasks.contains_key(&info.session) {
+                    if !epoch_change_nxt_tasks.contains_key(&session) {
                         let (tx, rx) = oneshot::channel::<()>();
-                        epoch_change_nxt_tasks.insert(info.session.clone(), tx);
+                        epoch_change_nxt_tasks.insert(session.clone(), tx);
                         let cfg = epoch_change_nxt::RunConfig {
                             rpc_url: ec_rpc_url.clone(),
                             rpc_api_key: ec_rpc_api_key.clone(),
                             rpc_gas_key: ec_rpc_gas_key.clone(),
                             ace_contract: ace.clone(),
-                            epoch_change_session: info.session.clone(),
+                            epoch_change_session: session.clone(),
                             account_addr: account_addr.clone(),
                             account_sk_hex: ec_account_sk_hex.clone(),
                             pke_dk_hex: ec_pke_dk_hex.clone(),
@@ -407,7 +403,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                                 eprintln!("network-node: epoch-change-nxt error: {:#}", e);
                             }
                         });
-                        println!("network-node: started epoch-change-nxt for session={}", info.session);
+                        println!("network-node: started epoch-change-nxt for session={}", session);
                     }
                 } else {
                     stop_tasks(&mut epoch_change_nxt_tasks);
@@ -420,7 +416,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         }
 
         // Update cur_nodes for the HTTP server's eval-point lookup.
-        *cur_nodes_shared.write().await = state.cur_nodes.clone();
+        *cur_nodes_shared.write().await =
+            state.cur_nodes.iter().map(addr_bytes_to_string).collect();
 
         // ── URH (UserRequestHandler) tasks ─────────────────────────────────
         // For each session address in state.secrets, maintain a background task that:
@@ -429,7 +426,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         //   3. Waits for shutdown, then removes it from keypair_shares.
 
         let active_secrets: HashSet<String> = if in_cur_nodes {
-            state.secrets.iter().cloned().collect()
+            state.secrets.iter().map(addr_bytes_to_string).collect()
         } else {
             HashSet::new()
         };

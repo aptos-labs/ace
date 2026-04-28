@@ -64,7 +64,7 @@ async function main() {
     log('Deploying contracts...');
     await deployContracts(adminAccount, [
         'pke', 'worker_config', 'group', 'fiat-shamir-transform',
-        'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network',
+        'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
     ]);
 
     // ── 3. Print connection info ─────────────────────────────────────────────
@@ -134,7 +134,7 @@ async function main() {
         const maybe = await getNetworkState(adminAccount.accountAddress);
         if (maybe.isOk) {
             const s = maybe.okValue!;
-            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.isEpochChanging() ? 'in_progress' : 'none'}  pending_proposals=${s.pendingProposals.length}`);
+            log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.isEpochChanging() ? 'in_progress' : 'none'}  proposals=${s.activeProposals().length}`);
 
             // Fund every node in the current committee so touch() never runs dry.
             for (const node of s.curNodes) {

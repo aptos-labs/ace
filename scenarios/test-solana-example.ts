@@ -75,7 +75,7 @@ async function main() {
 
         // ── Deploy contracts ─────────────────────────────────────────────────
         log('Deploying ACE contracts...');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         // ── Register PKE enc keys + HTTP endpoints ───────────────────────────
         log('Registering PKE enc keys and HTTP endpoints...');

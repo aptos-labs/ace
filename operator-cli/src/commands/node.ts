@@ -133,16 +133,11 @@ const nodeDetailView: (cfg: NodeDetailViewConfig) => Promise<NodeDetailAction> =
                     const [stateResult, bal] = await Promise.allSettled([
                         (async () => {
                             const state = await client.getNetworkState();
-                            const proposals = await Promise.all(
-                                state.pendingProposals.map(async p => {
-                                    try {
-                                        const ps = await client.getProposalState(p);
-                                        return { addr: p.toStringLong(), label: ps.proposal.kind, votes: ps.voters.length };
-                                    } catch {
-                                        return { addr: p.toStringLong(), label: '?', votes: 0 };
-                                    }
-                                }),
-                            );
+                            const proposals = state.activeProposals().map(pv => ({
+                                addr: pv.votingSession.toStringLong(),
+                                label: pv.proposal.kind,
+                                votes: pv.voteCount(),
+                            }));
                             return { state, proposals };
                         })(),
                         client.getAccountBalance(node.accountAddr),
@@ -225,7 +220,7 @@ const nodeDetailView: (cfg: NodeDetailViewConfig) => Promise<NodeDetailAction> =
             lines.push(`Epoch    : ${state.epoch}`);
             if (state.isEpochChanging()) {
                 lines.push(`Timer    : epoch change in progress`);
-                lines.push(`           session: ${state.epochChangeInfo!.session.toStringLong()}`);
+                lines.push(`           session: ${state.epochChangeInfo!.sessionAddr.toStringLong()}`);
             } else if (!epochStarted || durationMs === 0) {
                 lines.push(`Timer    : not started`);
             } else if (elapsedMs >= durationMs) {

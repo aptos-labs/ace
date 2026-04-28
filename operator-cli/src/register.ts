@@ -92,6 +92,8 @@ export async function registerOnChain(
         const txn = await aptos.transaction.build.simple({
             sender: account.accountAddress,
             data: { function: fn as `${string}::${string}::${string}`, functionArguments: args as any[] },
+            options: { replayProtectionNonce: BigInt(Date.now()) },
+            withFeePayer: !!node.gasStationKey,
         });
         const response = await aptos.signAndSubmitTransaction({ signer: account, transaction: txn });
         process.stderr.write(`  txn ${response.hash}\n`);

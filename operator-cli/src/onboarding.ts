@@ -2,10 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { input, select } from '@inquirer/prompts';
+import { execSync } from 'child_process';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
 import { selectImage } from './docker-hub.js';
 import { deriveRpcLabel, makeNodeKey, type TrackedNode, type Config } from './config.js';
+
+function defaultGcpProject(): string | undefined {
+    try {
+        const out = execSync('gcloud config get-value project 2>/dev/null', { encoding: 'utf8' }).trim();
+        return out || undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 function dockerRpcUrl(rpcUrl: string): string {
     return rpcUrl.replace(/localhost/g, 'host.docker.internal')
@@ -105,16 +115,15 @@ export async function runOnboarding(
                     name: n.alias
                         ? `${n.alias}  (${deriveRpcLabel(n.rpcUrl)})`
                         : deriveRpcLabel(n.rpcUrl),
-                    value: `${n.rpcUrl}|||${n.aceAddr}|||${n.rpcApiKey ?? ''}`,
+                    value: `${n.rpcUrl}|||${n.aceAddr}|||${n.rpcApiKey ?? ''}|||${n.gasStationKey ?? ''}`,
                 })),
                 { name: '+ Enter new network details', value: '__new__' },
             ],
         });
 
         if (chosen !== '__new__') {
-            const [rpcUrl, aceAddr, rpcApiKey] = chosen.split('|||');
-            const gasStationKey = (await input({ message: 'Gas station key (Enter to skip)' })) || undefined;
-            net = { rpcUrl: rpcUrl!, aceAddr: aceAddr!, rpcApiKey: rpcApiKey || undefined, gasStationKey };
+            const [rpcUrl, aceAddr, rpcApiKey, gasStationKey] = chosen.split('|||');
+            net = { rpcUrl: rpcUrl!, aceAddr: aceAddr!, rpcApiKey: rpcApiKey || undefined, gasStationKey: gasStationKey || undefined };
             console.log();
         } else {
             net = await promptNetworkDetails();
@@ -123,7 +132,7 @@ export async function runOnboarding(
         net = await promptNetworkDetails();
     }
 
-    const image = await selectImage();
+    const image = await selectImage() ?? 'aptoslabs/ace-node:latest';
     console.log();
 
     const platform = await select<'gcp' | 'docker'>({
@@ -139,9 +148,21 @@ export async function runOnboarding(
     let dockerCfg: TrackedNode['docker'];
 
     if (platform === 'gcp') {
-        const project     = await input({ message: 'GCP project ID' });
+        const project     = await input({ message: 'GCP project ID', default: defaultGcpProject() });
         const region      = await input({ message: 'Region', default: 'us-central1' });
-        const serviceName = await input({ message: 'Service name', default: 'ace-node' });
+        const contractPrefix = net.aceAddr.replace(/^0x/i, '').slice(0, 6);
+        const accountPrefix  = profile.accountAddr.replace(/^0x/i, '').slice(0, 6);
+        const serviceName = await input({
+            message: 'Service name',
+            default: `ace-${contractPrefix}-${accountPrefix}`,
+            validate: (val) => {
+                if (!/^[a-z]/.test(val)) return 'Must begin with a lowercase letter';
+                if (!/^[a-z][a-z0-9-]*$/.test(val)) return 'Only lowercase letters, digits, and hyphens are allowed';
+                if (val.endsWith('-')) return 'Must not end with a hyphen';
+                if (val.length >= 64) return 'Must be less than 64 characters';
+                return true;
+            },
+        });
         gcpCfg = { project, region, serviceName };
 
         console.log('\nRun this command to deploy your node:\n');
@@ -212,7 +233,26 @@ export async function runOnboarding(
 }
 
 async function promptNetworkDetails(): Promise<NetworkDetails> {
-    console.log('\nACE deployment details (ask your ACE deployer)\n');
+    console.log('\nACE deployment details\n');
+    const blob = (await input({ message: 'Paste deployment blob from admin (or Enter to fill manually)' })).trim();
+    if (blob) {
+        try {
+            const p = JSON.parse(blob) as Record<string, string>;
+            if (typeof p.rpcUrl === 'string' && typeof p.aceAddr === 'string') {
+                console.log(`  ✓ Parsed — contract ${p.aceAddr.slice(0, 10)}...\n`);
+                return {
+                    rpcUrl:        p.rpcUrl,
+                    aceAddr:       p.aceAddr,
+                    rpcApiKey:     p.rpcApiKey     || undefined,
+                    gasStationKey: p.gasStationKey || undefined,
+                };
+            }
+        } catch {
+            // fall through
+        }
+        console.log('  Could not parse blob — please fill in manually.\n');
+    }
+
     const rpcUrl        = await input({ message: 'Deployment API URL' });
     const aceAddr       = await input({ message: 'Contract address' });
     const rpcApiKey     = (await input({ message: 'API key         (Enter to skip)' })) || undefined;

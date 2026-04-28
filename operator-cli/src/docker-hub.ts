@@ -1,9 +1,13 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { select, input } from '@inquirer/prompts';
+import { input } from '@inquirer/prompts';
+import { escSelect } from './esc-select.js';
 
-export async function selectImage(currentImage?: string): Promise<string> {
+/**
+ * Returns the selected image string, or undefined if the user cancelled with [Esc].
+ */
+export async function selectImage(currentImage?: string): Promise<string | undefined> {
     process.stdout.write('Fetching available image tags...');
     let tags: string[] = [];
     try {
@@ -17,15 +21,21 @@ export async function selectImage(currentImage?: string): Promise<string> {
         process.stdout.write(' (unavailable)\n');
     }
 
-    if (tags.length > 0) {
-        return select({
-            message: 'Node image',
-            choices: tags.map(t => ({ name: t, value: t })),
-            default: currentImage && tags.includes(currentImage) ? currentImage : undefined,
-        });
-    }
-    return input({
-        message: 'Node image',
-        default: currentImage ?? 'aptoslabs/ace-node:latest',
-    });
+    const choices = [
+        ...tags.map(t => ({ name: t, value: t })),
+        { name: '+ Enter manually', value: '__manual__' },
+        { name: '← Cancel',        value: '__cancel__' },
+    ];
+
+    const selected = await escSelect({ message: 'Select image', choices });
+    if (selected === null || selected === '__cancel__') return undefined;
+
+    if (selected !== '__manual__') return selected;
+
+    // Manual entry — fall back to a plain text input
+    const manual = (await input({
+        message: 'Image (e.g. aptoslabs/ace-node:abc1234)',
+        default: currentImage,
+    })).trim();
+    return manual || undefined;
 }

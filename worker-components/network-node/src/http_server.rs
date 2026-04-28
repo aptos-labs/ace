@@ -88,7 +88,8 @@ async fn handle_request(
     if req_bytes.len() < 40 + ENC_KEY_SIZE {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(&req_bytes[0..32])));
+    let keypair_id_bytes: [u8; 32] = req_bytes[0..32].try_into().unwrap();
+    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(&keypair_id_bytes)));
 
     // 3. Parse epoch (u64 LE, 8 bytes).
     let epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
@@ -100,10 +101,13 @@ async fn handle_request(
         StatusCode::BAD_REQUEST
     })?;
 
-    // 5. Parse FullDecryptionDomain (contractId + domain = IBE identity).
-    let fdd =
-        crate::verify::parse_fdd(&req_bytes[40..]).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let fdd_bytes = &req_bytes[40..40 + fdd.byte_len];
+    // 5. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
+    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req_bytes[40..])
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    // IBE identity = keypairId || contractId || domain — binds the IDK to a specific keypair.
+    let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
+    fdd_bytes.extend_from_slice(&keypair_id_bytes);
+    fdd_bytes.extend_from_slice(&req_bytes[40..40 + fdd.byte_len]);
     // proof is between fdd and the ephemeral enc key
     let proof_bytes = &req_bytes[40 + fdd.byte_len..ek_start];
 
@@ -133,7 +137,7 @@ async fn handle_request(
     .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     // 9. Compute H_G2(fdd_bytes) ^ scalar, then encrypt the share under the client's ephemeral key.
-    let share_hex = crate::crypto::partial_extract_idk_share(fdd_bytes, &scalar_le32, eval_point)
+    let share_hex = crate::crypto::partial_extract_idk_share(&fdd_bytes, &scalar_le32, eval_point)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let share_bytes = hex::decode(&share_hex).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let resp_ct = vss_common::crypto::pke_encrypt(&ephemeral_ek, &share_bytes);

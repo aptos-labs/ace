@@ -330,16 +330,19 @@ export class ContractID {
 // }
 
 export class FullDecryptionDomain {
+    keypairId: AccountAddress;
     contractId: ContractID;
     domain: Uint8Array;
 
-    constructor({contractId, domain}: {contractId: ContractID, domain: Uint8Array}) {
+    constructor({keypairId, contractId, domain}: {keypairId: AccountAddress, contractId: ContractID, domain: Uint8Array}) {
+        this.keypairId = keypairId;
         this.contractId = contractId;
         this.domain = domain;
     }
 
     static dummy(): FullDecryptionDomain {
         return new FullDecryptionDomain({
+            keypairId: AccountAddress.ZERO,
             contractId: ContractID.dummy(),
             domain: new Uint8Array(0),
         });
@@ -347,9 +350,10 @@ export class FullDecryptionDomain {
 
     static deserialize(deserializer: Deserializer): Result<FullDecryptionDomain> {
         const task = (_extra: Record<string, any>) => {
+            const keypairId = AccountAddress.deserialize(deserializer);
             const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.FullDecryptionDomain.deserialize failed with ContractID deserialization error');
             const domain = deserializer.deserializeBytes();
-            return new FullDecryptionDomain({contractId, domain});
+            return new FullDecryptionDomain({keypairId, contractId, domain});
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -374,6 +378,7 @@ export class FullDecryptionDomain {
     }
 
     serialize(serializer: Serializer): void {
+        this.keypairId.serialize(serializer);
         this.contractId.serialize(serializer);
         serializer.serializeBytes(this.domain);
     }
@@ -390,7 +395,7 @@ export class FullDecryptionDomain {
 
     toPrettyMessage(indent: number = 0): string {
         const pad = '  '.repeat(indent);
-        return `\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}`;
+        return `\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}`;
     }
 
     getSolanaContractID(): SolanaContractID {
@@ -568,7 +573,7 @@ export async function encrypt({keypairId, contractId, domain, plaintext, aceCont
     return Result.captureAsync({
         task: async (_extra) => {
             const aptos = createAptos(rpcUrl);
-            const fdd = new FullDecryptionDomain({contractId, domain});
+            const fdd = new FullDecryptionDomain({keypairId, contractId, domain});
 
             // Fetch DKG session to get master public key (basePoint + resultPk).
             const [hexBytes] = await aptos.view({

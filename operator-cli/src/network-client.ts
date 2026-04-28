@@ -8,6 +8,8 @@ import {
     Aptos,
     Ed25519PrivateKey,
     Network,
+    PrivateKey,
+    PrivateKeyVariants,
     Serializer,
 } from '@aptos-labs/ts-sdk';
 import { GasStationTransactionSubmitter } from '@aptos-labs/gas-station-client';
@@ -77,19 +79,21 @@ export class NetworkClient {
     private aptos: Aptos;
     private aceAddr: string;
     private account: Account | undefined;
+    private hasGasStation: boolean;
 
     static fromNode(node: TrackedNode): NetworkClient {
         const client = new NetworkClient(node.rpcUrl, node.aceAddr, node.rpcApiKey, node.gasStationKey);
         if (node.accountSk) {
-            const sk = new Ed25519PrivateKey(node.accountSk);
+            const sk = new Ed25519PrivateKey(PrivateKey.formatPrivateKey(node.accountSk, PrivateKeyVariants.Ed25519));
             client.account = Account.fromPrivateKey({ privateKey: sk });
         }
         return client;
     }
 
     constructor(rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string) {
-        this.aceAddr = aceAddr;
-        this.aptos   = buildAptos(rpcUrl, rpcApiKey, gasStationKey);
+        this.aceAddr       = aceAddr;
+        this.aptos         = buildAptos(rpcUrl, rpcApiKey, gasStationKey);
+        this.hasGasStation = !!gasStationKey;
     }
 
     signerAddress(): string | undefined {
@@ -136,6 +140,8 @@ export class NetworkClient {
                 function: `${this.aceAddr}::network::new_proposal` as `${string}::${string}::${string}`,
                 functionArguments: [serializeProposal(proposal)],
             },
+            options: { replayProtectionNonce: BigInt(Date.now()) },
+            withFeePayer: this.hasGasStation,
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });
         await this.aptos.waitForTransaction({ transactionHash: response.hash, options: { checkSuccess: true } });
@@ -150,6 +156,8 @@ export class NetworkClient {
                 function: `${this.aceAddr}::voting::vote` as `${string}::${string}::${string}`,
                 functionArguments: [votingSessionAddr.toStringLong()],
             },
+            options: { replayProtectionNonce: BigInt(Date.now()) },
+            withFeePayer: this.hasGasStation,
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });
         await this.aptos.waitForTransaction({ transactionHash: response.hash, options: { checkSuccess: true } });

@@ -15,6 +15,7 @@
     "test-auto-epoch-change": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-auto-epoch-change.ts",
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",
     "cli-testbed": "pnpm --filter @aptos-labs/ace-sdk build && tsx cli-testbed.ts",
+    "new-devnet-deployment": "pnpm --filter @aptos-labs/ace-sdk build && tsx new-devnet-deployment.ts",
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
     "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
     "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"

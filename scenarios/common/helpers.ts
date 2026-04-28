@@ -109,7 +109,7 @@ export function rmContractsPublishScratch(scratch: ContractsPublishScratch): voi
     rmSync(scratch.tmpRoot, { recursive: true, force: true });
 }
 
-export async function publishMovePackage(packageDir: string, privateKeyHex: string): Promise<void> {
+export async function publishMovePackage(packageDir: string, privateKeyHex: string, rpcUrl = LOCALNET_URL): Promise<void> {
     const args = [
         'move',
         'publish',
@@ -118,7 +118,7 @@ export async function publishMovePackage(packageDir: string, privateKeyHex: stri
         '--private-key',
         `0x${privateKeyHex}`,
         '--url',
-        LOCALNET_URL,
+        rpcUrl,
         '--assume-yes',
         '--skip-fetch-latest-git-deps',
     ];
@@ -139,7 +139,7 @@ export function ed25519PrivateKeyHex(account: Account): string {
  * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
  * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
  */
-export async function deployContracts(adminAccount: Account, packageFolders: string[]): Promise<void> {
+export async function deployContracts(adminAccount: Account, packageFolders: string[], rpcUrl = LOCALNET_URL): Promise<void> {
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
     const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr);
@@ -149,7 +149,7 @@ export async function deployContracts(adminAccount: Account, packageFolders: str
             if (!existsSync(path.join(packageDir, 'Move.toml'))) {
                 throw new Error(`missing Move package at ${packageDir}`);
             }
-            await publishMovePackage(packageDir, adminKeyHex);
+            await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
     } finally {
         rmContractsPublishScratch(scratch);
@@ -277,16 +277,18 @@ export async function submitTxn(
         signer,
         entryFunction,
         args,
+        rpcUrl = LOCALNET_URL,
     }: {
         signer: Account,
         entryFunction: `${string}::${string}::${string}`,
         args: any[],
+        rpcUrl?: string,
     }
 ): Promise<Result<CommittedTxn>> {
     return Result.captureAsync({
         recordsExecutionTimeMs: false,
         task: async () => {
-            const aptos = createAptos();
+            const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
             const txn = await aptos.transaction.build.simple({
                 sender: signer.accountAddress,
                 data: {
@@ -294,6 +296,7 @@ export async function submitTxn(
                     typeArguments: [],
                     functionArguments: args,
                 },
+                options: { replayProtectionNonce: BigInt(Date.now()) },
             });
             const pending = await aptos.signAndSubmitTransaction({ signer, transaction: txn });
             const hash = pending.hash;
@@ -528,11 +531,11 @@ export async function getDKGSession(aceContractAddr: AccountAddress, sessionAddr
     });
 }
 
-export async function getNetworkState(aceContractAddr: AccountAddress): Promise<Result<ace.network.State>> {
+export async function getNetworkState(aceContractAddr: AccountAddress, rpcUrl = LOCALNET_URL): Promise<Result<ace.network.State>> {
     return Result.captureAsync({
         recordsExecutionTimeMs: false,
         task: async () => {
-            const aptos = createAptos();
+            const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
             const [hexBytes] = await aptos.view({
                 payload: {
                     function: `${aceContractAddr.toStringLong()}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,

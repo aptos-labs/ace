@@ -20,11 +20,12 @@ use crate::ChainRpcConfig;
 
 // ── Parsed FDD ────────────────────────────────────────────────────────────────
 
-/// Parsed `FullDecryptionDomain` (ContractID + domain), extracted from the request.
+/// Parsed `FullDecryptionDomain` (keypairId + ContractID + domain), extracted from the request.
 pub struct ParsedFdd {
+    pub keypair_id: [u8; 32],
     pub chain: ParsedChain,
     pub domain: Vec<u8>,
-    /// Total byte length of the FDD in the original request buffer.
+    /// Byte length of the ContractID+domain portion in the original request buffer (excludes keypairId).
     pub byte_len: usize,
 }
 
@@ -75,14 +76,15 @@ pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], chain_rpc: &ChainRpcCon
 
 // ── FDD Parsing ───────────────────────────────────────────────────────────────
 
-/// Parse a `FullDecryptionDomain` from the start of `bytes`.
+/// Parse the ContractID+domain portion of a `FullDecryptionDomain`.
 ///
-/// Layout (same for both `RequestForDecryptionKey` serialization and as the
-/// IBE identity blob):
-///   `[outer_scheme(1B)][ContractID body][domain(BCS bytes)]`
+/// `keypair_id` is already parsed separately (first 32 bytes of the request).
+/// `bytes` points to the start of the ContractID (after keypairId and epoch).
 ///
-/// Returns the parsed FDD, with `byte_len` = total bytes consumed.
-pub fn parse_fdd(bytes: &[u8]) -> Result<ParsedFdd> {
+/// Layout: `[outer_scheme(1B)][ContractID body][domain(BCS bytes)]`
+///
+/// Returns the parsed FDD, with `byte_len` = bytes consumed from `bytes` (excludes keypairId).
+pub fn parse_fdd(keypair_id: [u8; 32], bytes: &[u8]) -> Result<ParsedFdd> {
     let mut pos = 0usize;
 
     let scheme = *bytes.get(pos).ok_or_else(|| anyhow!("FDD: missing scheme byte"))?;
@@ -136,7 +138,7 @@ pub fn parse_fdd(bytes: &[u8]) -> Result<ParsedFdd> {
     let domain = bytes[pos..pos + domain_len as usize].to_vec();
     pos += domain_len as usize;
 
-    Ok(ParsedFdd { chain, domain, byte_len: pos })
+    Ok(ParsedFdd { keypair_id, chain, domain, byte_len: pos })
 }
 
 // ── Aptos Proof Parsing ───────────────────────────────────────────────────────
@@ -617,6 +619,7 @@ fn aptos_fdd_pretty_message(fdd: &ParsedFdd) -> Result<String> {
     let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
 
     // Matches FullDecryptionDomain.toPrettyMessage(indent=0):
+    //   "\nkeypairId: 0x{keypairIdHex}"
     //   "\ncontractId:"
     //   ContractID.toPrettyMessage(indent=1):          pad="  "
     //     "\n  scheme: aptos"
@@ -627,9 +630,10 @@ fn aptos_fdd_pretty_message(fdd: &ParsedFdd) -> Result<String> {
     //       "\n      moduleName: {moduleName}"
     //       "\n      functionName: {functionName}"
     //   "\ndomain: 0x{domainHex}"
+    let keypair_id_hex = format!("0x{}", hex::encode(fdd.keypair_id));
     Ok(format!(
-        "\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
-        chain_id, module_addr, module_name, function_name, domain_hex,
+        "\nkeypairId: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
+        keypair_id_hex, chain_id, module_addr, module_name, function_name, domain_hex,
     ))
 }
 

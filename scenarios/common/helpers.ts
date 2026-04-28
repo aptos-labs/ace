@@ -535,7 +535,7 @@ export async function getNetworkState(aceContractAddr: AccountAddress): Promise<
             const aptos = createAptos();
             const [hexBytes] = await aptos.view({
                 payload: {
-                    function: `${aceContractAddr.toStringLong()}::network::state_bcs` as `${string}::${string}::${string}`,
+                    function: `${aceContractAddr.toStringLong()}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
                     typeArguments: [],
                     functionArguments: [],
                 },
@@ -583,12 +583,10 @@ export function serializeCommitteeChangeProposal(nodes: AccountAddress[], thresh
 }
 
 /**
- * Submit a network proposal and collect threshold approvals.
- * `new_proposal` self-approves once, so the proposer must be either `@ace` (deploy address) *or* a
- * `cur_node`; only `cur_node` may call `approve_proposal`, so if the deployer is not in
- * `cur_nodes`, use a committee member as `proposer`.
- * - approvers: each calls `approve_proposal` (entries equal to `proposer` are skipped; they
- *   already voted in `new_proposal`). Pass a superset of cur_nodes to reach `cur_threshold` together.
+ * Submit a network proposal and collect threshold votes.
+ * `new_proposal` self-votes if the proposer is a cur_node.
+ * - approvers: each calls `voting::vote` (entries equal to `proposer` are skipped; they
+ *   already voted in `new_proposal`). Pass a superset of cur_nodes to reach `cur_threshold`.
  */
 export async function proposeAndApprove(
     proposer: Account,
@@ -597,7 +595,7 @@ export async function proposeAndApprove(
     proposalBcs: Uint8Array,
 ): Promise<void> {
     const proposerStr = proposer.accountAddress.toString();
-    const txnResult = assertTxnSuccess(
+    assertTxnSuccess(
         await submitTxn({
             signer: proposer,
             entryFunction: `${aceContract}::network::new_proposal`,
@@ -606,11 +604,13 @@ export async function proposeAndApprove(
         'new_proposal',
     );
 
-    const event = txnResult.events.find(
-        (e: any) => typeof e.type === 'string' && e.type.endsWith('::network::ProposalCreated'),
-    );
-    if (!event) throw new Error('ProposalCreated event not found in new_proposal txn');
-    const proposalAddr = (event.data as { addr: string }).addr;
+    // Read state to find the proposer's voting session address.
+    const state = (await getNetworkState(AccountAddress.fromString(aceContract)))
+        .unwrapOrThrow('proposeAndApprove: getNetworkState failed');
+    const proposerIdx = state.curNodes.findIndex(n => n.toStringLong() === proposerStr);
+    const pv = proposerIdx >= 0 ? state.proposals[proposerIdx] : state.proposals[state.proposals.length - 1];
+    if (!pv) throw new Error('proposeAndApprove: proposal slot not found after new_proposal');
+    const votingSessionAddr = pv.votingSession.toStringLong();
 
     for (const approver of approvers) {
         if (approver.accountAddress.toString() === proposerStr) {
@@ -619,10 +619,10 @@ export async function proposeAndApprove(
         assertTxnSuccess(
             await submitTxn({
                 signer: approver,
-                entryFunction: `${aceContract}::network::approve_proposal`,
-                args: [proposalAddr],
+                entryFunction: `${aceContract}::voting::vote`,
+                args: [votingSessionAddr],
             }),
-            `approve_proposal by ${approver.accountAddress.toStringLong()}`,
+            `voting::vote by ${approver.accountAddress.toStringLong()}`,
         );
     }
 }

@@ -10,93 +10,95 @@ export type ProposalVariant =
     | { kind: 'NewSecret'; scheme: number }
     | { kind: 'SecretDeactivation'; originalDkgAddr: AccountAddress };
 
-export class ProposalState {
+/** Mirrors `ace::network::ProposalView` from `state_view_v0_bcs`. */
+export class ProposalView {
     constructor(
-        readonly epoch: number,
-        readonly proposer: AccountAddress,
         readonly proposal: ProposalVariant,
-        readonly voters: AccountAddress[],
-        readonly executed: boolean,
+        readonly votingSession: AccountAddress,
+        /** votes[i] === true iff curNodes[i] has voted. */
+        readonly votes: boolean[],
+        /** true iff enough votes have been cast to pass. */
+        readonly votingPassed: boolean,
     ) {}
 
-    static deserialize(deserializer: Deserializer): Result<ProposalState> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const epoch = Number(deserializer.deserializeU64());
-                const proposer = AccountAddress.deserialize(deserializer);
-
-                const variant = deserializer.deserializeUleb128AsU32();
-                let proposal: ProposalVariant;
-                switch (variant) {
-                    case 0: {
-                        const len = deserializer.deserializeUleb128AsU32();
-                        const nodes: AccountAddress[] = [];
-                        for (let i = 0; i < len; i++) nodes.push(AccountAddress.deserialize(deserializer));
-                        const threshold = Number(deserializer.deserializeU64());
-                        proposal = { kind: 'CommitteeChange', nodes, threshold };
-                        break;
-                    }
-                    case 1: {
-                        const newIntervalSecs = deserializer.deserializeU64();
-                        proposal = { kind: 'ResharingIntervalUpdate', newIntervalSecs };
-                        break;
-                    }
-                    case 2: {
-                        const scheme = deserializer.deserializeU8();
-                        proposal = { kind: 'NewSecret', scheme };
-                        break;
-                    }
-                    case 3: {
-                        const originalDkgAddr = AccountAddress.deserialize(deserializer);
-                        proposal = { kind: 'SecretDeactivation', originalDkgAddr };
-                        break;
-                    }
-                    default:
-                        throw `Unknown Proposal variant: ${variant}`;
-                }
-
-                const votersLen = deserializer.deserializeUleb128AsU32();
-                const voters: AccountAddress[] = [];
-                for (let i = 0; i < votersLen; i++) voters.push(AccountAddress.deserialize(deserializer));
-
-                const executed = deserializer.deserializeBool();
-                return new ProposalState(epoch, proposer, proposal, voters, executed);
-            },
-        });
+    voteCount(): number {
+        return this.votes.filter(Boolean).length;
     }
 
-    static fromBytes(bytes: Uint8Array): Result<ProposalState> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = ProposalState.deserialize(deserializer).unwrapOrThrow('deserialize failed');
-                if (deserializer.remaining() !== 0) throw 'trailing bytes';
-                return obj;
-            },
-        });
+    hasVoted(nodeAddr: string, curNodes: AccountAddress[]): boolean {
+        const idx = curNodes.findIndex(n => n.toStringLong() === nodeAddr);
+        return idx >= 0 && this.votes[idx] === true;
+    }
+
+    static deserialize(deserializer: Deserializer): ProposalView {
+        const variant = deserializer.deserializeUleb128AsU32();
+        let proposal: ProposalVariant;
+        switch (variant) {
+            case 0: {
+                const len = deserializer.deserializeUleb128AsU32();
+                const nodes: AccountAddress[] = [];
+                for (let i = 0; i < len; i++) nodes.push(AccountAddress.deserialize(deserializer));
+                const threshold = Number(deserializer.deserializeU64());
+                proposal = { kind: 'CommitteeChange', nodes, threshold };
+                break;
+            }
+            case 1: {
+                const newIntervalSecs = deserializer.deserializeU64();
+                proposal = { kind: 'ResharingIntervalUpdate', newIntervalSecs };
+                break;
+            }
+            case 2: {
+                const scheme = deserializer.deserializeU8();
+                proposal = { kind: 'NewSecret', scheme };
+                break;
+            }
+            case 3: {
+                const originalDkgAddr = AccountAddress.deserialize(deserializer);
+                proposal = { kind: 'SecretDeactivation', originalDkgAddr };
+                break;
+            }
+            default:
+                throw `Unknown Proposal variant: ${variant}`;
+        }
+
+        const votingSession = AccountAddress.deserialize(deserializer);
+
+        const votesLen = deserializer.deserializeUleb128AsU32();
+        const votes: boolean[] = [];
+        for (let i = 0; i < votesLen; i++) votes.push(deserializer.deserializeBool());
+
+        const votingPassed = deserializer.deserializeBool();
+
+        return new ProposalView(proposal, votingSession, votes, votingPassed);
     }
 }
 
-/** Mirrors `ace::network::EpochChangeInfo`. */
-export class EpochChangeInfo {
+/** Mirrors `ace::network::EpochChangeView` from `state_view_v0_bcs`. */
+export class EpochChangeView {
     constructor(
+        readonly triggeringProposalIdx: number | null,
+        readonly sessionAddr: AccountAddress,
         readonly nxtNodes: AccountAddress[],
-        readonly session: AccountAddress,
+        readonly nxtThreshold: number,
     ) {}
 
-    static deserialize(deserializer: Deserializer): EpochChangeInfo {
+    static deserialize(deserializer: Deserializer): EpochChangeView {
+        const idxTag = deserializer.deserializeU8();
+        const triggeringProposalIdx = idxTag === 1 ? Number(deserializer.deserializeU64()) : null;
+
+        const sessionAddr = AccountAddress.deserialize(deserializer);
+
         const nxtNodesLen = deserializer.deserializeUleb128AsU32();
         const nxtNodes: AccountAddress[] = [];
-        for (let i = 0; i < nxtNodesLen; i++) {
-            nxtNodes.push(AccountAddress.deserialize(deserializer));
-        }
-        const session = AccountAddress.deserialize(deserializer);
-        return new EpochChangeInfo(nxtNodes, session);
+        for (let i = 0; i < nxtNodesLen; i++) nxtNodes.push(AccountAddress.deserialize(deserializer));
+
+        const nxtThreshold = Number(deserializer.deserializeU64());
+
+        return new EpochChangeView(triggeringProposalIdx, sessionAddr, nxtNodes, nxtThreshold);
     }
 }
 
+/** Mirrors `ace::network::StateViewV0` from `state_view_v0_bcs`. */
 export class State {
     constructor(
         readonly epoch: number,
@@ -105,12 +107,17 @@ export class State {
         readonly curNodes: AccountAddress[],
         readonly curThreshold: number,
         readonly secrets: AccountAddress[],
-        readonly pendingProposals: AccountAddress[],
-        readonly epochChangeInfo: EpochChangeInfo | null,
+        /** proposals[i] is node i's active proposal, last slot is admin's. null = no proposal. */
+        readonly proposals: (ProposalView | null)[],
+        readonly epochChangeInfo: EpochChangeView | null,
     ) {}
 
     isEpochChanging(): boolean {
         return this.epochChangeInfo !== null;
+    }
+
+    activeProposals(): ProposalView[] {
+        return this.proposals.filter((p): p is ProposalView => p !== null);
     }
 
     static deserialize(deserializer: Deserializer): Result<State> {
@@ -123,31 +130,33 @@ export class State {
 
                 const curNodesLen = deserializer.deserializeUleb128AsU32();
                 const curNodes: AccountAddress[] = [];
-                for (let i = 0; i < curNodesLen; i++) {
-                    curNodes.push(AccountAddress.deserialize(deserializer));
-                }
+                for (let i = 0; i < curNodesLen; i++) curNodes.push(AccountAddress.deserialize(deserializer));
 
                 const curThreshold = Number(deserializer.deserializeU64());
 
                 const secretsLen = deserializer.deserializeUleb128AsU32();
                 const secrets: AccountAddress[] = [];
-                for (let i = 0; i < secretsLen; i++) {
-                    secrets.push(AccountAddress.deserialize(deserializer));
+                for (let i = 0; i < secretsLen; i++) secrets.push(AccountAddress.deserialize(deserializer));
+
+                const proposalsLen = deserializer.deserializeUleb128AsU32();
+                const proposals: (ProposalView | null)[] = [];
+                for (let i = 0; i < proposalsLen; i++) {
+                    const tag = deserializer.deserializeU8();
+                    if (tag === 1) {
+                        proposals.push(ProposalView.deserialize(deserializer));
+                    } else if (tag === 0) {
+                        proposals.push(null);
+                    } else {
+                        throw `proposals[${i}] option tag must be 0 or 1, got ${tag}`;
+                    }
                 }
 
-                const pendingProposalsLen = deserializer.deserializeUleb128AsU32();
-                const pendingProposals: AccountAddress[] = [];
-                for (let i = 0; i < pendingProposalsLen; i++) {
-                    pendingProposals.push(AccountAddress.deserialize(deserializer));
-                }
-
-                // Option<EpochChangeInfo>: 0x00 = None, 0x01 + payload = Some
-                const optionTag = deserializer.deserializeU8();
-                let epochChangeInfo: EpochChangeInfo | null = null;
-                if (optionTag === 1) {
-                    epochChangeInfo = EpochChangeInfo.deserialize(deserializer);
-                } else if (optionTag !== 0) {
-                    throw `epoch_change_info option tag must be 0 or 1, got ${optionTag}`;
+                const ecTag = deserializer.deserializeU8();
+                let epochChangeInfo: EpochChangeView | null = null;
+                if (ecTag === 1) {
+                    epochChangeInfo = EpochChangeView.deserialize(deserializer);
+                } else if (ecTag !== 0) {
+                    throw `epoch_change_info option tag must be 0 or 1, got ${ecTag}`;
                 }
 
                 return new State(
@@ -157,7 +166,7 @@ export class State {
                     curNodes,
                     curThreshold,
                     secrets,
-                    pendingProposals,
+                    proposals,
                     epochChangeInfo,
                 );
             },

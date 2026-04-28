@@ -610,7 +610,7 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
             // Fetch current committee from network state.
             const [stateHex] = await aptos.view({
                 payload: {
-                    function: `${aceContract}::network::state_bcs` as `${string}::${string}::${string}`,
+                    function: `${aceContract}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
                     typeArguments: [],
                     functionArguments: [],
                 },

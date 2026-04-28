@@ -99,25 +99,13 @@ export class NetworkClient {
     async getNetworkState(): Promise<aceNetwork.State> {
         const [hex] = await this.aptos.view({
             payload: {
-                function: `${this.aceAddr}::network::state_bcs` as `${string}::${string}::${string}`,
+                function: `${this.aceAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
                 typeArguments: [],
                 functionArguments: [],
             },
         });
         return aceNetwork.State.fromBytes(hexToBytes(hex as string))
-            .unwrapOrThrow('Failed to parse network State');
-    }
-
-    async getProposalState(addr: AccountAddress): Promise<aceNetwork.ProposalState> {
-        const [hex] = await this.aptos.view({
-            payload: {
-                function: `${this.aceAddr}::network::get_proposal_state_bcs` as `${string}::${string}::${string}`,
-                typeArguments: [],
-                functionArguments: [addr.toStringLong()],
-            },
-        });
-        return aceNetwork.ProposalState.fromBytes(hexToBytes(hex as string))
-            .unwrapOrThrow('Failed to parse ProposalState');
+            .unwrapOrThrow('Failed to parse network StateViewV0');
     }
 
     async getAccountBalance(addr: string): Promise<bigint> {
@@ -140,7 +128,7 @@ export class NetworkClient {
         }
     }
 
-    async submitNewProposal(proposal: ProposalInput): Promise<{ hash: string; proposalAddr?: string }> {
+    async submitNewProposal(proposal: ProposalInput): Promise<{ hash: string }> {
         const account = this.requireSigner();
         const txn = await this.aptos.transaction.build.simple({
             sender: account.accountAddress,
@@ -150,24 +138,17 @@ export class NetworkClient {
             },
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });
-        const committed = await this.aptos.waitForTransaction({
-            transactionHash: response.hash,
-            options: { checkSuccess: true },
-        });
-        const event = (committed as any).events?.find(
-            (e: any) => typeof e.type === 'string' && e.type.endsWith('::network::ProposalCreated'),
-        );
-        const proposalAddr = (event?.data as { addr?: string } | undefined)?.addr;
-        return { hash: response.hash, proposalAddr };
+        await this.aptos.waitForTransaction({ transactionHash: response.hash, options: { checkSuccess: true } });
+        return { hash: response.hash };
     }
 
-    async submitApproveProposal(proposalAddr: AccountAddress): Promise<string> {
+    async submitVote(votingSessionAddr: AccountAddress): Promise<string> {
         const account = this.requireSigner();
         const txn = await this.aptos.transaction.build.simple({
             sender: account.accountAddress,
             data: {
-                function: `${this.aceAddr}::network::approve_proposal` as `${string}::${string}::${string}`,
-                functionArguments: [proposalAddr.toStringLong()],
+                function: `${this.aceAddr}::voting::vote` as `${string}::${string}::${string}`,
+                functionArguments: [votingSessionAddr.toStringLong()],
             },
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });

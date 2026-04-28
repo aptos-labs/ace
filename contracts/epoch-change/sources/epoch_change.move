@@ -101,6 +101,12 @@ module ace::epoch_change {
         session.state_code == STATE__DONE
     }
 
+    /// Returns (nxt_nodes, nxt_threshold) for external view composition (e.g. network::state_view_v0_bcs).
+    public fun nxt_nodes_and_threshold(session_addr: address): (vector<address>, u64) acquires Session {
+        let session = borrow_global<Session>(session_addr);
+        (session.nxt_nodes, session.nxt_threshold)
+    }
+
     /// Assuming session is completed, returns:
     /// - new epoch nodes
     /// - new epoch threshold

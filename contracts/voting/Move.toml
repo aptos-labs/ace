@@ -1,0 +1,15 @@
+[package]
+name = "Voting"
+version = "1.0.0"
+authors = []
+
+[addresses]
+ace = "0xcafe"
+
+[dependencies.WorkerConfig]
+local = "../worker_config"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"

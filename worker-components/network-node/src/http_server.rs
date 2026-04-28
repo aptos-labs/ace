@@ -102,7 +102,7 @@ async fn handle_request(
     })?;
 
     // 5. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
-    let fdd = crate::verify::parse_fdd(keypair_id.clone(), &req_bytes[40..])
+    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req_bytes[40..])
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     // IBE identity = keypairId || contractId || domain — binds the IDK to a specific keypair.
     let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);

@@ -22,8 +22,7 @@ use crate::ChainRpcConfig;
 
 /// Parsed `FullDecryptionDomain` (keypairId + ContractID + domain), extracted from the request.
 pub struct ParsedFdd {
-    /// Normalized hex address (e.g. `"0x000...abc"`), matching the AccountAddress repr used elsewhere.
-    pub keypair_id: String,
+    pub keypair_id: [u8; 32],
     pub chain: ParsedChain,
     pub domain: Vec<u8>,
     /// Byte length of the ContractID+domain portion in the original request buffer (excludes keypairId).
@@ -85,7 +84,7 @@ pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], chain_rpc: &ChainRpcCon
 /// Layout: `[outer_scheme(1B)][ContractID body][domain(BCS bytes)]`
 ///
 /// Returns the parsed FDD, with `byte_len` = bytes consumed from `bytes` (excludes keypairId).
-pub fn parse_fdd(keypair_id: String, bytes: &[u8]) -> Result<ParsedFdd> {
+pub fn parse_fdd(keypair_id: [u8; 32], bytes: &[u8]) -> Result<ParsedFdd> {
     let mut pos = 0usize;
 
     let scheme = *bytes.get(pos).ok_or_else(|| anyhow!("FDD: missing scheme byte"))?;
@@ -631,9 +630,10 @@ fn aptos_fdd_pretty_message(fdd: &ParsedFdd) -> Result<String> {
     //       "\n      moduleName: {moduleName}"
     //       "\n      functionName: {functionName}"
     //   "\ndomain: 0x{domainHex}"
+    let keypair_id_hex = format!("0x{}", hex::encode(fdd.keypair_id));
     Ok(format!(
         "\nkeypairId: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
-        fdd.keypair_id, chain_id, module_addr, module_name, function_name, domain_hex,
+        keypair_id_hex, chain_id, module_addr, module_name, function_name, domain_hex,
     ))
 }
 

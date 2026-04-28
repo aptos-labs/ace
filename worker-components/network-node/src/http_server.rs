@@ -89,7 +89,7 @@ async fn handle_request(
         return Err(StatusCode::BAD_REQUEST);
     }
     let keypair_id_bytes: [u8; 32] = req_bytes[0..32].try_into().unwrap();
-    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(&keypair_id_bytes)));
+    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(keypair_id_bytes)));
 
     // 3. Parse epoch (u64 LE, 8 bytes).
     let epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
@@ -102,7 +102,7 @@ async fn handle_request(
     })?;
 
     // 5. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
-    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req_bytes[40..])
+    let fdd = crate::verify::parse_fdd(keypair_id.clone(), &req_bytes[40..])
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     // IBE identity = keypairId || contractId || domain — binds the IDK to a specific keypair.
     let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);

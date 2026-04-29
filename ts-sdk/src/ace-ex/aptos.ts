@@ -6,29 +6,22 @@ import {
     AccountPublicKey,
     AnyPublicKey,
     AnySignature,
-    Aptos,
-    AptosConfig,
     Deserializer,
     Ed25519PublicKey,
     Ed25519Signature,
-    EntryFunctionArgumentTypes,
     FederatedKeylessPublicKey,
     KeylessPublicKey,
     KeylessSignature,
-    MoveValue,
     MultiEd25519PublicKey,
     MultiEd25519Signature,
     MultiKey,
     MultiKeySignature,
-    Network,
     PublicKey,
     Serializer,
     Signature,
-    SimpleEntryFunctionArgumentTypes
 } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
-import type { FullDecryptionDomain } from "./index";
 
 export class ContractID {
     chainId: number;
@@ -245,155 +238,3 @@ export class ProofOfPermission {
         return bytesToHex(this.toBytes());
     }
 }
-
-export async function verifyPermission({fullDecryptionDomain, proof, rpcEndpoint, apiKey}: {fullDecryptionDomain: FullDecryptionDomain, proof: ProofOfPermission, rpcEndpoint?: string, apiKey?: string}): Promise<Result<void>> {
-    const task = async (extra: Record<string, any>) => {
-        const networkName = getChainNameFromChainId(fullDecryptionDomain.getAptosContractID().chainId);
-        const aptos = createAptos(networkName, rpcEndpoint, apiKey);
-    
-        // Run all 3 tasks in parallel
-        const [verifySigResult, checkAuthKeyResult, checkPermissionResult] = await Promise.all([
-            verifySig({aptos, fullDecryptionDomain, proof}),
-            checkAuthKey({aptos, userAddr: proof.userAddr, publicKey: proof.publicKey}),
-            checkPermission({aptos, fullDecryptionDomain, proof})
-        ]);
-    
-        extra['verifySigResult'] = verifySigResult;
-        extra['checkAuthKeyResult'] = checkAuthKeyResult;
-        extra['checkPermissionResult'] = checkPermissionResult;
-
-        if (!verifySigResult.isOk || !checkAuthKeyResult.isOk || !checkPermissionResult.isOk) {
-            throw 'ACE.Aptos.verifyPermission failed with sub-check failures';
-        }
-    };
-    return await Result.captureAsync({task, recordsExecutionTimeMs: true});
-}
-
-async function verifySig({aptos, fullDecryptionDomain, proof}: {aptos: Aptos, fullDecryptionDomain: FullDecryptionDomain, proof: ProofOfPermission}): Promise<Result<void>> {
-    const task = async (extra: Record<string, any>) => {
-        const msgToSign = fullDecryptionDomain.toPrettyMessage();
-        const msgToSignHex = bytesToHex(new TextEncoder().encode(msgToSign));
-        const fullMessageSeemsFromPetra = proof.fullMessage.includes(msgToSign);
-        const fullMessageSeemsFromAptosConnect = proof.fullMessage.includes(msgToSignHex);
-        extra['msgToSign'] = msgToSign;
-        extra['msgToSignHex'] = msgToSignHex;
-        extra['fullMessageSeemsFromPetra'] = fullMessageSeemsFromPetra;
-        extra['fullMessageSeemsFromAptosConnect'] = fullMessageSeemsFromAptosConnect;
-        if (!fullMessageSeemsFromPetra && !fullMessageSeemsFromAptosConnect) throw 'ACE.Aptos.verifySig failed with fullMessage content mismatch';
-        const sigValid = await proof.publicKey.verifySignatureAsync({
-            aptosConfig: aptos.config,
-            message: proof.fullMessage,
-            signature: proof.signature
-        });
-        if (!sigValid) throw 'ACE.Aptos.verifySig failed with signature verification error';
-    };
-    return await Result.captureAsync({task, recordsExecutionTimeMs: true});
-}
-
-async function checkAuthKey({aptos, userAddr, publicKey}: {aptos: Aptos, userAddr: AccountAddress, publicKey: PublicKey}): Promise<Result<void>> {
-    const task = async (extra: Record<string, any>) => {
-        if (!(publicKey instanceof AccountPublicKey)) {
-            throw 'ACE.Aptos.checkAuthKey failed with invalid public key type';
-        }
-        const onChainAuthKeyBytes = await getAccountAuthKeyBytes(aptos, userAddr);
-        const userAuthKeyBytes = publicKey.authKey().bcsToBytes();
-        const onChainHex = bytesToHex(onChainAuthKeyBytes);
-        const userHex = bytesToHex(userAuthKeyBytes);
-        extra['onChainHex'] = onChainHex;
-        extra['userHex'] = userHex;
-        if (onChainHex !== userHex) throw 'ACE.Aptos.checkAuthKey failed with auth key mismatch';
-    };
-    return await Result.captureAsync({task, recordsExecutionTimeMs: true});
-}
-
-async function checkPermission({aptos, fullDecryptionDomain, proof}: {aptos: Aptos, fullDecryptionDomain: FullDecryptionDomain, proof: ProofOfPermission}): Promise<Result<void>> {
-    const task = async (extra: Record<string, any>) => {
-        const contractId = fullDecryptionDomain.getAptosContractID();
-        const viewFunctionInvocationResult = await view({
-            aptos,
-            func: `${contractId.moduleAddr.toStringLong()}::${contractId.moduleName}::${contractId.functionName}`,
-            typeArguments: [],
-            functionArguments: [proof.userAddr, Array.from(fullDecryptionDomain.domain)]
-        });
-        extra['viewFunctionInvocationResult'] = viewFunctionInvocationResult;
-        if (!viewFunctionInvocationResult.isOk) {
-            throw 'ACE.Aptos.checkPermission failed with view function invocation error';
-        }
-        const returnedMoveValue = viewFunctionInvocationResult.okValue;
-        if (returnedMoveValue?.toString() !== 'true') {
-            throw 'ACE.Aptos.checkPermission failed with access denied';
-        }
-    };
-    return await Result.captureAsync({task, recordsExecutionTimeMs: true});
-}
-
-function getChainNameFromChainId(chainId: number): string {
-    if (chainId === 1) {
-        return "mainnet";
-    } else if (chainId === 2) {
-        return "testnet";
-    } else if (chainId === 4) {
-        return "localnet";
-    } else if (chainId === 14) {
-        return "devnet";
-    } else if (chainId >= 104) {
-        return "shelbynet";
-    } else {
-        throw 'ACE.Aptos.getChainNameFromChainId failed with unknown chain id';
-    }
-}
-
-function createAptos(networkName: string, customEndpoint?: string, apiKey?: string): Aptos {
-    const clientConfig = apiKey ? { API_KEY: apiKey } : undefined;
-    
-    let config: AptosConfig;
-    if (customEndpoint) {
-        // Use custom endpoint if provided
-        config = new AptosConfig({
-            network: Network.CUSTOM,
-            fullnode: customEndpoint,
-            clientConfig
-        });
-    } else if (networkName === "mainnet") {
-        config = new AptosConfig({ network: Network.MAINNET, clientConfig });
-    } else if (networkName === "testnet") {
-        config = new AptosConfig({ network: Network.TESTNET, clientConfig });
-    } else if (networkName === "devnet") {
-        config = new AptosConfig({ network: Network.DEVNET, clientConfig });
-    } else if (networkName === "localnet") {
-        config = new AptosConfig({
-            network: Network.LOCAL,
-            fullnode: "http://localhost:8080/v1",
-            faucet: "http://localhost:8081",
-            clientConfig
-        });
-    } else {
-        throw 'ACE.Aptos.createAptos failed with unsupported network name';
-    }
-    return new Aptos(config);
-}
-
-async function getAccountAuthKeyBytes(aptos: Aptos, address: AccountAddress): Promise<Uint8Array> {
-    const accountInfo = await aptos.getAccountInfo({ accountAddress: address });
-    return hexToBytes(accountInfo.authentication_key.replace('0x', ''));
-}
-
-async function view({aptos, func, typeArguments, functionArguments}: {aptos: Aptos, func: `${string}::${string}::${string}`, typeArguments: Array<string>, functionArguments: Array<EntryFunctionArgumentTypes | SimpleEntryFunctionArgumentTypes>}): Promise<Result<MoveValue>> {
-    const task = async (extra: Record<string, any>) => {
-        extra['func'] = func;
-        const returnedMoveValues = await aptos.view({
-            payload: {
-                function: func,
-                typeArguments: typeArguments,
-                functionArguments: functionArguments
-            }
-        });
-        extra['returnedMoveValues'] = returnedMoveValues;
-        if (returnedMoveValues.length === 0) {
-            throw 'ACE.Aptos.view failed with empty response';
-        }
-        return returnedMoveValues[0]!;
-    }
-    return await Result.captureAsync({task, recordsExecutionTimeMs: true});
-}
-

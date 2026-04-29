@@ -303,9 +303,9 @@ export async function submitTxn(
             let waited = await aptos.waitForTransaction({ transactionHash: hash }) as Record<string, unknown>;
             // The node sometimes returns a committed transaction before its events are
             // fully indexed (race condition, more common on slow CI runners).
-            // Retry with backoff until events appear or we give up.
-            for (let i = 0; i < 5 && !((waited.events as unknown[])?.length); i++) {
-                await new Promise(r => setTimeout(r, 200 * (i + 1)));
+            // Retry at 500 ms intervals for up to 5 s total.
+            for (let i = 0; i < 10 && !((waited.events as unknown[])?.length); i++) {
+                await new Promise(r => setTimeout(r, 500));
                 waited = await aptos.getTransactionByHash({ transactionHash: hash }) as Record<string, unknown>;
             }
             const events = (waited.events as unknown[]) ?? [];

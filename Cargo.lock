@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "ace-anchor-kit"
 version = "0.1.0"
+dependencies = [
+ "bcs",
+ "serde",
+]
 
 [[package]]
 name = "ahash"

@@ -233,22 +233,22 @@ async function main() {
 
         step(10, 'Alice encrypts "PING" with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-        const contractId = ace_ex.ContractID.newAptos({
+        const aceDeployment = new ace_ex.AceDeployment({
+            apiEndpoint: LOCALNET_URL,
+            contractAddr: adminAccountAddress,
+        });
+        const pingEncResult = await ace_ex.aptosEncrypt({
+            aceDeployment,
+            keypairId: keypair0Id,
             chainId: CHAIN_ID,
-            moduleAddr: AccountAddress.fromString(adminAddr),
+            moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
             functionName: 'check_permission',
-        });
-        const pingEncResult = await ace_ex.encrypt({
-            keypairId: keypair0Id,
-            contractId,
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceContract: adminAddr,
-            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
-        const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
+        const pingCiph = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
         // ── Epoch change 1→2 (CommitteeChange) ─────────────────────────────────
@@ -274,21 +274,21 @@ async function main() {
         // ── Decrypt in epoch 1 (workers 1,2,3 online, worker 4 offline) ─────────
         step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee, worker 4 offline)');
         {
-            const msgToSign = pingFdd.toPrettyMessage();
-            const pingProof = ace_ex.ProofOfPermission.createAptos({
+            const pingSession = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: pingDomain,
+                ciphertext: pingCiph,
+            });
+            const pingMsgToSign = await pingSession.getRequestToSign();
+            const pingDecResult = await pingSession.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
-                signature: bob.sign(msgToSign),
-                fullMessage: msgToSign,
-            });
-            const pingDecResult = await ace_ex.decrypt({
-                keypairId: keypair0Id,
-                contractId,
-                domain: pingDomain,
-                proof: pingProof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
+                signature: bob.sign(pingMsgToSign),
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');

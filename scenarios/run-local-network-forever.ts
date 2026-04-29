@@ -176,9 +176,9 @@ async function main() {
     // ── Write config for example scripts ────────────────────────────────────
     const CONFIG_PATH = '/tmp/ace-localnet-config.json';
     writeFileSync(CONFIG_PATH, JSON.stringify({
-        aceContract,
+        apiEndpoint: LOCALNET_URL,
+        contractAddr: aceContract,
         keypairId: keypairId.toStringLong(),
-        rpcUrl: LOCALNET_URL,
     }, null, 2));
 
     log('');

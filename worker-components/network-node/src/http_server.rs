@@ -85,7 +85,7 @@ async fn handle_request(
     })?;
 
     // 2. Parse keypairId (32 fixed bytes, AccountAddress).
-    if req_bytes.len() < 40 + ENC_KEY_SIZE {
+    if req_bytes.len() < 40 {
         return Err(StatusCode::BAD_REQUEST);
     }
     let keypair_id_bytes: [u8; 32] = req_bytes[0..32].try_into().unwrap();
@@ -94,25 +94,29 @@ async fn handle_request(
     // 3. Parse epoch (u64 LE, 8 bytes).
     let epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
 
-    // 4. Extract ephemeral enc key (last ENC_KEY_SIZE bytes).
-    let ek_start = req_bytes.len() - ENC_KEY_SIZE;
-    let ephemeral_ek = EncryptionKey::from_bytes(&req_bytes[ek_start..]).map_err(|e| {
-        eprintln!("http-server: ephemeral enc key parse failed: {:#}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    // 5. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
+    // 4. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
     let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req_bytes[40..])
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     // IBE identity = keypairId || contractId || domain — binds the IDK to a specific keypair.
     let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
     fdd_bytes.extend_from_slice(&keypair_id_bytes);
     fdd_bytes.extend_from_slice(&req_bytes[40..40 + fdd.byte_len]);
-    // proof is between fdd and the ephemeral enc key
-    let proof_bytes = &req_bytes[40 + fdd.byte_len..ek_start];
+
+    // 5. Extract ephemeral enc key (immediately after FDD, before proof).
+    let ek_start = 40 + fdd.byte_len;
+    if req_bytes.len() < ek_start + ENC_KEY_SIZE {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let ephemeral_ek = EncryptionKey::from_bytes(&req_bytes[ek_start..ek_start + ENC_KEY_SIZE]).map_err(|e| {
+        eprintln!("http-server: ephemeral enc key parse failed: {:#}", e);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    // proof follows the enc key
+    let proof_bytes = &req_bytes[ek_start + ENC_KEY_SIZE..];
 
     // 6. Verify the proof (signature, auth-key, on-chain permission).
-    crate::verify::verify(&fdd, proof_bytes, &state.chain_rpc)
+    crate::verify::verify(&fdd, epoch, proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             eprintln!("http-server: proof verification failed: {:#}", e);

@@ -223,43 +223,43 @@ async function main() {
 
         step(10, 'Alice encrypts "PING" with keypair-0, domain=@alice/ping-blob');
         const correctDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-        const contractId = ace_ex.ContractID.newAptos({
+        const aceDeployment = new ace_ex.AceDeployment({
+            apiEndpoint: LOCALNET_URL,
+            contractAddr: adminAccountAddress,
+        });
+        const pingEncResult = await ace_ex.aptosEncrypt({
+            aceDeployment,
+            keypairId: keypair0Id,
             chainId: CHAIN_ID,
-            moduleAddr: AccountAddress.fromString(adminAddr),
+            moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
             functionName: 'check_permission',
-        });
-        const pingEncResult = await ace_ex.encrypt({
-            keypairId: keypair0Id,
-            contractId,
             domain: correctDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceContract: adminAddr,
-            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
-        const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
+        const pingCiph = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
         // ── Negative A: nonexistent keypair ID ──────────────────────────────────
         step('A', 'Negative: decrypt with nonexistent keypair ID → must fail (404)');
         {
             const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
-            const msg = pingFdd.toPrettyMessage();
-            const proof = ace_ex.ProofOfPermission.createAptos({
+            const session = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: fakeKeypairId,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const result = await session.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
                 signature: bob.sign(msg),
-                fullMessage: msg,
-            });
-            const result = await ace_ex.decrypt({
-                keypairId: fakeKeypairId,
-                contractId,
-                domain: correctDomain,
-                proof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail with nonexistent keypairId, but it succeeded`);
             console.log(`  ✓ decrypt with nonexistent keypairId correctly rejected (${result.errValue})`);
@@ -270,21 +270,21 @@ async function main() {
         // Worker verifies check_permission(Charlie, domain) → false → 403 FORBIDDEN.
         step('B', 'Negative: decrypt by Charlie (not allowlisted) → must fail (403)');
         {
-            const msg = pingFdd.toPrettyMessage();
-            const proof = ace_ex.ProofOfPermission.createAptos({
+            const session = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const result = await session.decryptWithProof({
                 userAddr: charlie.accountAddress,
                 publicKey: charlie.publicKey,
                 signature: charlie.sign(msg),
-                fullMessage: msg,
-            });
-            const result = await ace_ex.decrypt({
-                keypairId: keypair0Id,
-                contractId,
-                domain: correctDomain,
-                proof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
             console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -296,21 +296,21 @@ async function main() {
         step('C', 'Negative: decrypt with wrong domain (unregistered blob) → must fail (403)');
         {
             const wrongDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/other-blob`);
-            const msg = pingFdd.toPrettyMessage();
-            const proof = ace_ex.ProofOfPermission.createAptos({
+            const session = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: wrongDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const result = await session.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
                 signature: bob.sign(msg),
-                fullMessage: msg,
-            });
-            const result = await ace_ex.decrypt({
-                keypairId: keypair0Id,
-                contractId,
-                domain: wrongDomain,
-                proof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
             });
             assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
             console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
@@ -319,21 +319,21 @@ async function main() {
         // ── Positive control D: correct keypairId, domain, and allowlisted user ──
         step('D', 'Positive: Bob (allowlisted) decrypts with correct keypairId and domain → must succeed');
         {
-            const msg = pingFdd.toPrettyMessage();
-            const proof = ace_ex.ProofOfPermission.createAptos({
+            const session = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const result = await session.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
                 signature: bob.sign(msg),
-                fullMessage: msg,
-            });
-            const result = await ace_ex.decrypt({
-                keypairId: keypair0Id,
-                contractId,
-                domain: correctDomain,
-                proof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
             });
             assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
             assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');

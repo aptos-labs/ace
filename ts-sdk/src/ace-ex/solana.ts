@@ -3,9 +3,8 @@
 
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { Connection, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
-import type { FullDecryptionDomain } from "./index";
 
 export class ContractID {
     knownChainName: string; // mainnet-beta/testnet/devnet

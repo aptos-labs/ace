@@ -23,6 +23,7 @@ custom-panic = []
 [dependencies]
 anchor-lang = "0.32.1"
 access_control = { path = "../access_control", features = ["no-entrypoint"] }
+ace_sdk = { package = "ace-anchor-kit", path = "../../../../ace-anchor-kit" }
 
 
 [lints.rust]

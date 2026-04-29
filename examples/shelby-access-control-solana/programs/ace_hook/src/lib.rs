@@ -35,6 +35,7 @@
 //!
 //! If all checks pass, the user has valid access to decrypt the content.
 
+use ace_sdk::decode_blob_name;
 use anchor_lang::prelude::*;
 use access_control::{BlobMetadata, Receipt, ID as ACCESS_CONTROL_PROGRAM_ID};
 
@@ -48,28 +49,23 @@ pub mod ace_hook {
     /// Assert that the caller has access to the specified blob.
     ///
     /// This instruction is designed to be signed by users and presented to
-    /// ACE workers as proof of permission. ACE workers will simulate
-    /// this transaction to verify the user has valid access.
+    /// ACE workers as proof of permission. ACE workers simulate this transaction
+    /// to verify both the user's signature and their on-chain access.
     ///
     /// # Arguments
     ///
-    /// * `full_blob_name_bytes` - Full blob identifier in format:
-    ///   `"0x" + owner_aptos_addr (32 bytes) + "/" + blob_name`
-    ///
-    /// # Verification Steps
-    ///
-    /// 1. Parse the full blob name to extract owner address and blob name
-    /// 2. Verify blob_metadata account is owned by access_control program
-    /// 3. Verify receipt account is owned by access_control program
-    /// 4. Derive expected PDAs and verify they match the provided accounts
-    /// 5. Deserialize and verify receipt.seqnum == blob_metadata.seqnum
+    /// * `full_request_bytes` - Opaque ACE request bytes produced by
+    ///   `session.getFullRequestBytesToSign()` in the ACE TypeScript SDK.
+    ///   Use `ace_sdk::decode_blob_name` to extract the blob identifier.
     ///
     /// # Errors
     ///
     /// * `InvalidAccountOwner` - Account not owned by access_control
-    /// * `InvalidBlobName` - Malformed blob name format
+    /// * `InvalidBlobName` - Malformed blob name or request bytes
     /// * `AccessDenied` - Seqnum mismatch (receipt is stale)
-    pub fn assert_access(ctx: Context<AssertAccess>, full_blob_name_bytes: Vec<u8>) -> Result<()> {
+    pub fn assert_access(ctx: Context<AssertAccess>, full_request_bytes: Vec<u8>) -> Result<()> {
+        let full_blob_name_bytes = decode_blob_name(&full_request_bytes)
+            .map_err(|_| ErrorCode::InvalidBlobName)?;
         // ====================================================================
         // Step 1: Verify Account Ownership
         // ====================================================================

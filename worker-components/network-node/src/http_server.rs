@@ -116,7 +116,7 @@ async fn handle_request(
     let proof_bytes = &req_bytes[ek_start + ENC_KEY_SIZE..];
 
     // 6. Verify the proof (signature, auth-key, on-chain permission).
-    crate::verify::verify(&fdd, epoch, proof_bytes, &state.chain_rpc)
+    crate::verify::verify(&fdd, epoch, &req_bytes[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             eprintln!("http-server: proof verification failed: {:#}", e);

@@ -355,9 +355,9 @@ export class AptosDecryptionSession {
 /**
  * How to use:
  * 1. construct a SolanaDecryptionSession with the necessary parameters;
- * 2. call getRequestToSign() to get the request to display/sign;
- * 3. sign the request as a Solana transaction;
- * 4. call decryptWithProof() to decrypt the ciphertext.
+ * 2. call getRequestToSign() to get the bytes to embed in the transaction;
+ * 3. build and sign a Solana transaction calling assert_access(fullRequestBytes);
+ * 4. call decryptWithProof() with the signed transaction bytes.
  */
 export class SolanaDecryptionSession {
     aceDeployment: AceDeployment;
@@ -386,12 +386,25 @@ export class SolanaDecryptionSession {
         this.ephemeralEncryptionKey = encryptionKey;
     }
 
-    async getRequestToSign(): Promise<string> {
+    /**
+     * Fetch network state and return the opaque bytes to embed as the
+     * `full_request_bytes` argument when building the assert_access transaction.
+     *
+     * Layout: keypairId(32) | epoch(8 LE) | BCS(ephemeralEncKey) | BCS(domain)
+     *
+     * Must be called before decryptWithProof().
+     */
+    async getRequestToSign(): Promise<Uint8Array> {
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
             this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
         this.networkState = networkState;
         this.request = request;
-        return request.toPrettyMessage();
+        const s = new Serializer();
+        request.keypairId.serialize(s);
+        s.serializeU64(BigInt(request.epoch));
+        s.serializeBytes(request.ephemeralEncKey.toBytes());
+        s.serializeBytes(request.domain);
+        return s.toUint8Array();
     }
 
     async decryptWithProof({txn}: {txn: Uint8Array}): Promise<Result<Uint8Array>> {

@@ -11,10 +11,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ace-anchor-kit"
+version = "0.1.0"
+
+[[package]]
 name = "ace_hook"
 version = "0.1.0"
 dependencies = [
  "access_control",
+ "ace-anchor-kit",
  "anchor-lang",
 ]
 

@@ -125,6 +125,47 @@ jobs:
           ACE_SKIP_CARGO_BUILD: "1"
         run: pnpm --filter ace-scenarios test-solana-example
 
+  custom-flow-solana:
+    name: scenario / custom-flow-solana
+    needs: build-rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Download Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries
+          path: target/debug/
+
+      - name: Make binaries executable
+        run: chmod +x target/debug/*
+
+      - name: Install tools
+        run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
+
+      - name: Cache Solana SBF platform tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: solana-sbf-tools-${{ runner.os }}
+
+      - name: Run custom-flow-solana
+        env:
+          ACE_SKIP_CARGO_BUILD: "1"
+        run: pnpm --filter ace-scenarios test-custom-flow-solana
+
   scenarios:
     name: scenario / ${{ matrix.scenario }}
     needs: build-rust
@@ -140,6 +181,7 @@ jobs:
           - test-fault-tolerance
           - test-auto-epoch-change
           - large-committee
+          - test-custom-flow-aptos
       fail-fast: false
     runs-on: ubuntu-latest
     timeout-minutes: 60

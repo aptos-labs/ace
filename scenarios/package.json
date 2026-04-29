@@ -18,6 +18,8 @@
     "new-devnet-deployment": "pnpm --filter @aptos-labs/ace-sdk build && tsx new-devnet-deployment.ts",
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
     "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
+    "test-custom-flow-aptos": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-aptos.ts",
+    "test-custom-flow-solana": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-solana.ts",
     "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
   },
   "dependencies": {

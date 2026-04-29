@@ -10,8 +10,22 @@ revealing their nationality**.
 
 ## What is Being Proved?
 
-The prover holds a KYC credential: a jurisdiction code signed by a trusted KYC provider
-using EdDSA over Baby JubJub.  The Groth16 circuit simultaneously proves three things:
+The prover holds a KYC credential: a **jurisdiction code** signed by a trusted KYC
+provider using EdDSA over Baby JubJub.
+
+**What is a jurisdiction code?**  It is a small integer that identifies the
+country/jurisdiction where the user passed KYC.  ZK circuits operate over finite-field
+arithmetic, so credentials are represented as field elements rather than strings.  This
+demo uses a simple numbering: 0 = DPRK, 1 = Iran, 2 = Cuba, 3 = Syria (sanctioned), and
+any other value (e.g. 10 for United States, 20 for EU) for permitted jurisdictions.  A
+production system would use a standardised scheme such as [ISO 3166-1 numeric](https://en.wikipedia.org/wiki/ISO_3166-1_numeric).
+
+The KYC provider attests to a user's jurisdiction by computing `Poseidon(jurisdiction)`
+and signing the hash with their Baby JubJub private key.  The signed credential is handed
+to the user.  The user then uses it as a **private** witness in the ZK proof — the
+jurisdiction value itself is never revealed on-chain.
+
+The Groth16 circuit simultaneously proves three things:
 
 | Statement | How it is enforced |
 |---|---|

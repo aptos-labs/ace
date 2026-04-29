@@ -71,7 +71,7 @@ export class ProofOfPermission {
         this.scheme = scheme;
         this.inner = inner;
     }
-    
+
     static newVersioned(txn: VersionedTransaction): ProofOfPermission {
         return new ProofOfPermission(ProofOfPermission.SCHEME_VERSIONED, txn);
     }
@@ -132,4 +132,3 @@ export class ProofOfPermission {
         return bytesToHex(this.toBytes());
     }
 }
-

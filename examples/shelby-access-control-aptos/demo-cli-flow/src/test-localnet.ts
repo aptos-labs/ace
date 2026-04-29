@@ -20,7 +20,8 @@
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import { Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network } from "@aptos-labs/ts-sdk";
-import { ace_ex, Result } from "@aptos-labs/ace-sdk";
+import * as ACE from "@aptos-labs/ace-sdk";
+import { Result } from "@aptos-labs/ace-sdk";
 import { AccessPolicy, RegistrationInfo, regsToBytes } from "./policy";
 
 // ============================================================================
@@ -208,7 +209,7 @@ async function main() {
     log(`ACE contract: ${contractAddr}`);
     log(`Keypair ID:   ${keypairId.toString()}`);
 
-    const aceDeployment = new ace_ex.AceDeployment({
+    const aceDeployment = new ACE.AceDeployment({
         apiEndpoint,
         contractAddr: AccountAddress.fromString(contractAddr),
     });
@@ -226,7 +227,7 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const ciphertext = (await ace_ex.aptosEncrypt({
+    const ciphertext = (await ACE.AptosBasicFlow.encrypt({
         aceDeployment,
         keypairId,
         chainId,
@@ -250,7 +251,7 @@ async function main() {
     // ========================================================================
     
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const session = new ace_ex.AptosDecryptionSession({
+        const session = ACE.AptosBasicFlow.DecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,

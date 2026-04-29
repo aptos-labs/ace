@@ -38,7 +38,8 @@ import {
     Ed25519PrivateKey,
     Serializer,
 } from '@aptos-labs/ts-sdk';
-import { ace_ex, pke } from '@aptos-labs/ace-sdk';
+import * as ACE from '@aptos-labs/ace-sdk';
+import { pke } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
 
 import {
@@ -273,12 +274,12 @@ async function main() {
         // ── Step 11: Alice encrypts "PING" with keypair-0 ────────────────────
         step(11, 'Alice encrypts "PING" with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-        const aceDeployment = new ace_ex.AceDeployment({
+        const aceDeployment = new ACE.AceDeployment({
             apiEndpoint: LOCALNET_URL,
             contractAddr: adminAccountAddress,
         });
 
-        const pingEncResult = await ace_ex.aptosEncrypt({
+        const pingEncResult = await ACE.AptosBasicFlow.encrypt({
             aceDeployment,
             keypairId: keypair0Id,
             chainId: CHAIN_ID,
@@ -316,7 +317,7 @@ async function main() {
         // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
         step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
-            const pingSession = new ace_ex.AptosDecryptionSession({
+            const pingSession = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -404,7 +405,7 @@ async function main() {
             console.log('  pong-blob registered (owner=Bob, pay-to-download price=1)');
         }
 
-        const pongEncResult = await ace_ex.aptosEncrypt({
+        const pongEncResult = await ACE.AptosBasicFlow.encrypt({
             aceDeployment,
             keypairId: keypair1Id,
             chainId: CHAIN_ID,
@@ -439,7 +440,7 @@ async function main() {
         console.log('  Alice purchased pong-blob');
 
         {
-            const pongSession = new ace_ex.AptosDecryptionSession({
+            const pongSession = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair1Id,
                 chainId: CHAIN_ID,

@@ -29,7 +29,8 @@ import { AccessControl } from "../target/types/access_control";
 import { AceHook } from "../target/types/ace_hook";
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { expect } from "chai";
-import { ace_ex, Result } from "@aptos-labs/ace-sdk";
+import * as ACE from "@aptos-labs/ace-sdk";
+import { Result } from "@aptos-labs/ace-sdk";
 import { AccountAddress, Serializer, DerivableAbstractedAccount } from "@aptos-labs/ts-sdk";
 import { readFileSync } from "fs";
 
@@ -121,7 +122,7 @@ describe("access-control", () => {
     console.log(`ACE contract: ${contractAddr}`);
     console.log(`Keypair ID:   ${keypairId.toString()}`);
 
-    const aceDeployment = new ace_ex.AceDeployment({
+    const aceDeployment = new ACE.AceDeployment({
       apiEndpoint,
       contractAddr: AccountAddress.fromString(contractAddr),
     });
@@ -146,7 +147,7 @@ describe("access-control", () => {
 
     // Encrypt RedKey with ACE.
     // The result (GreenBox) can only be decrypted by users who pass the access check.
-    const greenBox = (await ace_ex.solanaEncrypt({
+    const greenBox = (await ACE.SolanaBasicFlow.encrypt({
       aceDeployment,
       keypairId,
       knownChainName,
@@ -212,7 +213,7 @@ describe("access-control", () => {
      * - Only release key shares if verification passes
      */
     async function bobOpenGreenBoxV0(): Promise<Result<Uint8Array>> {
-      const session = new ace_ex.SolanaDecryptionSession({
+      const session = ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
@@ -239,7 +240,7 @@ describe("access-control", () => {
     }
 
     async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
-      const session = new ace_ex.SolanaDecryptionSession({
+      const session = ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,

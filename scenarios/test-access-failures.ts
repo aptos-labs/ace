@@ -31,7 +31,8 @@ import {
     Ed25519PrivateKey,
     Serializer,
 } from '@aptos-labs/ts-sdk';
-import { ace_ex, pke } from '@aptos-labs/ace-sdk';
+import * as ACE from '@aptos-labs/ace-sdk';
+import { pke } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
 
 import {
@@ -223,11 +224,11 @@ async function main() {
 
         step(10, 'Alice encrypts "PING" with keypair-0, domain=@alice/ping-blob');
         const correctDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-        const aceDeployment = new ace_ex.AceDeployment({
+        const aceDeployment = new ACE.AceDeployment({
             apiEndpoint: LOCALNET_URL,
             contractAddr: adminAccountAddress,
         });
-        const pingEncResult = await ace_ex.aptosEncrypt({
+        const pingEncResult = await ACE.AptosBasicFlow.encrypt({
             aceDeployment,
             keypairId: keypair0Id,
             chainId: CHAIN_ID,
@@ -245,7 +246,7 @@ async function main() {
         step('A', 'Negative: decrypt with nonexistent keypair ID → must fail (404)');
         {
             const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
-            const session = new ace_ex.AptosDecryptionSession({
+            const session = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: fakeKeypairId,
                 chainId: CHAIN_ID,
@@ -270,7 +271,7 @@ async function main() {
         // Worker verifies check_permission(Charlie, domain) → false → 403 FORBIDDEN.
         step('B', 'Negative: decrypt by Charlie (not allowlisted) → must fail (403)');
         {
-            const session = new ace_ex.AptosDecryptionSession({
+            const session = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -296,7 +297,7 @@ async function main() {
         step('C', 'Negative: decrypt with wrong domain (unregistered blob) → must fail (403)');
         {
             const wrongDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/other-blob`);
-            const session = new ace_ex.AptosDecryptionSession({
+            const session = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -319,7 +320,7 @@ async function main() {
         // ── Positive control D: correct keypairId, domain, and allowlisted user ──
         step('D', 'Positive: Bob (allowlisted) decrypts with correct keypairId and domain → must succeed');
         {
-            const session = new ace_ex.AptosDecryptionSession({
+            const session = ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,

@@ -80,9 +80,11 @@ async function main() {
     const adminPrivKeyHex = Buffer.from(admin.privateKey.toUint8Array()).toString('hex');
     console.log(`  Admin address: ${adminAddress}`);
 
-    const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL }));
+    const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: LOCALNET_URL, faucet: 'http://127.0.0.1:8081' }));
     console.log('Funding admin via faucet...');
-    await aptos.fundAccount({ accountAddress: admin.accountAddress, amount: 200_000_000 });
+    const faucetResp = await fetch(`http://127.0.0.1:8081/mint?amount=200000000&address=${adminAddress}`, { method: 'POST' });
+    if (!faucetResp.ok) throw new Error(`Faucet failed: ${await faucetResp.text()}`);
+    await new Promise(r => setTimeout(r, 2000)); // let the funding confirm
 
     // ── Deploy Move contract ──────────────────────────────────────────────────
     console.log('Deploying kyc_verifier module...');

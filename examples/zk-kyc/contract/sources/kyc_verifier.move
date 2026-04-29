@@ -87,9 +87,9 @@ module admin::kyc_verifier {
         });
     }
 
-    /// ACE hook: returns true iff payload is a valid Groth16 proof that the
-    /// prover holds a KYC credential for a non-sanctioned jurisdiction,
-    /// bound to enc_pk.  label is verified by ACE itself and is ignored here.
+    // ACE hook: returns true iff payload is a valid Groth16 proof that the
+    // prover holds a KYC credential for a non-sanctioned jurisdiction,
+    // bound to enc_pk.  label is verified by ACE itself and is ignored here.
     #[view]
     public fun check_acl(
         _label: vector<u8>,

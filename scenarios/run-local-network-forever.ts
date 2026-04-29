@@ -83,7 +83,7 @@ async function main() {
     await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
-    const WORKER_BASE_PORT = 9000;
+    const WORKER_BASE_PORT = 9010;
     log('Registering PKE enc keys and HTTP endpoints for all workers...');
     for (let i = 0; i < numWorkers; i++) {
         (await submitTxn({

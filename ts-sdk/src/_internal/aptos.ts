@@ -35,11 +35,11 @@ export class ContractID {
         this.moduleName = moduleName;
         this.functionName = functionName;
     }
-    
+
     static dummy(): ContractID {
         return new ContractID(0, AccountAddress.fromString("0x1"), "module3", "function3");
     }
-    
+
     static deserialize(deserializer: Deserializer): Result<ContractID> {
         const task = (_extra: Record<string, any>) => {
             const chainId = deserializer.deserializeU8();
@@ -50,7 +50,7 @@ export class ContractID {
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
-    
+
     static fromBytes(bytes: Uint8Array): Result<ContractID> {
         const task = (_extra: Record<string, any>) => {
             const deserializer = new Deserializer(bytes);
@@ -62,14 +62,14 @@ export class ContractID {
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
-    
+
     static fromHex(hex: string): Result<ContractID> {
         const task = (_extra: Record<string, any>) => {
             return ContractID.fromBytes(hexToBytes(hex)).unwrapOrThrow('AptosContractID.fromHex failed with fromBytes error');
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
-    
+
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.chainId);
         serializer.serialize(this.moduleAddr);
@@ -82,7 +82,7 @@ export class ContractID {
         this.serialize(serializer);
         return serializer.toUint8Array();
     }
-    
+
     toHex(): string {
         return bytesToHex(this.toBytes());
     }

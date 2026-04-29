@@ -193,6 +193,12 @@ async function main() {
     log('  Run the Aptos example:');
     log('    cd examples/shelby-access-control-aptos/demo-cli-flow');
     log('    pnpm test:localnet');
+    log('');
+    log('  Run the ZK-KYC example (Groth16 proof of jurisdiction):');
+    log('    cd examples/zk-kyc');
+    log('    pnpm install && cd circuit && ./setup.sh && cd ..');
+    log('    pnpm 1-provider-setup && pnpm 2-deploy-contract');
+    log('    pnpm 3-issue-credential && pnpm 4-encrypt && pnpm 5-decrypt');
     log('══════════════════════════════════════════════');
     log('');
 

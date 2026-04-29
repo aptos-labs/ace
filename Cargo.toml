@@ -4,6 +4,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "ace-anchor-kit",
     "worker-components/vss-common",
     "worker-components/vss-dealer",
     "worker-components/vss-recipient",

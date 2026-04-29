@@ -20,6 +20,7 @@ name = "network_node"
 path = "src/lib.rs"
 
 [dependencies]
+ace-anchor-kit = { path = "../../ace-anchor-kit" }
 vss-common = { path = "../vss-common" }
 epoch-change-cur = { path = "../epoch-change-cur" }
 epoch-change-nxt = { path = "../epoch-change-nxt" }

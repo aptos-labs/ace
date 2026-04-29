@@ -1,0 +1,12 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "ace-anchor-kit"
+version = "0.1.0"
+edition = "2021"
+description = "Shared ACE encoding helpers for Solana hook programs and workers."
+
+[dependencies]
+bcs = "0.1"
+serde = { version = "1", features = ["derive"] }

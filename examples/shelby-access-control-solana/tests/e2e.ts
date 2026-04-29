@@ -212,8 +212,18 @@ describe("access-control", () => {
      * - Only release key shares if verification passes
      */
     async function bobOpenGreenBoxV0(): Promise<Result<Uint8Array>> {
+      const session = new ace_ex.SolanaDecryptionSession({
+        aceDeployment,
+        keypairId,
+        knownChainName,
+        programId: accessControlProgram.programId.toBase58(),
+        domain: fullBlobNameBytes,
+        ciphertext: greenBox,
+      });
+      const fullRequestBytes = await session.getRequestToSign();
+
       const txn = await accessControlProgram.methods
-        .assertAccess(fullBlobNameBytes)
+        .assertAccess(Buffer.from(fullRequestBytes))
         .accounts({
           blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
           receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
@@ -225,6 +235,10 @@ describe("access-control", () => {
       txn.recentBlockhash = blockhash;
       txn.sign(bob);
 
+      return session.decryptWithProof({ txn: txn.serialize() });
+    }
+
+    async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
       const session = new ace_ex.SolanaDecryptionSession({
         aceDeployment,
         keypairId,
@@ -233,13 +247,10 @@ describe("access-control", () => {
         domain: fullBlobNameBytes,
         ciphertext: greenBox,
       });
-      await session.getRequestToSign();
-      return session.decryptWithProof({ txn: txn.serialize() });
-    }
+      const fullRequestBytes = await session.getRequestToSign();
 
-    async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
       const instruction = await accessControlProgram.methods
-        .assertAccess(fullBlobNameBytes)
+        .assertAccess(Buffer.from(fullRequestBytes))
         .accounts({
           blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
           receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
@@ -255,15 +266,6 @@ describe("access-control", () => {
       const versionedTxn = new VersionedTransaction(messageV0);
       versionedTxn.sign([bob]);
 
-      const session = new ace_ex.SolanaDecryptionSession({
-        aceDeployment,
-        keypairId,
-        knownChainName,
-        programId: accessControlProgram.programId.toBase58(),
-        domain: fullBlobNameBytes,
-        ciphertext: greenBox,
-      });
-      await session.getRequestToSign();
       return session.decryptWithProof({ txn: versionedTxn.serialize() });
     }
 

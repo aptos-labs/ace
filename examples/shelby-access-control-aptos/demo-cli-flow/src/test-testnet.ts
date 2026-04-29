@@ -175,21 +175,18 @@ async function main() {
         console.error("ERROR: Set ACE_CONTRACT and KEYPAIR_ID env vars for testnet.");
         process.exit(1);
     }
-    const aceContract: string = process.env.ACE_CONTRACT;
+    const aceContractStr: string = process.env.ACE_CONTRACT;
     const keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
     const rpcUrl = "https://api.testnet.aptoslabs.com/v1";
-    log(`ACE contract: ${aceContract}`);
+    log(`ACE contract: ${aceContractStr}`);
     log(`Keypair ID:   ${keypairId.toString()}`);
 
-    // Create the contract ID that points to our check_permission function.
-    // Workers will call this function to verify access before releasing key shares.
-    const chainId = await aptos.getChainId();
-    const contractId = ace_ex.ContractID.newAptos({
-        chainId,
-        moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
-        moduleName: "access_control",
-        functionName: "check_permission",
+    const aceDeployment = new ace_ex.AceDeployment({
+        apiEndpoint: rpcUrl,
+        contractAddr: AccountAddress.fromString(aceContractStr),
     });
+
+    const chainId = await aptos.getChainId();
     
     // ========================================================================
     // Step 6: Alice Encrypts and Registers Content
@@ -202,13 +199,15 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const { fullDecryptionDomain, ciphertext } = (await ace_ex.encrypt({
+    const ciphertext = (await ace_ex.aptosEncrypt({
+        aceDeployment,
         keypairId,
-        contractId,
+        chainId,
+        moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+        moduleName: "access_control",
+        functionName: "check_permission",
         domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
-        aceContract,
-        rpcUrl,
     })).unwrapOrThrow("encryption failed");
     log("✓ Content encrypted");
     
@@ -234,25 +233,22 @@ async function main() {
      * 5. Bob aggregates key shares and decrypts
      */
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const task = async (_extra: Record<string, any>) => {
-            const msgToSign = fullDecryptionDomain.toPrettyMessage();
-            const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
-                userAddr: bob.accountAddress,
-                publicKey: bob.publicKey,
-                signature: bob.sign(msgToSign),
-                fullMessage: msgToSign,
-            });
-            return (await ace_ex.decrypt({
-                keypairId,
-                contractId: fullDecryptionDomain.contractId,
-                domain: fullDecryptionDomain.domain,
-                proof: proofOfPermission,
-                ciphertext,
-                aceContract,
-                rpcUrl,
-            })).unwrapOrThrow("decryption failed");
-        };
-        return Result.captureAsync({ task, recordsExecutionTimeMs: true });
+        const session = new ace_ex.AptosDecryptionSession({
+            aceDeployment,
+            keypairId,
+            chainId,
+            moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+            moduleName: "access_control",
+            functionName: "check_permission",
+            domain: textEncoder.encode(fullBlobName),
+            ciphertext,
+        });
+        const msgToSign = await session.getRequestToSign();
+        return session.decryptWithProof({
+            userAddr: bob.accountAddress,
+            publicKey: bob.publicKey,
+            signature: bob.sign(msgToSign),
+        });
     }
     
     // Bob tries to decrypt without permission - should fail

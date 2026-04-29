@@ -8,7 +8,7 @@
  */
 
 import * as AptosSDK from "@aptos-labs/ts-sdk";
-import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, PublicKey, Serializer, Signature } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
@@ -22,30 +22,20 @@ import { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermi
 export { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 export { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermission } from "./solana";
 
-/**
- * RPC endpoint configuration for verification.
- * Workers can provide custom endpoints for their own fullnodes.
- */
-export interface AptosChainConfig {
-    endpoint?: string;
+export class AceDeployment {
+    apiEndpoint: string;
+    contractAddr: AccountAddress;
     apiKey?: string;
+
+    constructor({apiEndpoint, contractAddr, apiKey}: {apiEndpoint: string, contractAddr: AccountAddress, apiKey?: string}) {
+        this.apiEndpoint = apiEndpoint;
+        this.contractAddr = contractAddr;
+        this.apiKey = apiKey;
+    }
 }
 
-export interface RpcConfig {
-    aptos?: {
-        mainnet?: AptosChainConfig;
-        testnet?: AptosChainConfig;
-        localnet?: AptosChainConfig;
-    };
-    solana?: {
-        "mainnet-beta"?: string;
-        testnet?: string;
-        devnet?: string;
-        localnet?: string;
-    };
-}
-
-export class ContractID {
+// I think this no longer needs to be exported.
+class ContractID {
     static readonly SCHEME_APTOS = 0;
     static readonly SCHEME_SOLANA = 1;
     
@@ -130,7 +120,8 @@ export class ContractID {
     }
 }
 
-export class FullDecryptionDomain {
+// I think this no longer needs to be exported.
+class FullDecryptionDomain {
     keypairId: AccountAddress;
     contractId: ContractID;
     domain: Uint8Array;
@@ -214,7 +205,8 @@ export class FullDecryptionDomain {
     }
 }
 
-export class ProofOfPermission {
+// I think this no longer needs to be exported.
+class ProofOfPermission {
     static readonly SCHEME_APTOS = 0;
     static readonly SCHEME_SOLANA = 1;
 
@@ -296,32 +288,209 @@ export class ProofOfPermission {
     }
 }
 
-export class RequestForDecryptionKey {
+/**
+ * How to use:
+ * 1. construct a DecryptionSession with the necessary parameters;
+ * 2. call getRequestToSign() to get the request to sign;
+ * 3. sign the request;
+ * 4. call decryptWithProof() to decrypt the ciphertext.
+ */
+export class AptosDecryptionSession {
+    aceDeployment: AceDeployment;
+    fullDecryptionDomain: FullDecryptionDomain;
+    ciphertext: Uint8Array;
+    ephemeralDecryptionKey: pke.DecryptionKey;
+    ephemeralEncryptionKey: pke.EncryptionKey;
+    request: DecryptionRequestPayload | undefined;
+    networkState: NetworkState | undefined;
+
+    constructor({aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName, domain, ciphertext}: {
+        aceDeployment?: AceDeployment,
+        keypairId: AccountAddress,
+        chainId: number,
+        moduleAddr: AccountAddress,
+        moduleName: string,
+        functionName?: string,
+        domain: Uint8Array,
+        ciphertext: Uint8Array,
+    }) {
+        if (aceDeployment === undefined) throw 'default aceDeployment is not supported yet';
+        this.aceDeployment = aceDeployment;
+        if (functionName === undefined) functionName = 'check_permission';
+        const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
+        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
+        this.ciphertext = ciphertext;
+        const {encryptionKey, decryptionKey} = pke.keygen();
+        this.ephemeralDecryptionKey = decryptionKey;
+        this.ephemeralEncryptionKey = encryptionKey;
+    }
+
+    async getRequestToSign(): Promise<string> {
+        const {networkState, request} = await fetchNetworkStateAndBuildRequest(
+            this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+        this.networkState = networkState;
+        this.request = request;
+        return request.toPrettyMessage();
+    }
+
+    async decryptWithProof({userAddr, publicKey, signature, fullMessage}: {
+        userAddr: AccountAddress,
+        publicKey: PublicKey,
+        signature: Signature,
+        fullMessage?: string,
+    }): Promise<Result<Uint8Array>> {
+        if (fullMessage === undefined) fullMessage = this.request!.toPrettyMessage();
+        const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
+        return decryptCore({
+            aceDeployment: this.aceDeployment,
+            networkState: this.networkState!,
+            request: this.request!,
+            proof,
+            ephemeralDecryptionKey: this.ephemeralDecryptionKey,
+            ciphertext: this.ciphertext,
+        });
+    }
+}
+
+/**
+ * How to use:
+ * 1. construct a SolanaDecryptionSession with the necessary parameters;
+ * 2. call getRequestToSign() to get the request to display/sign;
+ * 3. sign the request as a Solana transaction;
+ * 4. call decryptWithProof() to decrypt the ciphertext.
+ */
+export class SolanaDecryptionSession {
+    aceDeployment: AceDeployment;
+    fullDecryptionDomain: FullDecryptionDomain;
+    ciphertext: Uint8Array;
+    ephemeralDecryptionKey: pke.DecryptionKey;
+    ephemeralEncryptionKey: pke.EncryptionKey;
+    request: DecryptionRequestPayload | undefined;
+    networkState: NetworkState | undefined;
+
+    constructor({aceDeployment, keypairId, knownChainName, programId, domain, ciphertext}: {
+        aceDeployment?: AceDeployment,
+        keypairId: AccountAddress,
+        knownChainName: string,
+        programId: string,
+        domain: Uint8Array,
+        ciphertext: Uint8Array,
+    }) {
+        if (aceDeployment === undefined) throw 'default aceDeployment is not supported yet';
+        this.aceDeployment = aceDeployment;
+        const contractId = ContractID.newSolana({knownChainName, programId});
+        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
+        this.ciphertext = ciphertext;
+        const {encryptionKey, decryptionKey} = pke.keygen();
+        this.ephemeralDecryptionKey = decryptionKey;
+        this.ephemeralEncryptionKey = encryptionKey;
+    }
+
+    async getRequestToSign(): Promise<string> {
+        const {networkState, request} = await fetchNetworkStateAndBuildRequest(
+            this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+        this.networkState = networkState;
+        this.request = request;
+        return request.toPrettyMessage();
+    }
+
+    async decryptWithProof({txn}: {txn: Uint8Array}): Promise<Result<Uint8Array>> {
+        const proof = ProofOfPermission.createSolana({txn});
+        return decryptCore({
+            aceDeployment: this.aceDeployment,
+            networkState: this.networkState!,
+            request: this.request!,
+            proof,
+            ephemeralDecryptionKey: this.ephemeralDecryptionKey,
+            ciphertext: this.ciphertext,
+        });
+    }
+}
+
+class DecryptionRequestPayload {
     keypairId: AptosSDK.AccountAddress;
     epoch: number;
     contractId: ContractID;
     domain: Uint8Array;
-    proof: ProofOfPermission;
     ephemeralEncKey: pke.EncryptionKey;
 
-    constructor({keypairId, epoch, contractId, domain, proof, ephemeralEncKey}: {keypairId: AptosSDK.AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, proof: ProofOfPermission, ephemeralEncKey: pke.EncryptionKey}) {
+    constructor({keypairId, epoch, contractId, domain, ephemeralEncKey}: {keypairId: AptosSDK.AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, ephemeralEncKey: pke.EncryptionKey}) {
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
         this.domain = domain;
-        this.proof = proof;
         this.ephemeralEncKey = ephemeralEncKey;
+    }
+
+    static deserialize(deserializer: Deserializer): Result<DecryptionRequestPayload> {
+        const task = (_extra: Record<string, any>) => {
+            const keypairId = AccountAddress.deserialize(deserializer);
+            const epoch = Number(deserializer.deserializeU64());
+            const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.DecryptionRequestPayload.deserialize failed with ContractID deserialization error');
+            const domain = deserializer.deserializeBytes();
+            const ephemeralEncKey = pke.EncryptionKey.deserialize(deserializer).unwrapOrThrow('ACE.DecryptionRequestPayload.deserialize failed with ephemeralEncKey deserialization error');
+            return new DecryptionRequestPayload({keypairId, epoch, contractId, domain, ephemeralEncKey});
+        };
+        return Result.capture({task, recordsExecutionTimeMs: false});
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<DecryptionRequestPayload> {
+        const task = (_extra: Record<string, any>) => {
+            const deserializer = new Deserializer(bytes);
+            const ret = DecryptionRequestPayload.deserialize(deserializer).unwrapOrThrow('ACE.DecryptionRequestPayload.fromBytes failed with deserialization error');
+            if (deserializer.remaining() !== 0) {
+                throw 'ACE.DecryptionRequestPayload.fromBytes failed with trailing bytes';
+            }
+            return ret;
+        };
+        return Result.capture({task, recordsExecutionTimeMs: false});
+    }
+
+    static fromHex(hex: string): Result<DecryptionRequestPayload> {
+        const task = (_extra: Record<string, any>) => {
+            return DecryptionRequestPayload.fromBytes(hexToBytes(hex)).unwrapOrThrow('ACE.DecryptionRequestPayload.fromHex failed with fromBytes error');
+        };
+        return Result.capture({task, recordsExecutionTimeMs: false});
+    }
+
+    serialize(serializer: Serializer): void {
+        this.keypairId.serialize(serializer);
+        serializer.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(serializer);
+        serializer.serializeBytes(this.domain);
+        this.ephemeralEncKey.serialize(serializer);
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    toHex(): string {
+        return bytesToHex(this.toBytes());
+    }
+
+    toPrettyMessage(indent: number = 0): string {
+        const pad = '  '.repeat(indent);
+        return `${pad}ACE Decryption Request\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}epoch: ${this.epoch}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}\n${pad}ephemeralEncKey: ${this.ephemeralEncKey.toHex()}`;
+    }
+}
+
+class RequestForDecryptionKey {
+    requestPayload: DecryptionRequestPayload;
+    proof: ProofOfPermission;
+
+    constructor({requestPayload, proof}: {requestPayload: DecryptionRequestPayload, proof: ProofOfPermission}) {
+        this.requestPayload = requestPayload;
+        this.proof = proof;
     }
 
     static deserialize(deserializer: Deserializer): Result<RequestForDecryptionKey> {
         const task = (_extra: Record<string, any>) => {
-            const keypairId = AccountAddress.deserialize(deserializer);
-            const epoch = Number(deserializer.deserializeU64());
-            const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ContractID deserialization error');
-            const domain = deserializer.deserializeBytes();
+            const requestPayload = DecryptionRequestPayload.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with DecryptionRequestPayload deserialization error');
             const proof = ProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ProofOfPermission deserialization error');
-            const ephemeralEncKey = pke.EncryptionKey.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ephemeralEncKey deserialization error');
-            return new RequestForDecryptionKey({keypairId, epoch, contractId, domain, proof, ephemeralEncKey});
+            return new RequestForDecryptionKey({requestPayload, proof});
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -342,14 +511,8 @@ export class RequestForDecryptionKey {
     }
 
     serialize(serializer: Serializer): void {
-        this.keypairId.serialize(serializer);
-        serializer.serializeU64(BigInt(this.epoch));
-        this.contractId.serialize(serializer);
-        serializer.serializeBytes(this.domain);
+        this.requestPayload.serialize(serializer);
         this.proof.serialize(serializer);
-        // Ephemeral enc key appended last (always 67 bytes for scheme 0).
-        // The node slices the last 67 bytes to extract it without needing a length prefix.
-        this.ephemeralEncKey.serialize(serializer);
     }
 
     toBytes(): Uint8Array {
@@ -363,99 +526,155 @@ export class RequestForDecryptionKey {
     }
 }
 
-export async function encrypt({keypairId, contractId, domain, plaintext, aceContract, rpcUrl}: {
+export async function aptosEncrypt({aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName, domain, plaintext}: {
+    aceDeployment?: AceDeployment,
     keypairId: AccountAddress,
-    contractId: ContractID,
+    chainId: number,
+    moduleAddr: AccountAddress,
+    moduleName: string,
+    functionName?: string,
     domain: Uint8Array,
     plaintext: Uint8Array,
-    aceContract: string,
-    rpcUrl?: string,
-}): Promise<Result<{fullDecryptionDomain: FullDecryptionDomain, ciphertext: Uint8Array}>> {
+}): Promise<Result<Uint8Array>> {
+    if (aceDeployment === undefined) throw 'default aceDeployment is not supported yet';
+    if (functionName === undefined) functionName = 'check_permission';
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(rpcUrl);
+            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName: functionName!});
             const fdd = new FullDecryptionDomain({keypairId, contractId, domain});
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             // Fetch DKG session to get master public key (basePoint + resultPk).
             const [hexBytes] = await aptos.view({
                 payload: {
-                    function: `${aceContract}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
+                    function: `${aceContractAddr}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
                     typeArguments: [],
                     functionArguments: [keypairId.toStringLong()],
                 },
             });
             const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
-            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ace_ex.encrypt: parse DKG session');
-            if (!session.resultPk) throw 'ace_ex.encrypt: DKG session has no resultPk (not yet finalized)';
+            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ace_ex.aptosEncrypt: parse DKG session');
+            if (!session.resultPk) throw 'ace_ex.aptosEncrypt: DKG session has no resultPk (not yet finalized)';
 
             const mpk = tibe.MasterPublicKey.newBonehFranklinBls12381ShortPkOtpHmac(session.basePoint, session.resultPk)
-                .unwrapOrThrow('ace_ex.encrypt: construct MPK');
+                .unwrapOrThrow('ace_ex.aptosEncrypt: construct MPK');
 
-            const ciph = tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
-                .unwrapOrThrow('ace_ex.encrypt: tibe.encrypt failed');
-
-            return {fullDecryptionDomain: fdd, ciphertext: ciph.toBytes()};
+            return tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
+                .unwrapOrThrow('ace_ex.aptosEncrypt: tibe.encrypt failed')
+                .toBytes();
         },
         recordsExecutionTimeMs: true,
     });
 }
 
-export async function decrypt({keypairId, contractId, domain, proof, ciphertext, aceContract, rpcUrl}: {
+export async function solanaEncrypt({aceDeployment, keypairId, knownChainName, programId, domain, plaintext}: {
+    aceDeployment?: AceDeployment,
     keypairId: AccountAddress,
-    contractId: ContractID,
+    knownChainName: string,
+    programId: string,
     domain: Uint8Array,
+    plaintext: Uint8Array,
+}): Promise<Result<Uint8Array>> {
+    if (aceDeployment === undefined) throw 'default aceDeployment is not supported yet';
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const contractId = ContractID.newSolana({knownChainName, programId});
+            const fdd = new FullDecryptionDomain({keypairId, contractId, domain});
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [keypairId.toStringLong()],
+                },
+            });
+            const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
+            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ace_ex.solanaEncrypt: parse DKG session');
+            if (!session.resultPk) throw 'ace_ex.solanaEncrypt: DKG session has no resultPk (not yet finalized)';
+
+            const mpk = tibe.MasterPublicKey.newBonehFranklinBls12381ShortPkOtpHmac(session.basePoint, session.resultPk)
+                .unwrapOrThrow('ace_ex.solanaEncrypt: construct MPK');
+
+            return tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
+                .unwrapOrThrow('ace_ex.solanaEncrypt: tibe.encrypt failed')
+                .toBytes();
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
+async function fetchNetworkStateAndBuildRequest(
+    aceDeployment: AceDeployment,
+    fullDecryptionDomain: FullDecryptionDomain,
+    ephemeralEncryptionKey: pke.EncryptionKey,
+): Promise<{networkState: NetworkState, request: DecryptionRequestPayload}> {
+    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+
+    const [stateHex] = await aptos.view({
+        payload: {
+            function: `${aceContractAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
+            typeArguments: [],
+            functionArguments: [],
+        },
+    });
+    const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
+    const networkState = NetworkState.fromBytes(stateBytes).unwrapOrThrow('ace_ex: parse network state');
+
+    const request = new DecryptionRequestPayload({
+        keypairId: fullDecryptionDomain.keypairId,
+        epoch: networkState.epoch,
+        contractId: fullDecryptionDomain.contractId,
+        domain: fullDecryptionDomain.domain,
+        ephemeralEncKey: ephemeralEncryptionKey,
+    });
+
+    return {networkState, request};
+}
+
+async function decryptCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, ciphertext}: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    request: DecryptionRequestPayload,
     proof: ProofOfPermission,
+    ephemeralDecryptionKey: pke.DecryptionKey,
     ciphertext: Uint8Array,
-    aceContract: string,
-    rpcUrl?: string,
 }): Promise<Result<Uint8Array>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(rpcUrl);
+            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
-            // Fetch current committee from network state.
-            const [stateHex] = await aptos.view({
-                payload: {
-                    function: `${aceContract}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [],
-                },
-            });
-            const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
-            const state = NetworkState.fromBytes(stateBytes).unwrapOrThrow('ace_ex.decrypt: parse network state');
-
-            // Fetch HTTP endpoint and PKE enc key for each node in curNodes.
-            const nodeInfos = await Promise.all(state.curNodes.map(async (nodeAddr) => {
+            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
                 const addrStr = nodeAddr.toStringLong();
                 const [[endpoint], [ekHex]] = await Promise.all([
                     aptos.view({
                         payload: {
-                            function: `${aceContract}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
                             typeArguments: [],
                             functionArguments: [addrStr],
                         },
                     }),
                     aptos.view({
                         payload: {
-                            function: `${aceContract}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
                             typeArguments: [],
                             functionArguments: [addrStr],
                         },
                     }),
                 ]);
                 const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                    .unwrapOrThrow(`ace_ex.decrypt: parse pke enc key for ${addrStr}`);
+                    .unwrapOrThrow(`ace_ex.decryptCore: parse pke enc key for ${addrStr}`);
                 return { endpoint: endpoint as string, nodeEncKey };
             }));
 
-            // Generate a per-call ephemeral keypair; the enc key is included in the request so
-            // each node can encrypt its share response back to us.
-            const { encryptionKey: ephemeralEk, decryptionKey: ephemeralDk } = pke.keygen();
-            const reqBytes = new RequestForDecryptionKey({keypairId, epoch: state.epoch, contractId, domain, proof, ephemeralEncKey: ephemeralEk}).toBytes();
+            const reqBytes = new RequestForDecryptionKey({requestPayload: request, proof}).toBytes();
 
-            // POST to all workers concurrently; each request is encrypted to that node's PKE key.
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
-                const nodeAddr = state.curNodes[i].toStringLong();
+                const nodeAddr = networkState.curNodes[i].toStringLong();
                 try {
                     const encReqHex = pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes}).toHex();
                     const ctrl = new AbortController();
@@ -470,10 +689,10 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
                     const hexText = (await resp.text()).trim();
                     const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
                     if (respCt === null) {
-                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed, hex=${hexText.slice(0, 40)}...`);
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
                         return null;
                     }
-                    const shareBytes = pke.decrypt({decryptionKey: ephemeralDk, ciphertext: respCt}).okValue ?? null;
+                    const shareBytes = pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt}).okValue ?? null;
                     if (shareBytes === null) {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response decryption failed`);
                         return null;
@@ -482,7 +701,7 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
                     if (share === null) {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): share parse failed`);
                     } else {
-                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK (evalPoint=${share.inner?.evalPoint ?? (share as any).evalPoint})`);
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK`);
                     }
                     return share;
                 } catch (e) {
@@ -491,14 +710,14 @@ export async function decrypt({keypairId, contractId, domain, proof, ciphertext,
                 }
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);
 
-            if (idkShares.length < state.curThreshold) {
-                throw `ace_ex.decrypt: need ${state.curThreshold} shares, got ${idkShares.length}`;
+            if (idkShares.length < networkState.curThreshold) {
+                throw `ace_ex.decryptCore: need ${networkState.curThreshold} shares, got ${idkShares.length}`;
             }
 
             return tibe.decrypt({
                 idkShares,
-                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ace_ex.decrypt: parse ciphertext'),
-            }).unwrapOrThrow('ace_ex.decrypt: tibe.decrypt failed');
+                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ace_ex.decryptCore: parse ciphertext'),
+            }).unwrapOrThrow('ace_ex.decryptCore: tibe.decrypt failed');
         },
         recordsExecutionTimeMs: true,
     });

@@ -104,25 +104,26 @@ describe("access-control", () => {
 
     // Read ACE global network config written by `pnpm run-local-network-forever`.
     // Env vars ACE_CONTRACT + KEYPAIR_ID override the config file.
-    let aceContract: string;
+    let apiEndpoint: string;
+    let contractAddr: string;
     let keypairId: AccountAddress;
     if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
-      aceContract = process.env.ACE_CONTRACT;
+      apiEndpoint = "http://localhost:8080/v1";
+      contractAddr = process.env.ACE_CONTRACT;
       keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
     } else {
       const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-        { aceContract: string; keypairId: string };
-      aceContract = cfg.aceContract;
+        { apiEndpoint: string; contractAddr: string; keypairId: string };
+      apiEndpoint = cfg.apiEndpoint;
+      contractAddr = cfg.contractAddr;
       keypairId = AccountAddress.fromString(cfg.keypairId);
     }
-    console.log(`ACE contract: ${aceContract}`);
+    console.log(`ACE contract: ${contractAddr}`);
     console.log(`Keypair ID:   ${keypairId.toString()}`);
 
-    // Contract ID points to the ace_hook program.
-    // Workers verify that proof-of-permission transactions call this program.
-    const contractId = ace_ex.ContractID.newSolana({
-      knownChainName,
-      programId: accessControlProgram.programId.toBase58(),
+    const aceDeployment = new ace_ex.AceDeployment({
+      apiEndpoint,
+      contractAddr: AccountAddress.fromString(contractAddr),
     });
     
     // ========================================================================
@@ -145,12 +146,13 @@ describe("access-control", () => {
 
     // Encrypt RedKey with ACE.
     // The result (GreenBox) can only be decrypted by users who pass the access check.
-    const { ciphertext: greenBox } = (await ace_ex.encrypt({
+    const greenBox = (await ace_ex.solanaEncrypt({
+      aceDeployment,
       keypairId,
-      contractId,
+      knownChainName,
+      programId: accessControlProgram.programId.toBase58(),
       domain: fullBlobNameBytes,  // Unique identifier for this blob
       plaintext: redKey,          // The symmetric key to encrypt
-      aceContract,
     })).unwrapOrThrow('failed to encrypt');
     // greenBox is Uint8Array
     console.log("✓ RedKey encrypted into GreenBox");
@@ -210,86 +212,59 @@ describe("access-control", () => {
      * - Only release key shares if verification passes
      */
     async function bobOpenGreenBoxV0(): Promise<Result<Uint8Array>> {
-      const task = async (_extra: Record<string, any>) => {
-        // Build the assert_access transaction
-        const txn = await accessControlProgram.methods
-          .assertAccess(fullBlobNameBytes)
-          .accounts({
-            // BlobMetadata PDA - proves the blob exists and has this configuration
-            blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
-            // Receipt PDA - proves Bob has purchased access (if it exists)
-            receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
-            // Bob must sign to prove he controls this account
-            user: bob.publicKey,
-          })
-          .transaction();
-        
-        // Complete the transaction with fee payer and recent blockhash
-        txn.feePayer = bob.publicKey;
-        const { blockhash } = await connection.getLatestBlockhash();
-        txn.recentBlockhash = blockhash;
-        txn.sign(bob);
+      const txn = await accessControlProgram.methods
+        .assertAccess(fullBlobNameBytes)
+        .accounts({
+          blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
+          receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
+          user: bob.publicKey,
+        })
+        .transaction();
+      txn.feePayer = bob.publicKey;
+      const { blockhash } = await connection.getLatestBlockhash();
+      txn.recentBlockhash = blockhash;
+      txn.sign(bob);
 
-        // Create proof-of-permission from the signed transaction
-        const pop = ace_ex.ProofOfPermission.createSolana({ txn: txn.serialize() });
-
-        // Request decryption key shares from workers and decrypt.
-        // Workers simulate the transaction to verify Bob has access.
-        const plaintext = (await ace_ex.decrypt({
-          keypairId,
-          contractId,
-          domain: fullBlobNameBytes,
-          proof: pop,
-          ciphertext: greenBox,
-          aceContract,
-        })).unwrapOrThrow('failed to decrypt');
-
-        return plaintext;
-      };
-      return Result.captureAsync({ task, recordsExecutionTimeMs: true });
+      const session = new ace_ex.SolanaDecryptionSession({
+        aceDeployment,
+        keypairId,
+        knownChainName,
+        programId: accessControlProgram.programId.toBase58(),
+        domain: fullBlobNameBytes,
+        ciphertext: greenBox,
+      });
+      await session.getRequestToSign();
+      return session.decryptWithProof({ txn: txn.serialize() });
     }
 
-    /**
-     * Helper function for Bob to attempt decryption using a versioned transaction.
-     * Same flow as bobOpenGreenBoxV0 but uses the newer VersionedTransaction format.
-     */
     async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
-      const task = async (_extra: Record<string, any>) => {
-        // Build just the instruction (not full transaction)
-        const instruction = await accessControlProgram.methods
-          .assertAccess(fullBlobNameBytes)
-          .accounts({
-            blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
-            receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
-            user: bob.publicKey,
-          })
-          .instruction();
+      const instruction = await accessControlProgram.methods
+        .assertAccess(fullBlobNameBytes)
+        .accounts({
+          blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, fileName, program.programId),
+          receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId),
+          user: bob.publicKey,
+        })
+        .instruction();
+      const { blockhash } = await connection.getLatestBlockhash();
+      const messageV0 = new TransactionMessage({
+        payerKey: bob.publicKey,
+        recentBlockhash: blockhash,
+        instructions: [instruction],
+      }).compileToV0Message();
+      const versionedTxn = new VersionedTransaction(messageV0);
+      versionedTxn.sign([bob]);
 
-        // Create a versioned transaction (v0 message format)
-        const { blockhash } = await connection.getLatestBlockhash();
-        const messageV0 = new TransactionMessage({
-          payerKey: bob.publicKey,
-          recentBlockhash: blockhash,
-          instructions: [instruction],
-        }).compileToV0Message();
-
-        const versionedTxn = new VersionedTransaction(messageV0);
-        versionedTxn.sign([bob]);
-
-        // Same flow: create proof, request key shares, decrypt.
-        const pop = ace_ex.ProofOfPermission.createSolana({ txn: versionedTxn.serialize() });
-        const plaintext = (await ace_ex.decrypt({
-          keypairId,
-          contractId,
-          domain: fullBlobNameBytes,
-          proof: pop,
-          ciphertext: greenBox,
-          aceContract,
-        })).unwrapOrThrow('failed to decrypt');
-
-        return plaintext;
-      };
-      return Result.captureAsync({ task, recordsExecutionTimeMs: true });
+      const session = new ace_ex.SolanaDecryptionSession({
+        aceDeployment,
+        keypairId,
+        knownChainName,
+        programId: accessControlProgram.programId.toBase58(),
+        domain: fullBlobNameBytes,
+        ciphertext: greenBox,
+      });
+      await session.getRequestToSign();
+      return session.decryptWithProof({ txn: versionedTxn.serialize() });
     }
 
     console.log("\n=== Bob: Attempt Decryption Without Payment ===");

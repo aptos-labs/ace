@@ -47,7 +47,7 @@ pub enum ParsedChain {
 /// Verify `proof_bytes` against `fdd`.
 ///
 /// `chain_rpc` provides per-chain RPC endpoints for auth-key and permission checks.
-pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
+pub async fn verify(fdd: &ParsedFdd, epoch: u64, proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
     let outer_scheme = proof_bytes
         .first()
         .copied()
@@ -57,7 +57,7 @@ pub async fn verify(fdd: &ParsedFdd, proof_bytes: &[u8], chain_rpc: &ChainRpcCon
     match (outer_scheme, &fdd.chain) {
         (0, ParsedChain::Aptos { .. }) => {
             let proof = parse_aptos_proof(inner)?;
-            verify_aptos(fdd, &proof, chain_rpc).await
+            verify_aptos(fdd, epoch, &proof, chain_rpc).await
         }
         (1, ParsedChain::Solana { .. }) => {
             let proof = parse_solana_proof(inner)?;
@@ -236,7 +236,7 @@ fn parse_solana_proof(bytes: &[u8]) -> Result<SolanaProof> {
 
 // ── Aptos Verification ────────────────────────────────────────────────────────
 
-async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
+async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
     // Only legacy Ed25519 (pk_scheme=0, sig_scheme=0) is currently supported.
     if proof.pk_scheme != 0 {
         return Err(anyhow!("verify_aptos: unsupported public key scheme {}", proof.pk_scheme));
@@ -266,7 +266,7 @@ async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, chain_rpc: &ChainRpcC
 
     // Run 3 checks: sig, auth-key, permission.
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
-    verify_aptos_sig(fdd, proof, &vk, &sig)?;
+    verify_aptos_sig(fdd, epoch, proof, &vk, &sig)?;
 
     let chain_id = match &fdd.chain {
         ParsedChain::Aptos { chain_id, .. } => *chain_id,
@@ -287,24 +287,25 @@ async fn verify_aptos(fdd: &ParsedFdd, proof: &AptosProof, chain_rpc: &ChainRpcC
 
 /// Mirrors `verifySig` in `ts-sdk/src/ace-ex/aptos.ts`.
 ///
-/// Checks that `fullMessage` contains the FDD's pretty-printed representation (or its
-/// hex encoding, to handle AptosConnect wallets), then verifies the Ed25519 signature.
+/// Checks that `fullMessage` contains the decryption request's pretty-printed representation
+/// (or its hex encoding, to handle AptosConnect wallets), then verifies the Ed25519 signature.
 fn verify_aptos_sig(
     fdd: &ParsedFdd,
+    epoch: u64,
     proof: &AptosProof,
     vk: &ed25519_dalek::VerifyingKey,
     sig: &ed25519_dalek::Signature,
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let pretty_msg = aptos_fdd_pretty_message(fdd)?;
+    let pretty_msg = aptos_decryption_request_message(fdd, epoch)?;
     // AptosConnect embeds hex(UTF-8(pretty_msg)) rather than the raw string.
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
 
     let full_msg = &proof.full_message;
     if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
         return Err(anyhow!(
-            "verifySig: fullMessage does not contain expected FDD content"
+            "verifySig: fullMessage does not contain expected decryption request content"
         ));
     }
 
@@ -601,25 +602,31 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, is_versioned: bool
     Ok(())
 }
 
-// ── FDD pretty-message (Aptos) ────────────────────────────────────────────────
+// ── Decryption request pretty-message (Aptos) ─────────────────────────────────
 
-/// Produces the same string as `FullDecryptionDomain.toPrettyMessage(0)` in TypeScript
+/// Produces a substring of `DecryptionRequestPayload.toPrettyMessage(0)` in TypeScript
 /// for an Aptos ContractID.  Used by `verifySig` to check that `fullMessage` covers
-/// the correct decryption domain.
-fn aptos_fdd_pretty_message(fdd: &ParsedFdd) -> Result<String> {
+/// the correct keypairId, epoch, contractId, and domain.
+///
+/// The full TS message also appends `\nephemeralEncKey: {hex}`, so this string is a
+/// strict prefix (via `contains()`) of what the user actually signed.
+fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64) -> Result<String> {
     let (chain_id, module_addr_bytes, module_name, function_name) = match &fdd.chain {
         ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name } => {
             (chain_id, module_addr_bytes, module_name.as_str(), function_name.as_str())
         }
-        _ => return Err(anyhow!("aptos_fdd_pretty_message: chain is not Aptos")),
+        _ => return Err(anyhow!("aptos_decryption_request_message: chain is not Aptos")),
     };
 
     // moduleAddr.toStringLong() = "0x" + 64 lowercase hex chars (32 bytes)
     let module_addr = format!("0x{}", hex::encode(module_addr_bytes));
     let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
 
-    // Matches FullDecryptionDomain.toPrettyMessage(indent=0):
+    // Matches DecryptionRequestPayload.toPrettyMessage(indent=0) up to but not including
+    // the ephemeralEncKey line:
+    //   "ACE Decryption Request"
     //   "\nkeypairId: 0x{keypairIdHex}"
+    //   "\nepoch: {epoch}"
     //   "\ncontractId:"
     //   ContractID.toPrettyMessage(indent=1):          pad="  "
     //     "\n  scheme: aptos"
@@ -632,8 +639,8 @@ fn aptos_fdd_pretty_message(fdd: &ParsedFdd) -> Result<String> {
     //   "\ndomain: 0x{domainHex}"
     let keypair_id_hex = format!("0x{}", hex::encode(fdd.keypair_id));
     Ok(format!(
-        "\nkeypairId: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
-        keypair_id_hex, chain_id, module_addr, module_name, function_name, domain_hex,
+        "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
+        keypair_id_hex, epoch, chain_id, module_addr, module_name, function_name, domain_hex,
     ))
 }
 

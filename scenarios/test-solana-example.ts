@@ -27,7 +27,7 @@ import { existsSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { LOCALNET_URL, REPO_ROOT } from './common/config';
+import { LOCALNET_URL, REPO_ROOT, WORKER_BASE_PORT } from './common/config';
 import {
     startLocalnet,
     fundAccount,
@@ -39,10 +39,9 @@ import {
     proposeAndApprove,
     serializeNewSecretProposal,
 } from './common/helpers';
-import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
+import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNode } from './common/network-clients';
 
 const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'examples', 'shelby-access-control-solana');
-const WORKER_BASE_PORT = 9000;
 const NUM_WORKERS = 3;
 
 async function main() {
@@ -96,6 +95,9 @@ async function main() {
         log('Building Rust workspace...');
         await buildRustWorkspace();
 
+        // ── Kill any stale worker processes from prior runs ──────────────────
+        killStaleNetworkNodes();
+
         // ── Spawn workers ────────────────────────────────────────────────────
         for (let i = 0; i < NUM_WORKERS; i++) {
             const pkeDkHex = `0x${Buffer.from(encKeypairs[i]!.decryptionKey.toBytes()).toString('hex')}`;
@@ -145,9 +147,9 @@ async function main() {
         // ── Write config for the Solana test ─────────────────────────────────
         const CONFIG_PATH = '/tmp/ace-localnet-config.json';
         writeFileSync(CONFIG_PATH, JSON.stringify({
-            aceContract,
+            apiEndpoint: LOCALNET_URL,
+            contractAddr: aceContract,
             keypairId: networkState.secrets[0]!.toStringLong(),
-            rpcUrl: LOCALNET_URL,
         }, null, 2));
         log(`Config written to ${CONFIG_PATH}`);
 

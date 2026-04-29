@@ -273,23 +273,23 @@ async function main() {
         // ── Step 11: Alice encrypts "PING" with keypair-0 ────────────────────
         step(11, 'Alice encrypts "PING" with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-        const contractId = ace_ex.ContractID.newAptos({
-            chainId: CHAIN_ID,
-            moduleAddr: AccountAddress.fromString(adminAddr),
-            moduleName: 'access_control',
-            functionName: 'check_permission',
+        const aceDeployment = new ace_ex.AceDeployment({
+            apiEndpoint: LOCALNET_URL,
+            contractAddr: adminAccountAddress,
         });
 
-        const pingEncResult = await ace_ex.encrypt({
+        const pingEncResult = await ace_ex.aptosEncrypt({
+            aceDeployment,
             keypairId: keypair0Id,
-            contractId,
+            chainId: CHAIN_ID,
+            moduleAddr: adminAccountAddress,
+            moduleName: 'access_control',
+            functionName: 'check_permission',
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
-            aceContract: adminAddr,
-            rpcUrl: LOCALNET_URL,
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
-        const { fullDecryptionDomain: pingFdd, ciphertext: pingCiph } = pingEncResult.okValue!;
+        const pingCiph = pingEncResult.okValue!;
         console.log('  Encrypted PING');
 
         // ── Step 12: CommitteeChange epoch 2→3 (committee B = workers 1,2,3,4) ─
@@ -316,21 +316,21 @@ async function main() {
         // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
         step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
-            const msgToSign = pingFdd.toPrettyMessage();
-            const pingProof = ace_ex.ProofOfPermission.createAptos({
+            const pingSession = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: pingDomain,
+                ciphertext: pingCiph,
+            });
+            const pingMsgToSign = await pingSession.getRequestToSign();
+            const pingDecResult = await pingSession.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
-                signature: bob.sign(msgToSign),
-                fullMessage: msgToSign,
-            });
-            const pingDecResult = await ace_ex.decrypt({
-                keypairId: keypair0Id,
-                contractId,
-                domain: pingDomain,
-                proof: pingProof,
-                ciphertext: pingCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
+                signature: bob.sign(pingMsgToSign),
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -404,16 +404,18 @@ async function main() {
             console.log('  pong-blob registered (owner=Bob, pay-to-download price=1)');
         }
 
-        const pongEncResult = await ace_ex.encrypt({
+        const pongEncResult = await ace_ex.aptosEncrypt({
+            aceDeployment,
             keypairId: keypair1Id,
-            contractId,
+            chainId: CHAIN_ID,
+            moduleAddr: adminAccountAddress,
+            moduleName: 'access_control',
+            functionName: 'check_permission',
             domain: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
-            aceContract: adminAddr,
-            rpcUrl: LOCALNET_URL,
         });
         assert(pongEncResult.isOk, `encrypt PONG failed: ${pongEncResult.errValue}`);
-        const { fullDecryptionDomain: pongFdd, ciphertext: pongCiph } = pongEncResult.okValue!;
+        const pongCiph = pongEncResult.okValue!;
         console.log('  Encrypted PONG');
 
         // ── Step 17: Alice purchases pong-blob and decrypts "PONG" ───────────
@@ -437,21 +439,21 @@ async function main() {
         console.log('  Alice purchased pong-blob');
 
         {
-            const pongMsg = pongFdd.toPrettyMessage();
-            const pongProof = ace_ex.ProofOfPermission.createAptos({
+            const pongSession = new ace_ex.AptosDecryptionSession({
+                aceDeployment,
+                keypairId: keypair1Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: pongDomain,
+                ciphertext: pongCiph,
+            });
+            const pongMsgToSign = await pongSession.getRequestToSign();
+            const pongDecResult = await pongSession.decryptWithProof({
                 userAddr: alice.accountAddress,
                 publicKey: alice.publicKey,
-                signature: alice.sign(pongMsg),
-                fullMessage: pongMsg,
-            });
-            const pongDecResult = await ace_ex.decrypt({
-                keypairId: keypair1Id,
-                contractId,
-                domain: pongDomain,
-                proof: pongProof,
-                ciphertext: pongCiph,
-                aceContract: adminAddr,
-                rpcUrl: LOCALNET_URL,
+                signature: alice.sign(pongMsgToSign),
             });
             assert(pongDecResult.isOk, `decrypt PONG failed: ${pongDecResult.errValue}`);
             assert(new TextDecoder().decode(pongDecResult.okValue!) === 'PONG', 'PONG plaintext mismatch');

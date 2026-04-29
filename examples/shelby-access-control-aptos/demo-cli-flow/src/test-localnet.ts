@@ -191,29 +191,29 @@ async function main() {
 
     // Read ACE global network config written by `pnpm run-local-network-forever`.
     // Env vars ACE_CONTRACT + KEYPAIR_ID override the config file.
-    let aceContract: string;
+    let apiEndpoint: string;
+    let contractAddr: string;
     let keypairId: AccountAddress;
     if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
-        aceContract = process.env.ACE_CONTRACT;
+        apiEndpoint = "http://localhost:8080/v1";
+        contractAddr = process.env.ACE_CONTRACT;
         keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
     } else {
         const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-            { aceContract: string; keypairId: string };
-        aceContract = cfg.aceContract;
+            { apiEndpoint: string; contractAddr: string; keypairId: string };
+        apiEndpoint = cfg.apiEndpoint;
+        contractAddr = cfg.contractAddr;
         keypairId = AccountAddress.fromString(cfg.keypairId);
     }
-    log(`ACE contract: ${aceContract}`);
+    log(`ACE contract: ${contractAddr}`);
     log(`Keypair ID:   ${keypairId.toString()}`);
 
-    // Create the contract ID that points to our check_permission function.
-    // Workers will call this function to verify access before releasing key shares.
-    const chainId = await aptos.getChainId();
-    const contractId = ace_ex.ContractID.newAptos({
-        chainId,
-        moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
-        moduleName: "access_control",
-        functionName: "check_permission",
+    const aceDeployment = new ace_ex.AceDeployment({
+        apiEndpoint,
+        contractAddr: AccountAddress.fromString(contractAddr),
     });
+
+    const chainId = await aptos.getChainId();
     
     // ========================================================================
     // Step 6: Alice Encrypts and Registers Content
@@ -226,12 +226,15 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const { fullDecryptionDomain, ciphertext } = (await ace_ex.encrypt({
+    const ciphertext = (await ace_ex.aptosEncrypt({
+        aceDeployment,
         keypairId,
-        contractId,
+        chainId,
+        moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+        moduleName: "access_control",
+        functionName: "check_permission",
         domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
-        aceContract,
     })).unwrapOrThrow("encryption failed");
     log("✓ Content encrypted");
     
@@ -246,35 +249,23 @@ async function main() {
     // Step 7: Bob Attempts to Decrypt (Should Fail)
     // ========================================================================
     
-    /**
-     * Helper function for Bob to attempt decryption.
-     * 
-     * The flow is:
-     * 1. Bob signs the decryption domain to prove his identity
-     * 2. Bob requests decryption key shares from workers
-     * 3. Workers call check_permission(bob, domain) on-chain
-     * 4. If check_permission returns true, workers release their key shares
-     * 5. Bob aggregates key shares and decrypts
-     */
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const task = async (_extra: Record<string, any>) => {
-            const msgToSign = fullDecryptionDomain.toPrettyMessage();
-            const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
-                userAddr: bob.accountAddress,
-                publicKey: bob.publicKey,
-                signature: bob.sign(msgToSign),
-                fullMessage: msgToSign,
-            });
-            return (await ace_ex.decrypt({
-                keypairId,
-                contractId: fullDecryptionDomain.contractId,
-                domain: fullDecryptionDomain.domain,
-                proof: proofOfPermission,
-                ciphertext,
-                aceContract,
-            })).unwrapOrThrow("decryption failed");
-        };
-        return Result.captureAsync({ task, recordsExecutionTimeMs: true });
+        const session = new ace_ex.AptosDecryptionSession({
+            aceDeployment,
+            keypairId,
+            chainId,
+            moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+            moduleName: "access_control",
+            functionName: "check_permission",
+            domain: textEncoder.encode(fullBlobName),
+            ciphertext,
+        });
+        const msgToSign = await session.getRequestToSign();
+        return session.decryptWithProof({
+            userAddr: bob.accountAddress,
+            publicKey: bob.publicKey,
+            signature: bob.sign(msgToSign),
+        });
     }
     
     // Bob tries to decrypt without permission - should fail

@@ -2,21 +2,54 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress } from "@aptos-labs/ts-sdk";
-import { AceDeployment } from "../../_internal/common";
+import * as pke from "../../pke";
+import {
+    AceDeployment,
+    ContractID,
+    CustomFlowProof,
+    CustomFlowRequest,
+    fetchNetworkState,
+    decryptCoreCustom,
+} from "../../_internal/common";
 
-// Node protocol for custom-flow decryption is not yet defined.
-export async function decrypt(
-    _ciphertext: Uint8Array,
-    _label: Uint8Array,
-    _encPk: Uint8Array,
-    _encSk: Uint8Array,
-    _payload: Uint8Array,
-    _aceDeployment: AceDeployment,
-    _keypairId: AccountAddress,
-    _chainId: number,
-    _moduleAddr: AccountAddress,
-    _moduleName: string,
-    _functionName: string,
-): Promise<Uint8Array> {
-    throw new Error('AptosCustomFlow.decrypt: not yet implemented');
+export async function decrypt({
+    ciphertext, label, encPk, encSk, payload,
+    aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName,
+}: {
+    ciphertext: Uint8Array,
+    label: Uint8Array,
+    encPk: Uint8Array,
+    encSk: Uint8Array,
+    payload: Uint8Array,
+    aceDeployment: AceDeployment,
+    keypairId: AccountAddress,
+    chainId: number,
+    moduleAddr: AccountAddress,
+    moduleName: string,
+    functionName: string,
+}): Promise<Uint8Array> {
+    const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
+        .unwrapOrThrow('AptosCustomFlow.decrypt: parse encPk');
+    const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
+        .unwrapOrThrow('AptosCustomFlow.decrypt: parse encSk');
+
+    const networkState = await fetchNetworkState(aceDeployment);
+    const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
+    const proof = CustomFlowProof.createAptos(payload);
+    const customRequest = new CustomFlowRequest({
+        keypairId,
+        epoch: networkState.epoch,
+        contractId,
+        label,
+        encPk: callerEncPk,
+        proof,
+    });
+
+    return (await decryptCoreCustom({
+        aceDeployment,
+        networkState,
+        customRequest,
+        callerDecryptionKey: callerDecSk,
+        ciphertext,
+    })).unwrapOrThrow('AptosCustomFlow.decrypt failed');
 }

@@ -8,6 +8,7 @@ import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
 import { State as NetworkState } from "../network";
+export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermission } from "./solana";
 
@@ -339,42 +340,128 @@ export class DecryptionRequestPayload {
     }
 }
 
-export class RequestForDecryptionKey {
-    requestPayload: DecryptionRequestPayload;
-    proof: ProofOfPermission;
+// ── Custom-flow proof ─────────────────────────────────────────────────────────
 
-    constructor({requestPayload, proof}: {requestPayload: DecryptionRequestPayload, proof: ProofOfPermission}) {
-        this.requestPayload = requestPayload;
-        this.proof = proof;
+export class CustomFlowProof {
+    static readonly SCHEME_APTOS = 0;
+    static readonly SCHEME_SOLANA = 1;
+
+    scheme: number;
+    private _aptosPayload?: Uint8Array;
+    private _solanaInnerScheme?: number;
+    private _solanaTxnBytes?: Uint8Array;
+
+    private constructor(scheme: number) { this.scheme = scheme; }
+
+    static createAptos(payload: Uint8Array): CustomFlowProof {
+        const p = new CustomFlowProof(CustomFlowProof.SCHEME_APTOS);
+        p._aptosPayload = payload;
+        return p;
     }
 
-    static deserialize(deserializer: Deserializer): Result<RequestForDecryptionKey> {
-        const task = (_extra: Record<string, any>) => {
-            const requestPayload = DecryptionRequestPayload.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with DecryptionRequestPayload deserialization error');
-            const proof = ProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.deserialize failed with ProofOfPermission deserialization error');
-            return new RequestForDecryptionKey({requestPayload, proof});
-        };
-        return Result.capture({task, recordsExecutionTimeMs: false});
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<RequestForDecryptionKey> {
-        const task = (_extra: Record<string, any>) => {
-            const deserializer = new Deserializer(bytes);
-            return RequestForDecryptionKey.deserialize(deserializer).unwrapOrThrow('ACE.RequestForDecryptionKey.fromBytes failed with deserialization error');
-        };
-        return Result.capture({task, recordsExecutionTimeMs: false});
-    }
-
-    static fromHex(hex: string): Result<RequestForDecryptionKey> {
-        const task = (_extra: Record<string, any>) => {
-            return RequestForDecryptionKey.fromBytes(hexToBytes(hex)).unwrapOrThrow('ACE.RequestForDecryptionKey.fromHex failed with fromBytes error');
-        };
-        return Result.capture({task, recordsExecutionTimeMs: false});
+    static createSolana(txn: Uint8Array): CustomFlowProof {
+        const p = new CustomFlowProof(CustomFlowProof.SCHEME_SOLANA);
+        let innerScheme = 0;
+        try {
+            const versioned = VersionedTransaction.deserialize(txn);
+            if (versioned.version !== 'legacy') innerScheme = 1;
+        } catch {}
+        p._solanaInnerScheme = innerScheme;
+        p._solanaTxnBytes = txn;
+        return p;
     }
 
     serialize(serializer: Serializer): void {
-        this.requestPayload.serialize(serializer);
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === CustomFlowProof.SCHEME_APTOS) {
+            serializer.serializeBytes(this._aptosPayload!);
+        } else {
+            serializer.serializeU8(this._solanaInnerScheme!);
+            serializer.serializeBytes(this._solanaTxnBytes!);
+        }
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+// ── Custom-flow request ───────────────────────────────────────────────────────
+
+export class CustomFlowRequest {
+    keypairId: AccountAddress;
+    epoch: number;
+    contractId: ContractID;
+    label: Uint8Array;
+    encPk: pke.EncryptionKey;
+    proof: CustomFlowProof;
+
+    constructor({keypairId, epoch, contractId, label, encPk, proof}: {
+        keypairId: AccountAddress,
+        epoch: number,
+        contractId: ContractID,
+        label: Uint8Array,
+        encPk: pke.EncryptionKey,
+        proof: CustomFlowProof,
+    }) {
+        this.keypairId = keypairId;
+        this.epoch = epoch;
+        this.contractId = contractId;
+        this.label = label;
+        this.encPk = encPk;
+        this.proof = proof;
+    }
+
+    serialize(serializer: Serializer): void {
+        this.keypairId.serialize(serializer);
+        serializer.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(serializer);
+        serializer.serializeBytes(this.label);
+        this.encPk.serialize(serializer);
         this.proof.serialize(serializer);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+// ── RequestForDecryptionKey (outer enum with scheme byte) ─────────────────────
+
+export class RequestForDecryptionKey {
+    static readonly SCHEME_BASIC_FLOW = 0;
+    static readonly SCHEME_CUSTOM_FLOW = 1;
+
+    scheme: number;
+    private _basicPayload?: { request: DecryptionRequestPayload; proof: ProofOfPermission };
+    private _customPayload?: CustomFlowRequest;
+
+    private constructor(scheme: number) { this.scheme = scheme; }
+
+    static newBasicFlow(request: DecryptionRequestPayload, proof: ProofOfPermission): RequestForDecryptionKey {
+        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW);
+        r._basicPayload = { request, proof };
+        return r;
+    }
+
+    static newCustomFlow(customRequest: CustomFlowRequest): RequestForDecryptionKey {
+        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW);
+        r._customPayload = customRequest;
+        return r;
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(this.scheme);
+        if (this.scheme === RequestForDecryptionKey.SCHEME_BASIC_FLOW) {
+            this._basicPayload!.request.serialize(serializer);
+            this._basicPayload!.proof.serialize(serializer);
+        } else {
+            this._customPayload!.serialize(serializer);
+        }
     }
 
     toBytes(): Uint8Array {
@@ -386,6 +473,20 @@ export class RequestForDecryptionKey {
     toHex(): string {
         return bytesToHex(this.toBytes());
     }
+}
+
+export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<NetworkState> {
+    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+    const [stateHex] = await aptos.view({
+        payload: {
+            function: `${aceContractAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
+            typeArguments: [],
+            functionArguments: [],
+        },
+    });
+    const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
+    return NetworkState.fromBytes(stateBytes).unwrapOrThrow('ACE: parse network state');
 }
 
 export async function fetchNetworkStateAndBuildRequest(
@@ -453,7 +554,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                 return { endpoint: endpoint as string, nodeEncKey };
             }));
 
-            const reqBytes = new RequestForDecryptionKey({requestPayload: request, proof}).toBytes();
+            const reqBytes = RequestForDecryptionKey.newBasicFlow(request, proof).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -500,6 +601,93 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                 idkShares,
                 ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ACE.decryptCore: parse ciphertext'),
             }).unwrapOrThrow('ACE.decryptCore: tibe.decrypt failed');
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
+export async function decryptCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, ciphertext}: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    customRequest: CustomFlowRequest,
+    callerDecryptionKey: pke.DecryptionKey,
+    ciphertext: Uint8Array,
+}): Promise<Result<Uint8Array>> {
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+
+            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+                const addrStr = nodeAddr.toStringLong();
+                const [[endpoint], [ekHex]] = await Promise.all([
+                    aptos.view({
+                        payload: {
+                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                    aptos.view({
+                        payload: {
+                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                ]);
+                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+                    .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
+                return { endpoint: endpoint as string, nodeEncKey };
+            }));
+
+            const reqBytes = RequestForDecryptionKey.newCustomFlow(customRequest).toBytes();
+
+            const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
+                const nodeAddr = networkState.curNodes[i].toStringLong();
+                try {
+                    const encReqHex = pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes}).toHex();
+                    const ctrl = new AbortController();
+                    const tid = setTimeout(() => ctrl.abort(), 8000);
+                    const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal: ctrl.signal});
+                    clearTimeout(tid);
+                    if (!resp.ok) {
+                        const body = await resp.text().catch(() => '');
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
+                        return null;
+                    }
+                    const hexText = (await resp.text()).trim();
+                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                    if (respCt === null) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                        return null;
+                    }
+                    const shareBytes = pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt}).okValue ?? null;
+                    if (shareBytes === null) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                        return null;
+                    }
+                    const share = tibe.IdentityDecryptionKeyShare.fromBytes(shareBytes).okValue ?? null;
+                    if (share === null) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed`);
+                    } else {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
+                    }
+                    return share;
+                } catch (e) {
+                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
+                    return null;
+                }
+            }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);
+
+            if (idkShares.length < networkState.curThreshold) {
+                throw `ACE.decryptCoreCustom: need ${networkState.curThreshold} shares, got ${idkShares.length}`;
+            }
+
+            return tibe.decrypt({
+                idkShares,
+                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext'),
+            }).unwrapOrThrow('ACE.decryptCoreCustom: tibe.decrypt failed');
         },
         recordsExecutionTimeMs: true,
     });

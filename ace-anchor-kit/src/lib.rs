@@ -34,3 +34,42 @@ pub fn build_full_request_bytes(keypair_id: &[u8; 32], epoch: u64, enc_key_bytes
     })
     .expect("BCS serialization is infallible for FullRequestBytes")
 }
+
+// ── Custom-flow request bytes ─────────────────────────────────────────────────
+
+/// Fields embedded in the `assert_custom_acl` instruction data for the custom ACL flow.
+#[derive(Serialize, Deserialize)]
+pub struct CustomFullRequestBytes {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub enc_pk: Vec<u8>,
+    pub label: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+/// Serialize `CustomFullRequestBytes` for embedding in a Solana instruction.
+///
+/// Mirrors the TypeScript `buildCustomRequestBytes` in `SolanaCustomFlow`.
+pub fn build_custom_full_request_bytes(
+    keypair_id: &[u8; 32],
+    epoch: u64,
+    enc_pk: &[u8],
+    label: &[u8],
+    payload: &[u8],
+) -> Vec<u8> {
+    bcs::to_bytes(&CustomFullRequestBytes {
+        keypair_id: *keypair_id,
+        epoch,
+        enc_pk: enc_pk.to_vec(),
+        label: label.to_vec(),
+        payload: payload.to_vec(),
+    })
+    .expect("BCS serialization is infallible for CustomFullRequestBytes")
+}
+
+/// Deserialize `CustomFullRequestBytes` from BCS bytes extracted from instruction data.
+///
+/// Used by workers to validate the custom-flow Solana transaction.
+pub fn decode_custom_request(bytes: &[u8]) -> Result<CustomFullRequestBytes, bcs::Error> {
+    bcs::from_bytes(bytes)
+}

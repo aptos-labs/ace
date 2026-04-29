@@ -5,8 +5,12 @@
 //!
 //! Request body:  hex-encoded PKE ciphertext (encrypted to this node's registered key) whose
 //!                plaintext is a BCS `RequestForDecryptionKey`
-//! Response body: hex-encoded PKE ciphertext (encrypted to the client's ephemeral key) whose
+//! Response body: hex-encoded PKE ciphertext (encrypted to the client's key) whose
 //!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare`
+//!
+//! `RequestForDecryptionKey` wire format:
+//!   [scheme: u8]    0 = BasicFlow, 1 = CustomFlow
+//!   ... rest depends on scheme (see handle_basic_flow / handle_custom_flow)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,15 +66,12 @@ pub async fn run(
     }
 }
 
-/// POST handler: body = hex PKE-encrypted `RequestForDecryptionKey`,
-/// response = hex PKE-encrypted `tibe.IdentityDecryptionKeyShare`.
+/// POST handler: body = hex PKE-encrypted `RequestForDecryptionKey`.
+/// Dispatches to `handle_basic_flow` or `handle_custom_flow` based on scheme byte.
 async fn handle_request(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<String, StatusCode> {
-    // Acquire a concurrency permit before doing any work.  If all permits are
-    // taken the node is at its memory-derived concurrency limit; return 429 so
-    // callers can retry rather than queuing indefinitely.
     let _permit = Arc::clone(&state.concurrency)
         .try_acquire_owned()
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
@@ -78,59 +79,119 @@ async fn handle_request(
     let body_str = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let ct_bytes = hex::decode(body_str.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // 1. Decrypt the outer PKE ciphertext to recover the plaintext RequestForDecryptionKey.
     let req_bytes = pke_decrypt_bytes(&state.pke_dk_bytes, &ct_bytes).map_err(|e| {
         eprintln!("http-server: request decryption failed: {:#}", e);
         StatusCode::BAD_REQUEST
     })?;
 
-    // 2. Parse keypairId (32 fixed bytes, AccountAddress).
-    if req_bytes.len() < 40 {
+    if req_bytes.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let keypair_id_bytes: [u8; 32] = req_bytes[0..32].try_into().unwrap();
+    let scheme = req_bytes[0];
+    let rest = &req_bytes[1..];
+
+    match scheme {
+        0 => handle_basic_flow(&state, rest).await,
+        1 => handle_custom_flow(&state, rest).await,
+        _ => {
+            eprintln!("http-server: unknown request scheme {}", scheme);
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
+/// Handle a BasicFlow request.
+///
+/// Layout of `req` (after the scheme byte):
+///   keypairId[32] + epoch[8 LE] + FDD(contractId+domain)[BCS] + ephemeralEncKey[67] + ProofOfPermission
+async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, StatusCode> {
+    if req.len() < 40 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let keypair_id_bytes: [u8; 32] = req[0..32].try_into().unwrap();
     let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(keypair_id_bytes)));
+    let epoch = u64::from_le_bytes(req[32..40].try_into().unwrap());
 
-    // 3. Parse epoch (u64 LE, 8 bytes).
-    let epoch = u64::from_le_bytes(req_bytes[32..40].try_into().unwrap());
-
-    // 4. Parse FullDecryptionDomain (contractId + domain portion; keypairId prepended for IBE).
-    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req_bytes[40..])
+    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req[40..])
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    // IBE identity = keypairId || contractId || domain — binds the IDK to a specific keypair.
     let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
     fdd_bytes.extend_from_slice(&keypair_id_bytes);
-    fdd_bytes.extend_from_slice(&req_bytes[40..40 + fdd.byte_len]);
+    fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
 
-    // 5. Extract ephemeral enc key (immediately after FDD, before proof).
     let ek_start = 40 + fdd.byte_len;
-    if req_bytes.len() < ek_start + ENC_KEY_SIZE {
+    if req.len() < ek_start + ENC_KEY_SIZE {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let ephemeral_ek = EncryptionKey::from_bytes(&req_bytes[ek_start..ek_start + ENC_KEY_SIZE]).map_err(|e| {
-        eprintln!("http-server: ephemeral enc key parse failed: {:#}", e);
-        StatusCode::BAD_REQUEST
-    })?;
+    let ephemeral_ek = EncryptionKey::from_bytes(&req[ek_start..ek_start + ENC_KEY_SIZE])
+        .map_err(|e| {
+            eprintln!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+    let proof_bytes = &req[ek_start + ENC_KEY_SIZE..];
 
-    // proof follows the enc key
-    let proof_bytes = &req_bytes[ek_start + ENC_KEY_SIZE..];
-
-    // 6. Verify the proof (signature, auth-key, on-chain permission).
-    crate::verify::verify(&fdd, epoch, &req_bytes[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
-            eprintln!("http-server: proof verification failed: {:#}", e);
+            eprintln!("http-server: basic flow: proof verification failed: {:#}", e);
             StatusCode::FORBIDDEN
         })?;
 
-    // 7. Look up the scalar share for this keypairId at the requested epoch.
+    extract_and_respond(state, &keypair_id, epoch, &fdd_bytes, &ephemeral_ek).await
+}
+
+/// Handle a CustomFlow request.
+///
+/// Layout of `req` (after the scheme byte):
+///   keypairId[32] + epoch[8 LE] + FDD(contractId+label)[BCS] + encPk[67] + CustomFlowProof
+async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, StatusCode> {
+    if req.len() < 40 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let keypair_id_bytes: [u8; 32] = req[0..32].try_into().unwrap();
+    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(keypair_id_bytes)));
+    let epoch = u64::from_le_bytes(req[32..40].try_into().unwrap());
+
+    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req[40..])
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
+    fdd_bytes.extend_from_slice(&keypair_id_bytes);
+    fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
+
+    let enc_pk_start = 40 + fdd.byte_len;
+    if req.len() < enc_pk_start + ENC_KEY_SIZE {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let caller_enc_key = EncryptionKey::from_bytes(&req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE])
+        .map_err(|e| {
+            eprintln!("http-server: custom flow: enc key parse failed: {:#}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+    let proof_bytes = &req[enc_pk_start + ENC_KEY_SIZE..];
+
+    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+        .await
+        .map_err(|e| {
+            eprintln!("http-server: custom flow: proof verification failed: {:#}", e);
+            StatusCode::FORBIDDEN
+        })?;
+
+    extract_and_respond(state, &keypair_id, epoch, &fdd_bytes, &caller_enc_key).await
+}
+
+/// Look up the scalar share, compute the IDK share, and encrypt it to `response_enc_key`.
+async fn extract_and_respond(
+    state: &AppState,
+    keypair_id: &str,
+    epoch: u64,
+    fdd_bytes: &[u8],
+    response_enc_key: &EncryptionKey,
+) -> Result<String, StatusCode> {
     let scalar_le32 = {
         let shares = state.keypair_shares.read().await;
-        shares.get(&keypair_id).and_then(|by_epoch| by_epoch.get(&epoch)).copied()
+        shares.get(keypair_id).and_then(|by_epoch| by_epoch.get(&epoch)).copied()
     }
     .ok_or(StatusCode::NOT_FOUND)?;
 
-    // 8. Determine this node's eval point (1-based position in cur_nodes).
     let eval_point = {
         let nodes = state.cur_nodes.read().await;
         nodes
@@ -140,10 +201,9 @@ async fn handle_request(
     }
     .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    // 9. Compute H_G2(fdd_bytes) ^ scalar, then encrypt the share under the client's ephemeral key.
-    let share_hex = crate::crypto::partial_extract_idk_share(&fdd_bytes, &scalar_le32, eval_point)
+    let share_hex = crate::crypto::partial_extract_idk_share(fdd_bytes, &scalar_le32, eval_point)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let share_bytes = hex::decode(&share_hex).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let resp_ct = vss_common::crypto::pke_encrypt(&ephemeral_ek, &share_bytes);
+    let resp_ct = vss_common::crypto::pke_encrypt(response_enc_key, &share_bytes);
     Ok(hex::encode(resp_ct.to_bytes()))
 }

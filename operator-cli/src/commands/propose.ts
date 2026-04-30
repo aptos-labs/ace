@@ -8,8 +8,8 @@ import { deriveRpcLabel } from '../config.js';
 import { formatError } from '../format-error.js';
 import { buildProposalFor } from './proposal.js';
 
-export async function proposeCommand(opts: { profile?: string }): Promise<void> {
-    const { node } = resolveProfile(opts.profile);
+export async function proposeCommand(opts: { profile?: string; account?: string }): Promise<void> {
+    const { node } = resolveProfile(opts.profile, opts.account);
     const client = NetworkClient.fromNode(node);
 
     let state;

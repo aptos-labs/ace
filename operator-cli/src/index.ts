@@ -7,7 +7,7 @@ import { loadConfig, saveConfig } from './config.js';
 import { networkStatusCommand } from './commands/network-status.js';
 import { nodeStatusCommand } from './commands/node-status.js';
 import { proposeCommand } from './commands/propose.js';
-import { voteCommand } from './commands/vote.js';
+import { reviewProposalCommand } from './commands/review-proposal.js';
 import { editNodeCommand } from './commands/edit-node.js';
 import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from './commands/profile.js';
 
@@ -22,7 +22,7 @@ program
     .action(async () => {
         try {
             const config = loadConfig();
-            const { nodeKey, node } = await runOnboarding(config);
+            const { nodeKey, node } = await runOnboarding();
             config.nodes[nodeKey] = node;
             if (!config.defaultNode) config.defaultNode = nodeKey;
             saveConfig(config);
@@ -38,8 +38,9 @@ program
     .command('network-status')
     .description('Show on-chain network state (epoch, committee, proposals)')
     .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
     .option('-w, --watch', 'Continuously refresh every 2s (press Q to quit)')
-    .action(async (opts: { profile?: string; watch?: boolean }) => {
+    .action(async (opts: { profile?: string; account?: string; watch?: boolean }) => {
         try {
             await networkStatusCommand(opts);
         } catch (e) {
@@ -53,9 +54,10 @@ program
     .command('node-status')
     .description('Show node profile, credentials, committee membership, and deployment comparison')
     .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
     .option('-w, --watch', 'Continuously refresh every 2s (press Q to quit)')
     .option('--reveal', 'Show secret values (keys, API key) in plaintext')
-    .action(async (opts: { profile?: string; watch?: boolean; reveal?: boolean }) => {
+    .action(async (opts: { profile?: string; account?: string; watch?: boolean; reveal?: boolean }) => {
         try {
             await nodeStatusCommand(opts);
         } catch (e) {
@@ -66,10 +68,11 @@ program
 // ── propose ───────────────────────────────────────────────────────────────────
 
 program
-    .command('propose')
+    .command('new-proposal')
     .description('Create a new on-chain proposal')
     .option('-p, --profile <alias>', 'Profile alias to use')
-    .action(async (opts: { profile?: string }) => {
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (opts: { profile?: string; account?: string }) => {
         try {
             await proposeCommand(opts);
         } catch (e) {
@@ -77,16 +80,17 @@ program
         }
     });
 
-// ── vote ──────────────────────────────────────────────────────────────────────
+// ── review-proposal ───────────────────────────────────────────────────────────
 
 program
-    .command('vote <session-addr>')
-    .description('Vote on a proposal by its voting session address')
+    .command('review-proposal')
+    .description('Review a proposal and optionally vote on it (interactive TUI)')
+    .option('-s, --session <addr>', 'Voting session address of the proposal')
     .option('-p, --profile <alias>', 'Profile alias to use')
-    .option('-y, --yes', 'Skip confirmation prompt')
-    .action(async (sessionAddr: string, opts: { profile?: string; yes?: boolean }) => {
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (opts: { session?: string; profile?: string; account?: string }) => {
         try {
-            await voteCommand(sessionAddr, opts);
+            await reviewProposalCommand(opts);
         } catch (e) {
             exitOnError(e);
         }
@@ -98,7 +102,8 @@ program
     .command('edit-node')
     .description('Update node image, API key, or gas station key')
     .option('-p, --profile <alias>', 'Profile alias to use')
-    .action(async (opts: { profile?: string }) => {
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (opts: { profile?: string; account?: string }) => {
         try {
             await editNodeCommand(opts);
         } catch (e) {

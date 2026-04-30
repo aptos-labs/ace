@@ -10,6 +10,18 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 export type Platform = 'gcp' | 'docker';
 
+export interface ChainRpcOverrides {
+    aptosMainnetApi?:      string;
+    aptosMainnetApikey?:   string;
+    aptosTestnetApi?:      string;
+    aptosTestnetApikey?:   string;
+    aptosLocalnetApi?:     string;
+    aptosLocalnetApikey?:  string;
+    solanaMainnetBetaRpc?: string;
+    solanaTestnetRpc?:     string;
+    solanaDevnetRpc?:      string;
+}
+
 export interface GcpConfig {
     project: string;
     region: string;
@@ -24,7 +36,8 @@ export interface DockerConfig {
 /** A node you control or watch. Network connection info is embedded directly. */
 export interface TrackedNode {
     // Network connection (formerly TrackedNetwork)
-    rpcUrl:     string;
+    rpcUrl:      string;       // host-facing URL (used by the CLI)
+    nodeRpcUrl?: string;       // node-facing URL (used by the container; differs from rpcUrl on localnet+Docker)
     aceAddr:    string;
     rpcApiKey?: string;
     // Node identity
@@ -39,6 +52,7 @@ export interface TrackedNode {
     gcp?:           GcpConfig;
     docker?:        DockerConfig;
     gasStationKey?: string;
+    chainRpc?:      ChainRpcOverrides;
 }
 
 export interface Config {

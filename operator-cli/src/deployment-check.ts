@@ -46,10 +46,18 @@ function parseNodeArgs(args: string[]): ParsedArgs {
 }
 
 async function fetchDockerDeployment(containerName: string): Promise<ParsedArgs> {
-    const [{ stdout: argsOut }, { stdout: imgOut }] = await Promise.all([
-        execAsync(`docker inspect ${containerName} --format '{{json .Args}}'`),
-        execAsync(`docker inspect ${containerName} --format '{{.Config.Image}}'`),
-    ]);
+    let argsOut: string, imgOut: string;
+    try {
+        ([{ stdout: argsOut }, { stdout: imgOut }] = await Promise.all([
+            execAsync(`docker inspect ${containerName} --format '{{json .Args}}'`),
+            execAsync(`docker inspect ${containerName} --format '{{.Config.Image}}'`),
+        ]));
+    } catch (e) {
+        if (String(e).toLowerCase().includes('no such object')) {
+            throw new Error(`Container "${containerName}" not running — start it with the docker command above`);
+        }
+        throw e;
+    }
     const parsed = parseNodeArgs(JSON.parse(argsOut.trim()) as string[]);
     parsed.image = imgOut.trim().replace(/^docker\.io\//, '');
     return parsed;
@@ -85,7 +93,7 @@ export function computeDiff(node: TrackedNode, running: ParsedArgs): DiffRow[] {
         const p = profile ?? '', r = run ?? '';
         rows.push({ field, profile: p, running: r, secret, match: p === r });
     };
-    add('api',          node.rpcUrl,        running.api);
+    add('api', node.nodeRpcUrl ?? node.rpcUrl, running.api);
     add('addr',         node.aceAddr,       running.addr);
     if (node.rpcApiKey     || running.apikey)  add('apikey',    node.rpcApiKey,     running.apikey,    true);
     if (node.gasStationKey || running.gaskey)  add('gaskey',    node.gasStationKey, running.gaskey,    true);

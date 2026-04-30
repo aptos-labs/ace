@@ -1,13 +1,14 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-const REFRESH_MS = 2000;
+const DEFAULT_REFRESH_MS = 2000;
 
 /**
  * Run render() in a loop, printing to alt-screen, until user presses [Q].
- * render() is called immediately, then every REFRESH_MS.
+ * render() is called immediately, then every refreshMs.
  */
-export async function runWatch(render: () => Promise<string>): Promise<void> {
+export async function runWatch(render: () => Promise<string>, opts: { refreshMs?: number; showFooter?: boolean } = {}): Promise<void> {
+    const { refreshMs = DEFAULT_REFRESH_MS, showFooter = true } = opts;
     process.stdout.write('\x1b[?1049h'); // enter alt screen
     process.stdout.write('\x1b[?25l');   // hide cursor
 
@@ -41,9 +42,13 @@ export async function runWatch(render: () => Promise<string>): Promise<void> {
 
             process.stdout.write('\x1b[H\x1b[2J'); // move to top, clear screen
             process.stdout.write(content);
-            process.stdout.write(`\n\n\x1b[2mRefreshing every ${REFRESH_MS / 1000}s  [Q] quit\x1b[0m\n`);
+            if (showFooter) {
+                process.stdout.write(`\n\n\x1b[2mRefreshing every ${refreshMs / 1000}s  [Q] quit\x1b[0m\n`);
+            } else {
+                process.stdout.write(`\n\n\x1b[2m[Q] quit\x1b[0m\n`);
+            }
 
-            const deadline = Date.now() + REFRESH_MS;
+            const deadline = Date.now() + refreshMs;
             while (running && Date.now() < deadline) {
                 await new Promise(r => setTimeout(r, 100));
             }

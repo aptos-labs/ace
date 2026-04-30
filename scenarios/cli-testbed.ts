@@ -68,15 +68,20 @@ async function main() {
     ]);
 
     // ── 3. Print connection info ─────────────────────────────────────────────
+    const deploymentBlob = JSON.stringify({ rpcUrl: LOCALNET_URL, aceAddr: aceContract });
+
     log('');
     log('══════════════════════════════════════════════════════════');
-    log('  Contracts deployed. Set these in `ace nodes` → Add new node:');
+    log('  Contracts deployed.');
     log('');
-    log(`  Deployment API URL : ${LOCALNET_URL}`);
-    log(`  Contract address   : ${aceContract}`);
+    log('  For each committee member, run `ace nodes` → "Add new node"');
+    log('  and paste the deployment blob below when prompted.');
     log('');
-    log('  Run `ace nodes` for each committee member to register their');
-    log('  PKE enc key and endpoint on-chain, then return here.');
+    log('  ── deployment blob (copy the line between the dashes) ──────────');
+    console.log(deploymentBlob);
+    log('  ────────────────────────────────────────────────────────────────');
+    log('');
+    log('  Then return here once all nodes are registered.');
     log('══════════════════════════════════════════════════════════');
     log('');
 

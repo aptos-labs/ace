@@ -34,32 +34,48 @@ export function profileListCommand(): void {
     }
 }
 
-export async function profileDeleteCommand(alias: string): Promise<void> {
+function findProfile(config: ReturnType<typeof loadConfig>, aliasOrKey: string): [string, (typeof config.nodes)[string]] | undefined {
+    return Object.entries(config.nodes).find(([key, n]) =>
+        n.alias === aliasOrKey || key === aliasOrKey || n.accountAddr === aliasOrKey,
+    );
+}
+
+export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
     const config = loadConfig();
-    const entry = Object.entries(config.nodes).find(([, n]) => n.alias === alias);
+    const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile with alias "${alias}".`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`ace profile list\` to see available profiles.`);
         process.exit(1);
     }
-    const [key] = entry;
+    const [key, node] = entry;
+    const label = node.alias ?? key;
 
-    const ok = await confirm({ message: `Delete profile "${alias}"?`, default: false });
+    const ok = await confirm({ message: `Delete profile "${label}"?`, default: false });
     if (!ok) { console.log('Cancelled.'); return; }
 
     delete config.nodes[key];
     if (config.defaultNode === key) delete config.defaultNode;
     saveConfig(config);
-    console.log(`✓ Profile "${alias}" deleted.`);
+    console.log(`✓ Profile "${label}" deleted.`);
+
+    if (node.platform === 'docker' && node.docker?.containerName) {
+        console.log(`\n  Don't forget to stop the container:\n`);
+        console.log(`  docker rm -f ${node.docker.containerName}`);
+    } else if (node.platform === 'gcp' && node.gcp) {
+        console.log(`\n  Don't forget to delete the Cloud Run service:\n`);
+        console.log(`  gcloud run services delete ${node.gcp.serviceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+    }
 }
 
-export function profileDefaultCommand(alias: string): void {
+export function profileDefaultCommand(aliasOrKey: string): void {
     const config = loadConfig();
-    const entry = Object.entries(config.nodes).find(([, n]) => n.alias === alias);
+    const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile with alias "${alias}". Run \`ace profile list\` to see available profiles.`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`ace profile list\` to see available profiles.`);
         process.exit(1);
     }
-    config.defaultNode = entry[0];
+    const [key, node] = entry;
+    config.defaultNode = key;
     saveConfig(config);
-    console.log(`✓ Default profile set to "${alias}".`);
+    console.log(`✓ Default profile set to "${node.alias ?? key}".`);
 }

@@ -19,8 +19,12 @@ function shortAddr(addr: string): string {
 function fmtMicros(us: bigint): string {
     const secs = Number(us / 1_000_000n);
     if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.round(secs / 60)}m`;
-    return `${(secs / 3600).toFixed(1)}h`;
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    if (secs < 3600) return s === 0 ? `${m}m` : `${m}m ${s}s`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm === 0 ? `${h}h` : `${h}h ${rm}m`;
 }
 
 function fmtCountdown(state: aceNetwork.State): string {

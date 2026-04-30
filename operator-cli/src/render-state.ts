@@ -25,10 +25,14 @@ function epochTimerStr(state: aceNetwork.State): string {
     const durationMs = Number(state.epochDurationMicros / 1000n);
     const remainingMs = durationMs - (nowMs - startMs);
     if (remainingMs <= 0) return `${Y}epoch expired${R}`;
-    const s = Math.round(remainingMs / 1000);
+    const s = Math.ceil(remainingMs / 1000);
     if (s < 60)   return `${s}s remaining`;
-    if (s < 3600) return `${Math.round(s / 60)}m remaining`;
-    return `${Math.round(s / 3600)}h remaining`;
+    const m = Math.floor(s / 60);
+    const rs = s % 60;
+    if (s < 3600) return rs === 0 ? `${m}m remaining` : `${m}m ${rs}s remaining`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm === 0 ? `${h}h remaining` : `${h}h ${rm}m remaining`;
 }
 
 function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {

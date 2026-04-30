@@ -75,12 +75,14 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
     return parsed;
 }
 
-export async function fetchDeployment(node: TrackedNode): Promise<ParsedArgs | Error> {
+export async function fetchDeployment(node: TrackedNode): Promise<ParsedArgs | Error | null> {
     try {
         if (node.platform === 'docker' && node.docker)
             return await fetchDockerDeployment(node.docker.containerName);
         if (node.platform === 'gcp' && node.gcp)
             return await fetchGcpDeployment(node.gcp.serviceName, node.gcp.project, node.gcp.region);
+        if (node.platform === 'local')
+            return null; // local processes aren't introspectable; skip diff
         return new Error('No deployment platform configured');
     } catch (e) {
         return e instanceof Error ? e : new Error(String(e));

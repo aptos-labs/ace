@@ -8,7 +8,7 @@ import { join } from 'path';
 const CONFIG_DIR  = join(homedir(), '.ace');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
-export type Platform = 'gcp' | 'docker';
+export type Platform = 'gcp' | 'docker' | 'local';
 
 export interface ChainRpcOverrides {
     aptosMainnetApi?:      string;
@@ -33,6 +33,11 @@ export interface DockerConfig {
     port: string;
 }
 
+export interface LocalConfig {
+    repoPath: string;
+    port: string;
+}
+
 /** A node you control or watch. Network connection info is embedded directly. */
 export interface TrackedNode {
     // Network connection (formerly TrackedNetwork)
@@ -51,6 +56,7 @@ export interface TrackedNode {
     platform?:      Platform;
     gcp?:           GcpConfig;
     docker?:        DockerConfig;
+    local?:         LocalConfig;
     gasStationKey?: string;
     chainRpc?:      ChainRpcOverrides;
 }

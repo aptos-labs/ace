@@ -5,7 +5,7 @@ import { input, confirm } from '@inquirer/prompts';
 import { resolveProfile } from '../resolve-profile.js';
 import { loadConfig, saveConfig, type TrackedNode } from '../config.js';
 import { selectImage } from '../docker-hub.js';
-import { gcpDeployCmd, dockerRunCmd, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
+import { gcpDeployCmd, dockerRunCmd, localRunCmd, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 
 const G = '\x1b[32m', E = '\x1b[31m', D = '\x1b[2m', R = '\x1b[0m';
@@ -16,11 +16,14 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
 
     console.log(`\nEditing node: ${label}\n`);
 
-    // Image
-    console.log(`Current image: ${node.image ?? '(not set)'}`);
-    const newImage = await selectImage();
-    const image = newImage ?? node.image ?? 'aptoslabs/ace-node:latest';
-    console.log();
+    // Image (not applicable for local builds)
+    let image = node.image;
+    if (node.platform !== 'local') {
+        console.log(`Current image: ${node.image ?? '(not set)'}`);
+        const newImage = await selectImage();
+        image = newImage ?? node.image ?? 'aptoslabs/ace-node:latest';
+        console.log();
+    }
 
     // API key
     const newApiKey = await input({
@@ -64,16 +67,23 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     if (node.platform === 'gcp' && node.gcp) {
         console.log('Run this command to apply the changes:\n');
         console.log(gcpDeployCmd(
-            node.gcp.serviceName, image, node.gcp.project, node.gcp.region,
+            node.gcp.serviceName, image!, node.gcp.project, node.gcp.region,
             nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
     } else if (node.platform === 'docker' && node.docker) {
         console.log('Run this command to apply the changes:\n');
         console.log(`docker rm -f ${node.docker.containerName} &&`);
         console.log(dockerRunCmd(
-            node.docker.containerName, image, node.docker.port,
+            node.docker.containerName, image!, node.docker.port,
             nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
+    } else if (node.platform === 'local' && node.local) {
+        console.log('Run the updated node:\n');
+        console.log(localRunCmd(
+            node.local.repoPath, node.local.port,
+            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+        ));
+        return; // local processes aren't introspectable; no watch loop
     } else {
         return; // no deployment platform, nothing to watch
     }
@@ -102,6 +112,8 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
 
         if (dep instanceof Error) {
             process.stdout.write(`\r\x1b[K  ${E}✗ ${dep.message}${R}`);
+        } else if (dep === null) {
+            break; // platform doesn't support introspection
         } else {
             const diff = computeDiff(updatedNode, dep);
             const outdated = diff.filter(r => !r.match);

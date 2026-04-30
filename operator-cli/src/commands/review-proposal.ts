@@ -7,6 +7,7 @@ import { input } from '@inquirer/prompts';
 import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { formatError } from '../format-error.js';
+import { fmtSecs } from '../render-state.js';
 
 const R = '\x1b[0m', D = '\x1b[2m', B = '\x1b[1m';
 const G = '\x1b[32m', E = '\x1b[31m', C = '\x1b[36m', Y = '\x1b[33m';
@@ -17,14 +18,7 @@ function shortAddr(addr: string): string {
 }
 
 function fmtMicros(us: bigint): string {
-    const secs = Number(us / 1_000_000n);
-    if (secs < 60) return `${secs}s`;
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    if (secs < 3600) return s === 0 ? `${m}m` : `${m}m ${s}s`;
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return rm === 0 ? `${h}h` : `${h}h ${rm}m`;
+    return fmtSecs(Number(us / 1_000_000n));
 }
 
 function fmtCountdown(state: aceNetwork.State): string {

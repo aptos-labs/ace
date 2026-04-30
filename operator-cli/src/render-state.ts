@@ -18,6 +18,14 @@ function addrLabel(addr: string, profiles: Record<string, TrackedNode>, rpcUrl: 
     return match?.alias ? `${addr}  ${D}(${match.alias})${R}` : addr;
 }
 
+export function fmtSecs(s: number): string {
+    if (s < 60)     return `${s}s`;
+    if (s < 3600)   { const m = Math.floor(s / 60),  rs = s % 60;  return rs ? `${m}m ${rs}s` : `${m}m`; }
+    if (s < 86400)  { const h = Math.floor(s / 3600), rm = Math.floor((s % 3600) / 60); return rm ? `${h}h ${rm}m` : `${h}h`; }
+    const d = Math.floor(s / 86400), rh = Math.floor((s % 86400) / 3600);
+    return rh ? `${d}d ${rh}h` : `${d}d`;
+}
+
 function epochTimerStr(state: aceNetwork.State): string {
     if (state.isEpochChanging()) return `${Y}⚠ epoch change in progress${R}`;
     const nowMs = Date.now();
@@ -26,13 +34,7 @@ function epochTimerStr(state: aceNetwork.State): string {
     const remainingMs = durationMs - (nowMs - startMs);
     if (remainingMs <= 0) return `${Y}epoch expired${R}`;
     const s = Math.ceil(remainingMs / 1000);
-    if (s < 60)   return `${s}s remaining`;
-    const m = Math.floor(s / 60);
-    const rs = s % 60;
-    if (s < 3600) return rs === 0 ? `${m}m remaining` : `${m}m ${rs}s remaining`;
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return rm === 0 ? `${h}h remaining` : `${h}h ${rm}m remaining`;
+    return `${fmtSecs(s)} remaining`;
 }
 
 function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {

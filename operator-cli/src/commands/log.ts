@@ -88,6 +88,20 @@ async function logGcp(
     }
 }
 
+async function readFileFiltered(file: string, sinceDate?: Date, untilDate?: Date): Promise<void> {
+    const stream = createReadStream(file, { encoding: 'utf8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    await new Promise<void>((resolve) => {
+        rl.on('line', (line) => {
+            const ts = parseLocalTimestamp(line);
+            if (sinceDate && ts && ts < sinceDate) return;
+            if (untilDate && ts && ts > untilDate) return;
+            process.stdout.write(line + '\n');
+        });
+        rl.on('close', resolve);
+    });
+}
+
 async function logLocal(
     logFile: string,
     sinceDate?: Date, untilDate?: Date, watch = false,
@@ -98,8 +112,8 @@ async function logLocal(
     }
 
     if (watch) {
-        // tail -f, filter lines by timestamp in our wrapper
-        const child = spawn('tail', ['-f', '-n', '+1', logFile], {
+        // tail -f; start from beginning only when --since is given, otherwise new lines only
+        const child = spawn('tail', ['-f', '-n', sinceDate ? '+1' : '0', logFile], {
             stdio: ['ignore', 'pipe', 'inherit'],
         });
 
@@ -125,18 +139,12 @@ async function logLocal(
             });
         });
     } else {
-        // Read file line by line, filter by timestamps
-        const stream = createReadStream(logFile, { encoding: 'utf8' });
-        const rl = createInterface({ input: stream, crlfDelay: Infinity });
-        await new Promise<void>((resolve) => {
-            rl.on('line', (line) => {
-                const ts = parseLocalTimestamp(line);
-                if (sinceDate && ts && ts < sinceDate) return;
-                if (untilDate && ts && ts > untilDate) return;
-                process.stdout.write(line + '\n');
-            });
-            rl.on('close', resolve);
-        });
+        // Read rotated backup first (older entries), then current log
+        const rotated = `${logFile}.1`;
+        if (sinceDate && existsSync(rotated)) {
+            await readFileFiltered(rotated, sinceDate, untilDate);
+        }
+        await readFileFiltered(logFile, sinceDate, untilDate);
     }
 }
 
@@ -151,7 +159,12 @@ export async function logCommand(opts: {
 }): Promise<void> {
     const { node } = resolveProfile(opts.profile, opts.account);
 
-    const sinceDate = opts.since ? parseTime(opts.since) : undefined;
+    const DEFAULT_SINCE = '-1h';
+    const effectiveSince = opts.since ?? (opts.watch ? undefined : DEFAULT_SINCE);
+    if (!opts.since && !opts.watch) {
+        console.error(`(showing last 1h — use --since to adjust, e.g. --since -6h)\n`);
+    }
+    const sinceDate = effectiveSince ? parseTime(effectiveSince) : undefined;
     const untilDate = opts.until ? parseTime(opts.until) : undefined;
 
     if (node.platform === 'docker' && node.docker) {

@@ -111,7 +111,7 @@ async fn main() {
             });
 
             if let Err(e) = network_node::run(cfg, shutdown_rx).await {
-                eprintln!("network-node: fatal: {:#}", e);
+                network_node::wlog!("network-node: fatal: {:#}", e);
                 std::process::exit(1);
             }
         }

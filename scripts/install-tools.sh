@@ -39,4 +39,42 @@ install_aptos() {
     echo "aptos CLI installed: $(aptos --version)"
 }
 
+
+# ---------------------------------------------------------------------------
+# logrotate
+# ---------------------------------------------------------------------------
+install_logrotate() {
+    if command -v logrotate &>/dev/null; then
+        echo "logrotate already installed, skipping."
+        return
+    fi
+
+    case "$(uname -s)" in
+        Darwin)
+            if ! command -v brew &>/dev/null; then
+                echo "Homebrew not found — install it from https://brew.sh then re-run." >&2
+                exit 1
+            fi
+            brew install logrotate
+            ;;
+        Linux)
+            if command -v apt-get &>/dev/null; then
+                sudo apt-get install -y logrotate
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install -y logrotate
+            elif command -v yum &>/dev/null; then
+                sudo yum install -y logrotate
+            else
+                echo "No supported package manager found (apt/dnf/yum)." >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
+    esac
+
+    echo "logrotate installed: $(logrotate --version | head -1)"
+}
+
 install_aptos
+install_logrotate

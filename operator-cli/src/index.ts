@@ -119,7 +119,7 @@ program
     .description('Stream or query node logs (docker / gcp / local)')
     .option('-p, --profile <alias>', 'Profile alias to use')
     .option('-a, --account <addr>', 'Account address of the profile to use')
-    .option('--since <time>', 'Show logs after this time (e.g. 30m, 1h, 2024-01-15T10:00:00Z, 1704067200)')
+    .option('--since <time>', 'Show logs after this time (e.g. -30m, -1h, 2024-01-15T10:00:00Z, 1704067200)')
     .option('--until <time>', 'Show logs before this time (same formats as --since)')
     .option('-w, --watch', 'Stream new log lines (respects --until if set)')
     .action(async (opts: { profile?: string; account?: string; since?: string; until?: string; watch?: boolean }) => {
@@ -148,22 +148,28 @@ profileCmd
     });
 
 profileCmd
-    .command('delete <alias>')
-    .description('Delete a profile by alias')
-    .action(async (alias: string) => {
+    .command('delete [alias]')
+    .description('Delete a profile by alias or account address')
+    .option('-a, --account <addr>', 'Match profile by account address')
+    .action(async (alias: string | undefined, opts: { account?: string }) => {
         try {
-            await profileDeleteCommand(alias);
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            await profileDeleteCommand(key);
         } catch (e) {
             exitOnError(e);
         }
     });
 
 profileCmd
-    .command('default <alias>')
-    .description('Set the default profile by alias')
-    .action((alias: string) => {
+    .command('default [alias]')
+    .description('Set the default profile by alias or account address')
+    .option('-a, --account <addr>', 'Match profile by account address')
+    .action((alias: string | undefined, opts: { account?: string }) => {
         try {
-            profileDefaultCommand(alias);
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            profileDefaultCommand(key);
         } catch (e) {
             exitOnError(e);
         }

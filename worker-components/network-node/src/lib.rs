@@ -15,6 +15,34 @@ pub mod crypto;
 mod http_server;
 pub mod verify;
 
+/// ISO 8601 UTC timestamp with millisecond precision, e.g. `2026-04-30T16:53:26.877Z`.
+pub fn now_utc_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d   = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let sec = d.as_secs();
+    let ms  = d.subsec_millis();
+    // civil_from_days: https://howardhinnant.github.io/date_algorithms.html
+    let days = sec / 86400;
+    let t    = sec % 86400;
+    let (h, m, s) = (t / 3600, (t % 3600) / 60, t % 60);
+    let z    = days as i64 + 719_468;
+    let era  = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe  = (z - era * 146_097) as u64;
+    let yoe  = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy  = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp   = (5 * doy + 2) / 153;
+    let day  = doy - (153 * mp + 2) / 5 + 1;
+    let mon  = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr   = yoe as i64 + era * 400 + if mon <= 2 { 1 } else { 0 };
+    format!("{yr:04}-{mon:02}-{day:02}T{h:02}:{m:02}:{s:02}.{ms:03}Z")
+}
+
+/// Log a line to stderr with a UTC timestamp prefix.
+#[macro_export]
+macro_rules! wlog {
+    ($($arg:tt)*) => { eprintln!("[{}] {}", $crate::now_utc_iso(), format_args!($($arg)*)) };
+}
+
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -218,7 +246,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let ec_account_sk_hex = config.account_sk_hex.clone();
     let ec_pke_dk_hex = config.pke_dk.clone();
 
-    println!(
+    wlog!(
         "network-node: starting (account={} ace={})",
         account_addr, ace
     );
@@ -244,7 +272,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             match read_cgroup_memory_limit() {
                 Some(limit) => {
                     let mc = derive_max_concurrent(limit);
-                    println!(
+                    wlog!(
                         "network-node: cgroup memory limit {:.0} MiB → max_concurrent_requests={}",
                         limit as f64 / (1024.0 * 1024.0),
                         mc,
@@ -252,7 +280,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     mc
                 }
                 None => {
-                    println!(
+                    wlog!(
                         "network-node: no cgroup memory limit detected, \
                          max_concurrent_requests={DEFAULT_MAX_CONCURRENT} (default)"
                     );
@@ -295,7 +323,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             if by_epoch.is_empty() {
                                 w.remove(&keypair_id);
                             }
-                            println!(
+                            wlog!(
                                 "network-node: [cleanup] evicted keypair_id={} epoch={}",
                                 keypair_id, epoch
                             );
@@ -317,7 +345,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
-                println!("network-node: shutdown signal received.");
+                wlog!("network-node: shutdown signal received.");
                 stop_tasks(&mut urh_tasks);
                 stop_tasks(&mut epoch_change_cur_tasks);
                 stop_tasks(&mut epoch_change_nxt_tasks);
@@ -329,7 +357,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         let state = match fetch_state_view_v0(&rpc, &ace).await {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("network-node: fetch state view error: {:#}", e);
+                wlog!("network-node: fetch state view error: {:#}", e);
                 continue;
             }
         };
@@ -359,7 +387,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 )
                 .await
             {
-                eprintln!("network-node: network::touch error: {:#}", e);
+                wlog!("network-node: network::touch error: {:#}", e);
             }
         }
 
@@ -384,10 +412,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         };
                         tokio::spawn(async move {
                             if let Err(e) = epoch_change_cur::run(cfg, rx).await {
-                                eprintln!("network-node: epoch-change-cur error: {:#}", e);
+                                wlog!("network-node: epoch-change-cur error: {:#}", e);
                             }
                         });
-                        println!("network-node: started epoch-change-cur for session={}", session);
+                        wlog!("network-node: started epoch-change-cur for session={}", session);
                     }
                 } else {
                     stop_tasks(&mut epoch_change_cur_tasks);
@@ -411,10 +439,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         };
                         tokio::spawn(async move {
                             if let Err(e) = epoch_change_nxt::run(cfg, rx).await {
-                                eprintln!("network-node: epoch-change-nxt error: {:#}", e);
+                                wlog!("network-node: epoch-change-nxt error: {:#}", e);
                             }
                         });
-                        println!("network-node: started epoch-change-nxt for session={}", session);
+                        wlog!("network-node: started epoch-change-nxt for session={}", session);
                     }
                 } else {
                     stop_tasks(&mut epoch_change_nxt_tasks);
@@ -467,7 +495,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             .entry(keypair_id.clone())
                             .or_default()
                             .insert(epoch, scalar_le32);
-                        println!(
+                        wlog!(
                             "network-node: [urh] registered keypair_id={} epoch={}",
                             keypair_id, epoch
                         );
@@ -476,20 +504,20 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         // just before an epoch change can still be served.
                         let deadline = Instant::now() + Duration::from_secs(30);
                         expiry.lock().unwrap().push((deadline, keypair_id.clone(), epoch));
-                        println!(
+                        wlog!(
                             "network-node: [urh] scheduled eviction keypair_id={} epoch={} in 30s",
                             keypair_id, epoch
                         );
                     }
                     Err(e) => {
-                        eprintln!(
+                        wlog!(
                             "network-node: [urh] reconstruct_share failed for {}: {:#}",
                             secret, e
                         );
                     }
                 }
             });
-            println!("network-node: started URH task for secret={}", secret_addr);
+            wlog!("network-node: started URH task for secret={}", secret_addr);
         }
 
         let stale_secrets: Vec<String> = urh_tasks
@@ -500,7 +528,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         for k in stale_secrets {
             if let Some(tx) = urh_tasks.remove(&k) {
                 let _ = tx.send(());
-                println!("network-node: stopped URH task for secret={}", k);
+                wlog!("network-node: stopped URH task for secret={}", k);
             }
         }
     }

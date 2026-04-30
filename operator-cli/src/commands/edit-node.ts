@@ -6,7 +6,7 @@ import { resolveProfile } from '../resolve-profile.js';
 import { loadConfig, saveConfig, type TrackedNode } from '../config.js';
 import { selectImage } from '../docker-hub.js';
 import * as path from 'path';
-import { gcpDeployCmd, dockerRunCmd, localRunCmd, localRunArgs, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
+import { gcpDeployCmd, dockerRunCmd, localRunCmd, localRunArgs, promptChainRpcOverrides, dockerRpcUrl, writeLogrotateConf, runLogrotate } from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 
@@ -91,6 +91,9 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
             node.local.port, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
         const logFile = node.local.logFile ?? updatedNode.local?.logFile ?? '';
+        if (node.local.logMaxMb && logFile) {
+            runLogrotate(writeLogrotateConf(logFile, node.local.logMaxMb));
+        }
         const pid = spawnLocalNode(binaryPath, runArgs, logFile);
         updatedNode.local = { ...node.local, pid };
         console.log(`Node restarted in background  pid=${pid}  log=${logFile}`);

@@ -3,7 +3,7 @@
 
 /**
  * CI scenario: stand up the ACE local network, then run `anchor test` against
- * the shelby-access-control-solana example.
+ * the pay-to-download-solana example.
  *
  * Flow:
  *   1. Start Aptos localnet.
@@ -41,7 +41,7 @@ import {
 } from './common/helpers';
 import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNode } from './common/network-clients';
 
-const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'examples', 'shelby-access-control-solana');
+const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'examples', 'pay-to-download-solana');
 const NUM_WORKERS = 3;
 
 async function main() {

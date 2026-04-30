@@ -3,7 +3,7 @@
 
 /**
  * CI scenario: stand up the ACE local network, then run `anchor test` against
- * the shelby-custom-flow-solana example.
+ * scenarios/custom-flow-solana.
  *
  * Flow:
  *   1. Start Aptos localnet.
@@ -42,7 +42,7 @@ import {
 } from './common/helpers';
 import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNode } from './common/network-clients';
 
-const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'examples', 'shelby-custom-flow-solana');
+const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'scenarios', 'custom-flow-solana');
 const NUM_WORKERS = 3;
 
 async function main() {

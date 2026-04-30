@@ -1,15 +1,13 @@
-# Solana Access Control Example
+# Pay-to-Download (Solana)
 
-This example demonstrates how a Shelby app may use ACE and a Solana contract to implement access control.
+This example shows how to gate ACE-encrypted content behind a Solana payment: users pay on-chain, then prove the payment to ACE workers via a signed Solana transaction to obtain the decryption key.
 
 ## Overview
 
-This demo dApp shows how to:
+This demo shows how to:
 - Use ACE for decryption key management
-- Use Solana contracts to track access permissions (e.g., payments)
-- Prove access permission to ACE workers via signed Solana transactions
-
-**Note:** Currently, only pay-to-download mode is implemented.
+- Use a Solana program to track payments
+- Prove payment to ACE workers via a signed Solana transaction
 
 ## Architecture
 
@@ -46,7 +44,7 @@ ACE workers verify that a signed transaction calls `ace_hook::assert_access` bef
 ## Project Structure
 
 ```
-shelby-access-control-solana/
+pay-to-download-solana/
 ├── programs/
 │   ├── access_control/           # Main program (business logic)
 │   │   └── src/
@@ -91,7 +89,7 @@ runs DKG, and starts the workers — writing `aceContract` and `keypairId` to
 ### Step 2: Run the Test
 
 ```bash
-cd examples/shelby-access-control-solana
+cd examples/pay-to-download-solana
 pnpm install
 pnpm test:localnet
 ```
@@ -106,7 +104,7 @@ This will:
 If the programs are already deployed on testnet, run the same e2e test against testnet (no local validator, no deploy):
 
 ```bash
-cd examples/shelby-access-control-solana
+cd examples/pay-to-download-solana
 solana config set --url https://api.testnet.solana.com
 pnpm test:testnet
 ```

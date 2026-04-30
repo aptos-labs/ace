@@ -48,7 +48,7 @@ import {
 import { deployContract } from './common/infra';
 import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNode } from './common/network-clients';
 
-const CHECK_ACL_DEMO_CONTRACT_DIR = path.join(REPO_ROOT, 'examples', 'shelby-custom-flow-aptos', 'contract');
+const CHECK_ACL_DEMO_CONTRACT_DIR = path.join(REPO_ROOT, 'scenarios', 'custom-flow-aptos', 'contract');
 const NUM_WORKERS = 3;
 const THRESHOLD = 2;
 

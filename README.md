@@ -4,202 +4,279 @@ ACE is a protocol for access-controlling encrypted data with smart contracts.
 
 > ⚠️ **Prototype**: ACE is currently a prototype and not yet ready for production use.
 
-With ACE, dApps can support privacy scenarios like these—without any single party holding a decryption key:
+With ACE, dApps can support privacy scenarios like these — without any single party holding a decryption key:
 - **Pay-to-decrypt**: Alice sells her album as encrypted files; Bob can only decrypt after paying.
 - **Time-locked release**: A journalist encrypts a story that auto-releases on January 1, 2027. Until then, no one can decrypt it.
+- **ZK-gated access**: A DeFi protocol gates content to users who can prove age ≥ 18 via a zero-knowledge proof, without revealing the actual age.
 - **The general pattern**: Encrypt now; let a contract decide who can decrypt later.
 
-This monorepo provides a TypeScript SDK, worker implementation, and examples for Aptos and Solana.
+This monorepo provides a TypeScript SDK, worker binary, operator CLI, and examples for Aptos and Solana.
 
-## How to Use
+## Design Overview
 
-### Core Concepts
+### Roles
 
-| Term | Description |
-|------|-------------|
-| **aceContract** | Address of the ACE protocol contract on Aptos that holds network state and DKG sessions |
-| **keypairId** | On-chain address identifying the DKG keypair to use for encryption/decryption |
-| **ContractID** | Identifies the on-chain contract that manages decryption permission |
-| **Domain** | Unique ID within the scope of the app of the object to encrypt |
-| **FullDecryptionDomain** | Bundle of contractId + domain; signed to create proof |
-| **ProofOfPermission** | Signed proof that a user has permission to decrypt |
+| Role | Responsibility |
+|------|---------------|
+| **App developer** | Deploys an access-control contract; encrypts data; integrates the SDK for user-side decryption |
+| **End user** | Satisfies the access condition (pays, passes KYC, etc.); requests decryption |
+| **Operator** | Runs a worker node that holds a share of the decryption key |
 
-### Quick Start: how to implement Pay-to-Decrypt
+### Trust Assumptions
 
-Let's implement the pay-to-decrypt scenario: Alice sells her album; Bob can only decrypt after paying.
+- **Threshold honest majority**: decryption requires `t`-of-`n` worker shares. No single worker — and no coalition smaller than `t` — can decrypt alone or learn the plaintext.
+- **Contract is truth**: workers trust the on-chain view function unconditionally. If it returns `true`, they release their share. The security of the system reduces to the correctness of your contract and the integrity of the chain.
+- **Workers run their own fullnodes** (in production): workers that rely on a shared RPC endpoint inherit the trust assumptions of that provider.
 
-**1. Deploy an Access Control Contract**
+### Interaction Flow
 
-Deploy a contract that tracks who has paid for what albums. Workers will query this contract to check permission.
+```
+App developer                 End user                      Operators (n workers)
+─────────────────────         ─────────────────────         ─────────────────────
+(1) Deploy access-control
+    contract on-chain
 
-**Aptos:** Create a Move module with a `#[view]` function:
+(2) Encrypt plaintext
+    → publish ciphertext
+                              (3) Satisfy access condition
+                                  (pay, prove identity, …)
 
-```move
-module 0xcafe::album_store {
-    use std::table::Table;
+                              (4) Submit decryption request
+                                  (signature or ZK proof)
+                                                            (5) Each worker simulates
+                                                                check_permission /
+                                                                check_acl on-chain;
+                                                                if true, returns an
+                                                                encrypted key share
 
-    struct PaymentRecords has key {
-        // tracks: (buyer, album_id) -> has_paid
-        records: Table<(address, vector<u8>), bool>,
-    }
-
-    public entry fun buy_album(buyer: &signer, album_id: vector<u8>) {
-        // Process payment and record purchase
-        // ...
-    }
-
-    #[view]
-    public fun check_permission(user: address, album_id: vector<u8>): bool {
-        // Return true if user has paid for this album
-        // ...
-    }
-}
+                              (6) SDK collects ≥ t shares,
+                                  reconstructs key, decrypts
 ```
 
-**Solana:** Create a hook program that checks for a payment receipt PDA:
+Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a user decrypts.
 
-```rust
-declare_id!("AlbumStoreXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
-
-pub fn check_access(ctx: Context<CheckAccess>, album_id: Vec<u8>) -> Result<()> {
-    // Verify buyer's Receipt PDA exists for this album_id
-    // Reverts if no receipt found (access denied), returns Ok(()) if paid
-}
-```
-
-> **Note:** On Solana, the hook must be an Anchor program with exactly one instruction, since the contract identifier can only capture the program ID.
-
-**2. Alice Encrypts Her Album**
-
-Alice picks a committee of workers and encrypts her album.
-
-> ⚠️ By picking a committee, Alice assumes the workers do not collude, and at least `t` of them will be available for decryption requests.
-
-```typescript
-import { ace_ex } from "@aptos-labs/ace-sdk";
-
-// Point to Alice's album store contract
-// Aptos
-const contractId = ace_ex.ContractID.newAptos({
-  chainId: 1,
-  moduleAddr: "0xcafe",
-  moduleName: "album_store",
-  functionName: "check_permission",
-});
-// Solana
-const contractId = ace_ex.ContractID.newSolana({
-  knownChainName: "mainnet-beta", // or "devnet", "localnet"
-  programId: "AlbumStoreXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-});
-
-// Encrypt — workers and DKG session are looked up automatically from aceContract
-const { fullDecryptionDomain, ciphertext } = (await ace_ex.encrypt({
-  keypairId,      // DKG keypair address on the ACE contract
-  contractId,
-  domain: new TextEncoder().encode("album-001"),
-  plaintext: albumData,
-  aceContract,    // ACE protocol contract address on Aptos
-})).unwrapOrThrow();
-
-// Alice publishes fullDecryptionDomain + ciphertext (e.g., stores on Shelby)
-```
-
-**3. Bob Pays and Decrypts**
-
-After Bob pays on-chain, he can request the decryption key.
-
-```typescript
-// Bob calls buy_album("album-001") on-chain first...
-
-// Then Bob creates a proof of permission (chain-specific)
-// Aptos: sign the decryption domain
-const messageToSign = fullDecryptionDomain.toPrettyMessage();
-const signOutput = await signMessage({ message: messageToSign, nonce: "" });
-const proof = ace_ex.ProofOfPermission.createAptos({
-  userAddr: bob.accountAddress,
-  publicKey: bob.publicKey,
-  signature: signOutput.signature,
-  fullMessage: signOutput.fullMessage,
-});
-// Solana: Bob signs a transaction calling the hook program
-const proof = ace_ex.ProofOfPermission.createSolana({
-  txn: signedTransaction.serialize(),
-});
-
-// Decrypt — ace_ex fetches worker endpoints from aceContract, verifies permission,
-// aggregates key shares, and decrypts in one call
-const albumData = (await ace_ex.decrypt({
-  keypairId,
-  contractId: fullDecryptionDomain.contractId,
-  domain: fullDecryptionDomain.domain,
-  proof,
-  ciphertext,
-  aceContract,
-})).unwrapOrThrow();
-```
-
-### Full Examples
-
-| Example | Chain | Description |
-|---------|-------|-------------|
-| [Aptos Access Control](./examples/shelby-access-control-aptos) | Aptos | Allowlist-based encryption with Move contract |
-| [Solana Access Control](./examples/shelby-access-control-solana) | Solana | Pay-to-download with Anchor programs |
-
-### Public Test Workers
-
-Two public test workers are available for development and testing:
-
-| Worker | Endpoint |
-|--------|----------|
-| Worker 0 | `https://ace-worker-0-646682240579.europe-west1.run.app` |
-| Worker 1 | `https://ace-worker-1-646682240579.europe-west1.run.app` |
-
-With `ace_ex`, you don't configure workers directly — they are discovered automatically from `aceContract`'s on-chain state. For **local testing**, start the full ACE local network (see the examples) which writes `aceContract` and `keypairId` to `/tmp/ace-localnet-config.json`. For **testnet**, set the `ACE_CONTRACT` and `KEYPAIR_ID` env vars pointing to the public ACE testnet deployment.
-
-> ⚠️ **Test only**: These workers are for development/testing purposes. For production, run your own workers (see below).
-
-### Running Your Own Worker
-
-To run your own decryption worker:
-
-**1. Run fullnodes **
-
-> ⚠️ This step is optional for testing. For production with high security requirement, each worker must run their own fullnodes — using shared or public RPC endpoints introduces a trust dependency; a malicious provider could return false permission results and steal the decryption key.
-
-Workers query contracts to check decryption permissions. Run your own fullnodes:
-
-- **Aptos:** See [Run a public fullnode](https://aptos.dev/network/nodes/full-node)
-- **Solana:** See [Setup a Solana RPC node](https://docs.solanalabs.com/operations/setup-an-rpc-node)
-
-**2. Generate a Worker Profile**
-
-```bash
-npm install -g @aptos-labs/ace-worker@latest
-ace-worker new-worker-profile > worker-profile.txt
-```
-
-This outputs an IBE master secret key (`IBE_MSK`) and master public key (`IBE_MPK`) to `worker-profile.txt`. Keep `IBE_MSK` secret and never expose it on screen or in logs.
-
-**3. Start the Worker**
-
-```bash
-# Pass env vars inline (IBE_MSK only goes to ace-worker, not exported to shell)
-# The RPC endpoint env vars are optional; omit any chains you don't need
-env $(grep -v '^#' worker-profile.txt | xargs) \
-APTOS_MAINNET_API_ENDPOINT=https://my-aptos-fullnode:8080/v1 \
-APTOS_MAINNET_API_KEY=your-api-key \
-SOLANA_MAINNET_API_ENDPOINT=https://my-solana-rpc:8899 \
-ace-worker run-worker --port 3000
-```
+---
 
 ## Project Structure
 
 | Package | Description |
 |---------|-------------|
-| [`ts-sdk`](./ts-sdk) | TypeScript SDK for ACE operations |
-| [`worker`](./worker) | ACE worker for key share management |
-| [`examples/shelby-access-control-aptos`](./examples/shelby-access-control-aptos) | Aptos Move example |
-| [`examples/shelby-access-control-solana`](./examples/shelby-access-control-solana) | Solana Anchor example |
+| [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
+| [`operator-cli`](./operator-cli) | Operator CLI (`ace`) for node onboarding and management |
+| [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
+| [`scenarios`](./scenarios) | Local network setup scripts |
+| [`examples/shelby-explorer-acl-aptos`](./examples/shelby-explorer-acl-aptos) | ACE ACL module from Shelby Explorer (allowlist / time-lock / pay-to-download) |
+| [`examples/pay-to-download-solana`](./examples/pay-to-download-solana) | Pay-to-download example on Solana |
+| [`examples/zk-kyc`](./examples/zk-kyc) | Age-gated decryption with Groth16 ZK proofs |
+
+---
+
+## App Developer Guide
+
+Your job as an app developer is to deploy a Move contract with a single `#[view]` function that decides whether a given decryption request is allowed. ACE calls that function on-chain; if it returns `true`, the key is released. You also use the TypeScript SDK to encrypt and decrypt.
+
+ACE supports two flows depending on what your contract needs to verify:
+
+- **Basic Flow** — your contract receives the requestor's Aptos address (extracted from their signature). Good for allowlists, time-locks, and pay-to-download.
+- **Custom Flow** — your contract receives an arbitrary `payload` byte string submitted by the requestor. Good for ZK proofs, Merkle witnesses, and other cryptographic credentials.
+
+### The Contract Interface
+
+This is the most important part. Your view function is the sole access gate — get the signature right.
+
+**Basic Flow** — fixed signature, three parameters:
+
+```move
+#[view]
+public fun check_permission(
+    label: vector<u8>,     // the domain the ciphertext was encrypted under
+    enc_pk: vector<u8>,    // requestor's ephemeral public key for this session
+    user_addr: address,    // Aptos address that signed the decryption request
+): bool
+```
+
+- `label` identifies what is being decrypted — it equals the `domain` bytes you passed to `encrypt`. Use it to look up your access records.
+- `user_addr` is who is asking. Check your payment table, allowlist, etc. against this.
+- `enc_pk` is the requestor's session key. Most contracts ignore it; it is there if you need to bind external proofs to a specific session (see Custom Flow).
+
+**Custom Flow** — fixed signature, three parameters:
+
+```move
+#[view]
+public fun check_acl(
+    label: vector<u8>,     // the domain the ciphertext was encrypted under
+    enc_pk: vector<u8>,    // requestor's ephemeral public key for this session
+    payload: vector<u8>,   // arbitrary bytes submitted by the requestor
+): bool
+```
+
+- `label` and `enc_pk` are the same as above.
+- `payload` is whatever the requestor sends — a Groth16 proof, a Merkle proof, a signed attestation, etc. Your contract is fully responsible for deserializing and verifying it. A ZK proof should bind to `enc_pk` so that a captured proof cannot be replayed by a different requestor.
+
+The function name can be anything — you pass it to the SDK at encrypt/decrypt time.
+
+### SDK Usage
+
+```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress } from "@aptos-labs/ts-sdk";
+
+const aceDeployment = new ACE.AceDeployment({
+    apiEndpoint: "https://fullnode.mainnet.aptoslabs.com/v1",
+    contractAddr: AccountAddress.fromString("0x<ace-contract-addr>"),
+});
+```
+
+**Encrypt (both flows)**
+
+```typescript
+const ciphertext = (await ACE.AptosBasicFlow.encrypt({   // or AptosCustomFlow.encrypt
+    aceDeployment,
+    keypairId: AccountAddress.fromString("0x<keypair-id>"),
+    chainId: 1,
+    moduleAddr: AccountAddress.fromString("0xcafe"),
+    moduleName: "album_store",
+    functionName: "check_permission",
+    domain: new TextEncoder().encode("album-001"),        // becomes `label` in your contract
+    plaintext: albumData,
+})).unwrapOrThrow("encryption failed");
+```
+
+**Decrypt — Basic Flow**
+
+The requestor signs a challenge message that proves their identity:
+
+```typescript
+const session = ACE.AptosBasicFlow.DecryptionSession.create({
+    aceDeployment,
+    keypairId: AccountAddress.fromString("0x<keypair-id>"),
+    chainId: 1,
+    moduleAddr: AccountAddress.fromString("0xcafe"),
+    moduleName: "album_store",
+    functionName: "check_permission",
+    domain: new TextEncoder().encode("album-001"),
+    ciphertext,
+});
+
+const messageToSign = await session.getRequestToSign();
+const plaintext = (await session.decryptWithProof({
+    userAddr: bob.accountAddress,
+    publicKey: bob.publicKey,
+    signature: bob.sign(messageToSign),
+})).unwrapOrThrow("decryption failed");
+```
+
+**Decrypt — Custom Flow**
+
+The requestor builds a payload (e.g., a ZK proof) and supplies an ephemeral keypair that the payload should be bound to:
+
+```typescript
+const { encryptionKey, decryptionKey } = ACE.pke.keygen();
+const encPk = new Uint8Array(encryptionKey.toBytes());
+const encSk = new Uint8Array(decryptionKey.toBytes());
+
+const payload: Uint8Array = buildMyPayload(encPk, ...); // bind proof to encPk
+
+const plaintext = await ACE.AptosCustomFlow.decrypt({
+    ciphertext,
+    label: new TextEncoder().encode("my-label"),
+    encPk,
+    encSk,
+    payload,
+    aceDeployment,
+    keypairId: AccountAddress.fromString("0x<keypair-id>"),
+    chainId: 1,
+    moduleAddr: AccountAddress.fromString("0xcafe"),
+    moduleName: "my_verifier",
+    functionName: "check_acl",
+});
+```
+
+### Local Development
+
+Start a full ACE network locally (3 workers + Aptos localnet):
+
+```bash
+cd scenarios
+pnpm install
+pnpm run-local-network-forever
+```
+
+Wait for the `ACE local network is READY` banner. The network writes `contractAddr` and `keypairId` to `/tmp/ace-localnet-config.json`.
+
+---
+
+## Operator Guide
+
+Joining the ACE network requires coordination with the **admin** (who controls the ACE contract) and the **existing committee** (who votes to admit you).
+
+```
+Operator                              Admin / existing committee
+────────────────────────────────      ─────────────────────────────────
+                                      (1) Admin shares a deployment blob:
+                                          { rpcUrl, aceAddr, rpcApiKey?,
+                                            gasStationKey? }
+
+(2) `ace new-node` — paste blob;
+    wizard generates keys, prints
+    a docker/gcloud command to
+    start the worker, registers
+    on-chain
+
+(3) Share account address with admin
+
+                                      (4) `ace propose` — proposes adding
+                                          the new node to the committee
+
+                                      (5) Each committee member:
+                                          `ace vote <session-addr>`
+                                          until threshold is reached
+
+(6) Node joins the committee and
+    participates in the next DKG
+```
+
+**Install**
+
+```bash
+npm install -g @aptos-labs/ace-cli@latest
+```
+
+**Onboard a new node**
+
+```bash
+ace new-node
+```
+
+The guided wizard asks for the deployment blob from the admin, generates node keys, prints the `docker run` or `gcloud run deploy` command to start the worker, and registers your node on-chain. At the end it prints your **account address** — send this to the admin.
+
+**Useful commands**
+
+```bash
+ace network-status [-w]          # committee, epoch, active proposals
+ace node-status    [-w]          # your node's registration and key state
+ace propose                      # propose a committee change (committee members only)
+ace vote <session-addr> [-y]     # vote on a proposal
+ace edit-node                    # update image, API key, or gas station key
+ace profile list                 # list saved node profiles
+```
+
+**Fullnodes** *(optional for testing, recommended for production)*
+
+> ⚠️ Workers that rely on a shared RPC endpoint inherit its trust assumptions — a malicious provider could return false permission results.
+
+- **Aptos:** See [Run a public fullnode](https://aptos.dev/network/nodes/full-node)
+- **Solana:** See [Setup a Solana RPC node](https://docs.solanalabs.com/operations/setup-an-rpc-node)
+
+---
+
+## Examples
+
+| Example | Flow | Chain | Description |
+|---------|------|-------|-------------|
+| [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
+| [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
+| [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |
 
 ## License
 

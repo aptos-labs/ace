@@ -13,6 +13,10 @@ dependencies = [
 [[package]]
 name = "ace-anchor-kit"
 version = "0.1.0"
+dependencies = [
+ "bcs",
+ "serde",
+]
 
 [[package]]
 name = "ace_hook"
@@ -265,6 +269,16 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "bcs"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85b6598a2f5d564fb7855dc6b06fd1c38cff5a72bd8b863a4d021938497b440a"
+dependencies = [
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "bincode"

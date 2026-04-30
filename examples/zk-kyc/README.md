@@ -36,19 +36,22 @@ decrypt alone; the user needs a threshold of workers to accept the proof.
 
 ## What the ZK Proof Guarantees
 
-The Groth16 circuit proves three statements simultaneously:
+The Groth16 circuit proves three statements simultaneously and produces one public output:
 
-| Statement | How it is enforced |
+| | How it is enforced |
 |---|---|
 | I hold a credential signed by the registered KYC provider | EdDSA-Poseidon signature verification inside the circuit |
 | My age is **18 or older** | Arithmetic constraint: `GreaterEqThan(8)` comparator |
-| This proof is bound to my ACE decryption key `enc_pk` | The circuit packs `enc_pk[67]` into 3 BN254 Fr public inputs |
+| This proof is bound to my ACE decryption key `enc_pk` | `enc_pk_p0/p1/p2` are public inputs — Groth16 IC terms bind them to the proof |
+| **Nullifier** output: `Poseidon(sig_s)` | Same credential always yields the same value; a real app records it on-chain to detect reuse |
 
-The third guarantee prevents replay: a proof generated for one decryption session cannot
-be reused for a different one.
+The age value is a **private** input — the verifier learns only that it satisfies ≥ 18.
 
-The age value itself is a **private** input — the on-chain verifier and ACE workers learn
-only that it satisfies the ≥ 18 threshold, nothing more.
+> **Note — credential reuse (out of scope for this demo):** the nullifier is included in
+> the proof and printed by script 5, but this demo does not record it on-chain.  A
+> production app must store every nullifier after a successful decryption and reject any
+> future request that presents a duplicate.  Without this check, the same credential can
+> be used to decrypt an unlimited number of times.
 
 ---
 
@@ -161,7 +164,7 @@ pnpm 4-encrypt
 ```
 
 Encrypts a plaintext under the `kyc-demo` label using ACE custom flow.  Saves
-`data/session.json` (ciphertext + ephemeral PKE keys for the decryption request).
+`data/session.json` (ciphertext and label only).
 
 Anyone can run this step — encryption is a public operation.
 
@@ -181,12 +184,14 @@ pnpm 5-decrypt
 
 What happens under the hood:
 1. Reads `data/credential.json` and `data/session.json`.
-2. Calls `snarkjs.groth16.fullProve` with the circuit inputs — the ZK prover runs
+2. Generates an ephemeral PKE keypair for this decrypt request; the proof binds to its
+   `enc_pk` so it cannot be replayed for another caller key.
+3. Calls `snarkjs.groth16.fullProve` with the circuit inputs — the ZK prover runs
    locally in Node.js and produces a Groth16 proof in ~2 seconds.
-3. Encodes the proof as a 256-byte payload and calls `AptosCustomFlow.decrypt`.
-4. Each ACE worker simulates `kyc_verifier::check_acl` on-chain (BN254 pairing check).
+4. Encodes the proof as a 256-byte payload and calls `AptosCustomFlow.decrypt`.
+5. Each ACE worker simulates `kyc_verifier::check_acl` on-chain (BN254 pairing check).
    If the proof is valid, the worker releases its key share.
-5. Once a threshold of shares is collected, the threshold key is reconstructed and the
+6. Once a threshold of shares is collected, the threshold key is reconstructed and the
    ciphertext is decrypted.
 
 Expected output:

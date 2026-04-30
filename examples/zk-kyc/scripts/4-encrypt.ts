@@ -11,7 +11,7 @@
  * identity, so the ACE network will only release the decryption key share to a
  * caller who presents a valid ZK proof.
  *
- * Output: data/session.json  (ciphertext + ephemeral PKE keypair)
+ * Output: data/session.json  (ciphertext + label for decrypt step)
  */
 
 import { AccountAddress } from '@aptos-labs/ts-sdk';
@@ -63,15 +63,8 @@ async function main() {
     const ciphertext = result.unwrapOrThrow('AptosCustomFlow.encrypt failed');
     console.log('Plaintext encrypted.');
 
-    // Generate ephemeral PKE keypair for the decryption request.
-    const callerKeypair = ACE.pke.keygen();
-    const encPk = callerKeypair.encryptionKey.toBytes();
-    const encSk = callerKeypair.decryptionKey.toBytes();
-
     const session = {
         ciphertext: Buffer.from(ciphertext).toString('hex'),
-        encPk: Buffer.from(encPk).toString('hex'),
-        encSk: Buffer.from(encSk).toString('hex'),
         label: Buffer.from(LABEL).toString('hex'),
     };
 

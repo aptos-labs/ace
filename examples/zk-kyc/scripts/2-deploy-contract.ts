@@ -52,9 +52,9 @@ async function main() {
     const vk = readJson<VkJson>(vkPath);
     const providerKey = readJson<ProviderKey>(providerKeyPath);
 
-    if (vk.IC.length !== 6) {
+    if (vk.IC.length !== 7) {
         throw new Error(
-            `Expected 6 IC points (1 constant + 5 public inputs), got ${vk.IC.length}.\n` +
+            `Expected 7 IC points (1 constant + 1 nullifier output + 5 public inputs), got ${vk.IC.length}.\n` +
             'Make sure circuit/setup.sh was run against kyc.circom.',
         );
     }
@@ -65,8 +65,8 @@ async function main() {
     const vkGammaG2 = g2ToBytes(vk.vk_gamma_2);
     const vkDeltaG2 = g2ToBytes(vk.vk_delta_2);
 
-    const vkIc = new Uint8Array(6 * 64);
-    for (let i = 0; i < 6; i++) {
+    const vkIc = new Uint8Array(7 * 64);
+    for (let i = 0; i < 7; i++) {
         vkIc.set(g1ToBytes(vk.IC[i]!), i * 64);
     }
 

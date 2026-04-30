@@ -20,6 +20,7 @@
  */
 
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
+import * as ACE from '@aptos-labs/ace-sdk';
 import { groth16 } from 'snarkjs';
 import * as path from 'path';
 import {
@@ -31,13 +32,6 @@ interface ProviderKey {
     private: string;
     public_ax: string;
     public_ay: string;
-}
-
-interface Session {
-    ciphertext: string;
-    encPk: string;
-    encSk: string;
-    label: string;
 }
 
 async function main() {
@@ -57,8 +51,8 @@ async function main() {
     console.log(`Attempting to obtain a credential for age ${age} (underage)...`);
 
     const providerKey = readJson<ProviderKey>(path.join(DATA_DIR, 'provider-key.json'));
-    const session     = readJson<Session>(path.join(DATA_DIR, 'session.json'));
-    const encPk       = Uint8Array.from(Buffer.from(session.encPk, 'hex'));
+    const callerKeypair = ACE.pke.keygen();
+    const encPk = new Uint8Array(callerKeypair.encryptionKey.toBytes());
 
     const poseidon = await buildPoseidon();
     const eddsa    = await buildEddsa();

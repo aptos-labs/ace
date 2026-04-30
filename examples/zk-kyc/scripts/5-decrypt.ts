@@ -7,14 +7,15 @@
  * This is the core of the ZK-KYC demo.
  *
  * 1. Reads the credential (age + EdDSA signature from the provider).
- * 2. Packs the caller's enc_pk into the three BN254 Fr public inputs.
- * 3. Generates a Groth16 proof using snarkjs — this is where the ZK magic
+ * 2. Generates an ephemeral PKE keypair for this decrypt request (bound in the proof).
+ * 3. Packs the caller's enc_pk into the three BN254 Fr public inputs.
+ * 4. Generates a Groth16 proof using snarkjs — this is where the ZK magic
  *    happens: the proof asserts that the holder has a valid credential and is
  *    18 or older, WITHOUT revealing the actual age.
- * 4. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
+ * 5. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
  *    ACE workers call `kyc_verifier::check_acl` on-chain; if the proof
  *    verifies, they release their key shares.
- * 5. Reconstructs the threshold key and decrypts the ciphertext.
+ * 6. Reconstructs the threshold key and decrypts the ciphertext.
  */
 
 import { AccountAddress } from '@aptos-labs/ts-sdk';
@@ -23,7 +24,7 @@ import { groth16 } from 'snarkjs';
 import * as path from 'path';
 import {
     CIRCUIT_DIR, DATA_DIR, ensureDataDir,
-    readJson, packEncPk, proofToBytes,
+    readJson, packEncPk, proofToBytes, uint256ToLeBytes,
 } from './common.js';
 
 interface Config {
@@ -51,8 +52,6 @@ interface Credential {
 
 interface Session {
     ciphertext: string;
-    encPk: string;
-    encSk: string;
     label: string;
 }
 
@@ -65,9 +64,11 @@ async function main() {
     const session      = readJson<Session>(path.join(DATA_DIR, 'session.json'));
 
     const ciphertext = Uint8Array.from(Buffer.from(session.ciphertext, 'hex'));
-    const encPk      = Uint8Array.from(Buffer.from(session.encPk, 'hex'));
-    const encSk      = Uint8Array.from(Buffer.from(session.encSk, 'hex'));
     const label      = Uint8Array.from(Buffer.from(session.label, 'hex'));
+
+    const callerKeypair = ACE.pke.keygen();
+    const encPk = new Uint8Array(callerKeypair.encryptionKey.toBytes());
+    const encSk = new Uint8Array(callerKeypair.decryptionKey.toBytes());
 
     // ── Build circuit inputs ──────────────────────────────────────────────────
     const [p0, p1, p2] = packEncPk(encPk);
@@ -98,11 +99,21 @@ async function main() {
     console.log('  The actual age remains private.');
     console.log('');
 
-    const { proof } = await groth16.fullProve(circuitInput, wasmPath, zkeyPath);
+    const { proof, publicSignals } = await groth16.fullProve(circuitInput, wasmPath, zkeyPath);
     console.log('Proof generated.');
 
-    // Encode as 256-byte payload: pi_a (64B) || pi_b (128B) || pi_c (64B)
-    const payload = proofToBytes(proof);
+    // publicSignals[0] is the nullifier (circom outputs come before inputs).
+    // A real app would record this on-chain and reject any future request that
+    // presents the same nullifier — preventing credential reuse.
+    const nullifier = BigInt(publicSignals[0]!);
+    console.log(`  Nullifier: 0x${nullifier.toString(16)}`);
+    console.log('  (a real app records this on-chain to prevent credential reuse)');
+    console.log('');
+
+    // Payload: proof (256B) || nullifier (32B LE Fr)
+    const payload = new Uint8Array(288);
+    payload.set(proofToBytes(proof), 0);
+    payload.set(uint256ToLeBytes(nullifier), 256);
 
     // ── ACE decrypt ───────────────────────────────────────────────────────────
     const aceDeployment = new ACE.AceDeployment({

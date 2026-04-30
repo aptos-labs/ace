@@ -8,8 +8,9 @@
 ///   - The KYC provider's Baby JubJub public key.
 ///
 /// ACE workers call `check_acl(label, enc_pk, payload)` as a view function
-/// before releasing a decryption key share.  `payload` is a 256-byte Groth16
-/// proof (pi_a 64B || pi_b 128B || pi_c 64B).
+/// before releasing a decryption key share.  `payload` is 288 bytes:
+///   proof (256B): pi_a 64B || pi_b 128B || pi_c 64B
+///   nullifier (32B): Poseidon(sig_s) as a little-endian BN254 Fr scalar
 ///
 /// The verifier checks that the proof simultaneously witnesses:
 ///   1. A valid EdDSA-Poseidon signature from the KYC provider over an age value.
@@ -17,8 +18,8 @@
 ///   3. The proof is bound to the caller's `enc_pk` — preventing replay against
 ///      a different key.
 ///
-/// Binding is achieved without an on-chain hash: the circuit packs enc_pk[67]
-/// into 3 BN254 Fr scalars (same polynomial-evaluation scheme on both sides).
+/// The nullifier is a public output: same credential always yields the same value.
+/// A production app should record it on-chain and reject duplicate nullifiers.
 module admin::kyc_verifier {
     use std::bcs;
     use std::error;
@@ -36,12 +37,12 @@ module admin::kyc_verifier {
     const E_ONLY_ADMIN: u64 = 1;
     const E_ALREADY_INITIALIZED: u64 = 2;
 
-    // proof layout: G1(64) + G2(128) + G1(64) = 256 bytes
-    const PROOF_LEN: u64 = 256;
+    // payload layout: G1(64) + G2(128) + G1(64) + Fr(32) = 288 bytes
+    const PAYLOAD_LEN: u64 = 288;
     // Ristretto255 compressed point = 67 bytes
     const ENC_PK_LEN: u64 = 67;
-    // IC count = 1 (constant) + 5 (public inputs) = 6
-    const IC_COUNT: u64 = 6;
+    // IC count = 1 (constant) + 1 (nullifier output) + 5 (public inputs) = 7
+    const IC_COUNT: u64 = 7;
 
     struct VerificationKey has key {
         // Groth16 VK stored as raw bytes; deserialized on every check_acl call.
@@ -51,7 +52,7 @@ module admin::kyc_verifier {
         vk_beta_g2:  vector<u8>,   // 128 bytes
         vk_gamma_g2: vector<u8>,   // 128 bytes
         vk_delta_g2: vector<u8>,   // 128 bytes
-        vk_ic:       vector<u8>,   // 6 * 64 = 384 bytes (IC[0..5])
+        vk_ic:       vector<u8>,   // 7 * 64 = 448 bytes (IC[0..6])
         // KYC provider's Baby JubJub public key (BN254 Fr, 32 bytes LE each)
         pk_provider_ax: vector<u8>, // 32 bytes
         pk_provider_ay: vector<u8>, // 32 bytes
@@ -96,8 +97,8 @@ module admin::kyc_verifier {
         payload: vector<u8>,
     ): bool acquires VerificationKey {
         if (!exists<VerificationKey>(@admin)) return false;
-        if (vector::length(&payload) != PROOF_LEN)  return false;
-        if (vector::length(&enc_pk)  != ENC_PK_LEN) return false;
+        if (vector::length(&payload) != PAYLOAD_LEN) return false;
+        if (vector::length(&enc_pk)  != ENC_PK_LEN)  return false;
 
         let vk = borrow_global<VerificationKey>(@admin);
 
@@ -141,6 +142,12 @@ module admin::kyc_verifier {
             i = i + 1;
         };
 
+        // ── Nullifier (public output, payload[256..288]) ──────────────────────
+        // Circom places public outputs before public inputs in publicSignals,
+        // so nullifier is s[1] and pk_ax is s[2] in the IC sum.
+        let opt_nullifier = deserialize<Fr, FormatFrLsb>(&slice(&payload, 256, 288));
+        if (option::is_none(&opt_nullifier)) return false;
+
         // ── Public inputs: [pk_ax, pk_ay, p0, p1, p2] ────────────────────────
         let opt_ax = deserialize<Fr, FormatFrLsb>(&vk.pk_provider_ax);
         if (option::is_none(&opt_ax)) return false;
@@ -153,7 +160,9 @@ module admin::kyc_verifier {
             return false
         };
 
+        // s = [1, nullifier, pk_ax, pk_ay, p0, p1, p2]
         let public_inputs = vector[
+            option::extract(&mut opt_nullifier),
             option::extract(&mut opt_ax),
             option::extract(&mut opt_ay),
             option::extract(&mut opt_p0),
@@ -163,7 +172,7 @@ module admin::kyc_verifier {
 
         // ── Groth16 pairing check ────────────────────────────────────────────
         // e(A, B) == e(α, β) · e(Σ IC_i·s_i, γ) · e(C, δ)
-        // where s = [1, pk_ax, pk_ay, p0, p1, p2]
+        // where s = [1, nullifier, pk_ax, pk_ay, p0, p1, p2]
         let left = pairing<G1, G2, Gt>(&proof_a, &proof_b);
 
         let scalars = vector[from_u64<Fr>(1)];

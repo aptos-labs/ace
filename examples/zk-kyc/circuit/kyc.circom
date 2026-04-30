@@ -19,6 +19,11 @@ include "circomlib/circuits/comparators.circom";
 //      enc_pk_p0/p1/p2 are public inputs — the Groth16 IC terms bind them to
 //      the proof without any circuit constraints needed.
 //
+// Public output:
+//   nullifier — Poseidon(sig_s), a unique fingerprint of the credential.
+//               A real app records this on-chain after each decryption to
+//               prevent the same credential from being used more than once.
+//
 // Public inputs  (visible to the on-chain verifier):
 //   pk_provider_ax, pk_provider_ay  — KYC provider's Baby Jubjub public key
 //   enc_pk_p0, enc_pk_p1, enc_pk_p2 — enc_pk packed little-endian into 3 scalars
@@ -43,13 +48,10 @@ template KYCProof() {
     signal input sig_r8y;
     signal input sig_s;
 
-    // ── 1. EdDSA signature verification ───────────────────────────────────────
-    // The message is Poseidon(age). The KYC provider signs this message
-    // with their Baby Jubjub private key using signPoseidon (circomlibjs).
-    // EdDSAPoseidonVerifier internally computes the challenge as:
-    //   H = Poseidon(R8x, R8y, Ax, Ay, M)
-    // and checks B8*S == R8 + A*H on Baby Jubjub.
+    // ── Public output ──────────────────────────────────────────────────────────
+    signal output nullifier;
 
+    // ── 1. EdDSA signature verification ───────────────────────────────────────
     component msg_hash = Poseidon(1);
     msg_hash.inputs[0] <== age;
 
@@ -63,17 +65,22 @@ template KYCProof() {
     verifier.M      <== msg_hash.out;
 
     // ── 2. Age is 18 or older ─────────────────────────────────────────────────
-    // GreaterEqThan(8) checks age >= 18 within 8-bit range (0–255).
     component ageCheck = GreaterEqThan(8);
     ageCheck.in[0] <== age;
     ageCheck.in[1] <== 18;
     ageCheck.out === 1;
 
-    // ── 3. enc_pk binding ─────────────────────────────────────────────────────
+    // ── 3. Nullifier ──────────────────────────────────────────────────────────
+    // Poseidon(sig_s) is a stable, unique fingerprint of this credential.
+    // sig_s is deterministic (EdDSA is deterministic), so the same credential
+    // always produces the same nullifier — allowing double-use detection.
+    component null_hash = Poseidon(1);
+    null_hash.inputs[0] <== sig_s;
+    nullifier <== null_hash.out;
+
+    // ── 4. enc_pk binding ─────────────────────────────────────────────────────
     // enc_pk_p0/p1/p2 are public inputs. The Groth16 IC terms in the pairing
     // equation bind them to the proof — no circuit constraints needed here.
-    // The on-chain verifier computes p0/p1/p2 from the raw enc_pk bytes and
-    // passes them as public inputs; any mismatch breaks the pairing check.
 }
 
 component main {public [pk_provider_ax, pk_provider_ay, enc_pk_p0, enc_pk_p1, enc_pk_p2]} = KYCProof();

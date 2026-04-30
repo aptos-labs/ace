@@ -3,12 +3,40 @@
 
 import { input, select, confirm } from '@inquirer/prompts';
 import { execSync } from 'child_process';
+import { writeFileSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
 import * as path from 'path';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
 import { selectImage } from './docker-hub.js';
 import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides, type LocalConfig } from './config.js';
 import { logFilePath, spawnLocalNode } from './local-process.js';
+
+const LOGROTATE_DIR   = path.join(homedir(), '.ace', 'logrotate');
+const LOGROTATE_STATE = path.join(LOGROTATE_DIR, 'logrotate.state');
+
+export function writeLogrotateConf(logFile: string, maxMb: number): string {
+    mkdirSync(LOGROTATE_DIR, { recursive: true });
+    const confFile = path.join(LOGROTATE_DIR, path.basename(logFile) + '.conf');
+    const conf = [
+        `${logFile} {`,
+        `    size ${maxMb}M`,
+        `    rotate 1`,
+        `    copytruncate`,
+        `    nocompress`,
+        `    missingok`,
+        `    notifempty`,
+        `}`,
+    ].join('\n') + '\n';
+    writeFileSync(confFile, conf);
+    return confFile;
+}
+
+export function runLogrotate(confFile: string): void {
+    try {
+        execSync(`logrotate --state ${LOGROTATE_STATE} ${confFile}`, { stdio: 'ignore' });
+    } catch { /* rotation errors are non-fatal */ }
+}
 
 const CHAIN_DEFAULTS = {
     aptosMainnet:      'https://api.mainnet.aptoslabs.com/v1',
@@ -335,6 +363,8 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
             default: defaultRepoPath(),
         })).trim();
         const port = await input({ message: 'Port', default: String(defaultPort) });
+        const logMaxMbStr = await input({ message: 'Max log file size (MB, for logrotate)', default: '50' });
+        const logMaxMb = Math.max(1, parseInt(logMaxMbStr) || 50);
 
         console.log('\nBuilding node binary (this may take a minute)...\n');
         execSync(localBuildCmd(repoPath), { stdio: 'inherit' });
@@ -346,7 +376,10 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         const pid = spawnLocalNode(binaryPath, runArgs, logFile);
         console.log(`\nNode started in background  pid=${pid}  log=${logFile}\n`);
 
-        localCfg = { repoPath, port, pid, logFile };
+        const logrotateConf = writeLogrotateConf(logFile, logMaxMb);
+        runLogrotate(logrotateConf);
+
+        localCfg = { repoPath, port, pid, logFile, logMaxMb };
 
         endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
     }

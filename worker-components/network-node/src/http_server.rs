@@ -20,7 +20,7 @@ use tokio::sync::{RwLock, Semaphore};
 use vss_common::normalize_account_addr;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
-use crate::ChainRpcConfig;
+use crate::{wlog, ChainRpcConfig};
 
 /// Serialized size of a `pke::EncryptionKey` for scheme 0 (ElGamal-OTP-Ristretto255):
 /// [0x00 scheme][0x20 ULEB128(32)][32B enc_base][0x20 ULEB128(32)][32B public_point] = 67 bytes.
@@ -56,13 +56,13 @@ pub async fn run(
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("http-server: bind {} failed: {}", addr, e);
+            wlog!("http-server: bind {} failed: {}", addr, e);
             return;
         }
     };
-    println!("http-server: listening on {}", addr);
+    wlog!("http-server: listening on {}", addr);
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("http-server: serve error: {}", e);
+        wlog!("http-server: serve error: {}", e);
     }
 }
 
@@ -80,7 +80,7 @@ async fn handle_request(
     let ct_bytes = hex::decode(body_str.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let req_bytes = pke_decrypt_bytes(&state.pke_dk_bytes, &ct_bytes).map_err(|e| {
-        eprintln!("http-server: request decryption failed: {:#}", e);
+        wlog!("http-server: request decryption failed: {:#}", e);
         StatusCode::BAD_REQUEST
     })?;
 
@@ -94,7 +94,7 @@ async fn handle_request(
         0 => handle_basic_flow(&state, rest).await,
         1 => handle_custom_flow(&state, rest).await,
         _ => {
-            eprintln!("http-server: unknown request scheme {}", scheme);
+            wlog!("http-server: unknown request scheme {}", scheme);
             Err(StatusCode::BAD_REQUEST)
         }
     }
@@ -124,7 +124,7 @@ async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, Statu
     }
     let ephemeral_ek = EncryptionKey::from_bytes(&req[ek_start..ek_start + ENC_KEY_SIZE])
         .map_err(|e| {
-            eprintln!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
+            wlog!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
     let proof_bytes = &req[ek_start + ENC_KEY_SIZE..];
@@ -132,7 +132,7 @@ async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, Statu
     crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
-            eprintln!("http-server: basic flow: proof verification failed: {:#}", e);
+            wlog!("http-server: basic flow: proof verification failed: {:#}", e);
             StatusCode::FORBIDDEN
         })?;
 
@@ -163,7 +163,7 @@ async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, Stat
     }
     let caller_enc_key = EncryptionKey::from_bytes(&req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE])
         .map_err(|e| {
-            eprintln!("http-server: custom flow: enc key parse failed: {:#}", e);
+            wlog!("http-server: custom flow: enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
     let proof_bytes = &req[enc_pk_start + ENC_KEY_SIZE..];
@@ -171,7 +171,7 @@ async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, Stat
     crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
-            eprintln!("http-server: custom flow: proof verification failed: {:#}", e);
+            wlog!("http-server: custom flow: proof verification failed: {:#}", e);
             StatusCode::FORBIDDEN
         })?;
 

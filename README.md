@@ -225,11 +225,12 @@ Operator                              Admin / existing committee
 
 (3) Share account address with admin
 
-                                      (4) `ace propose` — proposes adding
-                                          the new node to the committee
+                                      (4) `ace new-proposal` — proposes
+                                          adding the new node to the
+                                          committee
 
                                       (5) Each committee member:
-                                          `ace vote <session-addr>`
+                                          `ace review-proposal`
                                           until threshold is reached
 
 (6) Node joins the committee and
@@ -253,12 +254,15 @@ The guided wizard asks for the deployment blob from the admin, generates node ke
 **Useful commands**
 
 ```bash
-ace network-status [-w]          # committee, epoch, active proposals
-ace node-status    [-w]          # your node's registration and key state
-ace propose                      # propose a committee change (committee members only)
-ace vote <session-addr> [-y]     # vote on a proposal
-ace edit-node                    # update image, API key, or gas station key
-ace profile list                 # list saved node profiles
+ace network-status [-w]              # committee, epoch, active proposals
+ace node-status    [-w]              # your node's registration and key state
+ace new-proposal                     # propose a committee change (committee members only)
+ace review-proposal [-s <session>]   # review and vote on a proposal (interactive TUI)
+ace edit-node                        # update image, API key, or gas station key
+ace log [--since <t>] [--until <t>] [-w]  # stream or query node logs
+ace profile list                     # list saved node profiles
+ace profile delete <alias>           # delete a saved profile
+ace profile default <alias>          # set the default profile
 ```
 
 **Fullnodes** *(optional for testing, recommended for production)*

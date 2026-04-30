@@ -81,7 +81,6 @@ async function main() {
         sig_r8x: F.toObject(sig.R8[0]).toString(),
         sig_r8y: F.toObject(sig.R8[1]).toString(),
         sig_s:   sig.S.toString(),
-        enc_pk:  Array.from(encPk).map(String),
     };
 
     const wasmPath = path.join(CIRCUIT_DIR, 'kyc_js', 'kyc.wasm');

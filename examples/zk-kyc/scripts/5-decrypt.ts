@@ -84,7 +84,6 @@ async function main() {
         sig_r8x: credential.sig_r8x,
         sig_r8y: credential.sig_r8y,
         sig_s:   credential.sig_s,
-        enc_pk:  Array.from(encPk).map(String),
     };
 
     const wasmPath = path.join(CIRCUIT_DIR, 'kyc_js', 'kyc.wasm');

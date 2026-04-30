@@ -15,20 +15,18 @@ include "circomlib/circuits/comparators.circom";
 //
 //   2. The prover's age is 18 or older.
 //
-//   3. The proof is bound to a specific enc_pk (the ACE decryption request key),
-//      packed as three BN254 Fr field elements, preventing replay against a
-//      different enc_pk.
+//   3. The proof is bound to a specific enc_pk (the ACE decryption request key).
+//      enc_pk_p0/p1/p2 are public inputs — the Groth16 IC terms bind them to
+//      the proof without any circuit constraints needed.
 //
 // Public inputs  (visible to the on-chain verifier):
 //   pk_provider_ax, pk_provider_ay  — KYC provider's Baby Jubjub public key
 //   enc_pk_p0, enc_pk_p1, enc_pk_p2 — enc_pk packed little-endian into 3 scalars
-//                                      p0 = bytes[0..30], p1 = bytes[31..61],
-//                                      p2 = bytes[62..66]
+//                                      (computed by the verifier from the raw enc_pk)
 //
 // Private inputs (known only to the prover, never revealed):
 //   age           — numeric age (0–255)
 //   sig_r8x, sig_r8y, sig_s  — EdDSA signature components
-//   enc_pk[67]   — raw enc_pk bytes
 //
 template KYCProof() {
 
@@ -44,7 +42,6 @@ template KYCProof() {
     signal input sig_r8x;
     signal input sig_r8y;
     signal input sig_s;
-    signal input enc_pk[67];
 
     // ── 1. EdDSA signature verification ───────────────────────────────────────
     // The message is Poseidon(age). The KYC provider signs this message
@@ -72,40 +69,11 @@ template KYCProof() {
     ageCheck.in[1] <== 18;
     ageCheck.out === 1;
 
-    // ── 3. enc_pk packing ──────────────────────────────────────────────────────
-    // Pack enc_pk[67] bytes into three BN254 Fr scalars (little-endian).
-    // Each byte is treated as a field element and summed with powers of 256.
-    // Since max(p0) = 255*(256^31-1)/255 = 256^31-1 = 2^248-1 < r (BN254 prime),
-    // no field wrapping occurs and the packing is injective.
-    //
-    // p0 = enc_pk[0] + enc_pk[1]*256 + ... + enc_pk[30]*256^30
-    // p1 = enc_pk[31] + enc_pk[32]*256 + ... + enc_pk[61]*256^30
-    // p2 = enc_pk[62] + enc_pk[63]*256 + enc_pk[64]*256^2
-    //      + enc_pk[65]*256^3 + enc_pk[66]*256^4
-
-    var acc0 = 0;
-    var acc1 = 0;
-    var acc2 = 0;
-    var c = 1;
-
-    for (var i = 0; i < 31; i++) {
-        acc0 += enc_pk[i] * c;
-        acc1 += enc_pk[31 + i] * c;
-        c *= 256;
-    }
-    for (var i = 0; i < 5; i++) {
-        if (i == 0) { c = 1; }
-        acc2 += enc_pk[62 + i] * c;
-        c *= 256;
-    }
-
-    signal p0_computed <== acc0;
-    signal p1_computed <== acc1;
-    signal p2_computed <== acc2;
-
-    p0_computed === enc_pk_p0;
-    p1_computed === enc_pk_p1;
-    p2_computed === enc_pk_p2;
+    // ── 3. enc_pk binding ─────────────────────────────────────────────────────
+    // enc_pk_p0/p1/p2 are public inputs. The Groth16 IC terms in the pairing
+    // equation bind them to the proof — no circuit constraints needed here.
+    // The on-chain verifier computes p0/p1/p2 from the raw enc_pk bytes and
+    // passes them as public inputs; any mismatch breaks the pairing check.
 }
 
 component main {public [pk_provider_ax, pk_provider_ay, enc_pk_p0, enc_pk_p1, enc_pk_p2]} = KYCProof();

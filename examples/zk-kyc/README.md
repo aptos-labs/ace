@@ -233,8 +233,11 @@ Private inputs (user only)       Public inputs (visible to on-chain verifier)
 ────────────────────────         ────────────────────────────────────────────
 age (u8)                         pk_provider_ax, pk_provider_ay
 sig_r8x, sig_r8y, sig_s          enc_pk_p0, enc_pk_p1, enc_pk_p2
-enc_pk[67]
 ```
+
+`enc_pk_p0/p1/p2` are the raw `enc_pk` bytes packed into three BN254 Fr scalars.
+The on-chain verifier computes them from the `enc_pk` in the decryption request;
+the Groth16 pairing equation binds them to the proof without any circuit constraint.
 
 | Layer | Algorithm |
 |---|---|

@@ -143,14 +143,14 @@ async function main() {
         if (!networkState || networkState.secrets.length < 1) {
             throw 'DKG did not complete within 5 minutes.';
         }
-        log(`DKG complete. keypairId=${networkState.secrets[0]!.toStringLong()}`);
+        log(`DKG complete. keypairId=${networkState.secrets[0]!.keypairId.toStringLong()}`);
 
         // ── 8. Write config for the Solana test ─────────────────────────────
         const CONFIG_PATH = '/tmp/ace-localnet-config.json';
         writeFileSync(CONFIG_PATH, JSON.stringify({
             apiEndpoint: LOCALNET_URL,
             contractAddr: aceContract,
-            keypairId: networkState.secrets[0]!.toStringLong(),
+            keypairId: networkState.secrets[0]!.keypairId.toStringLong(),
         }, null, 2));
         log(`Config written to ${CONFIG_PATH}`);
 

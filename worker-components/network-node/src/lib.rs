@@ -117,17 +117,20 @@ pub struct RunConfig {
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize)]
-enum BcsProposal {
-    CommitteeChange { nodes: Vec<[u8; 32]>, threshold: u64 },
-    ResharingIntervalUpdate { new_interval_secs: u64 },
-    NewSecret { scheme: u8 },
-    SecretDeactivation { original_dkg_addr: [u8; 32] },
+struct BcsProposedEpochConfig {
+    nodes: Vec<[u8; 32]>,
+    threshold: u64,
+    epoch_duration_micros: u64,
+    secrets_to_retain: Vec<[u8; 32]>,
+    new_secrets: Vec<u8>,
+    description: String,
+    target_epoch: u64,
 }
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct BcsProposalView {
-    proposal: BcsProposal,
+    proposal: BcsProposedEpochConfig,
     voting_session: [u8; 32],
     votes: Vec<bool>,
     voting_passed: bool,
@@ -143,6 +146,14 @@ struct BcsEpochChangeView {
     nxt_threshold: u64,
 }
 
+#[allow(dead_code)]
+#[derive(serde::Deserialize)]
+struct BcsSecretInfo {
+    current_session: [u8; 32],
+    keypair_id: [u8; 32],
+    scheme: u8,
+}
+
 #[derive(serde::Deserialize)]
 struct BcsStateViewV0 {
     epoch: u64,
@@ -151,7 +162,7 @@ struct BcsStateViewV0 {
     cur_nodes: Vec<[u8; 32]>,
     #[allow(dead_code)]
     cur_threshold: u64,
-    secrets: Vec<[u8; 32]>,
+    secrets: Vec<BcsSecretInfo>,
     proposals: Vec<Option<BcsProposalView>>,
     epoch_change_info: Option<BcsEpochChangeView>,
 }
@@ -426,7 +437,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         //   3. Waits for shutdown, then removes it from keypair_shares.
 
         let active_secrets: HashSet<String> = if in_cur_nodes {
-            state.secrets.iter().map(addr_bytes_to_string).collect()
+            state.secrets.iter().map(|s| addr_bytes_to_string(&s.current_session)).collect()
         } else {
             HashSet::new()
         };

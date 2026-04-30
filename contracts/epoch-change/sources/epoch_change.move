@@ -1,17 +1,16 @@
 module ace::epoch_change {
     use ace::dkr;
-    use std::option::{Option, Self};
     use aptos_framework::object::{Self, ExtendRef};
     use ace::dkg;
     use ace::group;
     use std::error;
-    use std::signer::address_of;
 
     const E_SESSION_NOT_COMPLETED: u64 = 1;
 
     const STATE__START_DKRS: u8 = 0;
-    const STATE__AWAIT_SUBSESSION_COMPLETION: u8 = 1;
-    const STATE__DONE: u8 = 2;
+    const STATE__START_DKGS: u8 = 1;
+    const STATE__AWAIT_SUBSESSION_COMPLETION: u8 = 2;
+    const STATE__DONE: u8 = 3;
 
     struct Session has key {
         caller: address,
@@ -21,8 +20,9 @@ module ace::epoch_change {
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
         secrets_to_reshare: vector<address>,
+        new_secret_schemes: vector<u8>,
         state_code: u8,
-        dkg: Option<address>,
+        dkgs: vector<address>,
         dkrs: vector<address>,
     }
 
@@ -39,20 +39,13 @@ module ace::epoch_change {
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
         secrets_to_reshare: vector<address>,
-        new_secret_scheme: Option<u8>,
+        new_secret_schemes: vector<u8>,
     ): address {
-        let caller_addr = address_of(caller);
+        let caller_addr = caller.address_of();
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
         let extend_ref = object_ref.generate_extend_ref();
         let session_addr = object_ref.address_from_constructor_ref();
-
-        let dkg = if (new_secret_scheme.is_some()) {
-            let addr = dkg::new_session(caller, nxt_nodes, nxt_threshold, group::rand_element(new_secret_scheme.destroy_some()));
-            option::some(addr)
-        } else {
-            option::none()
-        };
 
         let session = Session {
             caller: caller_addr,
@@ -62,8 +55,9 @@ module ace::epoch_change {
             nxt_threshold,
             nxt_epoch_duration_micros,
             secrets_to_reshare,
+            new_secret_schemes,
             state_code: STATE__START_DKRS,
-            dkg,
+            dkgs: vector[],
             dkrs: vector[],
         };
 
@@ -75,21 +69,32 @@ module ace::epoch_change {
         session_addr
     }
 
+    #[randomness]
     entry fun touch(session_addr: address) {
-        let session = borrow_global_mut<Session>(session_addr);
+        let session = &mut Session[session_addr];
         if (session.state_code == STATE__START_DKRS) {
             let idx = session.dkrs.length();
             if (idx >= session.secrets_to_reshare.length()) {
-                session.state_code = STATE__AWAIT_SUBSESSION_COMPLETION;
+                session.state_code = STATE__START_DKGS;
                 return;
             };
-            let signer_store = borrow_global<SignerStore>(session_addr);
+            let signer_store = &SignerStore[session_addr];
             let caller = signer_store.extend_ref.generate_signer_for_extending();
             let dkr = dkr::new_session(&caller, session.secrets_to_reshare[idx], session.nxt_nodes, session.nxt_threshold);
             session.dkrs.push_back(dkr);
+        } else if (session.state_code == STATE__START_DKGS) {
+            let idx = session.dkgs.length();
+            if (idx >= session.new_secret_schemes.length()) {
+                session.state_code = STATE__AWAIT_SUBSESSION_COMPLETION;
+                return;
+            };
+            let signer_store = &SignerStore[session_addr];
+            let caller = signer_store.extend_ref.generate_signer_for_extending();
+            let dkg = dkg::new_session(&caller, session.nxt_nodes, session.nxt_threshold, group::rand_element(session.new_secret_schemes[idx]));
+            session.dkgs.push_back(dkg);
         } else if (session.state_code == STATE__AWAIT_SUBSESSION_COMPLETION) {
             let all_dkr_completed = session.dkrs.all(|dkr| dkr::completed(*dkr));
-            let all_dkg_completed = session.dkg.is_none() || dkg::completed(*session.dkg.borrow());
+            let all_dkg_completed = session.dkgs.all(|dkg| dkg::completed(*dkg));
             if (all_dkr_completed && all_dkg_completed) {
                 session.state_code = STATE__DONE;
             }
@@ -97,13 +102,13 @@ module ace::epoch_change {
     }
 
     public fun completed(session_addr: address): bool {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         session.state_code == STATE__DONE
     }
 
     /// Returns (nxt_nodes, nxt_threshold) for external view composition (e.g. network::state_view_v0_bcs).
-    public fun nxt_nodes_and_threshold(session_addr: address): (vector<address>, u64) acquires Session {
-        let session = borrow_global<Session>(session_addr);
+    public fun nxt_nodes_and_threshold(session_addr: address): (vector<address>, u64) {
+        let session = &Session[session_addr];
         (session.nxt_nodes, session.nxt_threshold)
     }
 
@@ -113,12 +118,10 @@ module ace::epoch_change {
     /// - new secrets
     /// - new epoch duration
     public fun results(session_addr: address): (vector<address>, u64, vector<address>, u64) {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state_code == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
         let secrets = session.dkrs;
-        if (session.dkg.is_some()) {
-            secrets.push_back(*session.dkg.borrow());
-        };
+        secrets.append(session.dkgs);
         (session.nxt_nodes, session.nxt_threshold, secrets, session.nxt_epoch_duration_micros)
     }
 }

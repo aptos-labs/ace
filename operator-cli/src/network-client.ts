@@ -16,34 +16,28 @@ import { GasStationTransactionSubmitter } from '@aptos-labs/gas-station-client';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
 import type { TrackedNode } from './config.js';
 
-export type ProposalInput =
-    | { kind: 'CommitteeChange'; nodes: AccountAddress[]; threshold: number }
-    | { kind: 'ResharingIntervalUpdate'; newIntervalSecs: bigint }
-    | { kind: 'NewSecret'; scheme: number }
-    | { kind: 'SecretDeactivation'; originalDkgAddr: AccountAddress };
+export type ProposalInput = {
+    nodes: AccountAddress[];
+    threshold: number;
+    epochDurationMicros: bigint;
+    secretsToRetain: AccountAddress[];
+    newSecrets: number[];
+    description: string;
+    targetEpoch: number;
+};
 
 export function serializeProposal(proposal: ProposalInput): number[] {
     const ser = new Serializer();
-    switch (proposal.kind) {
-        case 'CommitteeChange':
-            ser.serializeU8(0);
-            ser.serializeU32AsUleb128(proposal.nodes.length);
-            for (const node of proposal.nodes) ser.serialize(node);
-            ser.serializeU64(proposal.threshold);
-            break;
-        case 'ResharingIntervalUpdate':
-            ser.serializeU8(1);
-            ser.serializeU64(proposal.newIntervalSecs);
-            break;
-        case 'NewSecret':
-            ser.serializeU8(2);
-            ser.serializeU8(proposal.scheme);
-            break;
-        case 'SecretDeactivation':
-            ser.serializeU8(3);
-            ser.serialize(proposal.originalDkgAddr);
-            break;
-    }
+    ser.serializeU32AsUleb128(proposal.nodes.length);
+    for (const node of proposal.nodes) ser.serialize(node);
+    ser.serializeU64(proposal.threshold);
+    ser.serializeU64(proposal.epochDurationMicros);
+    ser.serializeU32AsUleb128(proposal.secretsToRetain.length);
+    for (const s of proposal.secretsToRetain) ser.serialize(s);
+    ser.serializeU32AsUleb128(proposal.newSecrets.length);
+    for (const s of proposal.newSecrets) ser.serializeU8(s);
+    ser.serializeStr(proposal.description);
+    ser.serializeU64(proposal.targetEpoch);
     return Array.from(ser.toUint8Array());
 }
 

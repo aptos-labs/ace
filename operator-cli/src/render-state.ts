@@ -18,6 +18,14 @@ function addrLabel(addr: string, profiles: Record<string, TrackedNode>, rpcUrl: 
     return match?.alias ? `${addr}  ${D}(${match.alias})${R}` : addr;
 }
 
+export function fmtSecs(s: number): string {
+    if (s < 60)     return `${s}s`;
+    if (s < 3600)   { const m = Math.floor(s / 60),  rs = s % 60;  return rs ? `${m}m ${rs}s` : `${m}m`; }
+    if (s < 86400)  { const h = Math.floor(s / 3600), rm = Math.floor((s % 3600) / 60); return rm ? `${h}h ${rm}m` : `${h}h`; }
+    const d = Math.floor(s / 86400), rh = Math.floor((s % 86400) / 3600);
+    return rh ? `${d}d ${rh}h` : `${d}d`;
+}
+
 function epochTimerStr(state: aceNetwork.State): string {
     if (state.isEpochChanging()) return `${Y}⚠ epoch change in progress${R}`;
     const nowMs = Date.now();
@@ -25,27 +33,12 @@ function epochTimerStr(state: aceNetwork.State): string {
     const durationMs = Number(state.epochDurationMicros / 1000n);
     const remainingMs = durationMs - (nowMs - startMs);
     if (remainingMs <= 0) return `${Y}epoch expired${R}`;
-    const s = Math.round(remainingMs / 1000);
-    if (s < 60)   return `${s}s remaining`;
-    if (s < 3600) return `${Math.round(s / 60)}m remaining`;
-    return `${Math.round(s / 3600)}h remaining`;
+    const s = Math.ceil(remainingMs / 1000);
+    return `${fmtSecs(s)} remaining`;
 }
 
-function proposalDesc(p: aceNetwork.ProposalVariant): string {
-    switch (p.kind) {
-        case 'CommitteeChange':
-            return `CommitteeChange — ${p.nodes.length} nodes, threshold ${p.threshold}`;
-        case 'ResharingIntervalUpdate':
-            return `ResharingIntervalUpdate — ${p.newIntervalSecs}s`;
-        case 'NewSecret':
-            return `NewSecret — scheme ${p.scheme} (${schemeDesc(p.scheme)})`;
-        case 'SecretDeactivation':
-            return `SecretDeactivation — keypair ${shortAddr(p.originalDkgAddr.toStringLong())}`;
-    }
-}
-
-function schemeDesc(scheme: number): string {
-    return scheme === 0 ? 'BF BLS12-381 short-pubkey' : scheme === 1 ? 'BF BLS12-381 short-identity' : 'unknown';
+function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {
+    return p.description || `${p.nodes.length} nodes, threshold ${p.threshold}`;
 }
 
 /**
@@ -76,7 +69,7 @@ export function renderNetworkState(
     if (state.secrets.length > 0) {
         lines.push(`${B}Keypairs${R}  (${state.secrets.length})`);
         for (const s of state.secrets) {
-            lines.push(`  ${s.toStringLong()}`);
+            lines.push(`  ${s.currentSession.toStringLong()}  ${D}${s.schemeName()} — keypair id: ${s.keypairId.toStringLong()}${R}`);
         }
         lines.push('');
     }
@@ -91,11 +84,9 @@ export function renderNetworkState(
             const sess = pv.votingSession.toStringLong();
             lines.push('');
             lines.push(`  Session  : ${C}${sess}${R}`);
-            lines.push(`  Type     : ${proposalDesc(pv.proposal)}`);
-            if (pv.proposal.kind === 'CommitteeChange') {
-                for (const n of pv.proposal.nodes) {
-                    lines.push(`    ${addrLabel(n.toStringLong(), profiles, rpcUrl, aceAddr)}`);
-                }
+            lines.push(`  Proposal : ${proposalDesc(pv.proposal)}`);
+            for (const n of pv.proposal.nodes) {
+                lines.push(`    ${addrLabel(n.toStringLong(), profiles, rpcUrl, aceAddr)}`);
             }
             const passed = pv.votingPassed ? `${G}yes${R}` : 'no';
             lines.push(`  Votes    : ${pv.voteCount()}/${state.curThreshold}  passed: ${passed}`);

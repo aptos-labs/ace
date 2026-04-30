@@ -7,12 +7,18 @@ import { input } from '@inquirer/prompts';
 import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { formatError } from '../format-error.js';
+import { fmtSecs } from '../render-state.js';
 
 const R = '\x1b[0m', D = '\x1b[2m', B = '\x1b[1m';
 const G = '\x1b[32m', E = '\x1b[31m', C = '\x1b[36m', Y = '\x1b[33m';
+const ADD = '\x1b[32m+\x1b[0m', REM = '\x1b[31m−\x1b[0m', EQ = ' ';
 
 function shortAddr(addr: string): string {
     return `${addr.slice(0, 10)}...${addr.slice(-6)}`;
+}
+
+function fmtMicros(us: bigint): string {
+    return fmtSecs(Number(us / 1_000_000n));
 }
 
 function fmtCountdown(state: aceNetwork.State): string {
@@ -26,30 +32,58 @@ function fmtCountdown(state: aceNetwork.State): string {
     return `${hh}:${mm}:${ss} until epoch rotates (proposal becomes moot)`;
 }
 
-function proposalDetail(p: aceNetwork.ProposalVariant): string[] {
-    switch (p.kind) {
-        case 'CommitteeChange':
-            return [
-                `Type      : CommitteeChange`,
-                `Nodes     : ${p.nodes.map(n => shortAddr(n.toStringLong())).join(', ')}`,
-                `Threshold : ${p.threshold}`,
-            ];
-        case 'ResharingIntervalUpdate':
-            return [
-                `Type      : ResharingIntervalUpdate`,
-                `Interval  : ${p.newIntervalSecs}s`,
-            ];
-        case 'NewSecret':
-            return [
-                `Type      : NewSecret`,
-                `Scheme    : ${p.scheme}`,
-            ];
-        case 'SecretDeactivation':
-            return [
-                `Type      : SecretDeactivation`,
-                `Keypair   : ${shortAddr(p.originalDkgAddr.toStringLong())}`,
-            ];
+function proposalDiff(p: aceNetwork.ProposedEpochConfig, state: aceNetwork.State): string[] {
+    const lines: string[] = [];
+
+    // Description
+    lines.push(`  Description : ${p.description ? `${B}${p.description}${R}` : `${D}(none)${R}`}`);
+    lines.push('');
+
+    // Committee diff
+    const curSet = new Set(state.curNodes.map(n => n.toStringLong()));
+    const nxtSet = new Set(p.nodes.map(n => n.toStringLong()));
+    const thresholdSame = p.threshold === state.curThreshold;
+    lines.push(`  Committee   : ${p.nodes.length} nodes, threshold ${p.threshold}` +
+        (thresholdSame ? '' : `  ${Y}(was ${state.curThreshold})${R}`));
+
+    for (const n of state.curNodes) {
+        const addr = n.toStringLong();
+        const kept = nxtSet.has(addr);
+        lines.push(`    ${kept ? EQ : REM} ${shortAddr(addr)}${kept ? '' : `  ${D}(removing)${R}`}`);
     }
+    for (const n of p.nodes) {
+        const addr = n.toStringLong();
+        if (!curSet.has(addr)) {
+            lines.push(`    ${ADD} ${shortAddr(addr)}  ${G}(new)${R}`);
+        }
+    }
+    lines.push('');
+
+    // Epoch duration diff
+    const durSame = p.epochDurationMicros === state.epochDurationMicros;
+    if (!durSame) {
+        lines.push(`  Duration    : ${fmtMicros(p.epochDurationMicros)}  ${Y}(was ${fmtMicros(state.epochDurationMicros)})${R}`);
+        lines.push('');
+    }
+
+    // Secrets diff
+    const retainSet = new Set(p.secretsToRetain.map(a => a.toStringLong()));
+    const droppedSecrets = state.secrets.filter(s => !retainSet.has(s.currentSession.toStringLong()));
+    const hasSecretChanges = droppedSecrets.length > 0 || p.newSecrets.length > 0;
+
+    if (hasSecretChanges) {
+        lines.push('  Secrets');
+        for (const s of state.secrets) {
+            const kept = retainSet.has(s.currentSession.toStringLong());
+            lines.push(`    ${kept ? EQ : REM} ${shortAddr(s.currentSession.toStringLong())}  ${D}${s.schemeName()} — keypair id: ${shortAddr(s.keypairId.toStringLong())}${R}${kept ? '' : `  ${E}(deactivating)${R}`}`);
+        }
+        for (const scheme of p.newSecrets) {
+            lines.push(`    ${ADD} new DKG  ${G}${aceNetwork.schemeName(scheme)}${R}`);
+        }
+        lines.push('');
+    }
+
+    return lines;
 }
 
 function render(
@@ -65,7 +99,7 @@ function render(
 
     const isProposer = proposalIdx < state.curNodes.length
         ? state.curNodes[proposalIdx]!.toStringLong() === myAddr
-        : false; // admin slot
+        : false;
     const proposerLabel = proposalIdx < state.curNodes.length
         ? state.curNodes[proposalIdx]!.toStringLong()
         : 'admin';
@@ -73,17 +107,16 @@ function render(
     lines.push(`${B}  Proposal Review${R}`);
     lines.push('');
 
-    // My identity
     const myRole = state.curNodes.some(n => n.toStringLong() === myAddr)
         ? `${G}committee member${R}`
         : `${D}observer${R}`;
     lines.push(`  You       : ${myAddr}  ${D}(${myRole})${R}`);
     lines.push('');
 
-    // Proposal details
-    for (const line of proposalDetail(pv.proposal)) {
-        lines.push(`  ${line}`);
-    }
+    // Proposed changes (diff view)
+    lines.push(`  ${B}Proposed changes${R}  ${D}(epoch ${pv.proposal.targetEpoch} → ${pv.proposal.targetEpoch + 1})${R}`);
+    lines.push(...proposalDiff(pv.proposal, state));
+
     lines.push(`  Proposer  : ${proposerLabel}${isProposer ? `  ${C}(you)${R}` : ''}`);
     lines.push('');
 
@@ -103,16 +136,13 @@ function render(
     }
     lines.push('');
 
-    // Countdown
     lines.push(`  ${fmtCountdown(state)}`);
     lines.push('');
 
-    // Status / last action
     if (status) lines.push(`  ${status}`);
     if (lastAction) lines.push(`  ${lastAction}`);
     lines.push('');
 
-    // Action hint
     if (canVote) {
         lines.push(`  ${B}[V]${R} Vote   ${D}[Q] Quit${R}`);
     } else {
@@ -138,9 +168,8 @@ export async function reviewProposalCommand(opts: { session?: string; profile?: 
     const client = NetworkClient.fromNode(node);
     const myAddr = node.accountAddr;
 
-    // ── Alt-screen setup ──────────────────────────────────────────────────────
-    process.stdout.write('\x1b[?1049h'); // enter alt screen
-    process.stdout.write('\x1b[?25l');   // hide cursor
+    process.stdout.write('\x1b[?1049h');
+    process.stdout.write('\x1b[?25l');
 
     let running = true;
     let voting = false;
@@ -158,7 +187,6 @@ export async function reviewProposalCommand(opts: { session?: string; profile?: 
     process.once('SIGINT',  () => { restore(); process.exit(0); });
     process.once('SIGTERM', () => { restore(); process.exit(0); });
 
-    // ── State ─────────────────────────────────────────────────────────────────
     let state: aceNetwork.State | null = null;
     let proposalIdx = -1;
     let pv: aceNetwork.ProposalView | null = null;
@@ -213,9 +241,9 @@ export async function reviewProposalCommand(opts: { session?: string; profile?: 
         if (pv.votingPassed) return false;
         if (state.isEpochChanging()) return false;
         const myIdx = state.curNodes.findIndex(n => n.toStringLong() === myAddr);
-        if (myIdx === -1) return false;          // not a committee member
-        if (myIdx === proposalIdx) return false; // I am the proposer (already auto-voted)
-        if (pv.votes[myIdx]) return false;       // already voted
+        if (myIdx === -1) return false;
+        if (myIdx === proposalIdx) return false;
+        if (pv.votes[myIdx]) return false;
         return true;
     };
 
@@ -231,12 +259,10 @@ export async function reviewProposalCommand(opts: { session?: string; profile?: 
         return '';
     };
 
-    // ── Main loop ─────────────────────────────────────────────────────────────
     await fetchState();
 
     try {
         while (running) {
-            // Refresh state every 3s
             if (Date.now() - lastFetch >= 3000) await fetchState();
 
             const content = (state && pv)

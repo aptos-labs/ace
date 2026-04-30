@@ -8,11 +8,11 @@ module ace::network {
     use ace::group;
     use ace::epoch_change;
     use std::bcs;
-    use std::signer::address_of;
     use aptos_framework::object::{Self, ExtendRef};
     use aptos_std::bcs_stream;
     use std::vector::range;
     use ace::voting;
+    use std::string::String;
 
     const MIN_RESHARING_INTERVAL_SECS: u64 = 30;
 
@@ -29,13 +29,13 @@ module ace::network {
     const E_PROPOSAL_DESERIALIZATION_FAILED: u64 = 13;
     const E_INVALID_SECRET_SHARING_PARAMETERS: u64 = 14;
     const E_UNSUPPORTED_SECRET_SCHEME: u64 = 15;
-    const E_NOT_AN_ACTIVE_SECRET: u64 = 16;
+    const E_CAN_ONLY_RETAIN_ACTIVE_SECRET: u64 = 16;
     const E_INVALID_RESHARING_INTERVAL: u64 = 17;
     const E_PROPOSAL_IS_NOT_CURRENT: u64 = 18;
     const E_YOU_ALREADY_PROPOSED_IN_THIS_EPOCH: u64 = 19;
 
     struct ProposalState has store, drop {
-        proposal: Proposal,
+        proposal: ProposedEpochConfig,
         voting_session: address,
     }
 
@@ -60,20 +60,33 @@ module ace::network {
         extend_ref: ExtendRef,
     }
 
-    enum Proposal has store, drop, copy {
-        CommitteeChange { nodes: vector<address>, threshold: u64 },
-        ResharingIntervalUpdate { new_interval_secs: u64 },
-        NewSecret { scheme: u8 },
-        SecretDeactivation { original_dkg_addr: address },
+    struct ProposedEpochConfig has store, drop, copy {
+        nodes: vector<address>,
+        threshold: u64,
+        epoch_duration_micros: u64,
+        /// can only be a subset of the currently active secret set.
+        secrets_to_retain: vector<address>,
+        /// Each results in a DKG in epoch change.
+        new_secrets: vector<u8>,
+        /// limit: 1024 bytes
+        description: String,
+        /// Must match state.epoch at submission time; prevents stale proposals from firing.
+        target_epoch: u64,
+    }
+
+    struct SecretInfo has drop {
+        current_session: address,
+        keypair_id: address,
+        scheme: u8,
     }
 
     #[view]
     public fun state_bcs(): vector<u8> {
-        bcs::to_bytes(borrow_global<State>(@ace))
+        bcs::to_bytes(&State[@ace])
     }
 
     struct ProposalView has drop {
-        proposal: Proposal,
+        proposal: ProposedEpochConfig,
         voting_session: address,
         /// votes[i] == true iff cur_nodes[i] has voted for this proposal.
         votes: vector<bool>,
@@ -94,7 +107,7 @@ module ace::network {
         epoch_duration_micros: u64,
         cur_nodes: vector<address>,
         cur_threshold: u64,
-        secrets: vector<address>,
+        secrets: vector<SecretInfo>,
         /// Length == cur_nodes.length() + 1; index i is node i's proposal, last index is admin's.
         proposals: vector<Option<ProposalView>>,
         epoch_change_info: Option<EpochChangeView>,
@@ -104,8 +117,8 @@ module ace::network {
     // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
     // Versioned so new fields can be added in StateViewV1, V2, etc.
     #[view]
-    public fun state_view_v0_bcs(): vector<u8> acquires State {
-        let state = borrow_global<State>(@ace);
+    public fun state_view_v0_bcs(): vector<u8> {
+        let state = &State[@ace];
 
         let proposals = vector[];
         let i = 0;
@@ -119,8 +132,8 @@ module ace::network {
                 let num_votes = 0u64;
                 let j = 0;
                 while (j < votes.length()) {
-                    if (votes[j]) { num_votes = num_votes + 1; };
-                    j = j + 1;
+                    if (votes[j]) { num_votes += 1; };
+                    j += 1;
                 };
                 proposals.push_back(option::some(ProposalView {
                     proposal: ps.proposal,
@@ -129,7 +142,7 @@ module ace::network {
                     voting_passed: num_votes >= threshold,
                 }));
             };
-            i = i + 1;
+            i += 1;
         };
 
         let epoch_change_info = if (state.epoch_change_info.is_some()) {
@@ -145,20 +158,37 @@ module ace::network {
             option::none()
         };
 
+        let secrets = {
+            let n = state.secrets.length();
+            let i = 0;
+            let result = vector[];
+            while (i < n) {
+                let addr = state.secrets[i];
+                let (keypair_id, scheme) = if (dkg::is_session(addr)) {
+                    dkg::keypair_id_and_scheme(addr)
+                } else {
+                    dkr::keypair_id_and_scheme(addr)
+                };
+                result.push_back(SecretInfo { current_session: addr, keypair_id, scheme });
+                i += 1;
+            };
+            result
+        };
+
         bcs::to_bytes(&StateViewV0 {
             epoch: state.epoch,
             epoch_start_time_micros: state.epoch_start_time_micros,
             epoch_duration_micros: state.epoch_duration_micros,
             cur_nodes: state.cur_nodes,
             cur_threshold: state.cur_threshold,
-            secrets: state.secrets,
+            secrets,
             proposals,
             epoch_change_info,
         })
     }
 
     entry fun start_initial_epoch(ace: &signer, nodes: vector<address>, threshold: u64, resharing_interval_secs: u64) {
-        assert!(@ace == address_of(ace), error::invalid_argument(E_ONLY_ADMIN_CAN_DO_THIS));
+        assert!(@ace == ace.address_of(), error::invalid_argument(E_ONLY_ADMIN_CAN_DO_THIS));
         let n = nodes.length();
         let t = threshold;
         assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
@@ -198,7 +228,7 @@ module ace::network {
     #[randomness]
     /// Node should call this only after the current epoch is older than the epoch duration.
     entry fun touch() {
-        let state = borrow_global_mut<State>(@ace);
+        let state = &mut State[@ace];
         let now_micros = timestamp::now_microseconds();
         if (state.epoch_change_info.is_some()) {
             let session = state.epoch_change_info.borrow().session_addr;
@@ -236,41 +266,19 @@ module ace::network {
                 i += 1;
             };
             if (approved_proposal_found) {
-                // Calculate epoch change params based on the proposed change.
-                let (
-                    new_nodes,
-                    new_threshold,
-                    new_epoch_duration_micros,
-                    new_secret_scheme,
-                    secrets_to_reshare
-                ) = match (&state.proposals[approved_proposal_idx].borrow().proposal) {
-                    Proposal::CommitteeChange { nodes, threshold } => {
-                        (*nodes, *threshold, state.epoch_duration_micros, option::none(), state.secrets)
-                    }
-                    Proposal::ResharingIntervalUpdate { new_interval_secs } => {
-                        (state.cur_nodes, state.cur_threshold, *new_interval_secs * 1_000_000, option::none(), state.secrets)
-                    }
-                    Proposal::NewSecret { scheme } => {
-                        (state.cur_nodes, state.cur_threshold, state.epoch_duration_micros, option::some(*scheme), state.secrets)
-                    }
-                    Proposal::SecretDeactivation { original_dkg_addr } => {
-                        let secrets_to_reshare = state.secrets.filter(|secret_addr| original_dkg_session(*secret_addr) != *original_dkg_addr);
-                        (state.cur_nodes, state.cur_threshold, state.epoch_duration_micros, option::none(), secrets_to_reshare)
-                    }
-                };
-
+                let proposed_epoch_config = state.proposals[approved_proposal_idx].borrow().proposal;                 
                 // Create a new epoch change session.
-                let signer_store = borrow_global<SignerStore>(@ace);
+                let signer_store = &SignerStore[@ace];
                 let service_account = signer_store.extend_ref.generate_signer_for_extending();
                 let session = epoch_change::new_session(
                     &service_account,
                     state.cur_nodes,
                     state.cur_threshold,
-                    new_nodes,
-                    new_threshold,
-                    new_epoch_duration_micros,
-                    secrets_to_reshare,
-                    new_secret_scheme,
+                    proposed_epoch_config.nodes,
+                    proposed_epoch_config.threshold,
+                    proposed_epoch_config.epoch_duration_micros,
+                    proposed_epoch_config.secrets_to_retain,
+                    proposed_epoch_config.new_secrets,
                 );
                 state.epoch_change_info = option::some(EpochChangeInfo {
                     triggering_proposal_idx: option::some(approved_proposal_idx),
@@ -279,7 +287,7 @@ module ace::network {
 
 
             } else if (now_micros - state.epoch_start_time_micros >= state.epoch_duration_micros) {
-                let signer_store = borrow_global<SignerStore>(@ace);
+                let signer_store = &SignerStore[@ace];
                 let service_account = signer_store.extend_ref.generate_signer_for_extending();
                 let epoch_change_session = epoch_change::new_session(
                     &service_account,
@@ -289,7 +297,7 @@ module ace::network {
                     state.cur_threshold, // nxt_threshold
                     state.epoch_duration_micros, // nxt_epoch_duration_micros
                     state.secrets, // secrets_to_reshare
-                    option::none(), // new_secret_scheme
+                    vector[], // new_secret_scheme
                 );
                 state.epoch_change_info = option::some(EpochChangeInfo {
                     triggering_proposal_idx: option::none(),
@@ -301,15 +309,15 @@ module ace::network {
 
     #[randomness]
     entry fun new_proposal(proposer: &signer, proposal_bcs: vector<u8>) {
-        let state = borrow_global_mut<State>(@ace);
-        let proposer_addr = address_of(proposer);
+        let state = &mut State[@ace];
+        let proposer_addr = proposer.address_of();
         let (proposed_by_node, node_idx) = state.cur_nodes.find(|node| *node == proposer_addr);
         assert!(@ace == proposer_addr || proposed_by_node, error::permission_denied(E_ONLY_ADMIN_OR_CURRENT_NODE_CAN_PROPOSE));
         assert!(state.epoch_change_info.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
         let proposal = proposal_from_bcs(proposal_bcs);
         validate_proposal(state, &proposal);
 
-        let signer_store = borrow_global<SignerStore>(@ace);
+        let signer_store = &SignerStore[@ace];
         let service_account = signer_store.extend_ref.generate_signer_for_extending();
         let voting_session = voting::new_session(&service_account, state.cur_nodes, state.cur_threshold);
         let proposal_state = ProposalState {
@@ -326,48 +334,44 @@ module ace::network {
         }
     }
 
-    fun proposal_from_bcs(proposal_bcs: vector<u8>): Proposal {
+    fun proposal_from_bcs(proposal_bcs: vector<u8>): ProposedEpochConfig {
         let stream = bcs_stream::new(proposal_bcs);
-        let scheme = bcs_stream::deserialize_u8(&mut stream);
-        let proposal = if (scheme == 0) {
-            let nodes = bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_address(stream));
-            let threshold = bcs_stream::deserialize_u64(&mut stream);
-            Proposal::CommitteeChange { nodes, threshold }
-        } else if (scheme == 1) {
-            let new_interval_secs = bcs_stream::deserialize_u64(&mut stream);
-            Proposal::ResharingIntervalUpdate { new_interval_secs }
-        } else if (scheme == 2) {
-            let scheme = bcs_stream::deserialize_u8(&mut stream);
-            Proposal::NewSecret { scheme }
-        } else if (scheme == 3) {
-            let original_dkg_addr = bcs_stream::deserialize_address(&mut stream);
-            Proposal::SecretDeactivation { original_dkg_addr }
-        } else {
-            abort error::invalid_argument(E_UNSUPPORTED_PROPOSAL_SCHEME)
+        let proposal = ProposedEpochConfig {
+            nodes: bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_address(stream)),
+            threshold: bcs_stream::deserialize_u64(&mut stream),
+            epoch_duration_micros: bcs_stream::deserialize_u64(&mut stream),
+            secrets_to_retain: bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_address(stream)),
+            new_secrets: bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_u8(stream)),
+            description: bcs_stream::deserialize_string(&mut stream),
+            target_epoch: bcs_stream::deserialize_u64(&mut stream),
         };
         assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_PROPOSAL_DESERIALIZATION_FAILED));
         proposal
     }
 
-    fun validate_proposal(state: &State, proposal: &Proposal) {
-        match (proposal) {
-            Proposal::CommitteeChange { nodes, threshold } => {
-                let n = nodes.length();
-                let t = *threshold;
-                assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
-                nodes.for_each_ref(|node| {
-                    assert!(worker_config::has_pke_enc_key(*node), error::invalid_argument(E_INVALID_NODE));
-                });
-            }
-            Proposal::ResharingIntervalUpdate { new_interval_secs } => {
-                assert!(*new_interval_secs >= MIN_RESHARING_INTERVAL_SECS, error::invalid_argument(E_INVALID_RESHARING_INTERVAL));
-            }
-            Proposal::NewSecret { scheme } => {
-                assert!(group::scheme_supported(*scheme), error::invalid_argument(E_UNSUPPORTED_SECRET_SCHEME));
-            }
-            Proposal::SecretDeactivation { original_dkg_addr } => {
-                assert!(state.secrets.any(|secret_addr| original_dkg_session(*secret_addr) == *original_dkg_addr), error::invalid_argument(E_NOT_AN_ACTIVE_SECRET));
-            }
-        }
+    fun validate_proposal(state: &State, proposal: &ProposedEpochConfig) {
+        // Validate target epoch — reject stale proposals.
+        assert!(proposal.target_epoch == state.epoch, error::invalid_argument(E_PROPOSAL_IS_NOT_CURRENT));
+
+        // Validate nodes and threshold.
+        let n = proposal.nodes.length();
+        let t = proposal.threshold;
+        assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
+        proposal.nodes.for_each_ref(|node| {
+            assert!(worker_config::has_pke_enc_key(*node), error::invalid_argument(E_INVALID_NODE));
+        });
+
+        // Validate epoch duration.
+        assert!(proposal.epoch_duration_micros >= MIN_RESHARING_INTERVAL_SECS * 1_000_000, error::invalid_argument(E_INVALID_RESHARING_INTERVAL));
+
+        // Validate new secrets.
+        proposal.new_secrets.for_each_ref(|scheme| {
+            assert!(group::scheme_supported(*scheme), error::invalid_argument(E_UNSUPPORTED_SECRET_SCHEME));
+        });
+
+        // Validate secrets.
+        proposal.secrets_to_retain.for_each_ref(|secret_addr| {
+            assert!(state.secrets.contains(secret_addr), error::invalid_argument(E_CAN_ONLY_RETAIN_ACTIVE_SECRET));
+        });
     }
 }

@@ -196,6 +196,17 @@ module ace::dkg {
         (session.vss_sessions, session.done_flags)
     }
 
+    public fun is_session(addr: address): bool {
+        exists<Session>(addr)
+    }
+
+    /// Returns (keypair_id, scheme) for StateViewV0 secret annotations.
+    /// For a DKG session, the keypair_id IS the session address (it is the origin).
+    public fun keypair_id_and_scheme(addr: address): (address, u8) {
+        let s = &Session[addr];
+        (addr, group::element_scheme(&s.public_base_element))
+    }
+
     #[view]
     public fun get_session_bcs(session_addr: address): vector<u8> acquires Session {
         bcs::to_bytes(borrow_global<Session>(session_addr))

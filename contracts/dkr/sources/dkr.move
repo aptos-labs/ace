@@ -190,6 +190,13 @@ module ace::dkr {
         session.share_pks
     }
 
+    /// Returns (keypair_id, scheme) for StateViewV0 secret annotations.
+    /// keypair_id is the original DKG session that first created this secret lineage.
+    public fun keypair_id_and_scheme(addr: address): (address, u8) {
+        let s = &Session[addr];
+        (s.original_session, group::element_scheme(&s.public_base_element))
+    }
+
     /// Compute Lagrange interpolation coefficients at x=0 for the given evaluation points.
     /// lagrange[i] = Π_{j ≠ i} (-evals[j]) / (evals[i] - evals[j])
     fun lagrange_coeffs_at_zero(scheme: u8, evals: &vector<group::Scalar>): vector<group::Scalar> {

@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
 /// Must match `ace::epoch_change::Session.state_code` when the session is finished.
-const STATE_DONE: u8 = 2;
+const STATE_DONE: u8 = 3;
 
 #[derive(Debug, Clone)]
 struct EpochChangeSession {

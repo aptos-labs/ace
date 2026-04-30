@@ -68,13 +68,13 @@ program
 // ── propose ───────────────────────────────────────────────────────────────────
 
 program
-    .command('new-proposal')
-    .description('Create a new on-chain proposal')
+    .command('new-proposal [file]')
+    .description('Create a new on-chain proposal (opens $EDITOR; pass a .toml file to skip editor)')
     .option('-p, --profile <alias>', 'Profile alias to use')
     .option('-a, --account <addr>', 'Account address of the profile to use')
-    .action(async (opts: { profile?: string; account?: string }) => {
+    .action(async (file: string | undefined, opts: { profile?: string; account?: string }) => {
         try {
-            await proposeCommand(opts);
+            await proposeCommand({ ...opts, file });
         } catch (e) {
             exitOnError(e);
         }

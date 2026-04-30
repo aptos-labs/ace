@@ -117,7 +117,7 @@ async function main() {
         }
         if (!state1 || state1.epoch !== 1) throw 'Epoch 0→1 did not complete in time.';
 
-        const dkgSessionAddr = state1.secrets[0]!;
+        const dkgSessionAddr = state1.secrets[0]!.currentSession;
         log(`Epoch 1 reached. DKG session: ${dkgSessionAddr.toStringLong()}`);
         const dkgSession = (await getDKGSession(adminAccount.accountAddress, dkgSessionAddr))
             .unwrapOrThrow('Failed to read DKG session.');
@@ -186,14 +186,14 @@ async function main() {
             throw 'Expected epochChangeInfo to be None after epoch advance';
 
         // secrets[0]: reshared original secret (two DKR hops: 0→1 then 2→3). PK must be preserved.
-        const resharedAddr = finalState.secrets[0]!;
+        const resharedAddr = finalState.secrets[0]!.currentSession;
         const resharedSession = (await getDKRSession(adminAccount.accountAddress, resharedAddr))
             .unwrapOrThrow('Failed to read reshared DKR session.');
         if (resharedSession.secretlyScaledElement.toHex() !== baselinePk.toHex())
             throw `PK mismatch on reshared secret.\n  baseline: ${baselinePk.toHex()}\n  got:      ${resharedSession.secretlyScaledElement.toHex()}`;
 
         // secrets[1]: freshly created DKG secret. PK must be present.
-        const newDkgAddr = finalState.secrets[1]!;
+        const newDkgAddr = finalState.secrets[1]!.currentSession;
         const newDkgSession = (await getDKGSession(adminAccount.accountAddress, newDkgAddr))
             .unwrapOrThrow('Failed to read new DKG session.');
         if (!newDkgSession.resultPk)

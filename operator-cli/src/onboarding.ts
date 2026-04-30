@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
 import { selectImage } from './docker-hub.js';
-import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides } from './config.js';
+import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides, type LocalConfig } from './config.js';
 
 const CHAIN_DEFAULTS = {
     aptosMainnet:      'https://api.mainnet.aptoslabs.com/v1',
@@ -72,6 +72,38 @@ export function dockerRunCmd(
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc),
     ].join(' \\\n');
+}
+
+export function localBuildCmd(repoPath: string): string {
+    return `cargo build --release -p network-node --manifest-path ${repoPath}/Cargo.toml`;
+}
+
+export function localRunCmd(
+    repoPath: string, port: string,
+    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): string {
+    return [
+        `${repoPath}/target/release/network-node run`,
+        `  --ace-deployment-api=${rpcUrl}`,
+        `  --ace-deployment-addr=${aceAddr}`,
+        ...(rpcApiKey     ? [`  --ace-deployment-apikey=${rpcApiKey}`]     : []),
+        ...(gasStationKey ? [`  --ace-deployment-gaskey=${gasStationKey}`] : []),
+        `  --account-addr=${node.accountAddr}`,
+        `  --account-sk=${node.accountSk}`,
+        `  --pke-dk=${node.pkeDk}`,
+        `  --port=${port}`,
+        ...chainRpcArgs(chainRpc).map(a => `  ${a}`),
+    ].join(' \\\n');
+}
+
+function defaultRepoPath(): string | undefined {
+    try {
+        const out = execSync('git rev-parse --show-toplevel 2>/dev/null', { encoding: 'utf8' }).trim();
+        if (out && out.includes('ace')) return out;
+    } catch { /* ignore */ }
+    return undefined;
 }
 
 function nodeRunArgs(
@@ -189,16 +221,17 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
 
     const net: NetworkDetails = await promptNetworkDetails();
 
-    const image = await selectImage() ?? 'aptoslabs/ace-node:latest';
-    console.log();
-
-    const platform = await select<'gcp' | 'docker'>({
+    const platform = await select<'gcp' | 'docker' | 'local'>({
         message: 'Where will you run this node?',
         choices: [
             { name: 'Google Cloud Platform (Cloud Run)', value: 'gcp' },
             { name: 'My own machine (Docker)',            value: 'docker' },
+            { name: 'Local build (from source, requires repo)', value: 'local' },
         ],
     });
+
+    const image = platform !== 'local' ? (await selectImage() ?? 'aptoslabs/ace-node:latest') : undefined;
+    if (platform !== 'local') console.log();
 
     let chainRpc: ChainRpcOverrides = {};
     if (await confirm({ message: 'Configure per-chain RPC overrides?', default: false })) {
@@ -211,6 +244,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     let nodeRpcUrl:  string | undefined;
     let gcpCfg:      TrackedNode['gcp'];
     let dockerCfg:   TrackedNode['docker'];
+    let localCfg:    LocalConfig | undefined;
 
     if (platform === 'gcp') {
         const project     = await input({ message: 'GCP project ID', default: defaultGcpProject() });
@@ -231,10 +265,10 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         gcpCfg = { project, region, serviceName };
 
         console.log('\nRun this command to deploy your node:\n');
-        console.log(gcpDeployCmd(serviceName, image, project, region, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
+        console.log(gcpDeployCmd(serviceName, image!, project, region, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
         console.log();
         endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
-    } else {
+    } else if (platform === 'docker') {
         const usedPorts = new Set(
             Object.values(existingConfig.nodes).map(n => n.docker?.port).filter(Boolean),
         );
@@ -260,12 +294,34 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         dockerCfg = { containerName, port };
 
         console.log('\nRun this command to start your node:\n');
-        console.log(dockerRunCmd(containerName, image, port, profile, nodeRpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
+        console.log(dockerRunCmd(containerName, image!, port, profile, nodeRpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
         console.log();
 
         const isLocalnet = /localhost|127\.0\.0\.1/.test(net.rpcUrl);
         const defaultEndpoint = isLocalnet ? `http://localhost:${port}` : undefined;
         endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
+    } else {
+        // local build
+        const usedPorts = new Set(
+            Object.values(existingConfig.nodes).map(n => n.local?.port ?? n.docker?.port).filter(Boolean),
+        );
+        let defaultPort = 19000;
+        while (usedPorts.has(String(defaultPort))) defaultPort++;
+
+        const repoPath = (await input({
+            message: 'Path to ACE repo',
+            default: defaultRepoPath(),
+        })).trim();
+        const port = await input({ message: 'Port', default: String(defaultPort) });
+        localCfg = { repoPath, port };
+
+        console.log('\nBuild the node binary:\n');
+        console.log(localBuildCmd(repoPath));
+        console.log('\nThen run it:\n');
+        console.log(localRunCmd(repoPath, port, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
+        console.log();
+
+        endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
     }
 
     const alias = (await input({ message: 'Node alias (Enter to skip)', default: '' })).trim() || undefined;
@@ -293,6 +349,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         platform,
         gcp:          gcpCfg,
         docker:       dockerCfg,
+        local:        localCfg,
         gasStationKey: net.gasStationKey,
         chainRpc: Object.keys(chainRpc).length > 0 ? chainRpc : undefined,
     };

@@ -88,7 +88,7 @@ async function main() {
             throw `DKG did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 
-        const dkgSessionAddr = networkState.secrets[0]!;
+        const dkgSessionAddr = networkState.secrets[0]!.currentSession;
         const dkgSession = (await getDKGSession(adminAccount.accountAddress, dkgSessionAddr))
             .unwrapOrThrow('Failed to read DKG session.');
         const baselinePk = dkgSession.resultPk;
@@ -125,7 +125,7 @@ async function main() {
             throw `Epoch change did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 
-        const dkrSessionAddr = finalState.secrets[0]!;
+        const dkrSessionAddr = finalState.secrets[0]!.currentSession;
         const dkrSession = (await getDKRSession(adminAccount.accountAddress, dkrSessionAddr))
             .unwrapOrThrow('Failed to read DKR session.');
 

@@ -36,6 +36,8 @@ export interface DockerConfig {
 export interface LocalConfig {
     repoPath: string;
     port: string;
+    pid?: number;      // PID of the background process started by the CLI
+    logFile?: string;  // Absolute path to the timestamped log file
 }
 
 /** A node you control or watch. Network connection info is embedded directly. */

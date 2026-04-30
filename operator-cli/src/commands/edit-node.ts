@@ -5,7 +5,9 @@ import { input, confirm } from '@inquirer/prompts';
 import { resolveProfile } from '../resolve-profile.js';
 import { loadConfig, saveConfig, type TrackedNode } from '../config.js';
 import { selectImage } from '../docker-hub.js';
-import { gcpDeployCmd, dockerRunCmd, localRunCmd, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
+import * as path from 'path';
+import { gcpDeployCmd, dockerRunCmd, localRunCmd, localRunArgs, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
+import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 
 const G = '\x1b[32m', E = '\x1b[31m', D = '\x1b[2m', R = '\x1b[0m';
@@ -78,12 +80,24 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
             nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
     } else if (node.platform === 'local' && node.local) {
-        console.log('Run the updated node:\n');
-        console.log(localRunCmd(
-            node.local.repoPath, node.local.port,
-            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-        ));
-        return; // local processes aren't introspectable; no watch loop
+        if (node.local.pid && isLocalNodeAlive(node.local.pid)) {
+            console.log(`Stopping old process (pid=${node.local.pid})...`);
+            killLocalNode(node.local.pid);
+            // brief wait for the port to be released
+            await new Promise(r => setTimeout(r, 500));
+        }
+        const binaryPath = path.join(node.local.repoPath, 'target', 'release', 'network-node');
+        const runArgs = localRunArgs(
+            node.local.port, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+        );
+        const logFile = node.local.logFile ?? updatedNode.local?.logFile ?? '';
+        const pid = spawnLocalNode(binaryPath, runArgs, logFile);
+        updatedNode.local = { ...node.local, pid };
+        console.log(`Node restarted in background  pid=${pid}  log=${logFile}`);
+        const config = loadConfig();
+        config.nodes[nodeKey] = updatedNode;
+        saveConfig(config);
+        return;
     } else {
         return; // no deployment platform, nothing to watch
     }

@@ -10,6 +10,7 @@ import { proposeCommand } from './commands/propose.js';
 import { reviewProposalCommand } from './commands/review-proposal.js';
 import { editNodeCommand } from './commands/edit-node.js';
 import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from './commands/profile.js';
+import { logCommand } from './commands/log.js';
 
 const program = new Command();
 program.name('ace').description('ACE network operator CLI').version('0.1.0');
@@ -106,6 +107,24 @@ program
     .action(async (opts: { profile?: string; account?: string }) => {
         try {
             await editNodeCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+// ── log ───────────────────────────────────────────────────────────────────────
+
+program
+    .command('log')
+    .description('Stream or query node logs (docker / gcp / local)')
+    .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .option('--since <time>', 'Show logs after this time (e.g. 30m, 1h, 2024-01-15T10:00:00Z, 1704067200)')
+    .option('--until <time>', 'Show logs before this time (same formats as --since)')
+    .option('-w, --watch', 'Stream new log lines (respects --until if set)')
+    .action(async (opts: { profile?: string; account?: string; since?: string; until?: string; watch?: boolean }) => {
+        try {
+            await logCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

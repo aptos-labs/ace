@@ -3,10 +3,12 @@
 
 import { input, select, confirm } from '@inquirer/prompts';
 import { execSync } from 'child_process';
+import * as path from 'path';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
 import { selectImage } from './docker-hub.js';
 import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides, type LocalConfig } from './config.js';
+import { logFilePath, spawnLocalNode } from './local-process.js';
 
 const CHAIN_DEFAULTS = {
     aptosMainnet:      'https://api.mainnet.aptoslabs.com/v1',
@@ -96,6 +98,26 @@ export function localRunCmd(
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc).map(a => `  ${a}`),
     ].join(' \\\n');
+}
+
+export function localRunArgs(
+    port: string,
+    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): string[] {
+    return [
+        'run',
+        `--ace-deployment-api=${rpcUrl}`,
+        `--ace-deployment-addr=${aceAddr}`,
+        ...(rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
+        ...(gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
+        `--account-addr=${node.accountAddr}`,
+        `--account-sk=${node.accountSk}`,
+        `--pke-dk=${node.pkeDk}`,
+        `--port=${port}`,
+        ...chainRpcArgs(chainRpc),
+    ];
 }
 
 function defaultRepoPath(): string | undefined {
@@ -313,13 +335,18 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
             default: defaultRepoPath(),
         })).trim();
         const port = await input({ message: 'Port', default: String(defaultPort) });
-        localCfg = { repoPath, port };
 
-        console.log('\nBuild the node binary:\n');
-        console.log(localBuildCmd(repoPath));
-        console.log('\nThen run it:\n');
-        console.log(localRunCmd(repoPath, port, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
-        console.log();
+        console.log('\nBuilding node binary (this may take a minute)...\n');
+        execSync(localBuildCmd(repoPath), { stdio: 'inherit' });
+
+        const nodeKey = makeNodeKey(net.rpcUrl, net.aceAddr, profile.accountAddr);
+        const logFile = logFilePath(nodeKey);
+        const binaryPath = path.join(repoPath, 'target', 'release', 'network-node');
+        const runArgs = localRunArgs(port, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc);
+        const pid = spawnLocalNode(binaryPath, runArgs, logFile);
+        console.log(`\nNode started in background  pid=${pid}  log=${logFile}\n`);
+
+        localCfg = { repoPath, port, pid, logFile };
 
         endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
     }

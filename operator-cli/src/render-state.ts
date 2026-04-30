@@ -5,6 +5,8 @@ import { network as aceNetwork } from '@aptos-labs/ace-sdk';
 import type { TrackedNode } from './config.js';
 import type { DiffRow } from './deployment-check.js';
 import { deriveRpcLabel } from './config.js';
+import { CLI } from './cli-name.js';
+import { isLocalNodeAlive } from './local-process.js';
 
 const R = '\x1b[0m', D = '\x1b[2m', B = '\x1b[1m';
 const G = '\x1b[32m', E = '\x1b[31m', C = '\x1b[36m', Y = '\x1b[33m';
@@ -91,7 +93,7 @@ export function renderNetworkState(
             const passed = pv.votingPassed ? `${G}yes${R}` : 'no';
             lines.push(`  Votes    : ${pv.voteCount()}/${state.curThreshold}  passed: ${passed}`);
             lines.push('');
-            lines.push(`  ${D}→ ace vote ${sess} [--profile <alias>]${R}`);
+            lines.push(`  ${D}→ ${CLI} vote ${sess} [--profile <alias>]${R}`);
         }
     }
 
@@ -154,7 +156,7 @@ export function renderNodeStatus(
                 const voted = pv.hasVoted(node.accountAddr, state.curNodes);
                 const voteStr = voted ? `${G}voted${R}` : `${D}not voted${R}`;
                 lines.push(`    ${C}${sess}${R}  ${voteStr}`);
-                lines.push(`    ${D}→ ace vote ${sess} [--profile ${node.alias ?? '<alias>'}]${R}`);
+                lines.push(`    ${D}→ ${CLI} vote ${sess} [--profile ${node.alias ?? '<alias>'}]${R}`);
             }
         } else {
             lines.push(`  Proposals: none`);
@@ -162,8 +164,16 @@ export function renderNodeStatus(
     }
     lines.push('');
 
-    // Deployment
-    if (!node.platform) {
+    // Deployment / process status
+    if (node.platform === 'local' && node.local) {
+        const alive = node.local.pid ? isLocalNodeAlive(node.local.pid) : false;
+        const procStatus = node.local.pid
+            ? (alive ? `${G}running  pid=${node.local.pid}${R}` : `${E}stopped  (was pid=${node.local.pid})${R}`)
+            : `${D}not started${R}`;
+        lines.push(`${B}Process${R}  local build  ${procStatus}`);
+        if (node.local.logFile) lines.push(`  Log: ${node.local.logFile}`);
+        if (!alive) lines.push(`  ${D}Run \`${CLI} edit-node\` to restart.${R}`);
+    } else if (!node.platform) {
         lines.push(`${D}No deployment platform configured.${R}`);
     } else if (deployDiff instanceof Error) {
         const platformName = node.platform === 'gcp'
@@ -195,7 +205,7 @@ export function renderNodeStatus(
                 lines.push(row.match ? `${D}${line}${R}` : `${E}${line}  ✗${R}`);
             }
             lines.push('');
-            lines.push(`  ${D}Run \`ace edit-node [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
+            lines.push(`  ${D}Run \`${CLI} edit-node [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
         }
     }
 

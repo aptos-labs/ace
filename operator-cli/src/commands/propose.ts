@@ -6,6 +6,7 @@ import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { deriveRpcLabel } from '../config.js';
 import { formatError } from '../format-error.js';
+import { CLI } from '../cli-name.js';
 import { buildProposalFor, proposalFromFile } from './proposal.js';
 
 export async function proposeCommand(opts: { profile?: string; account?: string; file?: string }): Promise<void> {
@@ -49,7 +50,7 @@ export async function proposeCommand(opts: { profile?: string; account?: string;
         try {
             const { hash } = await client.submitNewProposal(proposal);
             console.log(`✓ Proposal submitted  (txn: ${hash})`);
-            console.log('\nRun `ace network-status` to see the voting session address.');
+            console.log(`\nRun \`${CLI} network-status\` to see the voting session address.`);
             break;
         } catch (e) {
             console.error(`✗ Failed: ${formatError(e)}`);

@@ -6,6 +6,7 @@ import { AccountAddress } from '@aptos-labs/ts-sdk';
 import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { formatError } from '../format-error.js';
+import { CLI } from '../cli-name.js';
 
 export async function voteCommand(sessionAddr: string, opts: { profile?: string; yes?: boolean }): Promise<void> {
     // Validate session address
@@ -32,7 +33,7 @@ export async function voteCommand(sessionAddr: string, opts: { profile?: string;
     const pv = state.activeProposals().find(p => p.votingSession.toStringLong() === addr.toStringLong());
     if (!pv) {
         console.error(`No active proposal with session address ${sessionAddr}.`);
-        console.log('Run `ace network-status` to see current proposals.');
+        console.log(`Run \`${CLI} network-status\` to see current proposals.`);
         process.exit(1);
     }
 

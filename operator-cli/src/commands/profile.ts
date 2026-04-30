@@ -3,15 +3,17 @@
 
 import { confirm } from '@inquirer/prompts';
 import { loadConfig, saveConfig, deriveRpcLabel } from '../config.js';
+import { CLI } from '../cli-name.js';
+import { isLocalNodeAlive, killLocalNode } from '../local-process.js';
 
-const D = '\x1b[2m', R = '\x1b[0m', B = '\x1b[1m', G = '\x1b[32m';
+const D = '\x1b[2m', R = '\x1b[0m', B = '\x1b[1m', G = '\x1b[32m', E = '\x1b[31m';
 
 export function profileListCommand(): void {
     const config = loadConfig();
     const entries = Object.entries(config.nodes);
 
     if (entries.length === 0) {
-        console.log('No profiles configured. Run `ace new-node` to set one up.');
+        console.log(`No profiles configured. Run \`${CLI} new-node\` to set one up.`);
         return;
     }
 
@@ -24,11 +26,17 @@ export function profileListCommand(): void {
         console.log(`    Network : ${deriveRpcLabel(node.rpcUrl)}`);
         console.log(`    Account : ${node.accountAddr}`);
         if (node.endpoint) console.log(`    Endpoint: ${node.endpoint}`);
-        if (node.platform) {
-            const plat = node.platform === 'gcp'
-                ? `GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`
-                : `Docker (${node.docker?.containerName ?? '?'})`;
-            console.log(`    Deploy  : ${plat}`);
+        if (node.platform === 'gcp') {
+            console.log(`    Deploy  : GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`);
+        } else if (node.platform === 'docker') {
+            console.log(`    Deploy  : Docker (${node.docker?.containerName ?? '?'})`);
+        } else if (node.platform === 'local') {
+            const alive = node.local?.pid ? isLocalNodeAlive(node.local.pid) : false;
+            const procStatus = node.local?.pid
+                ? (alive ? `${G}running pid=${node.local.pid}${R}` : `${E}stopped (was pid=${node.local.pid})${R}`)
+                : `${D}not started${R}`;
+            console.log(`    Deploy  : local build  ${procStatus}`);
+            if (node.local?.logFile) console.log(`    Log     : ${node.local.logFile}`);
         }
         console.log();
     }
@@ -44,7 +52,7 @@ export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
     const config = loadConfig();
     const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile matching "${aliasOrKey}". Run \`ace profile list\` to see available profiles.`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} profile list\` to see available profiles.`);
         process.exit(1);
     }
     const [key, node] = entry;
@@ -64,6 +72,11 @@ export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
     } else if (node.platform === 'gcp' && node.gcp) {
         console.log(`\n  Don't forget to delete the Cloud Run service:\n`);
         console.log(`  gcloud run services delete ${node.gcp.serviceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+    } else if (node.platform === 'local' && node.local?.pid) {
+        if (isLocalNodeAlive(node.local.pid)) {
+            killLocalNode(node.local.pid);
+            console.log(`\n  Background process stopped (pid=${node.local.pid}).`);
+        }
     }
 }
 
@@ -71,7 +84,7 @@ export function profileDefaultCommand(aliasOrKey: string): void {
     const config = loadConfig();
     const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile matching "${aliasOrKey}". Run \`ace profile list\` to see available profiles.`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} profile list\` to see available profiles.`);
         process.exit(1);
     }
     const [key, node] = entry;

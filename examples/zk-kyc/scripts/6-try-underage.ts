@@ -43,7 +43,8 @@ interface Session {
 async function main() {
     ensureDataDir();
 
-    const age = parseInt(process.argv[2] ?? '16', 10);
+    const rawArg = process.argv.slice(2).find(a => a !== '--');
+    const age = parseInt(rawArg ?? '16', 10);
     if (isNaN(age) || age < 0 || age > 255) {
         console.error('age must be an integer 0–255');
         process.exit(1);

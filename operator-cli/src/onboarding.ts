@@ -1,12 +1,21 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { input, select } from '@inquirer/prompts';
+import { input, select, confirm } from '@inquirer/prompts';
 import { execSync } from 'child_process';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
 import { selectImage } from './docker-hub.js';
-import { deriveRpcLabel, makeNodeKey, type TrackedNode, type Config } from './config.js';
+import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides } from './config.js';
+
+const CHAIN_DEFAULTS = {
+    aptosMainnet:      'https://api.mainnet.aptoslabs.com/v1',
+    aptosTestnet:      'https://api.testnet.aptoslabs.com/v1',
+    aptosLocalnet:     'http://127.0.0.1:8080/v1',
+    solanaMainnetBeta: 'https://api.mainnet-beta.solana.com',
+    solanaTestnet:     'https://api.testnet.solana.com',
+    solanaDevnet:      'https://api.devnet.solana.com',
+} as const;
 
 function defaultGcpProject(): string | undefined {
     try {
@@ -17,7 +26,7 @@ function defaultGcpProject(): string | undefined {
     }
 }
 
-function dockerRpcUrl(rpcUrl: string): string {
+export function dockerRpcUrl(rpcUrl: string): string {
     return rpcUrl.replace(/localhost/g, 'host.docker.internal')
                  .replace(/127\.0\.0\.1/g, 'host.docker.internal');
 }
@@ -26,8 +35,9 @@ export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
 ): string {
-    const args = nodeRunArgs(node, rpcUrl, aceAddr, rpcApiKey, gasStationKey);
+    const args = nodeRunArgs(node, rpcUrl, aceAddr, rpcApiKey, gasStationKey, chainRpc);
     return [
         `gcloud run deploy ${serviceName}`,
         `  --image docker.io/${image}`,
@@ -44,28 +54,30 @@ export function dockerRunCmd(
     containerName: string, image: string, port: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
 ): string {
-    rpcUrl = dockerRpcUrl(rpcUrl);
     return [
         `docker run -d --platform linux/amd64 --restart unless-stopped`,
         `  --name ${containerName}`,
         `  -p ${port}:${port}`,
         `  ${image}`,
         `  run`,
-        `  --ace-deployment-api ${rpcUrl}`,
-        `  --ace-deployment-addr ${aceAddr}`,
-        ...(rpcApiKey     ? [`  --ace-deployment-apikey ${rpcApiKey}`]     : []),
-        ...(gasStationKey ? [`  --ace-deployment-gaskey ${gasStationKey}`] : []),
-        `  --account-addr ${node.accountAddr}`,
-        `  --account-sk ${node.accountSk}`,
-        `  --pke-dk ${node.pkeDk}`,
-        `  --port ${port}`,
+        `  --ace-deployment-api=${rpcUrl}`,
+        `  --ace-deployment-addr=${aceAddr}`,
+        ...(rpcApiKey     ? [`  --ace-deployment-apikey=${rpcApiKey}`]     : []),
+        ...(gasStationKey ? [`  --ace-deployment-gaskey=${gasStationKey}`] : []),
+        `  --account-addr=${node.accountAddr}`,
+        `  --account-sk=${node.accountSk}`,
+        `  --pke-dk=${node.pkeDk}`,
+        `  --port=${port}`,
+        ...chainRpcArgs(chainRpc),
     ].join(' \\\n');
 }
 
 function nodeRunArgs(
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
 ): string[] {
     return [
         'run',
@@ -77,7 +89,59 @@ function nodeRunArgs(
         `--account-sk=${node.accountSk}`,
         `--pke-dk=${node.pkeDk}`,
         '--port=8080',
+        ...chainRpcArgs(chainRpc),
     ];
+}
+
+function chainRpcArgs(r?: ChainRpcOverrides): string[] {
+    if (!r) return [];
+    const f = (flag: string, val?: string) => val ? [`${flag}${val}`] : [];
+    return [
+        ...f('--aptos-mainnet-api=',       r.aptosMainnetApi),
+        ...f('--aptos-mainnet-apikey=',    r.aptosMainnetApikey),
+        ...f('--aptos-testnet-api=',       r.aptosTestnetApi),
+        ...f('--aptos-testnet-apikey=',    r.aptosTestnetApikey),
+        ...f('--aptos-localnet-api=',      r.aptosLocalnetApi),
+        ...f('--aptos-localnet-apikey=',   r.aptosLocalnetApikey),
+        ...f('--solana-mainnet-beta-rpc=', r.solanaMainnetBetaRpc),
+        ...f('--solana-testnet-rpc=',      r.solanaTestnetRpc),
+        ...f('--solana-devnet-rpc=',       r.solanaDevnetRpc),
+    ];
+}
+
+export async function promptChainRpcOverrides(
+    current?: ChainRpcOverrides,
+    transformDefault: (url: string) => string = u => u,
+): Promise<ChainRpcOverrides> {
+    console.log('\nPer-chain RPC endpoints  (Enter to use default)\n');
+
+    const askUrl = async (msg: string, pubDefault: string, cur?: string): Promise<string | undefined> => {
+        const effectiveDefault = cur ?? transformDefault(pubDefault);
+        const val = (await input({ message: msg, default: effectiveDefault })).trim();
+        return val === pubDefault ? undefined : val || undefined;
+    };
+
+    const askKey = async (msg: string, cur?: string): Promise<string | undefined> => {
+        const hint = cur ? ' (Enter to keep, "none" to clear)' : ' (Enter to skip)';
+        const val = (await input({ message: msg + hint, default: '' })).trim();
+        if (val === 'none') return undefined;
+        return val || cur;
+    };
+
+    const r: ChainRpcOverrides = {
+        aptosMainnetApi:      await askUrl('Aptos mainnet API URL',        CHAIN_DEFAULTS.aptosMainnet,      current?.aptosMainnetApi),
+        aptosMainnetApikey:   await askKey('Aptos mainnet API key',        current?.aptosMainnetApikey),
+        aptosTestnetApi:      await askUrl('Aptos testnet API URL',        CHAIN_DEFAULTS.aptosTestnet,      current?.aptosTestnetApi),
+        aptosTestnetApikey:   await askKey('Aptos testnet API key',        current?.aptosTestnetApikey),
+        aptosLocalnetApi:     await askUrl('Aptos localnet API URL',       CHAIN_DEFAULTS.aptosLocalnet,     current?.aptosLocalnetApi),
+        aptosLocalnetApikey:  await askKey('Aptos localnet API key',       current?.aptosLocalnetApikey),
+        solanaMainnetBetaRpc: await askUrl('Solana mainnet-beta RPC URL',  CHAIN_DEFAULTS.solanaMainnetBeta, current?.solanaMainnetBetaRpc),
+        solanaTestnetRpc:     await askUrl('Solana testnet RPC URL',       CHAIN_DEFAULTS.solanaTestnet,     current?.solanaTestnetRpc),
+        solanaDevnetRpc:      await askUrl('Solana devnet RPC URL',        CHAIN_DEFAULTS.solanaDevnet,      current?.solanaDevnetRpc),
+    };
+
+    console.log();
+    return Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined)) as ChainRpcOverrides;
 }
 
 interface NetworkDetails {
@@ -87,10 +151,35 @@ interface NetworkDetails {
     gasStationKey?: string;
 }
 
+async function probeEndpoint(url: string): Promise<boolean> {
+    try {
+        await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+
+async function promptEndpoint(message: string, defaultValue?: string): Promise<string> {
+    let last = defaultValue;
+    while (true) {
+        const url = (await input({ message, default: last })).trim();
+        if (!url) continue;
+        last = url;
+
+        process.stdout.write('  Checking node reachability...');
+        if (await probeEndpoint(url)) {
+            process.stdout.write(' ✓\n\n');
+            return url;
+        }
+        process.stdout.write(' ✗  (not reachable)\n\n');
+    }
+}
+
 /** Full guided wizard for adding a new node you control. */
-export async function runOnboarding(
-    existingConfig: Config,
-): Promise<{ nodeKey: string; node: TrackedNode }> {
+export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedNode }> {
+    const existingConfig = loadConfig();
     console.log('\n  ACE Node Setup\n');
 
     console.log('Generating node keys...\n');
@@ -98,39 +187,7 @@ export async function runOnboarding(
     console.log(`  Account address : ${profile.accountAddr}`);
     console.log(`  PKE enc key     : ${profile.pkeEk}\n`);
 
-    // Network details — offer to copy from an existing node on the same network.
-    let net: NetworkDetails;
-
-    const existingNodes = Object.values(existingConfig.nodes);
-    // Deduplicate by rpcUrl+aceAddr
-    const uniqueNets = [...new Map(
-        existingNodes.map(n => [`${n.rpcUrl}|${n.aceAddr}`, n]),
-    ).values()];
-
-    if (uniqueNets.length > 0) {
-        const chosen = await select<string>({
-            message: 'Which network?',
-            choices: [
-                ...uniqueNets.map(n => ({
-                    name: n.alias
-                        ? `${n.alias}  (${deriveRpcLabel(n.rpcUrl)})`
-                        : deriveRpcLabel(n.rpcUrl),
-                    value: `${n.rpcUrl}|||${n.aceAddr}|||${n.rpcApiKey ?? ''}|||${n.gasStationKey ?? ''}`,
-                })),
-                { name: '+ Enter new network details', value: '__new__' },
-            ],
-        });
-
-        if (chosen !== '__new__') {
-            const [rpcUrl, aceAddr, rpcApiKey, gasStationKey] = chosen.split('|||');
-            net = { rpcUrl: rpcUrl!, aceAddr: aceAddr!, rpcApiKey: rpcApiKey || undefined, gasStationKey: gasStationKey || undefined };
-            console.log();
-        } else {
-            net = await promptNetworkDetails();
-        }
-    } else {
-        net = await promptNetworkDetails();
-    }
+    const net: NetworkDetails = await promptNetworkDetails();
 
     const image = await selectImage() ?? 'aptoslabs/ace-node:latest';
     console.log();
@@ -143,9 +200,17 @@ export async function runOnboarding(
         ],
     });
 
-    let endpoint: string;
-    let gcpCfg:    TrackedNode['gcp'];
-    let dockerCfg: TrackedNode['docker'];
+    let chainRpc: ChainRpcOverrides = {};
+    if (await confirm({ message: 'Configure per-chain RPC overrides?', default: false })) {
+        chainRpc = await promptChainRpcOverrides(undefined, platform === 'docker' ? dockerRpcUrl : undefined);
+    } else {
+        console.log();
+    }
+
+    let endpoint:    string;
+    let nodeRpcUrl:  string | undefined;
+    let gcpCfg:      TrackedNode['gcp'];
+    let dockerCfg:   TrackedNode['docker'];
 
     if (platform === 'gcp') {
         const project     = await input({ message: 'GCP project ID', default: defaultGcpProject() });
@@ -166,9 +231,9 @@ export async function runOnboarding(
         gcpCfg = { project, region, serviceName };
 
         console.log('\nRun this command to deploy your node:\n');
-        console.log(gcpDeployCmd(serviceName, image, project, region, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey));
+        console.log(gcpDeployCmd(serviceName, image, project, region, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
         console.log();
-        endpoint = await input({ message: 'Cloud Run service URL (paste after deploy completes)' });
+        endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
     } else {
         const usedPorts = new Set(
             Object.values(existingConfig.nodes).map(n => n.docker?.port).filter(Boolean),
@@ -179,27 +244,33 @@ export async function runOnboarding(
         const usedContainerNames = new Set(
             Object.values(existingConfig.nodes).map(n => n.docker?.containerName).filter(Boolean),
         );
+        const contractPrefix = net.aceAddr.replace(/^0x/i, '').slice(0, 6);
+        const accountPrefix  = profile.accountAddr.replace(/^0x/i, '').slice(0, 6);
         const defaultContainerName = (() => {
-            if (!usedContainerNames.has('ace-node')) return 'ace-node';
+            const base = `ace-${contractPrefix}-${accountPrefix}`;
+            if (!usedContainerNames.has(base)) return base;
             let i = 2;
-            while (usedContainerNames.has(`ace-node-${i}`)) i++;
-            return `ace-node-${i}`;
+            while (usedContainerNames.has(`${base}-${i}`)) i++;
+            return `${base}-${i}`;
         })();
 
         const port          = await input({ message: 'Port', default: String(defaultPort) });
         const containerName = await input({ message: 'Container name', default: defaultContainerName });
+        nodeRpcUrl          = (await input({ message: 'Deployment API URL (as seen by the node)', default: dockerRpcUrl(net.rpcUrl) })).trim();
         dockerCfg = { containerName, port };
 
         console.log('\nRun this command to start your node:\n');
-        console.log(dockerRunCmd(containerName, image, port, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey));
+        console.log(dockerRunCmd(containerName, image, port, profile, nodeRpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
         console.log();
 
         const isLocalnet = /localhost|127\.0\.0\.1/.test(net.rpcUrl);
         const defaultEndpoint = isLocalnet ? `http://localhost:${port}` : undefined;
-        endpoint = await input({ message: "Your node's public URL", default: defaultEndpoint });
+        endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
     }
 
     const alias = (await input({ message: 'Node alias (Enter to skip)', default: '' })).trim() || undefined;
+
+    await ensureAccountFunded(net.rpcUrl, profile.accountAddr, net.rpcApiKey, net.gasStationKey);
 
     console.log('\nRegistering on-chain...\n');
     await registerOnChain(
@@ -208,9 +279,10 @@ export async function runOnboarding(
     );
 
     const node: TrackedNode = {
-        rpcUrl:    net.rpcUrl,
-        aceAddr:   net.aceAddr,
-        rpcApiKey: net.rpcApiKey,
+        rpcUrl:      net.rpcUrl,
+        nodeRpcUrl:  nodeRpcUrl !== net.rpcUrl ? nodeRpcUrl : undefined,
+        aceAddr:     net.aceAddr,
+        rpcApiKey:   net.rpcApiKey,
         accountAddr: profile.accountAddr,
         accountSk:   profile.accountSk,
         pkeDk:       profile.pkeDk,
@@ -222,6 +294,7 @@ export async function runOnboarding(
         gcp:          gcpCfg,
         docker:       dockerCfg,
         gasStationKey: net.gasStationKey,
+        chainRpc: Object.keys(chainRpc).length > 0 ? chainRpc : undefined,
     };
 
     const nodeKey = makeNodeKey(net.rpcUrl, net.aceAddr, profile.accountAddr);
@@ -230,6 +303,84 @@ export async function runOnboarding(
     console.log(`  ${profile.accountAddr}\n`);
 
     return { nodeKey, node };
+}
+
+const OCTAS_PER_APT = 100_000_000n;
+
+function detectAptosNetwork(rpcUrl: string): 'localnet' | 'devnet' | 'testnet' | 'mainnet' | 'other' {
+    if (/localhost|127\.0\.0\.1/.test(rpcUrl)) return 'localnet';
+    if (/devnet\.aptoslabs\.com/.test(rpcUrl))  return 'devnet';
+    if (/testnet\.aptoslabs\.com/.test(rpcUrl)) return 'testnet';
+    if (/mainnet\.aptoslabs\.com/.test(rpcUrl)) return 'mainnet';
+    return 'other';
+}
+
+function aptFaucetUrl(rpcUrl: string): string | undefined {
+    if (/localhost/.test(rpcUrl))    return rpcUrl.replace(/:\d+\/.*$/, ':8081');
+    if (/127\.0\.0\.1/.test(rpcUrl)) return rpcUrl.replace(/:\d+\/.*$/, ':8081');
+    if (/devnet\.aptoslabs\.com/.test(rpcUrl))  return 'https://faucet.devnet.aptoslabs.com';
+    if (/testnet\.aptoslabs\.com/.test(rpcUrl)) return 'https://faucet.testnet.aptoslabs.com';
+    return undefined;
+}
+
+async function getAptBalance(rpcUrl: string, addr: string, apiKey?: string): Promise<bigint> {
+    try {
+        const type = encodeURIComponent('0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>');
+        const url   = `${rpcUrl}/accounts/${addr}/resource/${type}`;
+        const headers: HeadersInit = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return 0n;
+        const data = await res.json() as { data: { coin: { value: string } } };
+        return BigInt(data.data.coin.value);
+    } catch {
+        return 0n;
+    }
+}
+
+async function ensureAccountFunded(
+    rpcUrl: string, accountAddr: string, apiKey?: string, gasStationKey?: string,
+): Promise<void> {
+    if (gasStationKey) return;
+
+    const network = detectAptosNetwork(rpcUrl);
+    const faucet  = aptFaucetUrl(rpcUrl);
+
+    if (network === 'localnet' || network === 'devnet') {
+        if (faucet) {
+            process.stdout.write('\nFunding account with 10 APT via faucet...');
+            try {
+                const res = await fetch(
+                    `${faucet}/mint?address=${accountAddr}&amount=${10n * OCTAS_PER_APT}`,
+                    { method: 'POST', signal: AbortSignal.timeout(5000) },
+                );
+                if (res.ok) { process.stdout.write(' ✓\n'); return; }
+            } catch { /* fall through */ }
+            process.stdout.write(' ✗  (faucet unreachable — fund manually before registering)\n');
+        }
+        return;
+    }
+
+    if (network !== 'testnet' && network !== 'mainnet') return;
+
+    console.log();
+    if (network === 'testnet' && faucet) {
+        console.log('Fund your account using the testnet faucet:');
+        console.log(`  curl -X POST '${faucet}/mint?address=${accountAddr}&amount=1000000000'\n`);
+    } else {
+        console.log(`Fund your account (${accountAddr}) with APT to cover transaction fees.\n`);
+    }
+
+    process.stdout.write('Waiting for account to receive APT...');
+    while (true) {
+        const bal = await getAptBalance(rpcUrl, accountAddr, apiKey);
+        if (bal > 0n) {
+            const apt = (Number(bal) / Number(OCTAS_PER_APT)).toFixed(4);
+            process.stdout.write(` ✓  (${apt} APT)\n`);
+            return;
+        }
+        await new Promise(r => setTimeout(r, 2000));
+        process.stdout.write('.');
+    }
 }
 
 async function promptNetworkDetails(): Promise<NetworkDetails> {

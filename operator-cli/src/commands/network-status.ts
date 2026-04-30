@@ -7,10 +7,10 @@ import { renderNetworkState } from '../render-state.js';
 import { resolveProfile } from '../resolve-profile.js';
 import { runWatch } from '../watch.js';
 
-export async function networkStatusCommand(opts: { profile?: string; watch?: boolean }): Promise<void> {
+export async function networkStatusCommand(opts: { profile?: string; account?: string; watch?: boolean }): Promise<void> {
     const render = async (): Promise<string> => {
         // Re-read config from disk each render so profile edits are reflected immediately.
-        const { node } = resolveProfile(opts.profile);
+        const { node } = resolveProfile(opts.profile, opts.account);
         const profiles = loadConfig().nodes;
         const client = new NetworkClient(node.rpcUrl, node.aceAddr, node.rpcApiKey);
         const state = await client.getNetworkState();
@@ -18,7 +18,7 @@ export async function networkStatusCommand(opts: { profile?: string; watch?: boo
     };
 
     if (opts.watch) {
-        await runWatch(render);
+        await runWatch(render, { refreshMs: 1000, showFooter: false });
     } else {
         const content = await render();
         console.log(content);

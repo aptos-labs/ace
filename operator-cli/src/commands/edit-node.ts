@@ -1,17 +1,17 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { input } from '@inquirer/prompts';
+import { input, confirm } from '@inquirer/prompts';
 import { resolveProfile } from '../resolve-profile.js';
 import { loadConfig, saveConfig, type TrackedNode } from '../config.js';
 import { selectImage } from '../docker-hub.js';
-import { gcpDeployCmd, dockerRunCmd } from '../onboarding.js';
+import { gcpDeployCmd, dockerRunCmd, promptChainRpcOverrides, dockerRpcUrl } from '../onboarding.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 
 const G = '\x1b[32m', E = '\x1b[31m', D = '\x1b[2m', R = '\x1b[0m';
 
-export async function editNodeCommand(opts: { profile?: string }): Promise<void> {
-    const { nodeKey, node } = resolveProfile(opts.profile);
+export async function editNodeCommand(opts: { profile?: string; account?: string }): Promise<void> {
+    const { nodeKey, node } = resolveProfile(opts.profile, opts.account);
     const label = node.alias ?? nodeKey;
 
     console.log(`\nEditing node: ${label}\n`);
@@ -40,8 +40,15 @@ export async function editNodeCommand(opts: { profile?: string }): Promise<void>
         : newGasKey.trim() !== '' ? newGasKey.trim()
         : node.gasStationKey;
 
+    // Chain RPC overrides
+    let chainRpc = node.chainRpc;
+    if (await confirm({ message: 'Edit per-chain RPC overrides?', default: false })) {
+        chainRpc = await promptChainRpcOverrides(node.chainRpc, node.platform === 'docker' ? dockerRpcUrl : undefined);
+        chainRpc = Object.keys(chainRpc).length > 0 ? chainRpc : undefined;
+    }
+
     // Save updated profile
-    const updatedNode: TrackedNode = { ...node, image, rpcApiKey, gasStationKey };
+    const updatedNode: TrackedNode = { ...node, image, rpcApiKey, gasStationKey, chainRpc };
     const config = loadConfig();
     config.nodes[nodeKey] = updatedNode;
     saveConfig(config);
@@ -58,13 +65,14 @@ export async function editNodeCommand(opts: { profile?: string }): Promise<void>
         console.log('Run this command to apply the changes:\n');
         console.log(gcpDeployCmd(
             node.gcp.serviceName, image, node.gcp.project, node.gcp.region,
-            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey,
+            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
     } else if (node.platform === 'docker' && node.docker) {
         console.log('Run this command to apply the changes:\n');
+        console.log(`docker rm -f ${node.docker.containerName} &&`);
         console.log(dockerRunCmd(
             node.docker.containerName, image, node.docker.port,
-            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey,
+            nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
     } else {
         return; // no deployment platform, nothing to watch

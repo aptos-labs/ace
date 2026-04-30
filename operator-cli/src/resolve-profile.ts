@@ -9,12 +9,18 @@ export interface ResolvedProfile {
 }
 
 /**
- * Resolve a profile from an optional alias.
+ * Resolve a profile from an optional alias or account address.
  * Falls back to: default profile → single profile → error.
  */
-export function resolveProfile(alias?: string): ResolvedProfile {
+export function resolveProfile(alias?: string, account?: string): ResolvedProfile {
     const config = loadConfig();
     const entries = Object.entries(config.nodes);
+
+    if (account) {
+        const found = entries.find(([, n]) => n.accountAddr === account);
+        if (!found) throw new Error(`No profile with account address "${account}". Run \`ace profile list\` to see available profiles.`);
+        return { nodeKey: found[0], node: found[1] };
+    }
 
     if (alias) {
         const found = entries.find(([, n]) => n.alias === alias);

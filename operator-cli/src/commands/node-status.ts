@@ -8,10 +8,10 @@ import { renderNodeStatus } from '../render-state.js';
 import { resolveProfile } from '../resolve-profile.js';
 import { runWatch } from '../watch.js';
 
-export async function nodeStatusCommand(opts: { profile?: string; watch?: boolean; reveal?: boolean }): Promise<void> {
+export async function nodeStatusCommand(opts: { profile?: string; account?: string; watch?: boolean; reveal?: boolean }): Promise<void> {
     const render = async (): Promise<string> => {
         // Re-read config from disk each render so edits from other processes are reflected.
-        const { nodeKey, node } = resolveProfile(opts.profile);
+        const { nodeKey, node } = resolveProfile(opts.profile, opts.account);
         const profiles = loadConfig().nodes;
         const client = NetworkClient.fromNode(node);
 
@@ -37,7 +37,7 @@ export async function nodeStatusCommand(opts: { profile?: string; watch?: boolea
     };
 
     if (opts.watch) {
-        await runWatch(render);
+        await runWatch(render, { refreshMs: 1000, showFooter: false });
     } else {
         const content = await render();
         console.log(content);

@@ -14,7 +14,7 @@
 /// The verifier checks that the proof simultaneously witnesses:
 ///   1. A valid EdDSA-Poseidon signature from the KYC provider over a
 ///      jurisdiction code.
-///   2. The jurisdiction is NOT in the sanctioned list (DPRK/Iran/Cuba/Syria).
+///   2. The jurisdiction is NOT in the blocked list (codes 0–3).
 ///   3. The proof is bound to the caller's `enc_pk` — preventing replay against
 ///      a different key.
 ///
@@ -88,8 +88,8 @@ module admin::kyc_verifier {
     }
 
     // ACE hook: returns true iff payload is a valid Groth16 proof that the
-    // prover holds a KYC credential for a non-sanctioned jurisdiction,
-    // bound to enc_pk.  label is verified by ACE itself and is ignored here.
+    // prover holds a KYC credential for a permitted jurisdiction (not in the
+    // blocked list), bound to enc_pk.  label is verified by ACE itself.
     #[view]
     public fun check_acl(
         _label: vector<u8>,

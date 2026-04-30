@@ -13,8 +13,7 @@ include "circomlib/circuits/comparators.circom";
 //   1. The prover holds a credential (jurisdiction code) that was signed by the
 //      KYC provider using EdDSA over Baby Jubjub with a Poseidon message hash.
 //
-//   2. The jurisdiction is not in the sanctioned list
-//      (codes 0–3: DPRK, Iran, Cuba, Syria).
+//   2. The jurisdiction is not in the blocked list (codes 0–3).
 //
 //   3. The proof is bound to a specific enc_pk (the ACE decryption request key),
 //      packed as three BN254 Fr field elements, preventing replay against a
@@ -66,8 +65,8 @@ template KYCProof() {
     verifier.S      <== sig_s;
     verifier.M      <== msg_hash.out;
 
-    // ── 2. Jurisdiction is not sanctioned ──────────────────────────────────────
-    // Sanctioned codes: 0 = DPRK, 1 = Iran, 2 = Cuba, 3 = Syria.
+    // ── 2. Jurisdiction is not blocked ────────────────────────────────────────
+    // Blocked codes: 0, 1, 2, 3.
     // Constraint: product of (1 - IsEqual(jurisdiction, i)) for i in 0..3 must be 1.
 
     component eq[4];
@@ -76,10 +75,10 @@ template KYCProof() {
         eq[i].in[0] <== jurisdiction;
         eq[i].in[1] <== i;
     }
-    signal ns01 <== (1 - eq[0].out) * (1 - eq[1].out);
-    signal ns23 <== (1 - eq[2].out) * (1 - eq[3].out);
-    signal not_sanctioned <== ns01 * ns23;
-    not_sanctioned === 1;
+    signal nb01 <== (1 - eq[0].out) * (1 - eq[1].out);
+    signal nb23 <== (1 - eq[2].out) * (1 - eq[3].out);
+    signal not_blocked <== nb01 * nb23;
+    not_blocked === 1;
 
     // ── 3. enc_pk packing ──────────────────────────────────────────────────────
     // Pack enc_pk[67] bytes into three BN254 Fr scalars (little-endian).

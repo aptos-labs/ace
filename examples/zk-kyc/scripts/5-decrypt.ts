@@ -10,7 +10,7 @@
  * 2. Packs the caller's enc_pk into the three BN254 Fr public inputs.
  * 3. Generates a Groth16 proof using snarkjs — this is where the ZK magic
  *    happens: the proof asserts knowledge of a valid credential and a
- *    non-sanctioned jurisdiction WITHOUT revealing the jurisdiction itself.
+ *    permitted jurisdiction WITHOUT revealing the jurisdiction itself.
  * 4. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
  *    ACE workers call `kyc_verifier::check_acl` on-chain; if the proof
  *    verifies, they release their key shares.
@@ -94,7 +94,7 @@ async function main() {
     console.log('Generating Groth16 proof (this may take a few seconds)...');
     console.log('  Proving:');
     console.log('    ✓ I hold a credential signed by the registered KYC provider');
-    console.log('    ✓ My jurisdiction is not on the sanctions list');
+    console.log('    ✓ My jurisdiction is not on the blocked list');
     console.log('    ✓ The proof is bound to my enc_pk (no replay possible)');
     console.log('  The jurisdiction itself remains private.');
     console.log('');

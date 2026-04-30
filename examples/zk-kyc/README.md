@@ -24,7 +24,7 @@ users decrypt or when.
 ### The User
 Someone who has passed KYC and holds a credential from the provider.  They want to
 decrypt the app's secret.  To do so they generate a zero-knowledge proof locally — the
-proof shows they hold a valid credential for a non-sanctioned country, without revealing
+proof shows they hold a valid credential for a permitted jurisdiction, without revealing
 which country.
 
 ### ACE Workers (infrastructure)
@@ -36,25 +36,20 @@ decrypt alone; the user needs a threshold of workers to accept the proof.
 
 ## What is a jurisdiction code?
 
-A jurisdiction code is a small integer identifying the country where the user was
+A jurisdiction code is a small integer identifying the jurisdiction where the user was
 KYC-verified.  ZK circuits operate over finite-field arithmetic, so credentials are field
 elements rather than strings.  This demo uses a simple mapping:
 
-| Code | Jurisdiction | Status |
-|------|-------------|--------|
-| 0 | DPRK (North Korea) | Sanctioned |
-| 1 | Iran | Sanctioned |
-| 2 | Cuba | Sanctioned |
-| 3 | Syria | Sanctioned |
-| 10 | United States | Permitted |
-| 20 | European Union | Permitted |
-| … | any other value | Permitted |
+| Code | Status |
+|------|--------|
+| 0–3 | Blocked |
+| 10, 20, … (any other value) | Permitted |
 
-A production system would use a standardised scheme such as
-[ISO 3166-1 numeric](https://en.wikipedia.org/wiki/ISO_3166-1_numeric).
+A production system would define its own blocklist and could use a standardised numbering
+scheme such as [ISO 3166-1 numeric](https://en.wikipedia.org/wiki/ISO_3166-1_numeric).
 
 The jurisdiction value is a **private** input to the ZK circuit — the on-chain verifier
-and ACE workers learn only that it is not sanctioned, nothing more.
+and ACE workers learn only that it is not on the blocklist, nothing more.
 
 ---
 
@@ -65,7 +60,7 @@ The Groth16 circuit proves three statements simultaneously:
 | Statement | How it is enforced |
 |---|---|
 | I hold a credential signed by the registered KYC provider | EdDSA-Poseidon signature verification inside the circuit |
-| My jurisdiction is **not** sanctioned (DPRK/Iran/Cuba/Syria) | Arithmetic constraint: `not_sanctioned === 1` |
+| My jurisdiction is **not** on the blocklist (codes 0–3) | Arithmetic constraint: `not_blocked === 1` |
 | This proof is bound to my ACE decryption key `enc_pk` | The circuit packs `enc_pk[67]` into 3 BN254 Fr public inputs |
 
 The third guarantee prevents replay: a proof generated for one decryption session cannot
@@ -175,7 +170,7 @@ private key.  Saves the signature to `data/credential.json`.
 
 > *The protocol publishes some gated content.  It uses ACE to encrypt the plaintext so
 > that only someone who can pass the `check_acl` check — i.e. only a KYC-verified user
-> from a non-sanctioned country — can obtain the decryption key.*
+> from a permitted jurisdiction — can obtain the decryption key.*
 
 ```bash
 pnpm 4-encrypt
@@ -192,7 +187,7 @@ Anyone can run this step — encryption is a public operation.
 
 > *The user wants to read the gated content.  They have a credential from the provider
 > but do not want to reveal their country.  They run the ZK prover locally: it produces
-> a proof that they hold a valid credential for a non-sanctioned country, without
+> a proof that they hold a valid credential for a permitted jurisdiction, without
 > disclosing which one.  The proof is sent to ACE workers, who verify it on-chain and
 > release their key shares.*
 
@@ -219,15 +214,15 @@ Plaintext: "KYC-GATED SECRET: you have been verified!"
 
 ---
 
-### Step 6 — What if a user is from a sanctioned country? (optional)
+### Step 6 — What if a user is from a blocked jurisdiction? (optional)
 
-> *A corrupt KYC provider issues a credential for DPRK.  Or a user tries to forge one.
-> Either way, the ZK prover itself refuses to produce a proof — the circuit's arithmetic
-> constraints make it mathematically impossible.*
+> *A corrupt KYC provider issues a credential for a blocked jurisdiction (code 0).  Or a
+> user tries to forge one.  Either way, the ZK prover itself refuses to produce a proof —
+> the circuit's arithmetic constraints make it mathematically impossible.*
 
 ```bash
-pnpm 6-try-sanctioned              # DPRK (code 0)
-pnpm 6-try-sanctioned -- 1         # Iran (code 1)
+pnpm 6-try-sanctioned              # blocked jurisdiction code 0
+pnpm 6-try-sanctioned -- 1         # blocked jurisdiction code 1
 ```
 
 Expected output:
@@ -235,14 +230,14 @@ Expected output:
 ```
 === Proof generation FAILED as expected! ===
 
-The circuit constraint "not_sanctioned === 1" is violated for DPRK (North Korea).
+The circuit constraint "not_blocked === 1" is violated for Jurisdiction A.
 The witness is inconsistent — no valid proof can be produced.
 ```
 
-The sanctions check is baked into the circuit's arithmetic constraints — it is not a
+The blocklist check is baked into the circuit's arithmetic constraints — it is not a
 check performed by any trusted party at proof time.  Even if the KYC provider issues a
-credential for a sanctioned country, the user cannot produce a valid proof.  The
-constraint `not_sanctioned === 1` is as hard to bypass as breaking the underlying
+credential for a blocked jurisdiction, the user cannot produce a valid proof.  The
+constraint `not_blocked === 1` is as hard to bypass as breaking the underlying
 elliptic-curve cryptography.
 
 ---
@@ -297,6 +292,6 @@ zk-kyc/
 │   ├── 3-issue-credential.ts← provider signs a jurisdiction code
 │   ├── 4-encrypt.ts        ← encrypt a secret under the KYC policy
 │   ├── 5-decrypt.ts        ← generate ZK proof + ACE decrypt
-│   └── 6-try-sanctioned.ts ← watch proof generation fail for a sanctioned code
+│   └── 6-try-sanctioned.ts ← watch proof generation fail for a blocked jurisdiction
 └── data/                   ← generated files (gitignored)
 ```

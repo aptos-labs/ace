@@ -1,0 +1,10 @@
+{
+  "adminAddress": "0xdd0ac18b704c98a71e17cc4765783b4c02bb6048eba9891d8583f730ddc93cac",
+  "adminPrivKeyHex": "10cf41fc6aae0f483384267a02ccf45947f74251c71be84d3369ce5ade3f8090",
+  "aceApiEndpoint": "http://localhost:8080/v1",
+  "aceContractAddr": "0x29cde35a7f829fd0ab5ac3138d183030644d4bb8768932ab5014f59fc69136b4",
+  "keypairId": "0x40a6703c1759f710ac5ad9daed50926ae58089ee9ca11d97dd82e8978a474ff0",
+  "chainId": 4,
+  "moduleName": "kyc_verifier",
+  "functionName": "check_acl"
+}

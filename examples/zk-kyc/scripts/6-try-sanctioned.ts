@@ -2,21 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Script 6 — Try a Sanctioned Jurisdiction
+ * Script 6 — Try a Blocked Jurisdiction
  *
- * Demonstrates that the ZK circuit itself enforces the sanctions check.
+ * Demonstrates that the ZK circuit itself enforces the blocklist check.
  * Even if an adversary convinces a corrupt KYC provider to sign a credential
- * for jurisdiction 0 (DPRK), the Groth16 prover will FAIL to generate a
- * valid proof — because the constraint `not_sanctioned === 1` is violated
- * and the witness is inconsistent.
+ * for a blocked jurisdiction (codes 0–3), the Groth16 prover will FAIL to
+ * generate a valid proof — because the constraint `not_blocked === 1` is
+ * violated and the witness is inconsistent.
  *
  * This is the key privacy/security property:
- *   - A sanctioned user cannot produce a valid proof (enforced cryptographically).
+ *   - A blocked jurisdiction cannot produce a valid proof (enforced cryptographically).
  *   - A valid proof does NOT reveal the actual jurisdiction (zero knowledge).
  *
  * Usage:
- *   pnpm 6-try-sanctioned              # tries DPRK (code 0) by default
- *   pnpm 6-try-sanctioned -- 1         # tries Iran (code 1)
+ *   pnpm 6-try-sanctioned              # tries blocked jurisdiction 0 by default
+ *   pnpm 6-try-sanctioned -- 1         # tries blocked jurisdiction 1
  */
 
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
@@ -40,25 +40,25 @@ interface Session {
     label: string;
 }
 
-const SANCTIONED: Record<number, string> = {
-    0: 'DPRK (North Korea)',
-    1: 'Iran',
-    2: 'Cuba',
-    3: 'Syria',
+const BLOCKED: Record<number, string> = {
+    0: 'Jurisdiction A',
+    1: 'Jurisdiction B',
+    2: 'Jurisdiction C',
+    3: 'Jurisdiction D',
 };
 
 async function main() {
     ensureDataDir();
 
     const jurisdiction = parseInt(process.argv[2] ?? '0', 10);
-    const name = SANCTIONED[jurisdiction];
+    const name = BLOCKED[jurisdiction];
     if (!name) {
-        console.error(`Jurisdiction ${jurisdiction} is not on the sanctions list.`);
-        console.error('Use 0=DPRK, 1=Iran, 2=Cuba, 3=Syria.');
+        console.error(`Jurisdiction ${jurisdiction} is not on the blocked list.`);
+        console.error('Use 0, 1, 2, or 3 (the four blocked codes).');
         process.exit(1);
     }
 
-    console.log(`Attempting to obtain a credential for jurisdiction ${jurisdiction} (${name})...`);
+    console.log(`Attempting to obtain a credential for blocked jurisdiction ${jurisdiction} (${name})...`);
 
     const providerKey = readJson<ProviderKey>(path.join(DATA_DIR, 'provider-key.json'));
     const session     = readJson<Session>(path.join(DATA_DIR, 'session.json'));
@@ -68,7 +68,7 @@ async function main() {
     const eddsa    = await buildEddsa();
     const F        = eddsa.F;
 
-    // Issue credential for the sanctioned jurisdiction (imagine a corrupt provider)
+    // Issue credential for the blocked jurisdiction (imagine a corrupt provider)
     const privKey  = Buffer.from(providerKey.private, 'hex');
     const msgHash  = poseidon([BigInt(jurisdiction)]);
     const sig      = eddsa.signPoseidon(privKey, msgHash);
@@ -92,24 +92,24 @@ async function main() {
     const zkeyPath = path.join(CIRCUIT_DIR, 'kyc_final.zkey');
 
     console.log('');
-    console.log('Attempting to generate proof for sanctioned jurisdiction...');
+    console.log('Attempting to generate proof for blocked jurisdiction...');
     try {
         await groth16.fullProve(circuitInput, wasmPath, zkeyPath);
         console.error('');
-        console.error('ERROR: Proof generation SHOULD have failed for a sanctioned jurisdiction!');
+        console.error('ERROR: Proof generation SHOULD have failed for a blocked jurisdiction!');
         process.exit(1);
     } catch (_err) {
         console.log('');
         console.log('=== Proof generation FAILED as expected! ===');
         console.log('');
-        console.log(`The circuit constraint "not_sanctioned === 1" is violated for ${name}.`);
+        console.log(`The circuit constraint "not_blocked === 1" is violated for ${name}.`);
         console.log('The witness is inconsistent — no valid proof can be produced.');
         console.log('');
         console.log('Key insight:');
-        console.log('  Even if a corrupt KYC provider issues a credential for a sanctioned');
-        console.log('  country, the prover cannot construct a valid ZK proof. The sanctions');
-        console.log('  check is enforced by the circuit\'s arithmetic constraints, not by');
-        console.log('  trusting any party at proof time.');
+        console.log('  Even if a corrupt KYC provider issues a credential for a blocked');
+        console.log('  jurisdiction, the prover cannot construct a valid ZK proof. The');
+        console.log('  blocklist check is enforced by the circuit\'s arithmetic constraints,');
+        console.log('  not by trusting any party at proof time.');
     }
 }
 

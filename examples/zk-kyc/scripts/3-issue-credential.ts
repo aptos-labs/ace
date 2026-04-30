@@ -12,9 +12,8 @@
  *   pnpm 3-issue-credential            # defaults to jurisdiction 10 (United States)
  *   pnpm 3-issue-credential -- 20      # jurisdiction 20 (European Union)
  *
- * Sanctioned codes (0=DPRK, 1=Iran, 2=Cuba, 3=Syria) are accepted here —
- * the ZK proof will simply fail to generate at step 5 since the circuit
- * enforces the non-sanctioned constraint.
+ * Blocked codes (0–3) are accepted here — the ZK proof will simply fail to
+ * generate at step 5 since the circuit enforces the non-blocked constraint.
  *
  * Output: data/credential.json
  */
@@ -30,16 +29,16 @@ interface ProviderKey {
 }
 
 const JURISDICTION_NAMES: Record<number, string> = {
-    0: 'DPRK (North Korea) ⚠️  SANCTIONED',
-    1: 'Iran ⚠️  SANCTIONED',
-    2: 'Cuba ⚠️  SANCTIONED',
-    3: 'Syria ⚠️  SANCTIONED',
-    10: 'United States',
-    20: 'European Union',
-    30: 'United Kingdom',
-    40: 'Japan',
-    50: 'Singapore',
-    99: 'Test Country',
+    0: 'Jurisdiction A (blocked)',
+    1: 'Jurisdiction B (blocked)',
+    2: 'Jurisdiction C (blocked)',
+    3: 'Jurisdiction D (blocked)',
+    10: 'Jurisdiction 10 (permitted)',
+    20: 'Jurisdiction 20 (permitted)',
+    30: 'Jurisdiction 30 (permitted)',
+    40: 'Jurisdiction 40 (permitted)',
+    50: 'Jurisdiction 50 (permitted)',
+    99: 'Jurisdiction 99 (permitted)',
 };
 
 async function main() {

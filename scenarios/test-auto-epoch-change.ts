@@ -112,7 +112,7 @@ async function main() {
             throw 'DKG epoch change did not complete in time.';
         }
 
-        const dkgSessionAddr = networkState.secrets[0]!;
+        const dkgSessionAddr = networkState.secrets[0]!.currentSession;
         log(`DKG complete. dkgSession=${dkgSessionAddr.toStringLong()}`);
 
         const dkgSession = (await getDKGSession(adminAccount.accountAddress, dkgSessionAddr))
@@ -162,7 +162,7 @@ async function main() {
         }
 
         // Verify PK is unchanged after resharing.
-        const dkrSessionAddr = finalState.secrets[0]!;
+        const dkrSessionAddr = finalState.secrets[0]!.currentSession;
         const dkrSession = (await getDKRSession(adminAccount.accountAddress, dkrSessionAddr))
             .unwrapOrThrow('Failed to read DKR session.');
 

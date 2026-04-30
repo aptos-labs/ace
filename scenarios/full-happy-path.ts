@@ -214,7 +214,7 @@ async function main() {
             return stateResult.okValue!.epoch === 1;
         }, 90_000);
         const state0 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-0 DKG');
-        const keypair0Id = state0.secrets[0];
+        const keypair0Id = state0.secrets[0]!.keypairId;
         console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-0
 
@@ -354,7 +354,7 @@ async function main() {
             return stateResult.okValue!.epoch === 4;
         }, 90_000);
         const state1 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-1 DKG');
-        const keypair1Id = state1.secrets[1];
+        const keypair1Id = state1.secrets[1]!.keypairId;
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-1
 

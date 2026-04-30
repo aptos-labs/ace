@@ -151,7 +151,7 @@ async function main() {
         if (!networkState || networkState.secrets.length < 1) {
             throw 'DKG did not complete within 5 minutes.';
         }
-        const keypairId = networkState.secrets[0]!;
+        const keypairId = networkState.secrets[0]!.keypairId;
         log(`DKG complete. keypairId=${keypairId.toStringLong()}`);
         await sleep(5_000); // let workers stabilise
 

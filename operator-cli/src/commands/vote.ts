@@ -51,7 +51,7 @@ export async function voteCommand(sessionAddr: string, opts: { profile?: string;
     }
 
     const sessionShort = `${addr.toStringLong().slice(0, 10)}...${addr.toStringLong().slice(-6)}`;
-    console.log(`\nProposal  : ${pv.proposal.kind}`);
+    console.log(`\nProposal  : ${pv.proposal.description || `${pv.proposal.nodes.length} nodes, threshold ${pv.proposal.threshold}`}`);
     console.log(`Session   : ${addr.toStringLong()}`);
     console.log(`Votes     : ${pv.voteCount()}/${state.curThreshold}`);
     console.log();

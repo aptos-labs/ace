@@ -567,22 +567,41 @@ export async function getDKRSession(aceContractAddr: AccountAddress, sessionAddr
     });
 }
 
-export function serializeNewSecretProposal(scheme: number): Uint8Array {
+function serializeProposedEpochConfig(state: ace.network.State, override: Partial<{
+    nodes: AccountAddress[];
+    threshold: number;
+    epochDurationMicros: bigint;
+    secretsToRetain: AccountAddress[];
+    newSecrets: number[];
+    description: string;
+}>): Uint8Array {
+    const nodes = override.nodes ?? state.curNodes;
+    const threshold = override.threshold ?? state.curThreshold;
+    const epochDurationMicros = override.epochDurationMicros ?? state.epochDurationMicros;
+    const secretsToRetain = override.secretsToRetain ?? state.secrets.map(s => s.currentSession);
+    const newSecrets = override.newSecrets ?? [];
+    const description = override.description ?? '';
+
     const ser = new Serializer();
-    ser.serializeU8(2); // NewSecret variant
-    ser.serializeU8(scheme);
+    ser.serializeU32AsUleb128(nodes.length);
+    for (const node of nodes) ser.serialize(node);
+    ser.serializeU64(threshold);
+    ser.serializeU64(epochDurationMicros);
+    ser.serializeU32AsUleb128(secretsToRetain.length);
+    for (const s of secretsToRetain) ser.serialize(s);
+    ser.serializeU32AsUleb128(newSecrets.length);
+    for (const s of newSecrets) ser.serializeU8(s);
+    ser.serializeStr(description);
+    ser.serializeU64(state.epoch);
     return ser.toUint8Array();
 }
 
-export function serializeCommitteeChangeProposal(nodes: AccountAddress[], threshold: number): Uint8Array {
-    const ser = new Serializer();
-    ser.serializeU8(0); // CommitteeChange variant
-    ser.serializeU32AsUleb128(nodes.length);
-    for (const node of nodes) {
-        ser.serialize(node);
-    }
-    ser.serializeU64(threshold);
-    return ser.toUint8Array();
+export function serializeNewSecretProposal(scheme: number): (state: ace.network.State) => Uint8Array {
+    return (state) => serializeProposedEpochConfig(state, { newSecrets: [scheme] });
+}
+
+export function serializeCommitteeChangeProposal(nodes: AccountAddress[], threshold: number): (state: ace.network.State) => Uint8Array {
+    return (state) => serializeProposedEpochConfig(state, { nodes, threshold });
 }
 
 /**
@@ -590,28 +609,37 @@ export function serializeCommitteeChangeProposal(nodes: AccountAddress[], thresh
  * `new_proposal` self-votes if the proposer is a cur_node.
  * - approvers: each calls `voting::vote` (entries equal to `proposer` are skipped; they
  *   already voted in `new_proposal`). Pass a superset of cur_nodes to reach `cur_threshold`.
+ * - proposalBcs: either a pre-built Uint8Array, or a builder function called with current state.
  */
 export async function proposeAndApprove(
     proposer: Account,
     approvers: Account[],
     aceContract: string,
-    proposalBcs: Uint8Array,
+    proposalBcs: Uint8Array | ((state: ace.network.State) => Uint8Array),
 ): Promise<void> {
     const proposerStr = proposer.accountAddress.toString();
+    let bcs: Uint8Array;
+    if (typeof proposalBcs === 'function') {
+        const state = (await getNetworkState(AccountAddress.fromString(aceContract)))
+            .unwrapOrThrow('proposeAndApprove: getNetworkState (pre-proposal) failed');
+        bcs = proposalBcs(state);
+    } else {
+        bcs = proposalBcs;
+    }
     assertTxnSuccess(
         await submitTxn({
             signer: proposer,
             entryFunction: `${aceContract}::network::new_proposal`,
-            args: [Array.from(proposalBcs)],
+            args: [Array.from(bcs)],
         }),
         'new_proposal',
     );
 
     // Read state to find the proposer's voting session address.
-    const state = (await getNetworkState(AccountAddress.fromString(aceContract)))
-        .unwrapOrThrow('proposeAndApprove: getNetworkState failed');
-    const proposerIdx = state.curNodes.findIndex(n => n.toStringLong() === proposerStr);
-    const pv = proposerIdx >= 0 ? state.proposals[proposerIdx] : state.proposals[state.proposals.length - 1];
+    const postState = (await getNetworkState(AccountAddress.fromString(aceContract)))
+        .unwrapOrThrow('proposeAndApprove: getNetworkState (post-proposal) failed');
+    const proposerIdx = postState.curNodes.findIndex(n => n.toStringLong() === proposerStr);
+    const pv = proposerIdx >= 0 ? postState.proposals[proposerIdx] : postState.proposals[postState.proposals.length - 1];
     if (!pv) throw new Error('proposeAndApprove: proposal slot not found after new_proposal');
     const votingSessionAddr = pv.votingSession.toStringLong();
 

@@ -6,9 +6,9 @@ import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { deriveRpcLabel } from '../config.js';
 import { formatError } from '../format-error.js';
-import { buildProposalFor } from './proposal.js';
+import { buildProposalFor, proposalFromFile } from './proposal.js';
 
-export async function proposeCommand(opts: { profile?: string; account?: string }): Promise<void> {
+export async function proposeCommand(opts: { profile?: string; account?: string; file?: string }): Promise<void> {
     const { node } = resolveProfile(opts.profile, opts.account);
     const client = NetworkClient.fromNode(node);
 
@@ -35,7 +35,10 @@ export async function proposeCommand(opts: { profile?: string; account?: string 
         process.exit(1);
     }
 
-    const proposal = await buildProposalFor(state);
+    const proposal = opts.file
+        ? await proposalFromFile(opts.file, state)
+        : await buildProposalFor(state);
+
     if (!proposal) {
         console.log('Cancelled.');
         return;

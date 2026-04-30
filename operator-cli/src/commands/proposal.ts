@@ -1,154 +1,202 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { escSelect, escInput } from '../esc-select.js';
+import { spawnSync } from 'child_process';
+import { writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { parse as parseToml } from 'smol-toml';
 import { AccountAddress } from '@aptos-labs/ts-sdk';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
-import { type ProposalInput } from '../network-client.js';
+import type { ProposalInput } from '../network-client.js';
 
-const RED = '\x1b[31m', R = '\x1b[0m';
+// ── Template generation ───────────────────────────────────────────────────────
 
-/** null = go back to type selection */
-type StepResult<T> = T | null;
-
-async function collectNewSecret(): Promise<StepResult<ProposalInput>> {
-    const scheme = await escSelect({
-        message: 'Scheme',
-        choices: [
-            { name: '0 — BF BLS12-381 (short public key)', value: '0' },
-            { name: '1 — BF BLS12-381 (short identity)',   value: '1' },
-        ],
-    });
-    if (scheme === null) return null;
-    return { kind: 'NewSecret', scheme: Number(scheme) };
+function pad(n: bigint | number, width = 20): string {
+    return String(n).padStart(width);
 }
 
-async function collectCommitteeChange(state: aceNetwork.State): Promise<StepResult<ProposalInput>> {
-    console.log('\nCurrent committee:');
-    for (const n of state.curNodes) console.log(`  ${n.toStringLong()}`);
-    console.log();
+function generateTemplate(state: aceNetwork.State): string {
+    const nodesLines = state.curNodes
+        .map(n => `    "${n.toStringLong()}",`)
+        .join('\n');
 
-    // Phase A: collect addresses one by one.
-    // Phase B: collect threshold.
-    // Esc in phase A at index 0 → back to type selection.
-    // Esc in phase A at index N → remove last address, re-prompt index N-1.
-    // Esc in phase B → back to phase A (re-prompt for address N+1, empty to finish).
+    const secretsLines = state.secrets.length > 0
+        ? state.secrets
+            .map(s => `    "${s.currentSession.toStringLong()}",  # ${s.schemeName()} — keypair id: ${s.keypairId.toStringLong()}`)
+            .join('\n')
+        : '';
 
-    const addrs: AccountAddress[] = [];
-    let phase: 'addr' | 'threshold' = 'addr';
-    let addrErr = '';
-    let threshStr = '';
-    let threshErr = '';
+    return [
+        `# ACE Epoch Proposal — generated from epoch ${state.epoch}`,
+        `# Edit this file, save, and close your editor to validate and submit.`,
+        `# To cancel: delete all content, or quit your editor with a non-zero exit (e.g. :cq in vim).`,
+        ``,
+        `# Required. A human-readable summary shown in the voting UI.`,
+        `description = ""`,
+        ``,
+        `# ── Committee ─────────────────────────────────────────────────────────────`,
+        `# Comment out a node to remove it from the next epoch.`,
+        `# Append an address to add a new node (must have a registered PKE key).`,
+        `# Constraint: threshold >= 2, 2*threshold > n, threshold <= n`,
+        `nodes = [`,
+        nodesLines,
+        `]`,
+        `threshold = ${state.curThreshold}`,
+        ``,
+        `# ── Epoch Duration ────────────────────────────────────────────────────────`,
+        `# In microseconds. Current value: ${state.epochDurationMicros}`,
+        `epoch_duration_micros = ${state.epochDurationMicros}`,
+        ``,
+        `# ── Secrets ───────────────────────────────────────────────────────────────`,
+        `# secrets_to_retain: existing secrets carried into the next epoch.`,
+        `# Comment out a secret to permanently deactivate it.`,
+        state.secrets.length > 0
+            ? `secrets_to_retain = [\n${secretsLines}\n]`
+            : `secrets_to_retain = []`,
+        ``,
+        `# new_secrets: generate a new DKG for each listed scheme code.`,
+        `# Supported schemes: 0 = bls12381_g1`,
+        `new_secrets = []`,
+        ``,
+    ].join('\n');
+}
 
-    while (true) {
-        if (phase === 'addr') {
-            const idx = addrs.length;
-            const suffix = idx > 0 ? '  (empty to finish)' : '';
-            if (addrErr) console.log(`  ${RED}${addrErr}${R}`);
-            const r = await escInput({ message: `Address ${idx + 1}${suffix}`, default: '' });
+// ── TOML → ProposalInput ──────────────────────────────────────────────────────
 
-            if (r === undefined) {
-                // Esc: go back one address, or back to type selection if none entered yet
-                if (idx === 0) return null;
-                addrs.pop();
-                addrErr = '';
-                continue;
-            }
-
-            const trimmed = r.trim();
-            if (trimmed === '') {
-                if (idx === 0) { addrErr = 'Enter at least one address'; continue; }
-                addrErr = '';
-                phase = 'threshold';
-                continue;
-            }
-
-            try {
-                addrs.push(AccountAddress.fromString(trimmed));
-                addrErr = '';
-            } catch {
-                addrErr = `Invalid address: ${trimmed}`;
-            }
-        } else {
-            if (threshErr) console.log(`  ${RED}${threshErr}${R}`);
-            const r = await escInput({
-                message: `Threshold (2 ≤ t ≤ ${addrs.length}, 2t > ${addrs.length})`,
-                default: threshStr,
-            });
-            if (r === undefined) { threshErr = ''; phase = 'addr'; continue; } // Esc → back to address list
-            threshStr = r.trim();
-            const t = parseInt(threshStr, 10);
-            if (isNaN(t) || t < 2 || t > addrs.length || 2 * t <= addrs.length) {
-                threshErr = `Must satisfy 2 ≤ t ≤ ${addrs.length} and 2t > ${addrs.length}`;
-                continue;
-            }
-            return { kind: 'CommitteeChange', nodes: addrs, threshold: t };
-        }
+function parseAddr(raw: unknown, field: string): AccountAddress {
+    if (typeof raw !== 'string') throw new Error(`${field}: expected a string address, got ${typeof raw}`);
+    try {
+        return AccountAddress.fromString(raw);
+    } catch {
+        throw new Error(`${field}: invalid address "${raw}"`);
     }
 }
 
-async function collectResharingIntervalUpdate(): Promise<StepResult<ProposalInput>> {
-    let secsStr = '';
-    let secsErr = '';
-    while (true) {
-        if (secsErr) console.log(`  ${RED}${secsErr}${R}`);
-        const r = await escInput({ message: 'New resharing interval (seconds, min 30)', default: secsStr });
-        if (r === undefined) return null; // Esc → back to type selection
-        secsStr = r.trim();
-        const n = parseInt(secsStr, 10);
-        if (isNaN(n) || n < 30) { secsErr = 'Must be at least 30 seconds'; continue; }
-        return { kind: 'ResharingIntervalUpdate', newIntervalSecs: BigInt(secsStr) };
-    }
+function parseU64(raw: unknown, field: string): bigint {
+    if (typeof raw === 'number') return BigInt(Math.trunc(raw));
+    if (typeof raw === 'bigint') return raw;
+    throw new Error(`${field}: expected a number, got ${typeof raw}`);
 }
 
-async function collectSecretDeactivation(state: aceNetwork.State): Promise<StepResult<ProposalInput>> {
-    if (state.secrets.length === 0) {
-        console.log('No keypairs available to deactivate.');
+function parseU8(raw: unknown, field: string): number {
+    if (typeof raw !== 'number') throw new Error(`${field}: expected a number, got ${typeof raw}`);
+    if (!Number.isInteger(raw) || raw < 0 || raw > 255) throw new Error(`${field}: must be an integer 0–255`);
+    return raw;
+}
+
+function tomlToProposalInput(doc: Record<string, unknown>, targetEpoch: number): ProposalInput {
+    const description = doc['description'];
+    if (typeof description !== 'string' || description.trim() === '')
+        throw new Error('description: required and must be non-empty');
+    if (description.length > 1024)
+        throw new Error(`description: exceeds 1024 bytes (got ${description.length})`);
+
+    const rawNodes = doc['nodes'];
+    if (!Array.isArray(rawNodes)) throw new Error('nodes: must be an array of addresses');
+    const nodes = rawNodes.map((v, i) => parseAddr(v, `nodes[${i}]`));
+
+    const threshold = parseU64(doc['threshold'], 'threshold');
+    const n = BigInt(nodes.length);
+    if (threshold < 2n || 2n * threshold <= n || threshold > n)
+        throw new Error(`threshold: must satisfy threshold >= 2, 2*threshold > ${n}, threshold <= ${n} (got ${threshold})`);
+
+    const epochDurationMicros = parseU64(doc['epoch_duration_micros'], 'epoch_duration_micros');
+    if (epochDurationMicros < 30_000_000n)
+        throw new Error('epoch_duration_micros: must be at least 30_000_000 (30 seconds)');
+
+    const rawRetain = doc['secrets_to_retain'];
+    if (!Array.isArray(rawRetain)) throw new Error('secrets_to_retain: must be an array of addresses');
+    const secretsToRetain = rawRetain.map((v, i) => parseAddr(v, `secrets_to_retain[${i}]`));
+
+    const rawNew = doc['new_secrets'];
+    if (!Array.isArray(rawNew)) throw new Error('new_secrets: must be an array of scheme numbers');
+    const newSecrets = rawNew.map((v, i) => parseU8(v, `new_secrets[${i}]`));
+
+    return {
+        nodes,
+        threshold: Number(threshold),
+        epochDurationMicros,
+        secretsToRetain,
+        newSecrets,
+        description: description.trim(),
+        targetEpoch,
+    };
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Build a ProposalInput from a pre-existing TOML file (skips editor).
+ * Used when the user passes a file path to `new-proposal`.
+ */
+export async function proposalFromFile(filePath: string, state: aceNetwork.State): Promise<ProposalInput | null> {
+    let content: string;
+    try {
+        content = readFileSync(filePath, 'utf8');
+    } catch (e) {
+        throw new Error(`Cannot read file "${filePath}": ${(e as Error).message}`);
+    }
+    return parseAndValidate(content, state);
+}
+
+/**
+ * Open $EDITOR with a pre-filled TOML template, then parse and return the result.
+ * Returns null if the user cancelled (empty file or non-zero editor exit).
+ */
+export async function buildProposalFor(state: aceNetwork.State): Promise<ProposalInput | null> {
+    const template = generateTemplate(state);
+    const tmpFile = join(tmpdir(), `ace-proposal-${Date.now()}.toml`);
+    writeFileSync(tmpFile, template, 'utf8');
+
+    const editorRaw = process.env.EDITOR ?? process.env.VISUAL ?? 'vi';
+    const editorParts = editorRaw.trim().split(/\s+/);
+    const editor = editorParts[0]!;
+    const editorArgs = [...editorParts.slice(1), tmpFile];
+
+    const result = spawnSync(editor, editorArgs, { stdio: 'inherit' });
+
+    let content: string;
+    try {
+        content = readFileSync(tmpFile, 'utf8');
+    } finally {
+        try { unlinkSync(tmpFile); } catch {}
+    }
+
+    if (result.status !== 0) {
+        console.log('Editor exited with non-zero status — cancelled.');
         return null;
     }
-    console.log('\nAvailable keypairs:');
-    for (const [i, s] of state.secrets.entries()) console.log(`  [${i}] ${s.toStringLong()}`);
-    console.log();
 
-    let addrStr = '';
-    let addrErr = '';
-    while (true) {
-        if (addrErr) console.log(`  ${RED}${addrErr}${R}`);
-        const r = await escInput({ message: 'Keypair address (original DKG session address)', default: addrStr });
-        if (r === undefined) return null; // Esc → back to type selection
-        addrStr = r.trim();
-        try {
-            AccountAddress.fromString(addrStr);
-            return { kind: 'SecretDeactivation', originalDkgAddr: AccountAddress.fromString(addrStr) };
-        } catch { addrErr = 'Invalid address'; }
+    if (content.trim() === '' || content.trim() === template.trim()) {
+        console.log('No changes made — cancelled.');
+        return null;
     }
+
+    return parseAndValidate(content, state);
 }
 
-export async function buildProposalFor(state: aceNetwork.State): Promise<ProposalInput | null> {
-    while (true) {
-        const kind = await escSelect({
-            message: 'Proposal type',
-            choices: [
-                { name: 'NewSecret — generate a new keypair',              value: 'NewSecret' },
-                { name: 'CommitteeChange — change the node set/threshold', value: 'CommitteeChange' },
-                { name: 'ResharingIntervalUpdate — change epoch duration', value: 'ResharingIntervalUpdate' },
-                { name: 'SecretDeactivation — deactivate a keypair',       value: 'SecretDeactivation' },
-                { name: '← Cancel',                                         value: 'cancel' },
-            ],
-        });
-
-        if (kind === null || kind === 'cancel') return null;
-
-        let result: ProposalInput | null;
-        switch (kind) {
-            case 'NewSecret':                result = await collectNewSecret(); break;
-            case 'CommitteeChange':          result = await collectCommitteeChange(state); break;
-            case 'ResharingIntervalUpdate':  result = await collectResharingIntervalUpdate(); break;
-            case 'SecretDeactivation':       result = await collectSecretDeactivation(state); break;
-            default: return null;
-        }
-
-        if (result !== null) return result;
-        // null → Esc was pressed, loop back to type selection
+function parseAndValidate(content: string, state: aceNetwork.State): ProposalInput | null {
+    if (content.trim() === '') {
+        console.log('File is empty — cancelled.');
+        return null;
     }
+
+    let doc: Record<string, unknown>;
+    try {
+        doc = parseToml(content) as Record<string, unknown>;
+    } catch (e) {
+        throw new Error(`TOML parse error: ${(e as Error).message}`);
+    }
+
+    const proposal = tomlToProposalInput(doc, state.epoch);
+
+    // Cross-check secrets_to_retain against on-chain active secrets.
+    const activeSessions = new Set(state.secrets.map(s => s.currentSession.toStringLong()));
+    for (const addr of proposal.secretsToRetain) {
+        if (!activeSessions.has(addr.toStringLong()))
+            throw new Error(`secrets_to_retain: "${addr.toStringLong()}" is not an active secret`);
+    }
+
+    return proposal;
 }

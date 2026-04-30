@@ -182,7 +182,7 @@ async function main() {
             return stateResult.okValue!.secrets.length >= 1;
         }, 90_000);
         const state0 = (await getNetworkState(adminAccountAddress)).unwrapOrThrow('state read failed after keypair-0 DKG');
-        const keypair0Id = state0.secrets[0];
+        const keypair0Id = state0.secrets[0]!.keypairId;
         console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
         await sleep(10000);
 

@@ -4,16 +4,49 @@
 import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 
-export type ProposalVariant =
-    | { kind: 'CommitteeChange'; nodes: AccountAddress[]; threshold: number }
-    | { kind: 'ResharingIntervalUpdate'; newIntervalSecs: bigint }
-    | { kind: 'NewSecret'; scheme: number }
-    | { kind: 'SecretDeactivation'; originalDkgAddr: AccountAddress };
+const SCHEME_NAMES: Record<number, string> = {
+    0: 'bls12381_g1',
+};
+
+export function schemeName(scheme: number): string {
+    return SCHEME_NAMES[scheme] ?? `scheme-${scheme}`;
+}
+
+/** Mirrors `ace::network::SecretInfo` from `state_view_v0_bcs`. */
+export class SecretInfo {
+    constructor(
+        /** Address of the most recent DKG or DKR session — use this in secrets_to_retain. */
+        readonly currentSession: AccountAddress,
+        /** Address of the original DKG session that created this secret lineage. */
+        readonly keypairId: AccountAddress,
+        readonly scheme: number,
+    ) {}
+
+    schemeName(): string { return schemeName(this.scheme); }
+
+    static deserialize(deserializer: Deserializer): SecretInfo {
+        const currentSession = AccountAddress.deserialize(deserializer);
+        const keypairId = AccountAddress.deserialize(deserializer);
+        const scheme = deserializer.deserializeU8();
+        return new SecretInfo(currentSession, keypairId, scheme);
+    }
+}
+
+/** Mirrors `ace::network::ProposedEpochConfig`. */
+export type ProposedEpochConfig = {
+    nodes: AccountAddress[];
+    threshold: number;
+    epochDurationMicros: bigint;
+    secretsToRetain: AccountAddress[];
+    newSecrets: number[];
+    description: string;
+    targetEpoch: number;
+};
 
 /** Mirrors `ace::network::ProposalView` from `state_view_v0_bcs`. */
 export class ProposalView {
     constructor(
-        readonly proposal: ProposalVariant,
+        readonly proposal: ProposedEpochConfig,
         readonly votingSession: AccountAddress,
         /** votes[i] === true iff curNodes[i] has voted. */
         readonly votes: boolean[],
@@ -31,35 +64,26 @@ export class ProposalView {
     }
 
     static deserialize(deserializer: Deserializer): ProposalView {
-        const variant = deserializer.deserializeUleb128AsU32();
-        let proposal: ProposalVariant;
-        switch (variant) {
-            case 0: {
-                const len = deserializer.deserializeUleb128AsU32();
-                const nodes: AccountAddress[] = [];
-                for (let i = 0; i < len; i++) nodes.push(AccountAddress.deserialize(deserializer));
-                const threshold = Number(deserializer.deserializeU64());
-                proposal = { kind: 'CommitteeChange', nodes, threshold };
-                break;
-            }
-            case 1: {
-                const newIntervalSecs = deserializer.deserializeU64();
-                proposal = { kind: 'ResharingIntervalUpdate', newIntervalSecs };
-                break;
-            }
-            case 2: {
-                const scheme = deserializer.deserializeU8();
-                proposal = { kind: 'NewSecret', scheme };
-                break;
-            }
-            case 3: {
-                const originalDkgAddr = AccountAddress.deserialize(deserializer);
-                proposal = { kind: 'SecretDeactivation', originalDkgAddr };
-                break;
-            }
-            default:
-                throw `Unknown Proposal variant: ${variant}`;
-        }
+        const nodesLen = deserializer.deserializeUleb128AsU32();
+        const nodes: AccountAddress[] = [];
+        for (let i = 0; i < nodesLen; i++) nodes.push(AccountAddress.deserialize(deserializer));
+        const threshold = Number(deserializer.deserializeU64());
+        const epochDurationMicros = deserializer.deserializeU64();
+
+        const retainLen = deserializer.deserializeUleb128AsU32();
+        const secretsToRetain: AccountAddress[] = [];
+        for (let i = 0; i < retainLen; i++) secretsToRetain.push(AccountAddress.deserialize(deserializer));
+
+        const newSecretsLen = deserializer.deserializeUleb128AsU32();
+        const newSecrets: number[] = [];
+        for (let i = 0; i < newSecretsLen; i++) newSecrets.push(deserializer.deserializeU8());
+
+        const description = deserializer.deserializeStr();
+        const targetEpoch = Number(deserializer.deserializeU64());
+
+        const proposal: ProposedEpochConfig = {
+            nodes, threshold, epochDurationMicros, secretsToRetain, newSecrets, description, targetEpoch,
+        };
 
         const votingSession = AccountAddress.deserialize(deserializer);
 
@@ -106,7 +130,7 @@ export class State {
         readonly epochDurationMicros: bigint,
         readonly curNodes: AccountAddress[],
         readonly curThreshold: number,
-        readonly secrets: AccountAddress[],
+        readonly secrets: SecretInfo[],
         /** proposals[i] is node i's active proposal, last slot is admin's. null = no proposal. */
         readonly proposals: (ProposalView | null)[],
         readonly epochChangeInfo: EpochChangeView | null,
@@ -135,8 +159,8 @@ export class State {
                 const curThreshold = Number(deserializer.deserializeU64());
 
                 const secretsLen = deserializer.deserializeUleb128AsU32();
-                const secrets: AccountAddress[] = [];
-                for (let i = 0; i < secretsLen; i++) secrets.push(AccountAddress.deserialize(deserializer));
+                const secrets: SecretInfo[] = [];
+                for (let i = 0; i < secretsLen; i++) secrets.push(SecretInfo.deserialize(deserializer));
 
                 const proposalsLen = deserializer.deserializeUleb128AsU32();
                 const proposals: (ProposalView | null)[] = [];

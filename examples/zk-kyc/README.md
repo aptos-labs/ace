@@ -1,7 +1,7 @@
 # ZK-KYC Example
 
-A DeFi protocol encrypts a secret so that only KYC-verified users may decrypt it —
-**without revealing their nationality**.  This example walks through the full flow as each
+A DeFi protocol encrypts a secret so that only age-verified users (18+) may decrypt it —
+**without revealing their actual age**.  This example walks through the full flow as each
 party would experience it, using Groth16 zero-knowledge proofs and the ACE custom-flow
 decryption hook.
 
@@ -12,44 +12,25 @@ decryption hook.
 ### KYC Provider
 A regulated identity-verification service (Jumio, Persona, …).  They hold a Baby JubJub
 signing key — in production this lives in an HSM.  Their job is to check a user's
-identity documents and issue a **credential**: a signature over that user's jurisdiction
-code.  They learn nothing about what the user does with the credential later.
+identity documents, determine their age, and issue a **credential**: a signature over
+that age value.  They learn nothing about what the user does with the credential later.
 
 ### The App (DeFi Protocol)
 A protocol that wants to gate some content — a compliance report, trading parameters,
-gated yield, etc. — to KYC-verified users only.  They deploy a Groth16 verifier contract
-on-chain and encrypt their secret under a KYC policy.  They learn nothing about which
+gated yield, etc. — to verified adults only.  They deploy a Groth16 verifier contract
+on-chain and encrypt their secret under an age policy.  They learn nothing about which
 users decrypt or when.
 
 ### The User
 Someone who has passed KYC and holds a credential from the provider.  They want to
 decrypt the app's secret.  To do so they generate a zero-knowledge proof locally — the
-proof shows they hold a valid credential for a permitted jurisdiction, without revealing
-which country.
+proof shows they hold a valid credential attesting to age ≥ 18, without revealing
+their exact age.
 
 ### ACE Workers (infrastructure)
 A threshold-decryption network that enforces the policy.  Before releasing a key share,
 each worker simulates the app's `check_acl` view function on-chain.  No single worker can
 decrypt alone; the user needs a threshold of workers to accept the proof.
-
----
-
-## What is a jurisdiction code?
-
-A jurisdiction code is a small integer identifying the jurisdiction where the user was
-KYC-verified.  ZK circuits operate over finite-field arithmetic, so credentials are field
-elements rather than strings.  This demo uses a simple mapping:
-
-| Code | Status |
-|------|--------|
-| 0–3 | Blocked |
-| 10, 20, … (any other value) | Permitted |
-
-A production system would define its own blocklist and could use a standardised numbering
-scheme such as [ISO 3166-1 numeric](https://en.wikipedia.org/wiki/ISO_3166-1_numeric).
-
-The jurisdiction value is a **private** input to the ZK circuit — the on-chain verifier
-and ACE workers learn only that it is not on the blocklist, nothing more.
 
 ---
 
@@ -60,11 +41,14 @@ The Groth16 circuit proves three statements simultaneously:
 | Statement | How it is enforced |
 |---|---|
 | I hold a credential signed by the registered KYC provider | EdDSA-Poseidon signature verification inside the circuit |
-| My jurisdiction is **not** on the blocklist (codes 0–3) | Arithmetic constraint: `not_blocked === 1` |
+| My age is **18 or older** | Arithmetic constraint: `GreaterEqThan(8)` comparator |
 | This proof is bound to my ACE decryption key `enc_pk` | The circuit packs `enc_pk[67]` into 3 BN254 Fr public inputs |
 
 The third guarantee prevents replay: a proof generated for one decryption session cannot
 be reused for a different one.
+
+The age value itself is a **private** input — the on-chain verifier and ACE workers learn
+only that it satisfies the ≥ 18 threshold, nothing more.
 
 ---
 
@@ -133,10 +117,10 @@ production this key lives in an HSM and the private key is never exported.
 
 ### Step 2 — App: deploy the on-chain verifier
 
-> *The DeFi protocol deploys its KYC policy on-chain.  It locks in two things: the
-> Groth16 verification key (which defines the circuit rules) and the KYC provider's
-> public key (which determines whose credentials are accepted).  Neither can be changed
-> after initialization.*
+> *The DeFi protocol deploys its age-verification policy on-chain.  It locks in two
+> things: the Groth16 verification key (which defines the circuit rules, including the
+> age ≥ 18 threshold) and the KYC provider's public key (which determines whose
+> credentials are accepted).  Neither can be changed after initialization.*
 
 ```bash
 pnpm 2-deploy-contract
@@ -153,24 +137,24 @@ pnpm 2-deploy-contract
 ### Step 3 — KYC Provider: issue a credential to a user
 
 > *A user has presented their identity documents.  The KYC provider verifies them,
-> determines the user's jurisdiction, and issues a credential — a signature over that
-> jurisdiction code.  The user stores this credential locally; it is never published.*
+> determines the user's age, and issues a credential — a signature over that age value.
+> The user stores this credential locally; it is never published.*
 
 ```bash
-pnpm 3-issue-credential            # jurisdiction 10 (United States)
-pnpm 3-issue-credential -- 20      # or jurisdiction 20 (European Union)
+pnpm 3-issue-credential            # age 25 (default)
+pnpm 3-issue-credential -- 30      # or a different eligible age
 ```
 
-Computes `Poseidon(jurisdiction)` and signs the hash with the provider's Baby JubJub
-private key.  Saves the signature to `data/credential.json`.
+Computes `Poseidon(age)` and signs the hash with the provider's Baby JubJub private key.
+Saves the signature to `data/credential.json`.
 
 ---
 
-### Step 4 — App: encrypt a secret under the KYC policy
+### Step 4 — App: encrypt a secret under the age policy
 
 > *The protocol publishes some gated content.  It uses ACE to encrypt the plaintext so
-> that only someone who can pass the `check_acl` check — i.e. only a KYC-verified user
-> from a permitted jurisdiction — can obtain the decryption key.*
+> that only someone who can pass the `check_acl` check — i.e. only a user with a valid
+> age credential showing 18+ — can obtain the decryption key.*
 
 ```bash
 pnpm 4-encrypt
@@ -183,13 +167,13 @@ Anyone can run this step — encryption is a public operation.
 
 ---
 
-### Step 5 — User: prove compliance and decrypt
+### Step 5 — User: prove eligibility and decrypt
 
 > *The user wants to read the gated content.  They have a credential from the provider
-> but do not want to reveal their country.  They run the ZK prover locally: it produces
-> a proof that they hold a valid credential for a permitted jurisdiction, without
-> disclosing which one.  The proof is sent to ACE workers, who verify it on-chain and
-> release their key shares.*
+> but do not want to reveal their exact age.  They run the ZK prover locally: it produces
+> a proof that they hold a valid credential attesting to age ≥ 18, without disclosing the
+> actual value.  The proof is sent to ACE workers, who verify it on-chain and release
+> their key shares.*
 
 ```bash
 pnpm 5-decrypt
@@ -214,15 +198,15 @@ Plaintext: "KYC-GATED SECRET: you have been verified!"
 
 ---
 
-### Step 6 — What if a user is from a blocked jurisdiction? (optional)
+### Step 6 — What if a user is underage? (optional)
 
-> *A corrupt KYC provider issues a credential for a blocked jurisdiction (code 0).  Or a
-> user tries to forge one.  Either way, the ZK prover itself refuses to produce a proof —
-> the circuit's arithmetic constraints make it mathematically impossible.*
+> *A corrupt KYC provider issues a credential for age 16.  Or a user tries to forge one.
+> Either way, the ZK prover itself refuses to produce a proof — the circuit's arithmetic
+> constraints make it mathematically impossible.*
 
 ```bash
-pnpm 6-try-sanctioned              # blocked jurisdiction code 0
-pnpm 6-try-sanctioned -- 1         # blocked jurisdiction code 1
+pnpm 6-try-underage              # age 16 (default)
+pnpm 6-try-underage -- 17        # age 17
 ```
 
 Expected output:
@@ -230,14 +214,14 @@ Expected output:
 ```
 === Proof generation FAILED as expected! ===
 
-The circuit constraint "not_blocked === 1" is violated for Jurisdiction A.
+The circuit constraint "age >= 18" is violated for age 16.
 The witness is inconsistent — no valid proof can be produced.
 ```
 
-The blocklist check is baked into the circuit's arithmetic constraints — it is not a
-check performed by any trusted party at proof time.  Even if the KYC provider issues a
-credential for a blocked jurisdiction, the user cannot produce a valid proof.  The
-constraint `not_blocked === 1` is as hard to bypass as breaking the underlying
+The age check is baked into the circuit's arithmetic constraints — it is not a check
+performed by any trusted party at proof time.  Even if a corrupt KYC provider issues a
+credential for an underage holder, the user cannot produce a valid proof.  The
+`GreaterEqThan` constraint is as hard to bypass as breaking the underlying
 elliptic-curve cryptography.
 
 ---
@@ -247,7 +231,7 @@ elliptic-curve cryptography.
 ```
 Private inputs (user only)       Public inputs (visible to on-chain verifier)
 ────────────────────────         ────────────────────────────────────────────
-jurisdiction (u8)                pk_provider_ax, pk_provider_ay
+age (u8)                         pk_provider_ax, pk_provider_ay
 sig_r8x, sig_r8y, sig_s          enc_pk_p0, enc_pk_p1, enc_pk_p2
 enc_pk[67]
 ```
@@ -257,6 +241,7 @@ enc_pk[67]
 | ZK proof system | Groth16 over BN254 (bn128) |
 | Signature scheme | EdDSA-Poseidon over Baby JubJub |
 | Hash function (inside circuit) | Poseidon |
+| Age comparison | `GreaterEqThan(8)` from circomlib |
 | On-chain verifier | `aptos_std::crypto_algebra` + `bn254_algebra` |
 | Trusted setup | Local Powers-of-Tau + Phase 2 (demo only) |
 
@@ -268,7 +253,7 @@ enc_pk[67]
 |---|---|
 | Local Powers-of-Tau ceremony | Public ceremony (Hermez, Semaphore, …) |
 | Private key in `data/provider-key.json` | HSM at a regulated KYC provider |
-| Jurisdiction as a small integer | Richer credential (age, accreditation, …) |
+| Age threshold hardcoded at 18 | Configurable threshold per protocol |
 | Localnet | Aptos mainnet/testnet |
 | Fixed label `"kyc-demo"` | Per-protocol label registered with ACE |
 
@@ -289,9 +274,9 @@ zk-kyc/
 │   ├── common.ts           ← shared helpers (byte encoding, packing)
 │   ├── 1-provider-setup.ts ← generate KYC provider Baby JubJub keypair
 │   ├── 2-deploy-contract.ts← deploy Move module + initialize with VK
-│   ├── 3-issue-credential.ts← provider signs a jurisdiction code
-│   ├── 4-encrypt.ts        ← encrypt a secret under the KYC policy
+│   ├── 3-issue-credential.ts← provider signs an age value
+│   ├── 4-encrypt.ts        ← encrypt a secret under the age policy
 │   ├── 5-decrypt.ts        ← generate ZK proof + ACE decrypt
-│   └── 6-try-sanctioned.ts ← watch proof generation fail for a blocked jurisdiction
+│   └── 6-try-underage.ts   ← watch proof generation fail for age < 18
 └── data/                   ← generated files (gitignored)
 ```

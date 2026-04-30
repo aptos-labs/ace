@@ -12,9 +12,8 @@
 /// proof (pi_a 64B || pi_b 128B || pi_c 64B).
 ///
 /// The verifier checks that the proof simultaneously witnesses:
-///   1. A valid EdDSA-Poseidon signature from the KYC provider over a
-///      jurisdiction code.
-///   2. The jurisdiction is NOT in the blocked list (codes 0–3).
+///   1. A valid EdDSA-Poseidon signature from the KYC provider over an age value.
+///   2. The age is 18 or older.
 ///   3. The proof is bound to the caller's `enc_pk` — preventing replay against
 ///      a different key.
 ///
@@ -88,8 +87,8 @@ module admin::kyc_verifier {
     }
 
     // ACE hook: returns true iff payload is a valid Groth16 proof that the
-    // prover holds a KYC credential for a permitted jurisdiction (not in the
-    // blocked list), bound to enc_pk.  label is verified by ACE itself.
+    // prover holds a KYC credential showing age >= 18, bound to enc_pk.
+    // label is verified by ACE itself and is ignored here.
     #[view]
     public fun check_acl(
         _label: vector<u8>,

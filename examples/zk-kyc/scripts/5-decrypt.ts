@@ -6,11 +6,11 @@
  *
  * This is the core of the ZK-KYC demo.
  *
- * 1. Reads the credential (jurisdiction + EdDSA signature from the provider).
+ * 1. Reads the credential (age + EdDSA signature from the provider).
  * 2. Packs the caller's enc_pk into the three BN254 Fr public inputs.
  * 3. Generates a Groth16 proof using snarkjs — this is where the ZK magic
- *    happens: the proof asserts knowledge of a valid credential and a
- *    permitted jurisdiction WITHOUT revealing the jurisdiction itself.
+ *    happens: the proof asserts that the holder has a valid credential and is
+ *    18 or older, WITHOUT revealing the actual age.
  * 4. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
  *    ACE workers call `kyc_verifier::check_acl` on-chain; if the proof
  *    verifies, they release their key shares.
@@ -43,7 +43,7 @@ interface ProviderKey {
 }
 
 interface Credential {
-    jurisdiction: number;
+    age: number;
     sig_r8x: string;
     sig_r8y: string;
     sig_s: string;
@@ -80,7 +80,7 @@ async function main() {
         enc_pk_p1: p1.toString(),
         enc_pk_p2: p2.toString(),
         // Private inputs (never revealed)
-        jurisdiction: credential.jurisdiction.toString(),
+        age: credential.age.toString(),
         sig_r8x: credential.sig_r8x,
         sig_r8y: credential.sig_r8y,
         sig_s:   credential.sig_s,
@@ -94,9 +94,9 @@ async function main() {
     console.log('Generating Groth16 proof (this may take a few seconds)...');
     console.log('  Proving:');
     console.log('    ✓ I hold a credential signed by the registered KYC provider');
-    console.log('    ✓ My jurisdiction is not on the blocked list');
+    console.log('    ✓ My age is 18 or older');
     console.log('    ✓ The proof is bound to my enc_pk (no replay possible)');
-    console.log('  The jurisdiction itself remains private.');
+    console.log('  The actual age remains private.');
     console.log('');
 
     const { proof } = await groth16.fullProve(circuitInput, wasmPath, zkeyPath);

@@ -2,7 +2,7 @@
   "name": "zk-kyc",
   "version": "0.1.0",
   "private": true,
-  "description": "ZK-KYC example: Groth16 proof of compliant jurisdiction as ACE custom-flow payload",
+  "description": "ZK-KYC example: Groth16 proof of age eligibility as ACE custom-flow payload",
   "type": "module",
   "scripts": {
     "setup-circuit": "cd circuit && ./setup.sh",
@@ -11,7 +11,7 @@
     "3-issue-credential": "tsx scripts/3-issue-credential.ts",
     "4-encrypt": "tsx scripts/4-encrypt.ts",
     "5-decrypt": "tsx scripts/5-decrypt.ts",
-    "6-try-sanctioned": "tsx scripts/6-try-sanctioned.ts",
+    "6-try-underage": "tsx scripts/6-try-underage.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

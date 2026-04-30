@@ -5,7 +5,7 @@
  * Script 1 — KYC Provider Setup
  *
  * Generates a Baby JubJub keypair for the KYC provider.
- * The private key is used to issue credentials (sign jurisdiction codes).
+ * The private key is used to issue credentials (sign age values).
  * The public key is stored on-chain inside the Groth16 verification key.
  *
  * In a real system this key would live in a HSM at the KYC provider.

@@ -2,21 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Script 6 — Try a Blocked Jurisdiction
+ * Script 6 — Try an Underage Credential
  *
- * Demonstrates that the ZK circuit itself enforces the blocklist check.
- * Even if an adversary convinces a corrupt KYC provider to sign a credential
- * for a blocked jurisdiction (codes 0–3), the Groth16 prover will FAIL to
- * generate a valid proof — because the constraint `not_blocked === 1` is
- * violated and the witness is inconsistent.
+ * Demonstrates that the ZK circuit itself enforces the age check.
+ * Even if an adversary convinces a KYC provider to sign a credential for
+ * age 16, the Groth16 prover will FAIL to generate a valid proof — because
+ * the constraint `ageCheck.out === 1` (age >= 18) is violated and the
+ * witness is inconsistent.
  *
- * This is the key privacy/security property:
- *   - A blocked jurisdiction cannot produce a valid proof (enforced cryptographically).
- *   - A valid proof does NOT reveal the actual jurisdiction (zero knowledge).
+ * This is the key property:
+ *   - An underage credential cannot produce a valid proof (enforced cryptographically).
+ *   - A valid proof does NOT reveal the actual age (zero knowledge).
  *
  * Usage:
- *   pnpm 6-try-sanctioned              # tries blocked jurisdiction 0 by default
- *   pnpm 6-try-sanctioned -- 1         # tries blocked jurisdiction 1
+ *   pnpm 6-try-underage              # tries age 16 by default
+ *   pnpm 6-try-underage -- 17        # tries age 17
  */
 
 import { buildEddsa, buildPoseidon } from 'circomlibjs';
@@ -40,25 +40,20 @@ interface Session {
     label: string;
 }
 
-const BLOCKED: Record<number, string> = {
-    0: 'Jurisdiction A',
-    1: 'Jurisdiction B',
-    2: 'Jurisdiction C',
-    3: 'Jurisdiction D',
-};
-
 async function main() {
     ensureDataDir();
 
-    const jurisdiction = parseInt(process.argv[2] ?? '0', 10);
-    const name = BLOCKED[jurisdiction];
-    if (!name) {
-        console.error(`Jurisdiction ${jurisdiction} is not on the blocked list.`);
-        console.error('Use 0, 1, 2, or 3 (the four blocked codes).');
+    const age = parseInt(process.argv[2] ?? '16', 10);
+    if (isNaN(age) || age < 0 || age > 255) {
+        console.error('age must be an integer 0–255');
+        process.exit(1);
+    }
+    if (age >= 18) {
+        console.error(`Age ${age} is already eligible (>= 18). Use an age below 18.`);
         process.exit(1);
     }
 
-    console.log(`Attempting to obtain a credential for blocked jurisdiction ${jurisdiction} (${name})...`);
+    console.log(`Attempting to obtain a credential for age ${age} (underage)...`);
 
     const providerKey = readJson<ProviderKey>(path.join(DATA_DIR, 'provider-key.json'));
     const session     = readJson<Session>(path.join(DATA_DIR, 'session.json'));
@@ -68,9 +63,9 @@ async function main() {
     const eddsa    = await buildEddsa();
     const F        = eddsa.F;
 
-    // Issue credential for the blocked jurisdiction (imagine a corrupt provider)
+    // Issue credential for the underage value (imagine a corrupt provider)
     const privKey  = Buffer.from(providerKey.private, 'hex');
-    const msgHash  = poseidon([BigInt(jurisdiction)]);
+    const msgHash  = poseidon([BigInt(age)]);
     const sig      = eddsa.signPoseidon(privKey, msgHash);
 
     const [p0, p1, p2] = packEncPk(encPk);
@@ -81,7 +76,7 @@ async function main() {
         enc_pk_p0: p0.toString(),
         enc_pk_p1: p1.toString(),
         enc_pk_p2: p2.toString(),
-        jurisdiction: jurisdiction.toString(),
+        age: age.toString(),
         sig_r8x: F.toObject(sig.R8[0]).toString(),
         sig_r8y: F.toObject(sig.R8[1]).toString(),
         sig_s:   sig.S.toString(),
@@ -92,24 +87,24 @@ async function main() {
     const zkeyPath = path.join(CIRCUIT_DIR, 'kyc_final.zkey');
 
     console.log('');
-    console.log('Attempting to generate proof for blocked jurisdiction...');
+    console.log('Attempting to generate proof for underage credential...');
     try {
         await groth16.fullProve(circuitInput, wasmPath, zkeyPath);
         console.error('');
-        console.error('ERROR: Proof generation SHOULD have failed for a blocked jurisdiction!');
+        console.error('ERROR: Proof generation SHOULD have failed for an underage credential!');
         process.exit(1);
     } catch (_err) {
         console.log('');
         console.log('=== Proof generation FAILED as expected! ===');
         console.log('');
-        console.log(`The circuit constraint "not_blocked === 1" is violated for ${name}.`);
+        console.log(`The circuit constraint "age >= 18" is violated for age ${age}.`);
         console.log('The witness is inconsistent — no valid proof can be produced.');
         console.log('');
         console.log('Key insight:');
-        console.log('  Even if a corrupt KYC provider issues a credential for a blocked');
-        console.log('  jurisdiction, the prover cannot construct a valid ZK proof. The');
-        console.log('  blocklist check is enforced by the circuit\'s arithmetic constraints,');
-        console.log('  not by trusting any party at proof time.');
+        console.log('  Even if a corrupt KYC provider issues a credential for an underage');
+        console.log('  holder, the prover cannot construct a valid ZK proof. The age check');
+        console.log('  is enforced by the circuit\'s arithmetic constraints, not by trusting');
+        console.log('  any party at proof time.');
     }
 }
 

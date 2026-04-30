@@ -10,10 +10,10 @@ include "circomlib/circuits/comparators.circom";
 //
 // KYCProof — proves three things simultaneously:
 //
-//   1. The prover holds a credential (jurisdiction code) that was signed by the
-//      KYC provider using EdDSA over Baby Jubjub with a Poseidon message hash.
+//   1. The prover holds a credential (age) that was signed by the KYC provider
+//      using EdDSA over Baby Jubjub with a Poseidon message hash.
 //
-//   2. The jurisdiction is not in the blocked list (codes 0–3).
+//   2. The prover's age is 18 or older.
 //
 //   3. The proof is bound to a specific enc_pk (the ACE decryption request key),
 //      packed as three BN254 Fr field elements, preventing replay against a
@@ -26,7 +26,7 @@ include "circomlib/circuits/comparators.circom";
 //                                      p2 = bytes[62..66]
 //
 // Private inputs (known only to the prover, never revealed):
-//   jurisdiction  — numeric country code (0–255)
+//   age           — numeric age (0–255)
 //   sig_r8x, sig_r8y, sig_s  — EdDSA signature components
 //   enc_pk[67]   — raw enc_pk bytes
 //
@@ -40,21 +40,21 @@ template KYCProof() {
     signal input enc_pk_p2;
 
     // ── Private inputs ─────────────────────────────────────────────────────────
-    signal input jurisdiction;
+    signal input age;
     signal input sig_r8x;
     signal input sig_r8y;
     signal input sig_s;
     signal input enc_pk[67];
 
     // ── 1. EdDSA signature verification ───────────────────────────────────────
-    // The message is Poseidon(jurisdiction). The KYC provider signs this message
+    // The message is Poseidon(age). The KYC provider signs this message
     // with their Baby Jubjub private key using signPoseidon (circomlibjs).
     // EdDSAPoseidonVerifier internally computes the challenge as:
     //   H = Poseidon(R8x, R8y, Ax, Ay, M)
     // and checks B8*S == R8 + A*H on Baby Jubjub.
 
     component msg_hash = Poseidon(1);
-    msg_hash.inputs[0] <== jurisdiction;
+    msg_hash.inputs[0] <== age;
 
     component verifier = EdDSAPoseidonVerifier();
     verifier.enabled <== 1;
@@ -65,20 +65,12 @@ template KYCProof() {
     verifier.S      <== sig_s;
     verifier.M      <== msg_hash.out;
 
-    // ── 2. Jurisdiction is not blocked ────────────────────────────────────────
-    // Blocked codes: 0, 1, 2, 3.
-    // Constraint: product of (1 - IsEqual(jurisdiction, i)) for i in 0..3 must be 1.
-
-    component eq[4];
-    for (var i = 0; i < 4; i++) {
-        eq[i] = IsEqual();
-        eq[i].in[0] <== jurisdiction;
-        eq[i].in[1] <== i;
-    }
-    signal nb01 <== (1 - eq[0].out) * (1 - eq[1].out);
-    signal nb23 <== (1 - eq[2].out) * (1 - eq[3].out);
-    signal not_blocked <== nb01 * nb23;
-    not_blocked === 1;
+    // ── 2. Age is 18 or older ─────────────────────────────────────────────────
+    // GreaterEqThan(8) checks age >= 18 within 8-bit range (0–255).
+    component ageCheck = GreaterEqThan(8);
+    ageCheck.in[0] <== age;
+    ageCheck.in[1] <== 18;
+    ageCheck.out === 1;
 
     // ── 3. enc_pk packing ──────────────────────────────────────────────────────
     // Pack enc_pk[67] bytes into three BN254 Fr scalars (little-endian).

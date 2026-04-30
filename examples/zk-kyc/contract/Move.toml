@@ -1,0 +1,11 @@
+[package]
+name = "KycVerifier"
+version = "1.0.0"
+
+[addresses]
+admin = "0xcafe"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"

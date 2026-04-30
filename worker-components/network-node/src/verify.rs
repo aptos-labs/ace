@@ -623,7 +623,171 @@ fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64) -> Result<Strin
     ))
 }
 
+// ── Custom-flow verification ──────────────────────────────────────────────────
+
+/// Verify a `CustomFlowProof` for a `CustomFlowRequest`.
+///
+/// `enc_pk_bytes` is the caller's PKE public key (67B), passed as-is to `check_acl`.
+/// `proof_bytes` starts with the proof scheme byte.
+pub async fn verify_custom(fdd: &ParsedFdd, epoch: u64, enc_pk_bytes: &[u8], proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
+    let outer_scheme = proof_bytes
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow!("verify_custom: empty proof bytes"))?;
+    let inner = &proof_bytes[1..];
+
+    match (outer_scheme, &fdd.chain) {
+        (0, ParsedChain::Aptos { .. }) => {
+            let (payload, _) = read_bcs_bytes_at(inner, 0)?;
+            verify_custom_aptos(fdd, enc_pk_bytes, &payload, chain_rpc).await
+        }
+        (1, ParsedChain::Solana { .. }) => {
+            let proof = parse_solana_proof(inner)?;
+            verify_custom_solana(fdd, epoch, enc_pk_bytes, &proof, chain_rpc).await
+        }
+        (s, chain) => Err(anyhow!(
+            "verify_custom: unsupported scheme combination proof={} chain={}",
+            s,
+            match chain {
+                ParsedChain::Aptos { .. } => 0,
+                ParsedChain::Solana { .. } => 1,
+            }
+        )),
+    }
+}
+
+async fn verify_custom_aptos(fdd: &ParsedFdd, enc_pk_bytes: &[u8], payload: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
+    let (chain_id, module_addr_bytes, module_name, function_name) = match &fdd.chain {
+        ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name } => {
+            (*chain_id, module_addr_bytes, module_name.as_str(), function_name.as_str())
+        }
+        _ => return Err(anyhow!("verify_custom_aptos: chain is not Aptos")),
+    };
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    check_aptos_acl(fdd, enc_pk_bytes, payload, module_addr_bytes, module_name, function_name, rpc).await
+}
+
+/// Calls `{moduleAddr}::{moduleName}::{functionName}(label, encPk, payload)` and expects `true`.
+async fn check_aptos_acl(
+    fdd: &ParsedFdd,
+    enc_pk_bytes: &[u8],
+    payload: &[u8],
+    module_addr_bytes: &[u8; 32],
+    module_name: &str,
+    function_name: &str,
+    rpc: &vss_common::AptosRpc,
+) -> Result<()> {
+    let func = format!("0x{}::{}::{}", hex::encode(module_addr_bytes), module_name, function_name);
+    let label_hex = format!("0x{}", hex::encode(&fdd.domain));
+    let enc_pk_hex = format!("0x{}", hex::encode(enc_pk_bytes));
+    let payload_hex = format!("0x{}", hex::encode(payload));
+
+    let result = rpc
+        .call_view(&func, &[json!(label_hex), json!(enc_pk_hex), json!(payload_hex)])
+        .await
+        .map_err(|e| anyhow!("check_aptos_acl: view call failed for {}: {}", func, e))?;
+
+    let returned = result
+        .first()
+        .ok_or_else(|| anyhow!("check_aptos_acl: empty view result"))?;
+    if returned.as_bool() != Some(true) && returned.to_string() != "true" {
+        return Err(anyhow!("check_aptos_acl: access denied (returned {:?})", returned));
+    }
+    Ok(())
+}
+
+async fn verify_custom_solana(fdd: &ParsedFdd, epoch: u64, enc_pk_bytes: &[u8], proof: &SolanaProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
+    let (known_chain_name, expected_program_id) = match &fdd.chain {
+        ParsedChain::Solana { known_chain_name, program_id } => (known_chain_name.as_str(), program_id),
+        _ => return Err(anyhow!("verify_custom_solana: chain is not Solana")),
+    };
+
+    let is_versioned = proof.inner_scheme == 1;
+    validate_solana_custom_txn(
+        &proof.txn_bytes,
+        expected_program_id,
+        &fdd.keypair_id,
+        epoch,
+        enc_pk_bytes,
+        &fdd.domain,
+        is_versioned,
+    )?;
+
+    let rpc_url = chain_rpc.solana_rpc_for_chain_name(known_chain_name)?;
+    simulate_solana_txn(&proof.txn_bytes, &rpc_url, &chain_rpc.solana_client).await?;
+    Ok(())
+}
+
+/// Validate that the Solana transaction carries the expected `CustomFullRequestBytes`.
+fn validate_solana_custom_txn(
+    txn: &[u8],
+    expected_program_id: &[u8; 32],
+    expected_keypair_id: &[u8; 32],
+    expected_epoch: u64,
+    expected_enc_pk: &[u8],
+    expected_label: &[u8],
+    is_versioned: bool,
+) -> Result<()> {
+    let (account_keys, instructions) = if is_versioned {
+        parse_solana_txn_versioned(txn)?
+    } else {
+        parse_solana_txn_legacy(txn)?
+    };
+
+    if instructions.len() != 1 {
+        return Err(anyhow!("Solana custom: expected exactly 1 instruction, got {}", instructions.len()));
+    }
+    let ix = &instructions[0];
+
+    let prog_key = account_keys
+        .get(ix.program_id_index as usize)
+        .ok_or_else(|| anyhow!("Solana custom: program_id_index {} out of bounds", ix.program_id_index))?;
+    if prog_key != expected_program_id {
+        return Err(anyhow!("Solana custom: instruction program ID mismatch"));
+    }
+
+    // Anchor format: [8B discriminator][u32-LE vec-length][vec bytes (BCS CustomFullRequestBytes)]
+    if ix.data.len() < 12 {
+        return Err(anyhow!("Solana custom: instruction data too short ({}B)", ix.data.len()));
+    }
+    let param = &ix.data[8..];
+    let vec_len = u32::from_le_bytes([param[0], param[1], param[2], param[3]]) as usize;
+    if param.len() != 4 + vec_len {
+        return Err(anyhow!("Solana custom: instruction data length mismatch"));
+    }
+    let custom_req_bytes = &param[4..4 + vec_len];
+
+    let decoded = ace_anchor_kit::decode_custom_request(custom_req_bytes)
+        .map_err(|e| anyhow!("Solana custom: decode CustomFullRequestBytes: {}", e))?;
+
+    if &decoded.keypair_id != expected_keypair_id {
+        return Err(anyhow!("Solana custom: keypair_id mismatch"));
+    }
+    if decoded.epoch != expected_epoch {
+        return Err(anyhow!("Solana custom: epoch mismatch"));
+    }
+    if decoded.enc_pk.as_slice() != expected_enc_pk {
+        return Err(anyhow!("Solana custom: enc_pk mismatch"));
+    }
+    if decoded.label.as_slice() != expected_label {
+        return Err(anyhow!("Solana custom: label mismatch"));
+    }
+    Ok(())
+}
+
 // ── BCS / binary helpers ──────────────────────────────────────────────────────
+
+/// Read a BCS-encoded `Vec<u8>` (ULEB128 length + bytes) starting at `pos`.
+///
+/// Returns `(bytes, bytes_consumed)`.
+fn read_bcs_bytes_at(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usize)> {
+    let (len, n) = read_uleb128(bytes, pos)?;
+    let end = pos + n + len as usize;
+    if bytes.len() < end {
+        return Err(anyhow!("BCS bytes truncated at pos {}", pos));
+    }
+    Ok((bytes[pos + n..end].to_vec(), n + len as usize))
+}
 
 fn read_bcs_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
     let (len, n) = read_uleb128(bytes, start)?;

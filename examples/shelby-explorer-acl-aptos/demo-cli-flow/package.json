@@ -1,5 +1,5 @@
 {
-  "name": "shelby-access-control-aptos-demo-cli-flow",
+  "name": "shelby-explorer-acl-aptos-demo-cli-flow",
   "version": "0.1.0",
   "description": "A demo CLI program for Shelby access control on Aptos",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
   "keywords": [
     "typescript",
     "cli",
-    "shelby",
+
     "aptos",
     "ace",
     "demo"

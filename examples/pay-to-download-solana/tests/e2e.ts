@@ -19,7 +19,7 @@
  *   cd scenarios && pnpm run-local-network-forever
  *   (wait for "ACE local network is READY" banner)
  * - Then in a second terminal:
- *   cd examples/shelby-access-control-solana
+ *   cd examples/pay-to-download-solana
  *   anchor test --provider.cluster localnet
  */
 

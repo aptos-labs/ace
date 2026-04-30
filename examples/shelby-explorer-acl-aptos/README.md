@@ -1,6 +1,6 @@
-# Aptos Access Control Example
+# Shelby Explorer — ACE Access Control (Aptos)
 
-This example demonstrates how a Shelby app may leverage ACE to implement access control on Aptos.
+This is the ACE access-control module integrated into [Shelby Explorer](https://explorer.shelby.xyz/), demonstrating how a real app uses ACE to gate encrypted content on Aptos.
 
 ## Overview
 
@@ -15,7 +15,7 @@ Consumers can decrypt content only after being granted permission by the content
 ## Project Structure
 
 ```
-shelby-access-control-aptos/
+shelby-explorer-acl-aptos/
 ├── contract/                 # Move smart contract
 │   ├── sources/
 │   │   └── access_control.move
@@ -54,7 +54,7 @@ Wait for the `ACE local network is READY` banner. This starts Aptos localnet, de
 In another terminal:
 
 ```bash
-cd examples/shelby-access-control-aptos/demo-cli-flow
+cd examples/shelby-explorer-acl-aptos/demo-cli-flow
 pnpm install
 pnpm test:localnet
 ```
@@ -73,7 +73,7 @@ This will:
 Set `ACE_CONTRACT` and `KEYPAIR_ID` to the deployed ACE contract and keypair addresses on testnet, then run:
 
 ```bash
-cd examples/shelby-access-control-aptos/demo-cli-flow
+cd examples/shelby-explorer-acl-aptos/demo-cli-flow
 ACE_CONTRACT=0x... KEYPAIR_ID=0x... pnpm test:testnet
 ```
 

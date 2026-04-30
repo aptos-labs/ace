@@ -5,4 +5,5 @@ packages:
   - "examples/*"
   - "examples/*/demo-cli-flow"
   - "scenarios"
+  - "scenarios/custom-flow-solana"
 

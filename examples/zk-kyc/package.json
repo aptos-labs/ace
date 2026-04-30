@@ -1,0 +1,28 @@
+{
+  "name": "zk-kyc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZK-KYC example: Groth16 proof of age eligibility as ACE custom-flow payload",
+  "type": "module",
+  "scripts": {
+    "setup-circuit": "cd circuit && ./setup.sh",
+    "1-provider-setup": "tsx scripts/1-provider-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-issue-credential": "tsx scripts/3-issue-credential.ts",
+    "4-encrypt": "tsx scripts/4-encrypt.ts",
+    "5-decrypt": "tsx scripts/5-decrypt.ts",
+    "6-try-underage": "tsx scripts/6-try-underage.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

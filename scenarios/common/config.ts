@@ -13,7 +13,7 @@ export const REPO_ROOT = path.resolve(__dirname, '../..');
  */
 export const ADMIN_PLACEHOLDER_FOR_MOVE_TOML =
     '0xcafe';
-export const ACCESS_CONTROL_CONTRACT_DIR = path.join(REPO_ROOT, 'examples/shelby-access-control-aptos/contract');
+export const ACCESS_CONTROL_CONTRACT_DIR = path.join(REPO_ROOT, 'examples/shelby-explorer-acl-aptos/contract');
 
 /**
  * Path to the `worker-rs` debug binary after `cargo build`.

@@ -58,9 +58,13 @@ async function main() {
     const eddsa    = await buildEddsa();
     const F        = eddsa.F;
 
-    // Issue credential for the underage value (imagine a corrupt provider)
+    // Generate a user_secret and have the (corrupt) provider sign Poseidon(user_secret, age)
+    const userSecretBytes = new Uint8Array(31);
+    crypto.getRandomValues(userSecretBytes);
+    const userSecret = BigInt('0x' + Buffer.from(userSecretBytes).toString('hex'));
+
     const privKey  = Buffer.from(providerKey.private, 'hex');
-    const msgHash  = poseidon([BigInt(age)]);
+    const msgHash  = poseidon([userSecret, BigInt(age)]);
     const sig      = eddsa.signPoseidon(privKey, msgHash);
 
     const [p0, p1, p2] = packEncPk(encPk);
@@ -71,6 +75,7 @@ async function main() {
         enc_pk_p0: p0.toString(),
         enc_pk_p1: p1.toString(),
         enc_pk_p2: p2.toString(),
+        user_secret: userSecret.toString(),
         age: age.toString(),
         sig_r8x: F.toObject(sig.R8[0]).toString(),
         sig_r8y: F.toObject(sig.R8[1]).toString(),

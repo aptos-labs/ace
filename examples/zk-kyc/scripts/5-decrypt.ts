@@ -44,6 +44,7 @@ interface ProviderKey {
 }
 
 interface Credential {
+    user_secret: string;
     age: number;
     sig_r8x: string;
     sig_r8y: string;
@@ -81,6 +82,7 @@ async function main() {
         enc_pk_p1: p1.toString(),
         enc_pk_p2: p2.toString(),
         // Private inputs (never revealed)
+        user_secret: credential.user_secret,
         age: credential.age.toString(),
         sig_r8x: credential.sig_r8x,
         sig_r8y: credential.sig_r8y,

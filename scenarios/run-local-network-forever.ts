@@ -83,7 +83,7 @@ async function main() {
     await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
-    const WORKER_BASE_PORT = 9010;
+    const WORKER_BASE_PORT = 19000;
     log('Registering PKE enc keys and HTTP endpoints for all workers...');
     for (let i = 0; i < numWorkers; i++) {
         (await submitTxn({
@@ -187,11 +187,11 @@ async function main() {
     log(`  Config: ${CONFIG_PATH}`);
     log('');
     log('  Run the Solana example:');
-    log('    cd examples/shelby-access-control-solana');
+    log('    cd examples/pay-to-download-solana');
     log('    anchor test --provider.cluster localnet');
     log('');
     log('  Run the Aptos example:');
-    log('    cd examples/shelby-access-control-aptos/demo-cli-flow');
+    log('    cd examples/shelby-explorer-acl-aptos/demo-cli-flow');
     log('    pnpm test:localnet');
     log('');
     log('  Run the ZK-KYC example (Groth16 proof of jurisdiction):');

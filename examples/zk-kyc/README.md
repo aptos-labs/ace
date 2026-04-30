@@ -12,8 +12,10 @@ decryption hook.
 ### KYC Provider
 A regulated identity-verification service (Jumio, Persona, …).  They hold a Baby JubJub
 signing key — in production this lives in an HSM.  Their job is to check a user's
-identity documents, determine their age, and issue a **credential**: a signature over
-that age value.  They learn nothing about what the user does with the credential later.
+identity documents and issue a **credential**: a signature over `Poseidon(user_secret, age)`,
+where `user_secret` is a random value only the user knows.  This binds the credential to
+that specific user — analogous to signing "this user's age is X" — without the provider
+ever learning what the user does with the credential later.
 
 ### The App (DeFi Protocol)
 A protocol that wants to gate some content — a compliance report, trading parameters,
@@ -40,12 +42,13 @@ The Groth16 circuit proves three statements simultaneously and produces one publ
 
 | | How it is enforced |
 |---|---|
-| I hold a credential signed by the registered KYC provider | EdDSA-Poseidon signature verification inside the circuit |
+| I hold a credential signed by the registered KYC provider | EdDSA-Poseidon signature verification on `Poseidon(user_secret, age)` inside the circuit |
 | My age is **18 or older** | Arithmetic constraint: `GreaterEqThan(8)` comparator |
 | This proof is bound to my ACE decryption key `enc_pk` | `enc_pk_p0/p1/p2` are public inputs — Groth16 IC terms bind them to the proof |
-| **Nullifier** output: `Poseidon(sig_s)` | Same credential always yields the same value; a real app records it on-chain to detect reuse |
+| **Nullifier** output: `Poseidon(user_secret)` | Same user always yields the same nullifier; a real app records it on-chain to detect reuse |
 
-The age value is a **private** input — the verifier learns only that it satisfies ≥ 18.
+Both `user_secret` and `age` are **private** inputs — the verifier learns only that the
+age satisfies ≥ 18 and that the credential was issued to the holder of this secret.
 
 > **Note — credential reuse (out of scope for this demo):** the nullifier is included in
 > the proof and printed by script 5, but this demo does not record it on-chain.  A
@@ -139,17 +142,20 @@ pnpm 2-deploy-contract
 
 ### Step 3 — KYC Provider: issue a credential to a user
 
-> *A user has presented their identity documents.  The KYC provider verifies them,
-> determines the user's age, and issues a credential — a signature over that age value.
-> The user stores this credential locally; it is never published.*
+> *A user has presented their identity documents.  The KYC provider verifies them and
+> issues a credential.  First the user generates a random `user_secret` — a value only
+> they will ever know.  The provider signs `Poseidon(user_secret, age)`, binding both
+> the user's identity and their age into a single unforgeable credential.  The credential
+> is stored locally by the user and never published.*
 
 ```bash
 pnpm 3-issue-credential            # age 25 (default)
 pnpm 3-issue-credential -- 30      # or a different eligible age
 ```
 
-Computes `Poseidon(age)` and signs the hash with the provider's Baby JubJub private key.
-Saves the signature to `data/credential.json`.
+Generates a fresh `user_secret`, computes `Poseidon(user_secret, age)`, and signs the
+hash with the provider's Baby JubJub private key.  Saves `user_secret`, `age`, and the
+signature to `data/credential.json`.
 
 ---
 
@@ -234,10 +240,11 @@ elliptic-curve cryptography.
 ## Cryptographic Details
 
 ```
-Private inputs (user only)       Public inputs (visible to on-chain verifier)
-────────────────────────         ────────────────────────────────────────────
-age (u8)                         pk_provider_ax, pk_provider_ay
-sig_r8x, sig_r8y, sig_s          enc_pk_p0, enc_pk_p1, enc_pk_p2
+Private inputs (user only)       Public output      Public inputs (on-chain verifier)
+────────────────────────         ─────────────────  ─────────────────────────────────
+user_secret (Fr)                 nullifier (Fr)     pk_provider_ax, pk_provider_ay
+age (u8)                                            enc_pk_p0, enc_pk_p1, enc_pk_p2
+sig_r8x, sig_r8y, sig_s
 ```
 
 `enc_pk_p0/p1/p2` are the raw `enc_pk` bytes packed into three BN254 Fr scalars.

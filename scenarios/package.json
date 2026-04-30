@@ -16,6 +16,7 @@
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",
     "cli-testbed": "pnpm --filter @aptos-labs/ace-sdk build && tsx cli-testbed.ts",
     "new-devnet-deployment": "pnpm --filter @aptos-labs/ace-sdk build && tsx new-devnet-deployment.ts",
+    "new-testnet-deployment": "pnpm --filter @aptos-labs/ace-sdk build && tsx new-testnet-deployment.ts",
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
     "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
     "test-custom-flow-aptos": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-aptos.ts",

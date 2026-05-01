@@ -22,6 +22,9 @@ export * as pke from "./pke";
 // Shared types
 export { AceDeployment } from "./_internal/common";
 
+// Registry of known ACE deployments (testnet, mainnet, …)
+export { knownDeployments } from "./known-deployments";
+
 // Aptos flows
 export * as AptosBasicFlow from "./aptos/basic-flow";
 export * as AptosCustomFlow from "./aptos/custom-flow";

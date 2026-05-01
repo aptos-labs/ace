@@ -17,17 +17,22 @@ function setupShares(threshold: number, total: number, id: Uint8Array): {
     mskInner: BfibeBls12381.MasterPrivateKey,
     mpkInner: BfibeBls12381.MasterPublicKey,
     shares: BfibeBls12381.IdentityDecryptionKeyShare[],
+    /** Per-holder Feldman commitments base^{s_i} — bound to the same `split` as `shares`. */
+    sharePks: WeierstrassPoint<bigint>[],
 } {
     const mskInner = BfibeBls12381.keygenForTesting();
     const mpkInner = BfibeBls12381.derivePublicKey(mskInner);
 
     const shareLeBytes = split(numberToBytesLE(mskInner.scalar, 32), threshold, total).unwrapOrThrow('split failed');
     const idPoint = bls12_381.G2.hashToCurve(id, { DST: DST_ID_HASH }) as unknown as WeierstrassPoint<Fp2>;
-    const shares = shareLeBytes.map((leBytes, i) => {
-        const si = bytesToNumberLE(leBytes);
-        return new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint.multiply(si), undefined);
-    });
-    return { mskInner, mpkInner, shares };
+    const shares: BfibeBls12381.IdentityDecryptionKeyShare[] = [];
+    const sharePks: WeierstrassPoint<bigint>[] = [];
+    for (let i = 0; i < shareLeBytes.length; i++) {
+        const si = bytesToNumberLE(shareLeBytes[i]);
+        shares.push(new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint.multiply(si), undefined));
+        sharePks.push(mskInner.base.multiply(si) as unknown as WeierstrassPoint<bigint>);
+    }
+    return { mskInner, mpkInner, shares, sharePks };
 }
 
 describe('T-IBE (Threshold Identity-Based Encryption)', () => {
@@ -80,6 +85,61 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             }).unwrapOrThrow('decrypt failed');
 
             expect(decrypted).toEqual(plaintext);
+        });
+    });
+
+    describe('verifyShare', () => {
+        it('accepts a correctly-formed share', () => {
+            const id = new TextEncoder().encode('verify@example.com');
+            const { mpkInner, shares, sharePks } = setupShares(2, 3, id);
+            const ok = BfibeBls12381.verifyShare({
+                basePoint: mpkInner.basePoint,
+                sharePk: sharePks[0],
+                id,
+                share: shares[0],
+            });
+            expect(ok).toBe(true);
+        });
+
+        it('rejects a share whose idkShare has been tampered with', () => {
+            const id = new TextEncoder().encode('tamper@example.com');
+            const { mpkInner, shares, sharePks } = setupShares(2, 3, id);
+            // Replace idkShare with a different point (use share[1]'s idkShare under share[0]'s evalPoint).
+            const tampered = new BfibeBls12381.IdentityDecryptionKeyShare(
+                shares[0].evalPoint, shares[1].idkShare, undefined,
+            );
+            const ok = BfibeBls12381.verifyShare({
+                basePoint: mpkInner.basePoint,
+                sharePk: sharePks[0],
+                id,
+                share: tampered,
+            });
+            expect(ok).toBe(false);
+        });
+
+        it('rejects a valid share against the wrong sharePk', () => {
+            const id = new TextEncoder().encode('mismatch@example.com');
+            const { mpkInner, shares, sharePks } = setupShares(2, 3, id);
+            const ok = BfibeBls12381.verifyShare({
+                basePoint: mpkInner.basePoint,
+                sharePk: sharePks[1],
+                id,
+                share: shares[0],
+            });
+            expect(ok).toBe(false);
+        });
+
+        it('rejects a share against a different id', () => {
+            const id = new TextEncoder().encode('verify@example.com');
+            const otherId = new TextEncoder().encode('different@example.com');
+            const { mpkInner, shares, sharePks } = setupShares(2, 3, id);
+            const ok = BfibeBls12381.verifyShare({
+                basePoint: mpkInner.basePoint,
+                sharePk: sharePks[0],
+                id: otherId,
+                share: shares[0],
+            });
+            expect(ok).toBe(false);
         });
     });
 

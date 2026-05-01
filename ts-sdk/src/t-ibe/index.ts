@@ -308,6 +308,34 @@ export function encryptWithRandomness({mpk, id, plaintext, randomness}: {mpk: Ma
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
 
+/**
+ * Verify that an IDK share is correct against the on-chain `sharePk` for the same evaluation point.
+ *
+ * Returns `true` if the share is well-formed for the given `(basePoint, sharePk, id)`.
+ * Caller binds `sharePk` to the share's evaluation point (i.e. `share_pks[i]` for node i).
+ */
+export function verifyShare({basePoint, sharePk, id, share}: {
+    basePoint: group.Element,
+    sharePk: group.Element,
+    id: Uint8Array,
+    share: IdentityDecryptionKeyShare,
+}): Result<boolean> {
+    const task = (_extra: Record<string, any>) => {
+        if (share.scheme !== SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            throw `verifyShare: unknown share scheme ${share.scheme}`;
+        }
+        const basePointInner = (basePoint.inner as group.bls12381G1.PublicPoint).pt;
+        const sharePkInner = (sharePk.inner as group.bls12381G1.PublicPoint).pt;
+        return BfibeBls12381ShortPkOtpHmac.verifyShare({
+            basePoint: basePointInner,
+            sharePk: sharePkInner,
+            id,
+            share: share.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare,
+        });
+    };
+    return Result.capture({task, recordsExecutionTimeMs: true});
+}
+
 export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionKeyShare[], ciphertext: Ciphertext}): Result<Uint8Array> {
     const task = (_extra: Record<string, any>) => {
         const scheme = ciphertext.scheme;

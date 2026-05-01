@@ -1,0 +1,16 @@
+[package]
+name = "TutorialSimpleAcl"
+version = "0.1.0"
+authors = []
+
+[addresses]
+admin = "0xcafe"
+
+[dev-addresses]
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"
+
+[dev-dependencies]

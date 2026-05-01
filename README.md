@@ -65,6 +65,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 | [`operator-cli`](./operator-cli) | Operator CLI (`ace`) for node onboarding and management |
 | [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
 | [`scenarios`](./scenarios) | Local network setup scripts |
+| [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
 | [`examples/shelby-explorer-acl-aptos`](./examples/shelby-explorer-acl-aptos) | ACE ACL module from Shelby Explorer (allowlist / time-lock / pay-to-download) |
 | [`examples/pay-to-download-solana`](./examples/pay-to-download-solana) | Pay-to-download example on Solana |
 | [`examples/zk-kyc`](./examples/zk-kyc) | Age-gated decryption with Groth16 ZK proofs |
@@ -125,6 +126,12 @@ const aceDeployment = new ACE.AceDeployment({
     apiEndpoint: "https://fullnode.mainnet.aptoslabs.com/v1",
     contractAddr: AccountAddress.fromString("0x<ace-contract-addr>"),
 });
+```
+
+For testnet, the SDK ships a registry of known deployments — skip the manual setup:
+
+```typescript
+const { aceDeployment, keypairId, chainId } = ACE.knownDeployments.preview20260501;
 ```
 
 **Encrypt (both flows)**
@@ -278,6 +285,7 @@ ace profile default <alias>          # set the default profile
 
 | Example | Flow | Chain | Description |
 |---------|------|-------|-------------|
+| [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — deploy contract, encrypt, decrypt, grant/revoke. Fund **one** account with ~2 APT and go. |
 | [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
 | [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
 | [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |

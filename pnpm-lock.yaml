@@ -70,6 +70,25 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
+  examples/tutorial-aptos:
+    dependencies:
+      '@aptos-labs/ace-sdk':
+        specifier: workspace:*
+        version: link:../../ts-sdk
+      '@aptos-labs/ts-sdk':
+        specifier: ^5.2.0
+        version: 5.2.1(got@11.8.6)
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.30
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   examples/zk-kyc:
     dependencies:
       '@aptos-labs/ace-sdk':

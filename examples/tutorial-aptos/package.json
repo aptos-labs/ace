@@ -1,0 +1,26 @@
+{
+  "name": "tutorial-aptos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Step-by-step ACE tutorial on Aptos testnet — deploy a contract, encrypt, decrypt",
+  "type": "module",
+  "scripts": {
+    "1-setup": "tsx scripts/1-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-encrypt": "tsx scripts/3-encrypt.ts",
+    "4-decrypt-fail": "tsx scripts/4-decrypt-fail.ts",
+    "5-grant-access": "tsx scripts/5-grant-access.ts",
+    "6-decrypt-success": "tsx scripts/6-decrypt-success.ts",
+    "7-revoke": "tsx scripts/7-revoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

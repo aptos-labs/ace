@@ -15,9 +15,7 @@ use tokio::sync::oneshot;
 use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed_with_base, pke_encrypt, poly_eval};
 use vss_common::TxnArg;
 use vss_common::session::{ACK_WINDOW_MICROS, BcsElement, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
-use vss_common::vss_types::{
-    dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState, PcsCommitment, SecretShare,
-};
+use vss_common::vss_types::{dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
 pub const POLL_SECS: u64 = 1;
@@ -284,26 +282,23 @@ async fn build_and_submit_dc0(
             let y_fr = poly_eval(&coefs, x_fr);
             let y_bytes = fr_to_le_bytes(y_fr);
 
-            let share = SecretShare::Bls12381Fr { y: y_bytes };
-            let plaintext = private_share_message_bytes(&share);
+            let plaintext = private_share_message_bytes(&y_bytes);
             pke_encrypt(&enc_keys[i], &plaintext)
         })
         .collect();
 
     // Encrypt dealer state with enc_keys[0] (dealer = share_holders[0]).
-    let dealer_state = DealerState::Bls12381Fr {
-        n: n as u64,
-        coefs_poly_p: coefs.iter().map(|c| fr_to_le_bytes(*c)).collect(),
-    };
+    let dealer_state = DealerState::bls12381_fr(
+        n as u64,
+        coefs.iter().map(|c| fr_to_le_bytes(*c)).collect(),
+    );
     let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
 
     // Build Feldman PCS commitment: v_k = coefs[k] * base_point for k = 0..threshold.
     // Use the session's actual base_point (not necessarily G1::generator).
-    let commitment = PcsCommitment::Bls12381Fr {
-        v_values: coefs.iter()
-            .map(|c| g1_compressed_with_base(*c, &base_point_bytes))
-            .collect::<anyhow::Result<Vec<_>>>()?,
-    };
+    let commitment_v_values: Vec<[u8; 48]> = coefs.iter()
+        .map(|c| g1_compressed_with_base(*c, &base_point_bytes))
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Build optional resharing response if the session has a resharing challenge.
     let resharing_resp = if let Some(challenge) = &bcs_session.resharing_challenge {
@@ -322,9 +317,7 @@ async fn build_and_submit_dc0(
         };
         let p0_bytes: &[u8; 48] = base_point_bytes.as_slice().try_into()
             .map_err(|_| anyhow!("base_point_bytes is not 48 bytes"))?;
-        let commitment_p0: [u8; 48] = match &commitment {
-            PcsCommitment::Bls12381Fr { v_values } => v_values[0],
-        };
+        let commitment_p0: [u8; 48] = commitment_v_values[0];
 
         let (p1, t0, t1, s_proof) = sigma_dlog_eq_prove(
             chain_id, &ace_bytes, p0_bytes, &commitment_p0, &b1_bytes, coefs[0],
@@ -335,7 +328,7 @@ async fn build_and_submit_dc0(
     };
 
     let payload = dc0_bytes(
-        &commitment,
+        &commitment_v_values,
         &share_ciphertexts,
         &dealer_state_ct,
         resharing_resp.as_ref().map(|(p1, t0, t1, s)| (p1, t0, t1, s)),

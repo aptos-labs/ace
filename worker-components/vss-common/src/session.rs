@@ -162,25 +162,25 @@ impl Session {
 // ── BCS mirror types (for decoding get_session_bcs view output) ───────────────
 
 /// BCS mirror of `group_bls12381_g1::PublicPoint`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsPublicPoint {
     pub point: Vec<u8>, // 48-byte G1 compressed point
 }
 
 /// BCS mirror of `group::Element` enum (variant 0 = Bls12381G1).
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum BcsElement {
     Bls12381G1(BcsPublicPoint),
 }
 
 /// BCS mirror of `vss::PcsCommitment`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsPcsCommitment {
     pub points: Vec<BcsElement>,
 }
 
 /// BCS mirror of `sigma_dlog_eq::Proof`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsSigmaDlogEqProof {
     pub t0: BcsElement,
     pub t1: BcsElement,
@@ -188,21 +188,21 @@ pub struct BcsSigmaDlogEqProof {
 }
 
 /// BCS mirror of `vss::ResharingDealerResponse`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsResharingDealerResponse {
     pub another_scaled_element: BcsElement,
     pub proof: BcsSigmaDlogEqProof,
 }
 
 /// BCS mirror of `vss::ResharingDealerChallenge`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsResharingDealerChallenge {
     pub expected_scaled_element: BcsElement,
     pub another_base_element: BcsElement,
 }
 
 /// BCS mirror of `vss::DealerContribution0`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsDealerContribution0 {
     pub pcs_commitment: BcsPcsCommitment,
     pub private_share_messages: Vec<crate::pke::BcsCiphertext>,
@@ -211,19 +211,19 @@ pub struct BcsDealerContribution0 {
 }
 
 /// BCS mirror of `group_bls12381_g1::PrivateScalar`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsPrivateScalar {
     pub scalar: Vec<u8>, // 32-byte Fr scalar (LE)
 }
 
 /// BCS mirror of `group::Scalar` enum (variant 0 = Bls12381G1).
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum BcsScalar {
     Bls12381G1(BcsPrivateScalar),
 }
 
 /// BCS mirror of `vss::DealerContribution1`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsDealerContribution1 {
     pub shares_to_reveal: Vec<Option<BcsScalar>>,
 }

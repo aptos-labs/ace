@@ -246,9 +246,17 @@ Operator                              Admin / existing committee
 
 **Install**
 
+The CLI isn't on npm yet — clone the repo and build:
+
 ```bash
-npm install -g @aptos-labs/ace-cli@latest
+git clone git@github.com:aptos-labs/ace.git
+cd ace
+pnpm install
+pnpm --filter @aptos-labs/ace-cli build
+cd operator-cli && npm link
 ```
+
+`npm link` puts `ace` on your PATH. To update later: `git pull && pnpm install && pnpm --filter @aptos-labs/ace-cli build`.
 
 **Onboard a new node**
 

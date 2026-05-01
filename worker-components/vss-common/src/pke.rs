@@ -110,7 +110,7 @@ impl Ciphertext {
 
 /// BCS mirror of `pke_elgamal_otp_ristretto255::Ciphertext`.
 /// `CompressedRistretto { data: Vec<u8> }` BCS-encodes identically to `Vec<u8>`.
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct BcsCiphertextInner {
     pub c0: Vec<u8>,
     pub c1: Vec<u8>,
@@ -119,9 +119,24 @@ pub struct BcsCiphertextInner {
 }
 
 /// BCS mirror of `pke::Ciphertext` enum (variant 0 = ElGamalOtpRistretto255).
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub enum BcsCiphertext {
     ElGamalOtpRistretto255(BcsCiphertextInner),
+}
+
+impl From<&Ciphertext> for BcsCiphertext {
+    fn from(ct: &Ciphertext) -> Self {
+        match ct {
+            Ciphertext::ElGamalOtpRistretto255 { c0, c1, sym_ciph, mac } => {
+                BcsCiphertext::ElGamalOtpRistretto255(BcsCiphertextInner {
+                    c0: c0.to_vec(),
+                    c1: c1.to_vec(),
+                    sym_ciph: sym_ciph.clone(),
+                    mac: mac.to_vec(),
+                })
+            }
+        }
+    }
 }
 
 // ── PKE decrypt ───────────────────────────────────────────────────────────────

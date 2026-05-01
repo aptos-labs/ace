@@ -50,9 +50,21 @@ pub fn kdf(seed: &[u8], dst: &[u8], target_len: usize) -> Vec<u8> {
 /// Write ULEB128(bytes.len()) ++ bytes into the hasher.
 fn update_with_bcs_bytes(hasher: &mut Sha3_256, bytes: &[u8]) {
     let mut len_buf = Vec::new();
-    crate::vss_types::write_uleb128(&mut len_buf, bytes.len() as u64);
+    write_uleb128(&mut len_buf, bytes.len() as u64);
     hasher.update(&len_buf);
     hasher.update(bytes);
+}
+
+fn write_uleb128(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
 }
 
 // ── HMAC-SHA3-256 ─────────────────────────────────────────────────────────────

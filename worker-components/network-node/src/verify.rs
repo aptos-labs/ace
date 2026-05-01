@@ -57,7 +57,7 @@ pub async fn verify(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8],
     match (outer_scheme, &fdd.chain) {
         (0, ParsedChain::Aptos { .. }) => {
             let proof = parse_aptos_proof(inner)?;
-            verify_aptos(fdd, epoch, &proof, chain_rpc).await
+            verify_aptos(fdd, epoch, ephemeral_enc_key_bytes, &proof, chain_rpc).await
         }
         (1, ParsedChain::Solana { .. }) => {
             let proof = parse_solana_proof(inner)?;
@@ -201,6 +201,14 @@ fn parse_aptos_proof(bytes: &[u8]) -> Result<AptosProof> {
     }
     let full_message = String::from_utf8(bytes[pos..pos + msg_len as usize].to_vec())
         .map_err(|e| anyhow!("AptosProof: fullMessage not UTF-8: {}", e))?;
+    pos += msg_len as usize;
+
+    if pos != bytes.len() {
+        return Err(anyhow!(
+            "AptosProof: trailing bytes ({} extra)",
+            bytes.len() - pos
+        ));
+    }
 
     Ok(AptosProof { user_addr, pk_scheme, pubkey_bytes, sig_scheme, sig_bytes, full_message })
 }
@@ -230,13 +238,21 @@ fn parse_solana_proof(bytes: &[u8]) -> Result<SolanaProof> {
         return Err(anyhow!("SolanaProof: txn bytes truncated"));
     }
     let txn_bytes = bytes[pos..pos + txn_len as usize].to_vec();
+    pos += txn_len as usize;
+
+    if pos != bytes.len() {
+        return Err(anyhow!(
+            "SolanaProof: trailing bytes ({} extra)",
+            bytes.len() - pos
+        ));
+    }
 
     Ok(SolanaProof { inner_scheme, txn_bytes })
 }
 
 // ── Aptos Verification ────────────────────────────────────────────────────────
 
-async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
+async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8], proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
     // Only legacy Ed25519 (pk_scheme=0, sig_scheme=0) is currently supported.
     if proof.pk_scheme != 0 {
         return Err(anyhow!("verify_aptos: unsupported public key scheme {}", proof.pk_scheme));
@@ -266,7 +282,7 @@ async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, proof: &AptosProof, chain_rpc
 
     // Run 3 checks: sig, auth-key, permission.
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
-    verify_aptos_sig(fdd, epoch, proof, &vk, &sig)?;
+    verify_aptos_sig(fdd, epoch, ephemeral_enc_key_bytes, proof, &vk, &sig)?;
 
     let chain_id = match &fdd.chain {
         ParsedChain::Aptos { chain_id, .. } => *chain_id,
@@ -292,13 +308,14 @@ async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, proof: &AptosProof, chain_rpc
 fn verify_aptos_sig(
     fdd: &ParsedFdd,
     epoch: u64,
+    ephemeral_enc_key_bytes: &[u8],
     proof: &AptosProof,
     vk: &ed25519_dalek::VerifyingKey,
     sig: &ed25519_dalek::Signature,
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let pretty_msg = aptos_decryption_request_message(fdd, epoch)?;
+    let pretty_msg = aptos_decryption_request_message(fdd, epoch, ephemeral_enc_key_bytes)?;
     // AptosConnect embeds hex(UTF-8(pretty_msg)) rather than the raw string.
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
 
@@ -583,13 +600,14 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, client: &reqwest::
 
 // ── Decryption request pretty-message (Aptos) ─────────────────────────────────
 
-/// Produces a substring of `DecryptionRequestPayload.toPrettyMessage(0)` in TypeScript
-/// for an Aptos ContractID.  Used by `verifySig` to check that `fullMessage` covers
-/// the correct keypairId, epoch, contractId, and domain.
+/// Produces `DecryptionRequestPayload.toPrettyMessage(0)` from `ts-sdk/src/_internal/common.ts`
+/// for an Aptos ContractID.  Used by `verifySig` to check that `fullMessage` covers the correct
+/// keypairId, epoch, contractId, domain, **and ephemeralEncKey**.
 ///
-/// The full TS message also appends `\nephemeralEncKey: {hex}`, so this string is a
-/// strict prefix (via `contains()`) of what the user actually signed.
-fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64) -> Result<String> {
+/// Binding the ephemeralEncKey is critical: it is the public key that the IDK share is encrypted
+/// to in the response.  If it were not part of the signed message, anyone holding a valid proof
+/// could replay it with a substituted ephemeralEncKey and have shares re-encrypted to themselves.
+fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8]) -> Result<String> {
     let (chain_id, module_addr_bytes, module_name, function_name) = match &fdd.chain {
         ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name } => {
             (chain_id, module_addr_bytes, module_name.as_str(), function_name.as_str())
@@ -600,9 +618,13 @@ fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64) -> Result<Strin
     // moduleAddr.toStringLong() = "0x" + 64 lowercase hex chars (32 bytes)
     let module_addr = format!("0x{}", hex::encode(module_addr_bytes));
     let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
+    // `pke.EncryptionKey.toHex()` = bytesToHex(toBytes()) where toBytes() writes
+    // [scheme(1B)][inner...]; for scheme 0 the wire form is exactly 67 bytes, identical
+    // to the slice carried in the request body.  Note: `toHex()` does NOT prepend "0x"
+    // (unlike AccountAddress.toStringLong() or the explicit "0x" on the domain line).
+    let ephemeral_ek_hex = hex::encode(ephemeral_enc_key_bytes);
 
-    // Matches DecryptionRequestPayload.toPrettyMessage(indent=0) up to but not including
-    // the ephemeralEncKey line:
+    // Matches DecryptionRequestPayload.toPrettyMessage(indent=0):
     //   "ACE Decryption Request"
     //   "\nkeypairId: 0x{keypairIdHex}"
     //   "\nepoch: {epoch}"
@@ -616,10 +638,11 @@ fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64) -> Result<Strin
     //       "\n      moduleName: {moduleName}"
     //       "\n      functionName: {functionName}"
     //   "\ndomain: 0x{domainHex}"
+    //   "\nephemeralEncKey: 0x{ephemeralEncKeyHex}"
     let keypair_id_hex = format!("0x{}", hex::encode(fdd.keypair_id));
     Ok(format!(
-        "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}",
-        keypair_id_hex, epoch, chain_id, module_addr, module_name, function_name, domain_hex,
+        "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}\nephemeralEncKey: {}",
+        keypair_id_hex, epoch, chain_id, module_addr, module_name, function_name, domain_hex, ephemeral_ek_hex,
     ))
 }
 

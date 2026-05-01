@@ -73,7 +73,7 @@ export function gcpDeployCmd(
         `  --image docker.io/${image}`,
         `  --project ${project}`,
         `  --region ${region}`,
-        `  --no-allow-unauthenticated`,
+        `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --no-cpu-throttling`,
         `  --args "${args.join(',')}"`,

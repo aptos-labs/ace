@@ -238,6 +238,14 @@ fn parse_solana_proof(bytes: &[u8]) -> Result<SolanaProof> {
         return Err(anyhow!("SolanaProof: txn bytes truncated"));
     }
     let txn_bytes = bytes[pos..pos + txn_len as usize].to_vec();
+    pos += txn_len as usize;
+
+    if pos != bytes.len() {
+        return Err(anyhow!(
+            "SolanaProof: trailing bytes ({} extra)",
+            bytes.len() - pos
+        ));
+    }
 
     Ok(SolanaProof { inner_scheme, txn_bytes })
 }

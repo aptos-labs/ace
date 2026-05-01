@@ -273,6 +273,26 @@ export function encrypt({mpk, id, plaintext}: {mpk: MasterPublicKey, id: Uint8Ar
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
 
+/**
+ * Verify that `share.idkShare = H_G2(id)^{f(x)}` where `share_pk = basePoint^{f(x)}`.
+ *
+ * Pairing check: `e(basePoint, idkShare) == e(sharePk, H_G2(id))`.
+ *
+ * Caller is responsible for binding `sharePk` to the right index — i.e. looking up
+ * the on-chain `share_pks[i]` for the same node that produced this share.
+ */
+export function verifyShare({basePoint, sharePk, id, share}: {
+    basePoint: WeierstrassPoint<bigint>,
+    sharePk: WeierstrassPoint<bigint>,
+    id: Uint8Array,
+    share: IdentityDecryptionKeyShare,
+}): boolean {
+    const idPoint = bls12_381.G2.hashToCurve(id, { DST: DST_ID_HASH }) as unknown as WeierstrassPoint<Fp2>;
+    const lhs = bls12_381.pairing(basePoint, share.idkShare);
+    const rhs = bls12_381.pairing(sharePk, idPoint);
+    return bls12_381.fields.Fp12.eql(lhs, rhs);
+}
+
 export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionKeyShare[], ciphertext: Ciphertext}): Result<Uint8Array> {
     const task = (_extra: Record<string, any>) => {
         if (idkShares.length === 0) throw 'decrypt: no IDK shares provided';

@@ -7,6 +7,9 @@ import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
+import * as dkg from "../dkg";
+import * as dkr from "../dkr";
+import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
@@ -518,6 +521,84 @@ export async function fetchNetworkStateAndBuildRequest(
     return {networkState, request};
 }
 
+/**
+ * Verify that `share` is the IDK share node `sdkIdx` is supposed to return:
+ * - the embedded `evalPoint` matches its position in the SDK's `curNodes` order (1-based)
+ * - the pairing equation `e(g, idkShare) == e(share_pks[sdkIdx], H_G2(id))` holds
+ *
+ * Logs and returns `false` on mismatch so the caller can drop the share.
+ */
+function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, label}: {
+    share: tibe.IdentityDecryptionKeyShare,
+    sdkIdx: number,
+    sessionPks: {basePoint: GroupElement, sharePks: GroupElement[]},
+    id: Uint8Array,
+    nodeAddr: string,
+    endpoint: string,
+    label: string,
+}): boolean {
+    const inner = share.inner as { evalPoint: bigint };
+    const expectedEval = BigInt(sdkIdx + 1);
+    if (inner.evalPoint !== expectedEval) {
+        console.log(`  [${label}] worker ${nodeAddr} (${endpoint}): evalPoint mismatch (got ${inner.evalPoint}, expected ${expectedEval})`);
+        return false;
+    }
+    const ok = tibe.verifyShare({
+        basePoint: sessionPks.basePoint,
+        sharePk: sessionPks.sharePks[sdkIdx],
+        id,
+        share,
+    }).okValue ?? false;
+    if (!ok) {
+        console.log(`  [${label}] worker ${nodeAddr} (${endpoint}): share failed pairing verification`);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Fetch the basePoint and per-holder share PKs of the most-recent DKG/DKR session for `keypairId`.
+ *
+ * Used by `decryptCore` / `decryptCoreCustom` to verify that each returned IDK share is
+ * `H_G2(id)^{f(i+1)}` where `share_pks[i] = basePoint^{f(i+1)}` — without this check, a single
+ * corrupt node returning a syntactically-valid-but-wrong share corrupts the aggregate and forces
+ * a MAC failure for everyone.
+ *
+ * The discriminator `currentSession === keypairId` distinguishes the initial DKG (no DKR yet)
+ * from subsequent DKR sessions.
+ */
+async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
+    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+    const keypairIdStr = keypairId.toStringLong();
+
+    const secret = networkState.secrets.find(s => s.keypairId.toStringLong() === keypairIdStr);
+    if (secret === undefined) {
+        throw `ACE: keypairId ${keypairIdStr} not found in network state secrets`;
+    }
+    const isInitialDkg = secret.currentSession.toStringLong() === keypairIdStr;
+    const sessionFn = isInitialDkg ? 'dkg::get_session_bcs' : 'dkr::get_session_bcs';
+
+    const [hexBytes] = await aptos.view({
+        payload: {
+            function: `${aceContractAddr}::${sessionFn}` as `${string}::${string}::${string}`,
+            typeArguments: [],
+            functionArguments: [secret.currentSession.toStringLong()],
+        },
+    });
+    const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
+
+    // Session classes already store basePoint / sharePks as group.Element (see vss/index.ts
+    // re-export `Element as PublicPoint`).  No re-wrapping needed.
+    if (isInitialDkg) {
+        const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ACE: parse DKG session');
+        return { basePoint: session.basePoint, sharePks: session.sharePks };
+    } else {
+        const session = dkr.Session.fromBytes(sessionBytes).unwrapOrThrow('ACE: parse DKR session');
+        return { basePoint: session.publicBaseElement, sharePks: session.sharePks };
+    }
+}
+
 export async function decryptCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, ciphertext}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
@@ -531,28 +612,42 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
             const aptos = createAptos(aceDeployment.apiEndpoint);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
-            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-                const addrStr = nodeAddr.toStringLong();
-                const [[endpoint], [ekHex]] = await Promise.all([
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                ]);
-                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                    .unwrapOrThrow(`ACE.decryptCore: parse pke enc key for ${addrStr}`);
-                return { endpoint: endpoint as string, nodeEncKey };
-            }));
+            const fdd = new FullDecryptionDomain({
+                keypairId: request.keypairId,
+                contractId: request.contractId,
+                domain: request.domain,
+            });
+            const fddBytes = fdd.toBytes();
+
+            const [nodeInfos, currentSessionPks] = await Promise.all([
+                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+                    const addrStr = nodeAddr.toStringLong();
+                    const [[endpoint], [ekHex]] = await Promise.all([
+                        aptos.view({
+                            payload: {
+                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                                typeArguments: [],
+                                functionArguments: [addrStr],
+                            },
+                        }),
+                        aptos.view({
+                            payload: {
+                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                                typeArguments: [],
+                                functionArguments: [addrStr],
+                            },
+                        }),
+                    ]);
+                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+                        .unwrapOrThrow(`ACE.decryptCore: parse pke enc key for ${addrStr}`);
+                    return { endpoint: endpoint as string, nodeEncKey };
+                })),
+                fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
+            ]);
+
+            if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
+                throw `ACE.decryptCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+            }
 
             const reqBytes = RequestForDecryptionKey.newBasicFlow(request, proof).toBytes();
 
@@ -583,9 +678,12 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                     const share = tibe.IdentityDecryptionKeyShare.fromBytes(shareBytes).okValue ?? null;
                     if (share === null) {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): share parse failed`);
-                    } else {
-                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK`);
+                        return null;
                     }
+                    if (!verifyIdkShare({share, sdkIdx: i, sessionPks: currentSessionPks, id: fddBytes, nodeAddr, endpoint, label: 'decrypt'})) {
+                        return null;
+                    }
+                    console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
                 } catch (e) {
                     console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
@@ -618,28 +716,42 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             const aptos = createAptos(aceDeployment.apiEndpoint);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
-            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-                const addrStr = nodeAddr.toStringLong();
-                const [[endpoint], [ekHex]] = await Promise.all([
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                ]);
-                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                    .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
-                return { endpoint: endpoint as string, nodeEncKey };
-            }));
+            const fdd = new FullDecryptionDomain({
+                keypairId: customRequest.keypairId,
+                contractId: customRequest.contractId,
+                domain: customRequest.label,
+            });
+            const fddBytes = fdd.toBytes();
+
+            const [nodeInfos, currentSessionPks] = await Promise.all([
+                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+                    const addrStr = nodeAddr.toStringLong();
+                    const [[endpoint], [ekHex]] = await Promise.all([
+                        aptos.view({
+                            payload: {
+                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                                typeArguments: [],
+                                functionArguments: [addrStr],
+                            },
+                        }),
+                        aptos.view({
+                            payload: {
+                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                                typeArguments: [],
+                                functionArguments: [addrStr],
+                            },
+                        }),
+                    ]);
+                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+                        .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
+                    return { endpoint: endpoint as string, nodeEncKey };
+                })),
+                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
+            ]);
+
+            if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
+                throw `ACE.decryptCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+            }
 
             const reqBytes = RequestForDecryptionKey.newCustomFlow(customRequest).toBytes();
 
@@ -670,9 +782,12 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                     const share = tibe.IdentityDecryptionKeyShare.fromBytes(shareBytes).okValue ?? null;
                     if (share === null) {
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed`);
-                    } else {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
+                        return null;
                     }
+                    if (!verifyIdkShare({share, sdkIdx: i, sessionPks: currentSessionPks, id: fddBytes, nodeAddr, endpoint, label: 'decrypt-custom'})) {
+                        return null;
+                    }
+                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
                 } catch (e) {
                     console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);

@@ -224,7 +224,7 @@ Operator                              Admin / existing committee
                                           { rpcUrl, aceAddr, rpcApiKey?,
                                             gasStationKey? }
 
-(2) `ace new-node` — paste blob;
+(2) `pnpm dev new-node` — paste blob;
     wizard generates keys, prints
     a docker/gcloud command to
     start the worker, registers
@@ -232,12 +232,12 @@ Operator                              Admin / existing committee
 
 (3) Share account address with admin
 
-                                      (4) `ace new-proposal` — proposes
+                                      (4) `pnpm dev new-proposal` — proposes
                                           adding the new node to the
                                           committee
 
                                       (5) Each committee member:
-                                          `ace review-proposal`
+                                          `pnpm dev review-proposal`
                                           until threshold is reached
 
 (6) Node joins the committee and
@@ -246,14 +246,27 @@ Operator                              Admin / existing committee
 
 **Install**
 
+The CLI isn't on npm yet. Clone the repo and install dependencies:
+
 ```bash
-npm install -g @aptos-labs/ace-cli@latest
+git clone git@github.com:aptos-labs/ace.git
+cd ace
+pnpm install
 ```
+
+All CLI commands below run as `pnpm dev <subcommand>` from the `operator-cli/` directory:
+
+```bash
+cd operator-cli
+pnpm dev <subcommand>
+```
+
+To update later: `git pull && pnpm install`.
 
 **Onboard a new node**
 
 ```bash
-ace new-node
+pnpm dev new-node
 ```
 
 The guided wizard asks for the deployment blob from the admin, generates node keys, prints the `docker run` or `gcloud run deploy` command to start the worker, and registers your node on-chain. At the end it prints your **account address** — send this to the admin.
@@ -261,15 +274,15 @@ The guided wizard asks for the deployment blob from the admin, generates node ke
 **Useful commands**
 
 ```bash
-ace network-status [-w]              # committee, epoch, active proposals
-ace node-status    [-w]              # your node's registration and key state
-ace new-proposal                     # propose a committee change (committee members only)
-ace review-proposal [-s <session>]   # review and vote on a proposal (interactive TUI)
-ace edit-node                        # update image, API key, or gas station key
-ace log [--since <t>] [--until <t>] [-w]  # stream or query node logs
-ace profile list                     # list saved node profiles
-ace profile delete <alias>           # delete a saved profile
-ace profile default <alias>          # set the default profile
+pnpm dev network-status [-w]              # committee, epoch, active proposals
+pnpm dev node-status    [-w]              # your node's registration and key state
+pnpm dev new-proposal                     # propose a committee change (committee members only)
+pnpm dev review-proposal [-s <session>]   # review and vote on a proposal (interactive TUI)
+pnpm dev edit-node                        # update image, API key, or gas station key
+pnpm dev log [--since <t>] [--until <t>] [-w]  # stream or query node logs
+pnpm dev profile list                     # list saved node profiles
+pnpm dev profile delete <alias>           # delete a saved profile
+pnpm dev profile default <alias>          # set the default profile
 ```
 
 **Fullnodes** *(optional for testing, recommended for production)*

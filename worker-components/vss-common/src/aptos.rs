@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use ed25519_dalek::Signer;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha3::{Digest, Sha3_256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,38 +50,9 @@ impl<'a> TxnArg<'a> {
     fn bcs_inner(&self) -> Result<Vec<u8>> {
         match self {
             TxnArg::Address(s) => Ok(parse_addr(s)?.to_vec()),
-            TxnArg::Bytes(b) => {
-                let mut buf = Vec::new();
-                write_bcs_bytes(&mut buf, b);
-                Ok(buf)
-            }
+            TxnArg::Bytes(b) => bcs::to_bytes(b).map_err(|e| anyhow!("bcs Bytes arg: {}", e)),
         }
     }
-}
-
-// ── BCS helpers ───────────────────────────────────────────────────────────────
-
-fn write_uleb128(buf: &mut Vec<u8>, mut n: u64) {
-    loop {
-        let byte = (n & 0x7f) as u8;
-        n >>= 7;
-        if n != 0 {
-            buf.push(byte | 0x80);
-        } else {
-            buf.push(byte);
-            break;
-        }
-    }
-}
-
-/// Write `bytes` as a BCS byte vector: ULEB128(len) + raw bytes.
-fn write_bcs_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
-    write_uleb128(buf, bytes.len() as u64);
-    buf.extend_from_slice(bytes);
-}
-
-fn write_bcs_str(buf: &mut Vec<u8>, s: &str) {
-    write_bcs_bytes(buf, s.as_bytes());
 }
 
 /// Parse a hex address string (`0x`-optional) into a 32-byte big-endian array.
@@ -96,102 +67,161 @@ fn parse_addr(addr: &str) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-// ── BCS transaction serialization ─────────────────────────────────────────────
+// ── BCS mirror types ─────────────────────────────────────────────────────────
+//
+// These mirror the on-chain Aptos transaction types (the same shapes the Move
+// VM and `aptos-types` define). Every type derives `Serialize` so the wire
+// bytes are produced by `bcs::to_bytes(&...)`. Variant order on each enum
+// matches the on-chain BCS discriminant layout — placeholder variants are
+// declared (but never constructed) so the variants we *do* use land at the
+// correct index. Mirroring `aptos-types` directly is impractical because
+// that crate pulls in the full aptos-core consensus tree.
 
-/// BCS-serialize an orderless entry-function `TransactionPayload`.
-///
-/// Produces: Payload(4) + V1(0) + EntryFunction(1) + EntryFunction body + ExtraConfigV1
-fn serialize_orderless_entry_fn_payload(
+/// Mirrors `move_core_types::language_storage::ModuleId`.
+#[derive(Serialize, Clone)]
+struct ModuleId {
+    address: [u8; 32],
+    name: String,
+}
+
+/// Mirrors `move_core_types::language_storage::TypeTag`.
+/// Uninhabited: we always produce empty `ty_args` lists, so no variant is ever
+/// constructed. `bcs::to_bytes` of `Vec<TypeTag>` with zero elements emits
+/// just `ULEB128(0)`.
+#[derive(Serialize, Clone)]
+enum TypeTag {}
+
+/// Mirrors `aptos_types::transaction::EntryFunction`.
+#[derive(Serialize, Clone)]
+struct EntryFunction {
+    module: ModuleId,
+    function: String,
+    ty_args: Vec<TypeTag>,
+    args: Vec<Vec<u8>>,
+}
+
+/// Mirrors `aptos_types::transaction::TransactionExecutable` (variant 1 = EntryFunction).
+#[derive(Serialize, Clone)]
+#[allow(dead_code)]
+enum TransactionExecutable {
+    Script,                          // 0 (placeholder)
+    EntryFunction(EntryFunction),    // 1
+}
+
+/// Mirrors `aptos_types::transaction::TransactionExtraConfig`.
+#[derive(Serialize, Clone)]
+enum TransactionExtraConfig {
+    V1 {
+        multisig_address: Option<[u8; 32]>,
+        replay_protection_nonce: Option<u64>,
+    },
+}
+
+/// Mirrors `aptos_types::transaction::TransactionInnerPayload`.
+#[derive(Serialize, Clone)]
+enum TransactionInnerPayload {
+    V1 {
+        executable: TransactionExecutable,
+        extra_config: TransactionExtraConfig,
+    },
+}
+
+/// Mirrors `aptos_types::transaction::TransactionPayload`.
+/// Variants 0–3 are reserved indices for the legacy on-chain layouts (Script,
+/// ModuleBundle, EntryFunction, Multisig). Declared as unit placeholders so
+/// `Payload` lands at variant index 4 — the new orderless+fee-payer-capable
+/// shape carrying `TransactionExtraConfig`.
+#[derive(Serialize, Clone)]
+#[allow(dead_code)]
+enum TransactionPayload {
+    LegacyScript,                        // 0
+    LegacyModuleBundle,                  // 1
+    LegacyEntryFunction,                 // 2
+    LegacyMultisig,                      // 3
+    Payload(TransactionInnerPayload),    // 4
+}
+
+/// Mirrors `aptos_types::transaction::RawTransaction`.
+/// For orderless txns, `sequence_number` is `ORDERLESS_SEQUENCE_NUMBER` and
+/// the actual nonce lives in `extra_config.replay_protection_nonce`.
+#[derive(Serialize, Clone)]
+struct RawTransaction {
+    sender: [u8; 32],
+    sequence_number: u64,
+    payload: TransactionPayload,
+    max_gas_amount: u64,
+    gas_unit_price: u64,
+    expiration_timestamp_secs: u64,
+    chain_id: u8,
+}
+
+/// Mirrors `aptos_types::transaction::RawTransactionWithData` (variant 1 = FeePayerTransaction).
+#[derive(Serialize, Clone)]
+#[allow(dead_code)]
+enum RawTransactionWithData {
+    MultiAgent,                          // 0 (placeholder)
+    FeePayerTransaction {                // 1
+        raw_txn: RawTransaction,
+        secondary_signer_addresses: Vec<[u8; 32]>,
+        fee_payer_address: [u8; 32],
+    },
+}
+
+/// Mirrors `aptos_types::transaction::authenticator::AccountAuthenticator`
+/// (variant 0 = Ed25519). Only Ed25519 is constructed.
+#[derive(Serialize)]
+#[allow(dead_code)]
+enum AccountAuthenticator {
+    Ed25519 {
+        public_key: Vec<u8>,  // 32 bytes
+        signature: Vec<u8>,    // 64 bytes
+    },
+}
+
+/// Wire format the Aptos gas station expects in its `transactionBytes` field:
+/// `bcs(raw_txn) || option(fee_payer_address)`. The all-zero fee-payer is a
+/// placeholder; the gas station substitutes its own address before signing.
+#[derive(Serialize)]
+struct GasStationTransactionBody {
+    raw_txn: RawTransaction,
+    fee_payer_address: Option<[u8; 32]>,
+}
+
+/// Sequence-number sentinel marking an orderless transaction. The real nonce
+/// is carried in `TransactionExtraConfig::V1.replay_protection_nonce`.
+const ORDERLESS_SEQUENCE_NUMBER: u64 = 0x0000_0000_DEAD_BEEF;
+
+// ── Transaction builders ─────────────────────────────────────────────────────
+
+fn build_orderless_payload(
     function: &str,
     args: &[TxnArg<'_>],
     nonce: u64,
-) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-
-    // TransactionPayload::Payload = 4
-    write_uleb128(&mut buf, 4);
-    // TransactionInnerPayload::V1 = 0
-    write_uleb128(&mut buf, 0);
-    // TransactionExecutable::EntryFunction = 1
-    write_uleb128(&mut buf, 1);
-
-    // Parse "0xaddr::module::function"
+) -> Result<TransactionPayload> {
     let parts: Vec<&str> = function.splitn(3, "::").collect();
     if parts.len() != 3 {
         return Err(anyhow!("invalid function '{}': expected 'addr::module::fn'", function));
     }
-    let module_addr = parse_addr(parts[0])?;
-    let module_name = parts[1];
-    let func_name = parts[2];
-
-    // ModuleId: address (32 bytes fixed) + module name (BCS string)
-    buf.extend_from_slice(&module_addr);
-    write_bcs_str(&mut buf, module_name);
-
-    // Function name (BCS string)
-    write_bcs_str(&mut buf, func_name);
-
-    // Type arguments: empty
-    write_uleb128(&mut buf, 0);
-
-    // Entry-function arguments: each is ULEB128(inner_len) + inner_bcs
-    write_uleb128(&mut buf, args.len() as u64);
-    for arg in args {
-        let inner = arg.bcs_inner()?;
-        write_bcs_bytes(&mut buf, &inner);
-    }
-
-    // TransactionExtraConfig::V1 = 0
-    write_uleb128(&mut buf, 0);
-    // multisig_address: None
-    buf.push(0x00);
-    // replay_protection_nonce: Some(nonce)
-    buf.push(0x01);
-    buf.extend_from_slice(&nonce.to_le_bytes());
-
-    Ok(buf)
+    let entry_fn = EntryFunction {
+        module: ModuleId {
+            address: parse_addr(parts[0])?,
+            name: parts[1].to_string(),
+        },
+        function: parts[2].to_string(),
+        ty_args: Vec::new(),
+        args: args.iter().map(|a| a.bcs_inner()).collect::<Result<Vec<_>>>()?,
+    };
+    Ok(TransactionPayload::Payload(TransactionInnerPayload::V1 {
+        executable: TransactionExecutable::EntryFunction(entry_fn),
+        extra_config: TransactionExtraConfig::V1 {
+            multisig_address: None,
+            replay_protection_nonce: Some(nonce),
+        },
+    }))
 }
 
-/// BCS-serialize a `RawTransaction` for an orderless transaction.
-///
-/// Uses the `0xDEADBEEF` sequence-number sentinel defined by the Aptos SDK for
-/// nonce-based (orderless) transactions.
-fn serialize_raw_txn(
-    sender: &[u8; 32],
-    payload_bcs: &[u8],
-    max_gas: u64,
-    gas_price: u64,
-    expiry: u64,
-    chain_id: u8,
-) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(sender);
-    buf.extend_from_slice(&0x0000_0000_DEAD_BEEFu64.to_le_bytes());
-    buf.extend_from_slice(payload_bcs);
-    buf.extend_from_slice(&max_gas.to_le_bytes());
-    buf.extend_from_slice(&gas_price.to_le_bytes());
-    buf.extend_from_slice(&expiry.to_le_bytes());
-    buf.push(chain_id);
-    buf
-}
-
-/// Wrap a `RawTransaction` BCS blob into a `FeePayerRawTransaction`.
-///
-/// The fee-payer address is all zeros — the gas station fills in its own address
-/// before signing.
-fn serialize_fee_payer_txn(raw_txn_bcs: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    write_uleb128(&mut buf, 1); // TransactionVariants::FeePayerTransaction
-    buf.extend_from_slice(raw_txn_bcs);
-    write_uleb128(&mut buf, 0); // secondary signers: empty vector
-    buf.extend_from_slice(&[0u8; 32]); // fee_payer_address placeholder (all zeros)
-    buf
-}
-
-/// Build the Ed25519 signing input for a fee-payer transaction.
-///
-/// Aptos signing input = SHA3-256("APTOS::RawTransactionWithData") || fee_payer_txn_bcs
-/// (the hash is only of the domain separator; the BCS bytes are appended raw, not re-hashed)
+/// Aptos signing input = SHA3-256("APTOS::RawTransactionWithData") || fee_payer_txn_bcs.
+/// (Domain-separator hash is computed once; the BCS bytes are appended raw, not re-hashed.)
 fn fee_payer_signing_input(fee_payer_txn_bcs: &[u8]) -> Vec<u8> {
     let mut h = Sha3_256::new();
     h.update(b"APTOS::RawTransactionWithData");
@@ -201,25 +231,6 @@ fn fee_payer_signing_input(fee_payer_txn_bcs: &[u8]) -> Vec<u8> {
     result.extend_from_slice(&prefix);
     result.extend_from_slice(fee_payer_txn_bcs);
     result
-}
-
-/// Encode a `SimpleTransaction` with fee-payer for the `transactionBytes` gas-station field.
-///
-/// Format: RawTransaction BCS || 0x01 (fee payer present) || [0u8; 32] (placeholder address)
-fn serialize_simple_txn_with_fee_payer(raw_txn_bcs: &[u8]) -> Vec<u8> {
-    let mut buf = raw_txn_bcs.to_vec();
-    buf.push(0x01);                     // fee_payer_address present = true
-    buf.extend_from_slice(&[0u8; 32]); // placeholder (gas station fills in its address)
-    buf
-}
-
-/// BCS-serialize an Ed25519 `AccountAuthenticator`.
-fn serialize_ed25519_authenticator(pk: &[u8; 32], sig: &[u8; 64]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    write_uleb128(&mut buf, 0); // AccountAuthenticatorVariant::Ed25519
-    write_bcs_bytes(&mut buf, pk);
-    write_bcs_bytes(&mut buf, sig);
-    buf
 }
 
 // ── AptosRpc ─────────────────────────────────────────────────────────────────
@@ -517,21 +528,41 @@ impl AptosRpc {
             + 60;
 
         let sender = parse_addr(sender_addr)?;
-        let payload_bcs = serialize_orderless_entry_fn_payload(function, args, nonce)?;
-        let raw_txn_bcs =
-            serialize_raw_txn(&sender, &payload_bcs, 200_000, 100, expiry, chain_id);
+        let payload = build_orderless_payload(function, args, nonce)?;
+        let raw_txn = RawTransaction {
+            sender,
+            sequence_number: ORDERLESS_SEQUENCE_NUMBER,
+            payload,
+            max_gas_amount: 200_000,
+            gas_unit_price: 100,
+            expiration_timestamp_secs: expiry,
+            chain_id,
+        };
 
-        // Signing uses FeePayerRawTransaction BCS (variant(1) + raw_txn + [] + [0;32])
-        let fee_payer_txn_bcs = serialize_fee_payer_txn(&raw_txn_bcs);
+        // Signing uses FeePayerTransaction BCS with all-zero fee-payer placeholder.
+        let fee_payer_txn = RawTransactionWithData::FeePayerTransaction {
+            raw_txn: raw_txn.clone(),
+            secondary_signer_addresses: Vec::new(),
+            fee_payer_address: [0u8; 32],
+        };
+        let fee_payer_txn_bcs =
+            bcs::to_bytes(&fee_payer_txn).map_err(|e| anyhow!("bcs FeePayer: {}", e))?;
         let signing_input = fee_payer_signing_input(&fee_payer_txn_bcs);
         let sig = signing_key.sign(&signing_input);
 
-        let pk: [u8; 32] = *verifying_key.as_bytes();
-        let sig_bytes: [u8; 64] = sig.to_bytes();
-        let sender_auth_bcs = serialize_ed25519_authenticator(&pk, &sig_bytes);
+        let sender_auth = AccountAuthenticator::Ed25519 {
+            public_key: verifying_key.as_bytes().to_vec(),
+            signature: sig.to_bytes().to_vec(),
+        };
+        let sender_auth_bcs =
+            bcs::to_bytes(&sender_auth).map_err(|e| anyhow!("bcs auth: {}", e))?;
 
-        // Gas station receives SimpleTransaction BCS (raw_txn + bool + fee_payer_placeholder)
-        let simple_txn_bcs = serialize_simple_txn_with_fee_payer(&raw_txn_bcs);
+        // Gas station body: bcs(raw_txn) || Some(fee_payer_placeholder).
+        let simple_txn_bcs = bcs::to_bytes(&GasStationTransactionBody {
+            raw_txn,
+            fee_payer_address: Some([0u8; 32]),
+        })
+        .map_err(|e| anyhow!("bcs GasStation body: {}", e))?;
 
         let body = json!({
             "transactionBytes": simple_txn_bcs,
@@ -664,5 +695,159 @@ impl AptosRpc {
             }
         }
         Err(anyhow!("timeout waiting for transaction {}", hash))
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the exact BCS layout of `TransactionPayload::Payload(V1(...))` for an
+    /// orderless entry function with one Address arg + one Bytes arg.
+    #[test]
+    fn orderless_payload_layout() {
+        let args = [TxnArg::Address("0x0123"), TxnArg::Bytes(&[0xab, 0xcd])];
+        let payload = build_orderless_payload("0x01::aptos_account::transfer", &args, 42).unwrap();
+        let bytes = bcs::to_bytes(&payload).unwrap();
+
+        let mut addr_1 = [0u8; 32];
+        addr_1[31] = 0x01;
+        let mut addr_123 = [0u8; 32];
+        addr_123[30] = 0x01;
+        addr_123[31] = 0x23;
+
+        // [0x04]                               TransactionPayload::Payload (variant 4)
+        // [0x00]                               TransactionInnerPayload::V1
+        // [0x01]                               TransactionExecutable::EntryFunction
+        // [...32B = 0x...01...]                module address (0x1)
+        // [0x0d]"aptos_account"                module name
+        // [0x08]"transfer"                     function name
+        // [0x00]                               ty_args: empty
+        // [0x02]                               args.len() = 2
+        //   [0x20][...32B 0x...0123]           arg[0] = Vec<u8>(32) wrapping the address
+        //   [0x03][0x02, 0xab, 0xcd]           arg[1] = Vec<u8>(3) wrapping bcs(Vec<u8>(2))
+        // [0x00]                               TransactionExtraConfig::V1
+        // [0x00]                               multisig_address: None
+        // [0x01][...8B nonce LE]               replay_protection_nonce: Some(42)
+        assert_eq!(bytes[0], 0x04);
+        assert_eq!(bytes[1], 0x00);
+        assert_eq!(bytes[2], 0x01);
+        assert_eq!(&bytes[3..35], &addr_1);
+        assert_eq!(bytes[35], 0x0d);
+        assert_eq!(&bytes[36..49], b"aptos_account");
+        assert_eq!(bytes[49], 0x08);
+        assert_eq!(&bytes[50..58], b"transfer");
+        assert_eq!(bytes[58], 0x00); // ty_args empty
+        assert_eq!(bytes[59], 0x02); // 2 args
+        assert_eq!(bytes[60], 0x20); // arg[0] inner-len = 32
+        assert_eq!(&bytes[61..93], &addr_123);
+        assert_eq!(bytes[93], 0x03); // arg[1] inner-len = 3
+        assert_eq!(&bytes[94..97], &[0x02, 0xab, 0xcd]); // bcs(Vec<u8>(2)) = [0x02, 0xab, 0xcd]
+        assert_eq!(bytes[97], 0x00); // ExtraConfig::V1
+        assert_eq!(bytes[98], 0x00); // multisig: None
+        assert_eq!(bytes[99], 0x01); // replay_nonce: Some
+        assert_eq!(&bytes[100..108], &42u64.to_le_bytes());
+        assert_eq!(bytes.len(), 108);
+    }
+
+    fn sample_raw_txn() -> RawTransaction {
+        let mut sender = [0u8; 32];
+        sender[31] = 0x42;
+        let payload = TransactionPayload::Payload(TransactionInnerPayload::V1 {
+            executable: TransactionExecutable::EntryFunction(EntryFunction {
+                module: ModuleId { address: [0u8; 32], name: "m".to_string() },
+                function: "f".to_string(),
+                ty_args: Vec::new(),
+                args: Vec::new(),
+            }),
+            extra_config: TransactionExtraConfig::V1 {
+                multisig_address: None,
+                replay_protection_nonce: Some(7),
+            },
+        });
+        RawTransaction {
+            sender,
+            sequence_number: ORDERLESS_SEQUENCE_NUMBER,
+            payload,
+            max_gas_amount: 200_000,
+            gas_unit_price: 100,
+            expiration_timestamp_secs: 1_700_000_000,
+            chain_id: 4,
+        }
+    }
+
+    /// Verifies orderless `RawTransaction` BCS: 32B sender, then 0xDEADBEEF LE,
+    /// then payload, then three u64 LE fields, then chain_id.
+    #[test]
+    fn raw_txn_layout() {
+        let raw = sample_raw_txn();
+        let bytes = bcs::to_bytes(&raw).unwrap();
+        let mut expected_sender = [0u8; 32];
+        expected_sender[31] = 0x42;
+        assert_eq!(&bytes[0..32], &expected_sender);
+        assert_eq!(&bytes[32..40], &0x0000_0000_DEAD_BEEFu64.to_le_bytes());
+        // payload starts at byte 40 with TransactionPayload variant 4
+        assert_eq!(bytes[40], 0x04);
+        // chain_id is the last byte
+        assert_eq!(*bytes.last().unwrap(), 0x04);
+        // The three u64s precede chain_id: max_gas, gas_price, expiry.
+        assert_eq!(&bytes[bytes.len() - 25..bytes.len() - 17], &200_000u64.to_le_bytes());
+        assert_eq!(&bytes[bytes.len() - 17..bytes.len() - 9], &100u64.to_le_bytes());
+        assert_eq!(&bytes[bytes.len() - 9..bytes.len() - 1], &1_700_000_000u64.to_le_bytes());
+    }
+
+    /// `RawTransactionWithData::FeePayerTransaction` lays out as:
+    /// [0x01 variant] [bcs(raw_txn)] [0x00 empty secondary] [32B zeros].
+    #[test]
+    fn fee_payer_wrapper_layout() {
+        let raw = sample_raw_txn();
+        let raw_bcs = bcs::to_bytes(&raw).unwrap();
+        let fp = RawTransactionWithData::FeePayerTransaction {
+            raw_txn: raw,
+            secondary_signer_addresses: Vec::new(),
+            fee_payer_address: [0u8; 32],
+        };
+        let bytes = bcs::to_bytes(&fp).unwrap();
+        assert_eq!(bytes[0], 0x01); // FeePayerTransaction variant
+        assert_eq!(&bytes[1..1 + raw_bcs.len()], &raw_bcs[..]);
+        let mid = 1 + raw_bcs.len();
+        assert_eq!(bytes[mid], 0x00); // empty secondary signers
+        assert_eq!(&bytes[mid + 1..mid + 33], &[0u8; 32]);
+        assert_eq!(bytes.len(), mid + 33);
+    }
+
+    /// Gas-station body lays out as: bcs(raw_txn) || 0x01 || 32B zeros.
+    #[test]
+    fn gas_station_body_layout() {
+        let raw = sample_raw_txn();
+        let raw_bcs = bcs::to_bytes(&raw).unwrap();
+        let body = GasStationTransactionBody {
+            raw_txn: raw,
+            fee_payer_address: Some([0u8; 32]),
+        };
+        let bytes = bcs::to_bytes(&body).unwrap();
+        assert_eq!(&bytes[..raw_bcs.len()], &raw_bcs[..]);
+        assert_eq!(bytes[raw_bcs.len()], 0x01); // Option::Some
+        assert_eq!(&bytes[raw_bcs.len() + 1..], &[0u8; 32]);
+    }
+
+    /// `AccountAuthenticator::Ed25519` lays out as: 0x00 variant || ULEB128(32) || pk || ULEB128(64) || sig.
+    #[test]
+    fn ed25519_authenticator_layout() {
+        let pk = [0xaau8; 32];
+        let sig = [0xbbu8; 64];
+        let auth = AccountAuthenticator::Ed25519 {
+            public_key: pk.to_vec(),
+            signature: sig.to_vec(),
+        };
+        let bytes = bcs::to_bytes(&auth).unwrap();
+        assert_eq!(bytes[0], 0x00); // Ed25519 variant
+        assert_eq!(bytes[1], 0x20); // ULEB128(32)
+        assert_eq!(&bytes[2..34], &pk);
+        assert_eq!(bytes[34], 0x40); // ULEB128(64)
+        assert_eq!(&bytes[35..99], &sig);
+        assert_eq!(bytes.len(), 99);
     }
 }

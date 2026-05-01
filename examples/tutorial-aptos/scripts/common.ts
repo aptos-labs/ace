@@ -13,8 +13,16 @@ export const ROOT = path.join(__dirname, '..');
 export const CONTRACT_DIR = path.join(ROOT, 'contract');
 export const DATA_DIR = path.join(ROOT, 'data');
 
-export const BLOB_NAME = 'tutorial-blob';
-export const PLAINTEXT = 'Hello from the ACE tutorial!';
+export interface ItemSpec {
+    name: string;
+    plaintext: string;
+    priceOctas: number;
+}
+
+export const ITEMS: ItemSpec[] = [
+    { name: 'song-1.mp3', plaintext: 'Lyrics for song 1: hello sunshine!', priceOctas: 10_000_000 },
+    { name: 'song-2.mp3', plaintext: 'Lyrics for song 2: goodbye rain!',  priceOctas: 10_000_000 },
+];
 
 export function ensureDataDir(): void {
     if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -40,7 +48,7 @@ export function waitForEnter(prompt: string): Promise<void> {
 export const ALICE_FILE = path.join(DATA_DIR, 'alice.json');
 export const BOB_FILE = path.join(DATA_DIR, 'bob.json');
 export const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
-export const BLOB_FILE = path.join(DATA_DIR, 'blob.json');
+export const CATALOG_FILE = path.join(DATA_DIR, 'catalog.json');
 
 export interface AccountFile {
     address: string;
@@ -51,7 +59,12 @@ export interface ConfigFile {
     appContractAddr: string;
 }
 
-export interface BlobFile {
+export interface CatalogEntry {
     name: string;
+    priceOctas: number;
     ciphertextHex: string;
+}
+
+export interface CatalogFile {
+    items: CatalogEntry[];
 }

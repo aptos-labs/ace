@@ -1,28 +1,32 @@
 # ACE Tutorial — Aptos Testnet
 
-A step-by-step walkthrough of the ACE encryption flow on Aptos. You will:
+A step-by-step walkthrough of the ACE encryption flow on Aptos, framed as a
+minimal pay-to-download marketplace. You will:
 
-1. Deploy a small Move contract (`simple_acl`) that gates a blob behind an allowlist.
-2. Encrypt a secret under that contract's `check_permission` view.
-3. Watch a fresh user fail to decrypt.
-4. Add the user to the allowlist; watch them succeed.
-5. Revoke access; watch them fail again.
+1. Deploy a small Move contract (`marketplace`) that gates per-item access.
+2. Encrypt two items under that contract's `check_permission` view, listing
+   each one at an APT price.
+3. Watch a fresh user fail to decrypt either item.
+4. Pay for one item on-chain; watch the buyer decrypt that item.
+5. Confirm the buyer **still cannot** decrypt the unpaid item — domain-binding
+   isolates each ciphertext to its specific item name.
 
 The whole tutorial uses the public ACE testnet deployment, bundled in the SDK
-as `ACE.knownDeployments.preview20260501`. You only need to fund **one** account
-(Alice) with ~2 APT at the start — Bob's keypair is generated locally and never
-sends an on-chain transaction.
+as `ACE.knownDeployments.preview20260501`. You only need to visit the faucet
+once: a single click funds **Alice** with ~10 APT, and she will send Bob a
+small allowance on-chain when he shows up in step 4.
 
 ## Cast
 
-- **Alice** — content owner. Deploys the contract, encrypts a secret, manages
-  the allowlist. The only account that needs APT.
-- **Bob** — a curious would-be reader. Generated as a fresh keypair in step 4.
-  Signs an off-chain proof when requesting decryption from ACE workers; never
-  pays gas.
+- **Alice** — marketplace operator. Deploys the contract, encrypts and lists
+  items, receives APT payments.
+- **Bob** — a buyer. Generated as a fresh keypair in step 4 and funded by
+  Alice with a small allowance (testnet faucets are rate-limited, so the
+  tutorial avoids asking you to visit the faucet twice). He pays Alice in APT
+  for one item, then runs the standard ACE decryption flow.
 - **ACE workers** — the threshold-decryption network. Before releasing a key
-  share they call `simple_acl::check_permission(user, domain)` on-chain. No
-  single worker can decrypt alone; Bob needs a threshold of them to agree.
+  share they call `marketplace::check_permission(user, itemName)` on-chain.
+  No single worker can decrypt alone; Bob needs a threshold of them to agree.
 
 ## Prerequisites
 
@@ -41,23 +45,26 @@ cd examples/tutorial-aptos
 ### Step 1 — Generate Alice's keypair and fund it
 
 > *Alice is opening shop. She generates a fresh keypair on testnet and asks the
-> faucet for ~2 APT — enough to deploy the contract and run a few transactions.*
+> faucet for some APT — enough to deploy the contract, list items, and send
+> Bob an allowance later.*
 
 ```bash
 pnpm 1-setup
 ```
 
 The script prints Alice's address, then waits for you to fund her via the
-[Aptos testnet faucet](https://aptos.dev/en/network/faucet) (the faucet hands
-out 1 APT per click — click twice). Once you press Enter, the script verifies
-the balance and saves Alice's keypair to `data/alice.json`.
+[Aptos testnet faucet](https://aptos.dev/en/network/faucet) (one click drops
+~10 APT — plenty for the tutorial). Once you press Enter, the script polls
+until the drop lands and saves Alice's keypair to `data/alice.json`. The
+script is idempotent: if Alice is already funded on a re-run, it skips the
+prompt entirely.
 
-### Step 2 — Alice deploys `simple_acl`
+### Step 2 — Alice deploys `marketplace`
 
-> *Alice deploys her access-control module. The Move package's named address
+> *Alice deploys her marketplace module. The Move package's named address
 > `admin` is rewritten to her own address on the way in, so the deployed
-> module's identity is `<alice>::simple_acl`. After publishing she calls
-> `initialize` to create an empty blob registry.*
+> module's identity is `<alice>::marketplace`. After publishing she calls
+> `initialize` to create an empty catalog.*
 
 ```bash
 pnpm 2-deploy-contract
@@ -65,88 +72,90 @@ pnpm 2-deploy-contract
 
 Saves the deployed module address to `data/config.json`.
 
-### Step 3 — Alice encrypts and registers the blob
+### Step 3 — Alice encrypts and lists two items
 
-> *Alice ACE-encrypts her secret under the policy
-> `(simple_acl::check_permission, blobName)`. Then she registers the blob
-> on-chain. The blob's allowlist starts empty — only Alice (the owner) can
-> decrypt.*
+> *Alice ACE-encrypts two items (`song-1.mp3` and `song-2.mp3`). Each
+> ciphertext is bound to the policy
+> `(marketplace::check_permission, itemName)` — meaning a worker will only
+> release a key share when `check_permission(user, itemName)` returns true.
+> She then lists each item on-chain at a fixed APT price.*
 
 ```bash
-pnpm 3-encrypt
+pnpm 3-list
 ```
 
-The ciphertext is saved to `data/blob.json`.
+Ciphertexts and prices are saved to `data/catalog.json`.
 
-### Step 4 — Bob attempts to decrypt (and is denied)
+### Step 4 — Bob shows up, gets a small allowance from Alice, and is denied
 
-> *Bob shows up out of nowhere, generates his own keypair, and tries to decrypt.
-> ACE workers each simulate `simple_acl::check_permission(bob, blobName)` on
-> testnet, which returns `false` because Bob isn't on the list. They refuse to
-> release key shares; Bob's threshold-IBE decrypt fails.*
+> *Bob is generated locally. Alice transfers ~0.2 APT to him on-chain — enough
+> to buy one item plus gas (the testnet faucet is rate-limited at 5 calls/day,
+> so we avoid asking you to fund twice). Without buying anything yet, Bob
+> attempts to decrypt song-1. ACE workers each simulate
+> `marketplace::check_permission(bob, "song-1.mp3")`, which returns `false`
+> because Bob isn't on the buyer list. They refuse to release key shares;
+> Bob's threshold-IBE decrypt fails.*
 
 ```bash
 pnpm 4-decrypt-fail
 ```
 
-Bob's keypair is persisted to `data/bob.json` for later steps. Bob never sends
-a transaction — his only on-chain footprint is the address that workers see in
-the proof-of-permission signature.
+Bob's keypair is persisted to `data/bob.json` for later steps.
 
-### Step 5 — Alice grants Bob access
+### Step 5 — Bob buys song-1
 
-> *Convinced Bob is who he says he is, Alice adds him to the allowlist.*
+> *Bob signs a `marketplace::buy` transaction. The contract transfers
+> song-1's price in APT from Bob to Alice in the same call, then pushes Bob
+> onto song-1's buyer list. Note: only song-1's buyer list — song-2 is
+> untouched.*
 
 ```bash
-pnpm 5-grant-access
+pnpm 5-buy
 ```
 
-### Step 6 — Bob decrypts successfully
+### Step 6 — Bob decrypts song-1; song-2 stays sealed
 
-> *Bob retries with the same proof flow as before. This time the on-chain
-> `check_permission` returns `true`, workers release their key shares, and Bob
-> reconstructs the threshold key and decrypts the ciphertext.*
+> *Bob retries the same flow as step 4, against song-1 first: this time
+> `check_permission` returns `true`, workers release shares, and Bob
+> reconstructs the threshold key. Then Bob tries the exact same flow against
+> song-2 — and is denied. Same Bob, same encryption keypair, same decryption
+> code path; the only difference is the item name (the encryption "domain"),
+> and the on-chain check answers per-item.*
 
 ```bash
-pnpm 6-decrypt-success
+pnpm 6-decrypt
 ```
 
 Expected output:
 
 ```
 ✓ Decryption succeeded.
-  Plaintext: "Hello from the ACE tutorial!"
+  Plaintext: "Lyrics for song 1: hello sunshine!"
+...
+✓ Decryption denied (expected).
+  Domain-binding holds: paying for one item does not unlock another.
 ```
 
-### Step 7 — Alice revokes; Bob fails again
-
-> *Access is not a one-time grant. Every decryption request triggers a fresh
-> on-chain check. Alice removes Bob from the allowlist and Bob's next attempt
-> fails — even though he held the same ciphertext and credentials moments ago.*
-
-```bash
-pnpm 7-revoke
-```
+This last step is the punchline: domain-binding is what makes ACE's
+per-ciphertext access control meaningful.
 
 ## What's in this tutorial
 
 ```
 tutorial-aptos/
 ├── contract/
-│   ├── Move.toml               ← named address `admin` rewritten at deploy time
+│   ├── Move.toml                ← named address `admin` rewritten at deploy time
 │   └── sources/
-│       └── simple_acl.move     ← Registry, register_blob, grant/revoke,
-│                                  check_permission view (the ACE hook)
+│       └── marketplace.move     ← Catalog, list_item, buy, check_permission
 ├── scripts/
-│   ├── common.ts               ← paths, JSON helpers, persona file shapes
-│   ├── 1-setup.ts              ← generate Alice, prompt fund
-│   ├── 2-deploy-contract.ts    ← publish + initialize
-│   ├── 3-encrypt.ts            ← ACE encrypt + register_blob
-│   ├── 4-decrypt-fail.ts       ← generate Bob, attempt decrypt → expected fail
-│   ├── 5-grant-access.ts       ← Alice adds Bob to allowlist
-│   ├── 6-decrypt-success.ts    ← Bob retries → success
-│   └── 7-revoke.ts             ← Alice removes Bob, Bob retries → expected fail
-└── data/                        ← gitignored: alice.json, bob.json, config.json, blob.json
+│   ├── common.ts                ← paths, JSON helpers, item specs, file shapes
+│   ├── 1-setup.ts               ← generate Alice, prompt fund
+│   ├── 2-deploy-contract.ts     ← publish + initialize
+│   ├── 3-list.ts                ← encrypt 2 items + list_item for each
+│   ├── 4-decrypt-fail.ts        ← generate + fund Bob, attempt decrypt → expected fail
+│   ├── 5-buy.ts                 ← Bob calls marketplace::buy on song-1
+│   └── 6-decrypt.ts             ← song-1 ✓, song-2 ✗ — domain-binding demo
+└── data/                         ← gitignored: alice.json, bob.json, config.json, catalog.json
 ```
 
 ## What this tutorial intentionally does *not* cover
@@ -154,7 +163,7 @@ tutorial-aptos/
 - **Custom flows.** This tutorial uses the **basic flow** (proof of permission =
   Ed25519 signature on the request). For ZK-proof-based ACLs see
   [`examples/zk-kyc`](../zk-kyc/README.md).
-- **Pay-to-download / time locks.** See
-  [`examples/shelby-explorer-acl-aptos`](../shelby-explorer-acl-aptos/README.md)
-  for an access_control module with PayToDownload and TimeLock policies.
+- **Refunds, revocation, time locks.** A real marketplace would model these.
+  See [`examples/shelby-explorer-acl-aptos`](../shelby-explorer-acl-aptos/README.md)
+  for an access-control module with PayToDownload **and** TimeLock policies.
 - **Solana.** See [`examples/pay-to-download-solana`](../pay-to-download-solana/README.md).

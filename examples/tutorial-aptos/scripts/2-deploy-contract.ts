@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Step 2 — Alice deploys `simple_acl` and initializes the registry.
+ * Step 2 — Alice deploys the `marketplace` module and initializes an empty catalog.
  *
  * Copies the Move package to a tempdir, rewrites the placeholder admin address
  * (0xcafe) to Alice's, runs `aptos move publish`, then calls `initialize`.
@@ -31,7 +31,7 @@ async function main() {
     const { aceDeployment } = ACE.knownDeployments.preview20260501;
     const rpcUrl = aceDeployment.apiEndpoint;
 
-    log(`Deploying simple_acl with admin = ${adminAddress}`);
+    log(`Deploying marketplace with admin = ${adminAddress}`);
 
     const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'tutorial-aptos-'));
     const tmpContract = path.join(tmpDir, 'contract');
@@ -58,25 +58,24 @@ async function main() {
     }
     log('Module published.');
 
-    // Initialize the registry.
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
-    log('Calling simple_acl::initialize...');
+    log('Calling marketplace::initialize...');
     const txn = await aptos.transaction.build.simple({
         sender: alice.accountAddress,
         data: {
-            function: `${adminAddress}::simple_acl::initialize` as `${string}::${string}::${string}`,
+            function: `${adminAddress}::marketplace::initialize` as `${string}::${string}::${string}`,
             typeArguments: [],
             functionArguments: [],
         },
     });
     const submitted = await aptos.signAndSubmitTransaction({ signer: alice, transaction: txn });
     await aptos.waitForTransaction({ transactionHash: submitted.hash });
-    log('Registry initialized.');
+    log('Catalog initialized.');
 
     writeJson(CONFIG_FILE, { appContractAddr: adminAddress });
     log(`Saved config to ${CONFIG_FILE}`);
     log('');
-    log('Next: pnpm 3-encrypt');
+    log('Next: pnpm 3-list');
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

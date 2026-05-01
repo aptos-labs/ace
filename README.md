@@ -298,7 +298,7 @@ pnpm dev profile default <alias>          # set the default profile
 
 | Example | Flow | Chain | Description |
 |---------|------|-------|-------------|
-| [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — deploy contract, encrypt, decrypt, grant/revoke. Fund **one** account with ~2 APT and go. |
+| [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — a minimal pay-to-download marketplace; demonstrates per-item domain-binding. One faucet click for Alice and go. |
 | [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
 | [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
 | [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |

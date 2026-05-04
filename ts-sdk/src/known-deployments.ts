@@ -21,4 +21,12 @@ export const knownDeployments = {
         }),
         keypairId: AccountAddress.fromString('0x3d9a818deeb290e8cf79589ef57e0afa9b241cbaecc1b23682fb6e9b3a54c77c'),
     },
+    preview20260504: {
+        chainId: 2,
+        aceDeployment: new AceDeployment({
+            apiEndpoint: 'https://api.testnet.aptoslabs.com/v1',
+            contractAddr: AccountAddress.fromString('0x97c41a8ea25534a469ba079ed9007b9d08610e981c4d1962948247fa8595354c'),
+        }),
+        keypairId: AccountAddress.fromString('0xdcf7992d1458683ac63420cfa8ff3726639b9c467e5eb0104253f2541fcfdc96'),
+    },
 } as const;

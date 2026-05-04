@@ -26,7 +26,7 @@ async function main() {
     const catalog = readJson<CatalogFile>(CATALOG_FILE);
     const bob = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(bobFile.privateKeyHex) });
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260501;
+    const { aceDeployment } = ACE.knownDeployments.preview20260504;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
 
     const target = catalog.items.find(i => i.name === ITEMS[0].name)!;

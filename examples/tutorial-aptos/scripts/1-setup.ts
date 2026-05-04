@@ -54,7 +54,7 @@ async function main() {
 
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(privateKeyHex) });
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260501;
+    const { aceDeployment } = ACE.knownDeployments.preview20260504;
     const aptos = new Aptos(new AptosConfig({
         network: Network.CUSTOM,
         fullnode: aceDeployment.apiEndpoint,

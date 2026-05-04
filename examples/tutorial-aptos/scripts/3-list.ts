@@ -28,7 +28,7 @@ async function main() {
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
     const appContractAddr = AccountAddress.fromString(cfg.appContractAddr);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260501;
+    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260504;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
     const textEncoder = new TextEncoder();
 

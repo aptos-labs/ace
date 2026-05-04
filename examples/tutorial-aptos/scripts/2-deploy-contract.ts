@@ -28,7 +28,7 @@ async function main() {
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
     const adminAddress = alice.accountAddress.toStringLong();
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260501;
+    const { aceDeployment } = ACE.knownDeployments.preview20260504;
     const rpcUrl = aceDeployment.apiEndpoint;
 
     log(`Deploying marketplace with admin = ${adminAddress}`);

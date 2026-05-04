@@ -38,7 +38,7 @@ async function main() {
     const bobAddress = bob.accountAddress.toStringLong();
     log(`Generated Bob keypair: ${bobAddress}`);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260501;
+    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260504;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
 
     log(`Alice transferring ${BOB_ALLOWANCE_OCTAS / 100_000_000} APT to Bob...`);

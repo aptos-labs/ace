@@ -126,7 +126,7 @@ async function main() {
             workerAccounts[0]!,
             workerAccounts.slice(0, 2),
             aceContract,
-            serializeNewSecretProposal(0),
+            serializeNewSecretProposal(1),
         );
 
         log('Waiting for DKG to complete...');

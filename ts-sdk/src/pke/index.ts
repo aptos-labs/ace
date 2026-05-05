@@ -248,9 +248,11 @@ export async function deriveEncryptionKey(decryptionKey: DecryptionKey): Promise
 }
 
 /** Generate a fresh PKE keypair. The scheme parameter selects the underlying construction;
- *  defaults to ElGamalOtpRistretto255 for now. */
+ *  defaults to HPKE-X25519-HKDF-SHA256-ChaCha20-Poly1305 (RFC 9180 base mode). The legacy
+ *  ElGamalOtpRistretto255 scheme is still supported by passing
+ *  `SCHEME_ELGAMAL_OTP_RISTRETTO255` explicitly. */
 export async function keygen(
-    scheme: number = SCHEME_ELGAMAL_OTP_RISTRETTO255,
+    scheme: number = SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305,
 ): Promise<{ encryptionKey: EncryptionKey; decryptionKey: DecryptionKey }> {
     if (scheme === SCHEME_ELGAMAL_OTP_RISTRETTO255) {
         const dkInner = ElGamalOtpRistretto255.keygen();

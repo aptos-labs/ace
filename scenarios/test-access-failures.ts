@@ -173,7 +173,7 @@ async function main() {
         const epoch0WorkerAccounts = EPOCH0_WORKER_INDICES.map(i => workerAccounts[i]);
         {
             const approvers = epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD);
-            await proposeAndApprove(approvers[0]!, approvers, adminAddr, serializeNewSecretProposal(0));
+            await proposeAndApprove(approvers[0]!, approvers, adminAddr, serializeNewSecretProposal(1));
         }
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done', async () => {

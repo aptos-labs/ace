@@ -173,13 +173,13 @@ jobs:
       matrix:
         scenario:
           - test-vss-protocol
-          - test-vss-protocol-g2
+          - test-vss-protocol-g1
           - test-dkg-protocol
-          - test-dkg-protocol-g2
+          - test-dkg-protocol-g1
           - test-dkr-protocol
-          - test-dkr-protocol-g2
+          - test-dkr-protocol-g1
           - test-network-protocol
-          - test-network-protocol-shortsig
+          - test-network-protocol-shortpk
           - full-happy-path
           - test-access-failures
           - test-fault-tolerance

@@ -48,6 +48,44 @@ export class MasterPublicKey {
         return new MasterPublicKey(scheme, inner);
     }
 
+    /**
+     * Build a `MasterPublicKey` for the requested t-IBE `scheme` from on-chain DKG group
+     * elements, validating that the elements live in the group expected by `scheme`.
+     *
+     * Returns Err with an explicit "incompatible" message if `basePoint` / `resultPk` were
+     * produced by a DKG over a different group than `scheme` requires (e.g. asking for
+     * shortsig-aead but the keypair's DKG is over G1).
+     *
+     *   shortpk-otp-hmac (= 0) requires basePoint + resultPk in BLS12-381 G1.
+     *   shortsig-aead    (= 1) requires basePoint + resultPk in BLS12-381 G2.
+     */
+    static fromGroupElements(
+        scheme: number,
+        basePoint: group.Element,
+        resultPk: group.Element,
+    ): Result<MasterPublicKey> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (_extra: Record<string, any>) => {
+                if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+                    if (basePoint.scheme !== group.SCHEME_BLS12381G1 || resultPk.scheme !== group.SCHEME_BLS12381G1) {
+                        throw `tibe.MasterPublicKey.fromGroupElements: scheme=shortpk-otp-hmac requires G1 basepoint and resultPk, got basePoint.scheme=${basePoint.scheme}, resultPk.scheme=${resultPk.scheme}`;
+                    }
+                    return MasterPublicKey.newBonehFranklinBls12381ShortPkOtpHmac(basePoint, resultPk)
+                        .unwrapOrThrow('newBonehFranklinBls12381ShortPkOtpHmac');
+                }
+                if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                    if (basePoint.scheme !== group.SCHEME_BLS12381G2 || resultPk.scheme !== group.SCHEME_BLS12381G2) {
+                        throw `tibe.MasterPublicKey.fromGroupElements: scheme=shortsig-aead requires G2 basepoint and resultPk, got basePoint.scheme=${basePoint.scheme}, resultPk.scheme=${resultPk.scheme}`;
+                    }
+                    return MasterPublicKey.newBonehFranklinBls12381ShortSigAead(basePoint, resultPk)
+                        .unwrapOrThrow('newBonehFranklinBls12381ShortSigAead');
+                }
+                throw `tibe.MasterPublicKey.fromGroupElements: unknown scheme ${scheme}`;
+            },
+        });
+    }
+
     static deserialize(deserializer: Deserializer): Result<MasterPublicKey> {
         const task = (_extra: Record<string, any>) => {
             const scheme = deserializer.deserializeU8();

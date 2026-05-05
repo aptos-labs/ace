@@ -234,7 +234,7 @@ async function main() {
      * 5. Bob aggregates key shares and decrypts
      */
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const session = ACE.AptosBasicFlow.DecryptionSession.create({
+        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,

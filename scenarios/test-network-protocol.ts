@@ -48,7 +48,7 @@ async function main() {
         // 1 admin + 3 workers: A=0, B=1, C=2
         const numWorkers = 3;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: numWorkers }, () => ace.pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }

@@ -51,7 +51,7 @@ async function main() {
     console.log(`Attempting to obtain a credential for age ${age} (underage)...`);
 
     const providerKey = readJson<ProviderKey>(path.join(DATA_DIR, 'provider-key.json'));
-    const callerKeypair = ACE.pke.keygen();
+    const callerKeypair = await ACE.pke.keygen();
     const encPk = new Uint8Array(callerKeypair.encryptionKey.toBytes());
 
     const poseidon = await buildPoseidon();

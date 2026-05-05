@@ -5,13 +5,13 @@ import { Account } from '@aptos-labs/ts-sdk';
 import { pke } from '@aptos-labs/ace-sdk';
 import type { NodeProfile } from './profile.js';
 
-export function generateProfile(): NodeProfile {
+export async function generateProfile(): Promise<NodeProfile> {
   const account = Account.generate();
   const skHex = '0x' + Buffer.from(
     (account.privateKey as { toUint8Array(): Uint8Array }).toUint8Array(),
   ).toString('hex');
 
-  const { encryptionKey, decryptionKey } = pke.keygen();
+  const { encryptionKey, decryptionKey } = await pke.keygen();
 
   return {
     accountAddr: account.accountAddress.toStringLong(),

@@ -134,6 +134,17 @@ pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertex
 
             pke::Ciphertext::ElGamalOtpRistretto255 { c0, c1, sym_ciph, mac }
         }
+        pke::EncryptionKey::HpkeX25519ChaCha20Poly1305 { pk } => {
+            let ek = crate::pke_hpke_x25519_chacha20poly1305::EncryptionKey { pk: pk.to_vec() };
+            let ct = crate::pke_hpke_x25519_chacha20poly1305::encrypt(&ek, plaintext, b"")
+                .expect("HPKE encrypt: invalid public key");
+            let enc: [u8; 32] = ct
+                .enc
+                .as_slice()
+                .try_into()
+                .expect("HPKE encapped key must be 32 bytes");
+            pke::Ciphertext::HpkeX25519ChaCha20Poly1305 { enc, aead_ct: ct.aead_ct }
+        }
     }
 }
 

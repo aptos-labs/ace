@@ -121,7 +121,7 @@ async function main() {
         }
 
         step(4, 'Register all worker PKE keys and endpoints on-chain');
-        const encKeypairs = Array.from({ length: TOTAL_WORKERS }, () => pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: TOTAL_WORKERS }, () => pke.keygen()));
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
             assertTxnSuccess(
@@ -275,7 +275,7 @@ async function main() {
         // ── Decrypt in epoch 1 (workers 1,2,3 online, worker 4 offline) ─────────
         step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee, worker 4 offline)');
         {
-            const pingSession = ACE.AptosBasicFlow.DecryptionSession.create({
+            const pingSession = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,

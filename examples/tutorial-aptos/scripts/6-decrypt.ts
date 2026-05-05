@@ -31,7 +31,7 @@ async function main() {
     const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260504;
 
     async function tryDecrypt(entry: CatalogEntry): Promise<{ ok: boolean; plaintext?: string }> {
-        const session = ACE.AptosBasicFlow.DecryptionSession.create({
+        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,

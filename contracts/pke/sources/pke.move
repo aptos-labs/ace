@@ -10,6 +10,7 @@
 module ace::pke {
     use aptos_std::bcs_stream::{Self, BCSStream};
     use ace::pke_elgamal_otp_ristretto255;
+    use ace::pke_hpke_x25519_chacha20poly1305;
 
     // ── Error codes ──────────────────────────────────────────────────────────
 
@@ -21,23 +22,30 @@ module ace::pke {
     // ── Scheme constants ─────────────────────────────────────────────────────
 
     const SCHEME_ELGAMAL_OTP_RISTRETTO255: u8 = 0;
+    const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305: u8 = 1;
 
     // ── Outer enum types ─────────────────────────────────────────────────────
 
-    /// Wire: [u8 scheme=0] [inner EncryptionKey bytes]
+    /// Wire: [u8 scheme] [inner EncryptionKey bytes]
     enum EncryptionKey has copy, drop, store {
         ElGamalOtpRistretto255(pke_elgamal_otp_ristretto255::EncryptionKey),
+        HpkeX25519ChaCha20Poly1305(pke_hpke_x25519_chacha20poly1305::EncryptionKey),
     }
 
-    /// Wire: [u8 scheme=0] [inner Ciphertext bytes]
+    /// Wire: [u8 scheme] [inner Ciphertext bytes]
     enum Ciphertext has copy, drop, store {
         ElGamalOtpRistretto255(pke_elgamal_otp_ristretto255::Ciphertext),
+        HpkeX25519ChaCha20Poly1305(pke_hpke_x25519_chacha20poly1305::Ciphertext),
     }
 
     // ── Public scheme constants ───────────────────────────────────────────────
 
     public fun scheme_elgamal_otp_ristretto255(): u8 {
         SCHEME_ELGAMAL_OTP_RISTRETTO255
+    }
+
+    public fun scheme_hpke_x25519_chacha20poly1305(): u8 {
+        SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305
     }
 
     // ── EncryptionKey parse ───────────────────────────────────────────────────
@@ -48,6 +56,10 @@ module ace::pke {
         if (scheme == SCHEME_ELGAMAL_OTP_RISTRETTO255) {
             EncryptionKey::ElGamalOtpRistretto255(
                 pke_elgamal_otp_ristretto255::deserialize_enc_key(stream)
+            )
+        } else if (scheme == SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
+            EncryptionKey::HpkeX25519ChaCha20Poly1305(
+                pke_hpke_x25519_chacha20poly1305::deserialize_enc_key(stream)
             )
         } else {
             abort EUNSUPPORTED_SCHEME
@@ -68,14 +80,25 @@ module ace::pke {
     public fun get_enc_key_scheme(ek: &EncryptionKey): u8 {
         match (ek) {
             EncryptionKey::ElGamalOtpRistretto255(_) => SCHEME_ELGAMAL_OTP_RISTRETTO255,
+            EncryptionKey::HpkeX25519ChaCha20Poly1305(_) => SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305,
         }
     }
 
     /// Downcast an `EncryptionKey` to its `ElGamalOtpRistretto255` inner type.
-    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match (future-proof).
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
     public fun enc_key_as_elgamal_otp_ristretto255(ek: EncryptionKey): pke_elgamal_otp_ristretto255::EncryptionKey {
         match (ek) {
             EncryptionKey::ElGamalOtpRistretto255(inner) => inner,
+            EncryptionKey::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+        }
+    }
+
+    /// Downcast an `EncryptionKey` to its `HpkeX25519ChaCha20Poly1305` inner type.
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
+    public fun enc_key_as_hpke_x25519_chacha20poly1305(ek: EncryptionKey): pke_hpke_x25519_chacha20poly1305::EncryptionKey {
+        match (ek) {
+            EncryptionKey::HpkeX25519ChaCha20Poly1305(inner) => inner,
+            EncryptionKey::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 
@@ -87,6 +110,10 @@ module ace::pke {
         if (scheme == SCHEME_ELGAMAL_OTP_RISTRETTO255) {
             Ciphertext::ElGamalOtpRistretto255(
                 pke_elgamal_otp_ristretto255::deserialize_ciphertext(stream)
+            )
+        } else if (scheme == SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
+            Ciphertext::HpkeX25519ChaCha20Poly1305(
+                pke_hpke_x25519_chacha20poly1305::deserialize_ciphertext(stream)
             )
         } else {
             abort EUNSUPPORTED_SCHEME
@@ -107,13 +134,25 @@ module ace::pke {
     public fun get_ciphertext_scheme(ct: &Ciphertext): u8 {
         match (ct) {
             Ciphertext::ElGamalOtpRistretto255(_) => SCHEME_ELGAMAL_OTP_RISTRETTO255,
+            Ciphertext::HpkeX25519ChaCha20Poly1305(_) => SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305,
         }
     }
 
     /// Downcast a `Ciphertext` to its `ElGamalOtpRistretto255` inner type.
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
     public fun ciphertext_as_elgamal_otp_ristretto255(ct: Ciphertext): pke_elgamal_otp_ristretto255::Ciphertext {
         match (ct) {
             Ciphertext::ElGamalOtpRistretto255(inner) => inner,
+            Ciphertext::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+        }
+    }
+
+    /// Downcast a `Ciphertext` to its `HpkeX25519ChaCha20Poly1305` inner type.
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
+    public fun ciphertext_as_hpke_x25519_chacha20poly1305(ct: Ciphertext): pke_hpke_x25519_chacha20poly1305::Ciphertext {
+        match (ct) {
+            Ciphertext::HpkeX25519ChaCha20Poly1305(inner) => inner,
+            Ciphertext::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 
@@ -149,8 +188,8 @@ module ace::pke {
     #[test]
     #[expected_failure(abort_code = EUNSUPPORTED_SCHEME)]
     fun test_ciphertext_unknown_scheme_rejected() {
-        // Replace scheme byte 0x00 with 0x01
-        let bad = x"012014c7926d76823e4a63b1af4b5b3e95dae3c64d05cf977e9d2a15a0111f06d4622056c0e7f44b3421bd93e1f418768db5f034eae6b1cf1bc005e24cd1d04c5b821c10bd77c200e653658f9dd719653744eb9e20e36a274f7710a9c9448afbfe5857a0f2478ee0f21f4cd27cdadcbbc9b45e9090";
+        // Use scheme byte 0xff which is not assigned to any scheme.
+        let bad = x"ff2014c7926d76823e4a63b1af4b5b3e95dae3c64d05cf977e9d2a15a0111f06d4622056c0e7f44b3421bd93e1f418768db5f034eae6b1cf1bc005e24cd1d04c5b821c10bd77c200e653658f9dd719653744eb9e20e36a274f7710a9c9448afbfe5857a0f2478ee0f21f4cd27cdadcbbc9b45e9090";
         ciphertext_from_bytes(bad);
     }
 
@@ -173,8 +212,8 @@ module ace::pke {
     #[test]
     #[expected_failure(abort_code = EUNSUPPORTED_SCHEME)]
     fun test_enc_key_unknown_scheme_rejected() {
-        // Replace scheme byte 0x00 with 0x01
-        let bad = x"0120f84e5c1c19630f29093c84052819f02bc2158dbad8590e9121fa4c59d20e1741209e441d841f1c37c7104a3eb43f51447306c8cb2294cc6ac1be23f32f23c72b71";
+        // Use scheme byte 0xff which is not assigned to any scheme.
+        let bad = x"ff20f84e5c1c19630f29093c84052819f02bc2158dbad8590e9121fa4c59d20e1741209e441d841f1c37c7104a3eb43f51447306c8cb2294cc6ac1be23f32f23c72b71";
         enc_key_from_bytes(bad);
     }
 }

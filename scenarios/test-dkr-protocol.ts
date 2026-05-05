@@ -15,7 +15,7 @@ async function main() {
         // New committee: [B, C, D, E] with new_threshold=3
         const numWorkers = 5;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: numWorkers }, () => ace.pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -189,10 +189,10 @@ async function main() {
                 const sharesForVss: ace.vss.SecretShare[] = [];
                 for (let m = 0; m < newCommittee.length; m++) {
                     const newMemberEncKeypairIdx = newCommitteeEncKeypairIndices[m];
-                    const msgBytes = ace.pke.decrypt({
+                    const msgBytes = (await ace.pke.decrypt({
                         decryptionKey: encKeypairs[newMemberEncKeypairIdx].decryptionKey,
                         ciphertext: vssSession.dealerContribution0!.privateShareMessages[m],
-                    }).unwrapOrThrow(`Failed to decrypt sub-share (vss=${j}, new_member=${m}).`);
+                    })).unwrapOrThrow(`Failed to decrypt sub-share (vss=${j}, new_member=${m}).`);
                     const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
                         .unwrapOrThrow(`Failed to parse PrivateShareMessage (vss=${j}, new_member=${m}).`);
                     sharesForVss.push(msg.share);

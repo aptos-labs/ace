@@ -10,15 +10,23 @@ use anyhow::{anyhow, Result};
 use curve25519_dalek::{ristretto::CompressedRistretto, Scalar};
 use serde::{Deserialize, Serialize};
 
+use crate::pke_hpke_x25519_chacha20poly1305 as hpke_scheme;
+
 pub const SCHEME_ELGAMAL_OTP_RISTRETTO255: u8 = 0;
+pub const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305: u8 = 1;
 
 // ── EncryptionKey ─────────────────────────────────────────────────────────────
 
-/// Wire: [u8 scheme=0x00] [ULEB128(32)][32B enc_base] [ULEB128(32)][32B public_point]
+/// Wire (per variant, prefixed with the scheme byte):
+///   ElGamalOtpRistretto255 = [0x00] [ULEB128(32)+32B enc_base] [ULEB128(32)+32B public_point]
+///   HpkeX25519ChaCha20Poly1305 = [0x01] [ULEB128(32)+32B X25519 pk]
 pub enum EncryptionKey {
     ElGamalOtpRistretto255 {
         enc_base: [u8; 32],
         public_point: [u8; 32],
+    },
+    HpkeX25519ChaCha20Poly1305 {
+        pk: [u8; 32],
     },
 }
 
@@ -40,10 +48,15 @@ impl EncryptionKey {
                 out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
                 out
             }
+            EncryptionKey::HpkeX25519ChaCha20Poly1305 { pk } => {
+                let inner = hpke_scheme::EncryptionKey { pk: pk.to_vec() };
+                let mut out = vec![SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305];
+                out.extend(inner.to_bytes());
+                out
+            }
         }
     }
 
-    /// Parse from `get_pke_enc_key_bcs` output: [0x00][ULEB128(32)+32B enc_base][ULEB128(32)+32B public_point] = 67 bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.is_empty() {
             return Err(anyhow!("empty bytes"));
@@ -63,6 +76,15 @@ impl EncryptionKey {
                         .map_err(|_| anyhow!("public_point must be 32 bytes"))?,
                 })
             }
+            SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305 => {
+                let inner = hpke_scheme::EncryptionKey::from_bytes(&bytes[1..])?;
+                Ok(EncryptionKey::HpkeX25519ChaCha20Poly1305 {
+                    pk: inner
+                        .pk
+                        .try_into()
+                        .map_err(|_| anyhow!("HPKE pk must be 32 bytes"))?,
+                })
+            }
             s => Err(anyhow!("unsupported PKE scheme {}", s)),
         }
     }
@@ -70,13 +92,19 @@ impl EncryptionKey {
 
 // ── Ciphertext ────────────────────────────────────────────────────────────────
 
-/// Wire: [u8 scheme=0x00] [ULEB128(32)+32B c0] [ULEB128(32)+32B c1] [ULEB128(len)+sym_ciph] [ULEB128(32)+32B mac]
+/// Wire (per variant, prefixed with the scheme byte):
+///   ElGamalOtpRistretto255      = [0x00] [ULEB128(32)+32B c0] [ULEB128(32)+32B c1] [ULEB128(len)+sym_ciph] [ULEB128(32)+32B mac]
+///   HpkeX25519ChaCha20Poly1305  = [0x01] [ULEB128(32)+32B enc] [ULEB128(len)+aead_ct]
 pub enum Ciphertext {
     ElGamalOtpRistretto255 {
         c0: [u8; 32],
         c1: [u8; 32],
         sym_ciph: Vec<u8>,
         mac: [u8; 32],
+    },
+    HpkeX25519ChaCha20Poly1305 {
+        enc: [u8; 32],
+        aead_ct: Vec<u8>,
     },
 }
 
@@ -102,6 +130,15 @@ impl Ciphertext {
                 out.extend(bcs::to_bytes(&inner).expect("bcs serialization failed"));
                 out
             }
+            Ciphertext::HpkeX25519ChaCha20Poly1305 { enc, aead_ct } => {
+                let inner = hpke_scheme::Ciphertext {
+                    enc: enc.to_vec(),
+                    aead_ct: aead_ct.clone(),
+                };
+                let mut out = vec![SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305];
+                out.extend(inner.to_bytes());
+                out
+            }
         }
     }
 }
@@ -118,10 +155,12 @@ pub struct BcsCiphertextInner {
     pub mac: Vec<u8>,
 }
 
-/// BCS mirror of `pke::Ciphertext` enum (variant 0 = ElGamalOtpRistretto255).
+/// BCS mirror of `pke::Ciphertext` enum
+/// (variant 0 = ElGamalOtpRistretto255, variant 1 = HpkeX25519ChaCha20Poly1305).
 #[derive(Serialize, Deserialize)]
 pub enum BcsCiphertext {
     ElGamalOtpRistretto255(BcsCiphertextInner),
+    HpkeX25519ChaCha20Poly1305(hpke_scheme::Ciphertext),
 }
 
 impl From<&Ciphertext> for BcsCiphertext {
@@ -135,23 +174,75 @@ impl From<&Ciphertext> for BcsCiphertext {
                     mac: mac.to_vec(),
                 })
             }
+            Ciphertext::HpkeX25519ChaCha20Poly1305 { enc, aead_ct } => {
+                BcsCiphertext::HpkeX25519ChaCha20Poly1305(hpke_scheme::Ciphertext {
+                    enc: enc.to_vec(),
+                    aead_ct: aead_ct.clone(),
+                })
+            }
         }
     }
 }
 
 // ── PKE decrypt ───────────────────────────────────────────────────────────────
 
+/// Decrypt a `BcsCiphertext` (the on-chain mirror enum) using the given decryption key.
+/// Handles per-variant dispatch and verifies the dk's scheme byte matches.
+pub fn pke_decrypt_bcs(dk_bytes: &[u8], ct: &BcsCiphertext) -> Result<Vec<u8>> {
+    if dk_bytes.is_empty() {
+        return Err(anyhow!("empty decryption-key bytes"));
+    }
+    match ct {
+        BcsCiphertext::ElGamalOtpRistretto255(inner) => {
+            if dk_bytes[0] != SCHEME_ELGAMAL_OTP_RISTRETTO255 {
+                return Err(anyhow!(
+                    "PKE scheme mismatch: dk={}, ct=ElGamalOtpRistretto255",
+                    dk_bytes[0]
+                ));
+            }
+            pke_decrypt(dk_bytes, inner)
+        }
+        BcsCiphertext::HpkeX25519ChaCha20Poly1305(inner) => {
+            if dk_bytes[0] != SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305 {
+                return Err(anyhow!(
+                    "PKE scheme mismatch: dk={}, ct=HpkeX25519ChaCha20Poly1305",
+                    dk_bytes[0]
+                ));
+            }
+            let dk = hpke_scheme::DecryptionKey::from_bytes(&dk_bytes[1..])?;
+            hpke_scheme::decrypt(&dk, inner, b"")
+        }
+    }
+}
+
 /// Decrypt a ciphertext from wire bytes `[scheme][BCS inner]` using the given decryption key.
 pub fn pke_decrypt_bytes(dk_bytes: &[u8], ct_bytes: &[u8]) -> Result<Vec<u8>> {
     if ct_bytes.is_empty() {
         return Err(anyhow!("empty ciphertext bytes"));
     }
-    if ct_bytes[0] != SCHEME_ELGAMAL_OTP_RISTRETTO255 {
-        return Err(anyhow!("unsupported PKE scheme {}", ct_bytes[0]));
+    if dk_bytes.is_empty() {
+        return Err(anyhow!("empty decryption-key bytes"));
     }
-    let ct_inner: BcsCiphertextInner = bcs::from_bytes(&ct_bytes[1..])
-        .map_err(|e| anyhow!("pke_decrypt_bytes: BCS parse: {}", e))?;
-    pke_decrypt(dk_bytes, &ct_inner)
+    if dk_bytes[0] != ct_bytes[0] {
+        return Err(anyhow!(
+            "PKE scheme mismatch: dk={}, ct={}",
+            dk_bytes[0],
+            ct_bytes[0]
+        ));
+    }
+    match ct_bytes[0] {
+        SCHEME_ELGAMAL_OTP_RISTRETTO255 => {
+            let ct_inner: BcsCiphertextInner = bcs::from_bytes(&ct_bytes[1..])
+                .map_err(|e| anyhow!("pke_decrypt_bytes: BCS parse: {}", e))?;
+            pke_decrypt(dk_bytes, &ct_inner)
+        }
+        SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305 => {
+            let dk_inner = hpke_scheme::DecryptionKey::from_bytes(&dk_bytes[1..])?;
+            let ct_inner = hpke_scheme::Ciphertext::from_bytes(&ct_bytes[1..])?;
+            hpke_scheme::decrypt(&dk_inner, &ct_inner, b"")
+        }
+        s => Err(anyhow!("unsupported PKE scheme {}", s)),
+    }
 }
 
 /// Decrypt a ciphertext using the given decryption key.

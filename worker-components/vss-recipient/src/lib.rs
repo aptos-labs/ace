@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Result};
 use tokio::sync::oneshot;
-use vss_common::pke::{pke_decrypt, BcsCiphertext};
+use vss_common::pke::pke_decrypt_bcs;
 use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
 use vss_common::vss_types::feldman_verify;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
@@ -117,9 +117,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             continue;
                         }
                     };
-                    let BcsCiphertext::ElGamalOtpRistretto255(ref inner) =
-                        dc0.private_share_messages[my_idx];
-                    let plaintext = match pke_decrypt(&dk_bytes, inner) {
+                    let plaintext = match pke_decrypt_bcs(
+                        &dk_bytes,
+                        &dc0.private_share_messages[my_idx],
+                    ) {
                         Ok(p) => p,
                         Err(e) => {
                             eprintln!("vss-recipient: pke_decrypt error: {:#}", e);

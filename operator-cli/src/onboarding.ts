@@ -265,7 +265,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     console.log('\n  ACE Node Setup\n');
 
     console.log('Generating node keys...\n');
-    const profile = generateProfile();
+    const profile = await generateProfile();
     console.log(`  Account address : ${profile.accountAddr}`);
     console.log(`  PKE enc key     : ${profile.pkeEk}\n`);
 

@@ -24,32 +24,41 @@ export class DecryptionSession {
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
 
-    private constructor({aceDeployment, keypairId, knownChainName, programId, domain, ciphertext}: {
+    private constructor({
+        aceDeployment, keypairId, knownChainName, programId, domain, ciphertext,
+        ephemeralEncryptionKey, ephemeralDecryptionKey,
+    }: {
         aceDeployment: AceDeployment,
         keypairId: AccountAddress,
         knownChainName: string,
         programId: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
+        ephemeralEncryptionKey: pke.EncryptionKey,
+        ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
         this.aceDeployment = aceDeployment;
         const contractId = ContractID.newSolana({knownChainName, programId});
         this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
         this.ciphertext = ciphertext;
-        const {encryptionKey, decryptionKey} = pke.keygen();
-        this.ephemeralDecryptionKey = decryptionKey;
-        this.ephemeralEncryptionKey = encryptionKey;
+        this.ephemeralEncryptionKey = ephemeralEncryptionKey;
+        this.ephemeralDecryptionKey = ephemeralDecryptionKey;
     }
 
-    static create(params: {
+    static async create(params: {
         aceDeployment: AceDeployment,
         keypairId: AccountAddress,
         knownChainName: string,
         programId: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
-    }): DecryptionSession {
-        return new DecryptionSession(params);
+    }): Promise<DecryptionSession> {
+        const {encryptionKey, decryptionKey} = await pke.keygen();
+        return new DecryptionSession({
+            ...params,
+            ephemeralEncryptionKey: encryptionKey,
+            ephemeralDecryptionKey: decryptionKey,
+        });
     }
 
     async getRequestToSign(): Promise<Uint8Array> {

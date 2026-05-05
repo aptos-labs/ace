@@ -25,12 +25,12 @@ const GOLDEN_CIPHERTEXT_BYTES = hexToBytes(
 const GOLDEN_CIPHERTEXT_HEX = bytesToHex(GOLDEN_CIPHERTEXT_BYTES);
 
 describe("PKE (ElGamal OTP Ristretto255)", () => {
-    it("keygen, encrypt, decrypt round-trip", () => {
-        const { encryptionKey, decryptionKey } = pke.keygen();
+    it("keygen, encrypt, decrypt round-trip", async () => {
+        const { encryptionKey, decryptionKey } = await pke.keygen();
         const plaintext = new TextEncoder().encode("hello pke");
 
-        const ciphertext = pke.encrypt({ encryptionKey, plaintext });
-        const result = pke.decrypt({ decryptionKey, ciphertext });
+        const ciphertext = await pke.encrypt({ encryptionKey, plaintext });
+        const result = await pke.decrypt({ decryptionKey, ciphertext });
 
         expect(result.isOk).toBe(true);
         expect(new Uint8Array(result.okValue!)).toEqual(plaintext);
@@ -42,12 +42,12 @@ describe("PKE (ElGamal OTP Ristretto255)", () => {
      * against the built SDK; do not change vectors unless the wire format is
      * intentionally versioned.
      */
-    it("deserialization compatibility: fixed dec key + fixed ciphertext -> fixed plaintext", () => {
+    it("deserialization compatibility: fixed dec key + fixed ciphertext -> fixed plaintext", async () => {
         const decryptionKey = pke.DecryptionKey.fromBytes(GOLDEN_DEC_KEY_BYTES).unwrapOrThrow("golden dk");
         const ciphertext = pke.Ciphertext.fromBytes(GOLDEN_CIPHERTEXT_BYTES).unwrapOrThrow("golden ct");
         const expectedPlaintext = new TextEncoder().encode("golden-plaintext");
 
-        const result = pke.decrypt({ decryptionKey, ciphertext });
+        const result = await pke.decrypt({ decryptionKey, ciphertext });
 
         expect(result.isOk).toBe(true);
         expect(new Uint8Array(result.okValue!)).toEqual(expectedPlaintext);
@@ -66,9 +66,9 @@ describe("PKE (ElGamal OTP Ristretto255)", () => {
         expect(new Uint8Array(with0x.okValue!.toBytes())).toEqual(GOLDEN_DEC_KEY_BYTES);
     });
 
-    it("golden bytes: EncryptionKey toHex / fromHex round-trip (derived from golden DK)", () => {
+    it("golden bytes: EncryptionKey toHex / fromHex round-trip (derived from golden DK)", async () => {
         const dk = pke.DecryptionKey.fromBytes(GOLDEN_DEC_KEY_BYTES).unwrapOrThrow("golden dk");
-        const ek = pke.deriveEncryptionKey(dk);
+        const ek = await pke.deriveEncryptionKey(dk);
         expect(ek.toHex()).toBe(GOLDEN_ENC_KEY_HEX);
 
         const parsed = pke.EncryptionKey.fromHex(GOLDEN_ENC_KEY_HEX);
@@ -85,8 +85,8 @@ describe("PKE (ElGamal OTP Ristretto255)", () => {
         expect(new Uint8Array(parsed.okValue!.toBytes())).toEqual(GOLDEN_CIPHERTEXT_BYTES);
     });
 
-    it("keygen keys: toHex / fromHex round-trip", () => {
-        const { encryptionKey, decryptionKey } = pke.keygen();
+    it("keygen keys: toHex / fromHex round-trip", async () => {
+        const { encryptionKey, decryptionKey } = await pke.keygen();
 
         const dkBack = pke.DecryptionKey.fromHex(decryptionKey.toHex()).unwrapOrThrow("dk fromHex");
         expect(new Uint8Array(dkBack.toBytes())).toEqual(new Uint8Array(decryptionKey.toBytes()));

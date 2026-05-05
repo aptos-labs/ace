@@ -12,7 +12,7 @@ async function main() {
         // 1 admin account and 4 worker accounts.
         const numWorkers = 4;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: numWorkers }, () => ace.pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -93,10 +93,10 @@ async function main() {
                     .unwrapOrThrow(`Failed to fetch VSS session ${i}.`);
                 const sharesForVss: ace.vss.SecretShare[] = [];
                 for (let j = 0; j < numWorkers; j++) {
-                    const msgBytes = ace.pke.decrypt({
+                    const msgBytes = (await ace.pke.decrypt({
                         decryptionKey: encKeypairs[j].decryptionKey,
                         ciphertext: vssSession.dealerContribution0!.privateShareMessages[j],
-                    }).unwrapOrThrow(`Failed to decrypt sub-share (vss=${i}, worker=${j}).`);
+                    })).unwrapOrThrow(`Failed to decrypt sub-share (vss=${i}, worker=${j}).`);
                     const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
                         .unwrapOrThrow(`Failed to parse PrivateShareMessage (vss=${i}, worker=${j}).`);
                     sharesForVss.push(msg.share);

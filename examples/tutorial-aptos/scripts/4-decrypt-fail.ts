@@ -61,7 +61,7 @@ async function main() {
     const domain = new TextEncoder().encode(target.name);
 
     log(`Bob attempting to decrypt "${target.name}" (without buying)...`);
-    const session = ACE.AptosBasicFlow.DecryptionSession.create({
+    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         chainId,

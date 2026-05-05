@@ -123,7 +123,7 @@ async function main() {
         }
 
         step(4, 'Register worker PKE keys and endpoints on-chain');
-        const encKeypairs = Array.from({ length: TOTAL_WORKERS }, () => pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: TOTAL_WORKERS }, () => pke.keygen()));
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
             assertTxnSuccess(
@@ -246,7 +246,7 @@ async function main() {
         step('A', 'Negative: decrypt with nonexistent keypair ID → must fail (404)');
         {
             const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
-            const session = ACE.AptosBasicFlow.DecryptionSession.create({
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: fakeKeypairId,
                 chainId: CHAIN_ID,
@@ -271,7 +271,7 @@ async function main() {
         // Worker verifies check_permission(Charlie, domain) → false → 403 FORBIDDEN.
         step('B', 'Negative: decrypt by Charlie (not allowlisted) → must fail (403)');
         {
-            const session = ACE.AptosBasicFlow.DecryptionSession.create({
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -297,7 +297,7 @@ async function main() {
         step('C', 'Negative: decrypt with wrong domain (unregistered blob) → must fail (403)');
         {
             const wrongDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/other-blob`);
-            const session = ACE.AptosBasicFlow.DecryptionSession.create({
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -320,7 +320,7 @@ async function main() {
         // ── Positive control D: correct keypairId, domain, and allowlisted user ──
         step('D', 'Positive: Bob (allowlisted) decrypts with correct keypairId and domain → must succeed');
         {
-            const session = ACE.AptosBasicFlow.DecryptionSession.create({
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,

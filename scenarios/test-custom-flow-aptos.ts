@@ -71,7 +71,7 @@ async function main() {
 
         // ── 2. Fund accounts ──────────────────────────────────────────────────
         const accounts: Account[] = Array.from({ length: NUM_WORKERS + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: NUM_WORKERS }, () => pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => pke.keygen()));
         log(`Funding ${NUM_WORKERS + 1} accounts...`);
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
@@ -199,7 +199,7 @@ async function main() {
         log('Plaintext encrypted');
 
         // Generate caller PKE keypair (used to receive the decryption key share)
-        const callerKeyPair = pke.keygen();
+        const callerKeyPair = await pke.keygen();
         const encPk = callerKeyPair.encryptionKey.toBytes();
         const encSk = callerKeyPair.decryptionKey.toBytes();
 

@@ -40,6 +40,7 @@ async function main() {
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::dkg::new_session_entry`,
+            awaitEventType: `${adminAccount.accountAddress.toStringLong()}::dkg::SessionCreated`,
             args: [
                 workerAccounts.map(w => w.accountAddress),
                 3, // threshold

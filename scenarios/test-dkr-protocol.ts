@@ -58,6 +58,7 @@ async function main() {
         const dkgMaybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::dkg::new_session_entry`,
+            awaitEventType: `${adminAccount.accountAddress.toStringLong()}::dkg::SessionCreated`,
             args: [
                 oldCommittee.map(w => w.accountAddress),
                 oldThreshold,
@@ -103,6 +104,7 @@ async function main() {
         const dkrMaybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${aceContract}::dkr::new_session_entry`,
+            awaitEventType: `${aceContract}::dkr::SessionCreated`,
             args: [
                 dkgSessionAddr,
                 newCommittee.map(w => w.accountAddress),

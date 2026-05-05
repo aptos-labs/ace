@@ -53,6 +53,7 @@ async function main() {
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::vss::new_session_entry`,
+            awaitEventType: `${adminAccount.accountAddress.toStringLong()}::vss::SessionCreated`,
             args: [
                 dealerAccount.accountAddress,
                 recipientAccounts.map(w => w.accountAddress),

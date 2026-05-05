@@ -57,36 +57,52 @@ impl EncryptionKey {
         }
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.is_empty() {
-            return Err(anyhow!("empty bytes"));
-        }
-        match bytes[0] {
+    /// Parse from the prefix of `bytes`, returning the value and the number of bytes
+    /// consumed. Use this when an `EncryptionKey` is followed by other data in a buffer
+    /// (e.g. inside a network request).
+    ///
+    /// Stream-aware: walks the BCS structure with a cursor so callers don't need to know
+    /// the per-scheme on-wire size. Adding a new scheme is a single new match arm here —
+    /// no per-scheme size table for callers to keep in sync.
+    pub fn parse_prefix(bytes: &[u8]) -> Result<(Self, usize)> {
+        let mut cur = crate::bcs_stream::Cursor::new(bytes);
+        let scheme = cur.read_u8()?;
+
+        let value = match scheme {
             SCHEME_ELGAMAL_OTP_RISTRETTO255 => {
-                let inner: ElGamalOtpRistretto255EncKeyInner = bcs::from_bytes(&bytes[1..])
-                    .map_err(|e| anyhow!("pke::EncryptionKey::from_bytes: {}", e))?;
-                Ok(EncryptionKey::ElGamalOtpRistretto255 {
-                    enc_base: inner
-                        .enc_base
+                let enc_base = cur.read_bytes_field()?;
+                let public_point = cur.read_bytes_field()?;
+                EncryptionKey::ElGamalOtpRistretto255 {
+                    enc_base: enc_base
                         .try_into()
                         .map_err(|_| anyhow!("enc_base must be 32 bytes"))?,
-                    public_point: inner
-                        .public_point
+                    public_point: public_point
                         .try_into()
                         .map_err(|_| anyhow!("public_point must be 32 bytes"))?,
-                })
+                }
             }
             SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305 => {
-                let inner = hpke_scheme::EncryptionKey::from_bytes(&bytes[1..])?;
-                Ok(EncryptionKey::HpkeX25519ChaCha20Poly1305 {
-                    pk: inner
-                        .pk
-                        .try_into()
-                        .map_err(|_| anyhow!("HPKE pk must be 32 bytes"))?,
-                })
+                let pk = cur.read_bytes_field()?;
+                EncryptionKey::HpkeX25519ChaCha20Poly1305 {
+                    pk: pk.try_into().map_err(|_| anyhow!("HPKE pk must be 32 bytes"))?,
+                }
             }
-            s => Err(anyhow!("unsupported PKE scheme {}", s)),
+            s => return Err(anyhow!("unsupported PKE scheme {}", s)),
+        };
+        Ok((value, cur.position()))
+    }
+
+    /// Strict whole-buffer parse: errors if `bytes` has trailing data after the EncryptionKey.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let (value, consumed) = Self::parse_prefix(bytes)?;
+        if consumed != bytes.len() {
+            return Err(anyhow!(
+                "pke::EncryptionKey::from_bytes: trailing bytes (consumed {}, total {})",
+                consumed,
+                bytes.len()
+            ));
         }
+        Ok(value)
     }
 }
 

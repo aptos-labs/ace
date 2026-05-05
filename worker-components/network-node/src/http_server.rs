@@ -22,10 +22,6 @@ use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
 use crate::{wlog, ChainRpcConfig};
 
-/// Serialized size of a `pke::EncryptionKey` for scheme 0 (ElGamal-OTP-Ristretto255):
-/// [0x00 scheme][0x20 ULEB128(32)][32B enc_base][0x20 ULEB128(32)][32B public_point] = 67 bytes.
-const ENC_KEY_SIZE: usize = 67;
-
 /// Shared state for the HTTP handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -119,17 +115,14 @@ async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, Statu
     fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
 
     let ek_start = 40 + fdd.byte_len;
-    if req.len() < ek_start + ENC_KEY_SIZE {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let ephemeral_ek = EncryptionKey::from_bytes(&req[ek_start..ek_start + ENC_KEY_SIZE])
+    let (ephemeral_ek, ek_size) = EncryptionKey::parse_prefix(&req[ek_start..])
         .map_err(|e| {
             wlog!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
-    let proof_bytes = &req[ek_start + ENC_KEY_SIZE..];
+    let proof_bytes = &req[ek_start + ek_size..];
 
-    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ek_size], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             wlog!("http-server: basic flow: proof verification failed: {:#}", e);
@@ -158,17 +151,14 @@ async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, Stat
     fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
 
     let enc_pk_start = 40 + fdd.byte_len;
-    if req.len() < enc_pk_start + ENC_KEY_SIZE {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let caller_enc_key = EncryptionKey::from_bytes(&req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE])
+    let (caller_enc_key, ek_size) = EncryptionKey::parse_prefix(&req[enc_pk_start..])
         .map_err(|e| {
             wlog!("http-server: custom flow: enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
-    let proof_bytes = &req[enc_pk_start + ENC_KEY_SIZE..];
+    let proof_bytes = &req[enc_pk_start + ek_size..];
 
-    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ek_size], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             wlog!("http-server: custom flow: proof verification failed: {:#}", e);

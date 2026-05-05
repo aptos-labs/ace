@@ -319,10 +319,21 @@ export async function submitTxn(
             const ready = awaitEventType
                 ? (w: Record<string, unknown>) => eventsArray(w).some(e => String(e?.type ?? '') === awaitEventType)
                 : (w: Record<string, unknown>) => eventsArray(w).length > 0;
-            // Up to 30 s for CI runners where event indexing can lag well past 5 s.
-            for (let i = 0; i < 60 && !ready(waited); i++) {
+            // Up to 60 s for CI runners where event indexing can lag well past 30 s.
+            // The polling itself is cheap (one HTTP GET per iteration) and exits early
+            // once the awaited event appears, so this is just a generous safety net.
+            for (let i = 0; i < 120 && !ready(waited); i++) {
                 await new Promise(r => setTimeout(r, 500));
                 waited = await aptos.getTransactionByHash({ transactionHash: hash }) as Record<string, unknown>;
+            }
+            if (awaitEventType && !ready(waited)) {
+                // Surface enough context to triage CI flakes that have exhausted the budget.
+                const got = (waited.events as { type?: string }[] | undefined) ?? [];
+                console.warn(
+                    `submitTxn: awaitEventType=${awaitEventType} not seen after 60 s for ` +
+                    `${entryFunction} hash=${hash}; saw event types: ` +
+                    JSON.stringify(got.map(e => e?.type)),
+                );
             }
             const events = (waited.events as unknown[]) ?? [];
             const success = waited.success as boolean;

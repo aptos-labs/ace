@@ -175,8 +175,14 @@ async fn reconstruct_dkg_share(
         let plaintext = pke_decrypt_bcs(pke_dk_bytes, ct)
             .map_err(|e| anyhow!("DKG VSS session {} decryption failed: {}", vss_addr, e))?;
 
-        // Parse private share message: [u8 scheme=0x00][ULEB128(32)=0x20][32B Fr LE]
-        if plaintext.len() < 34 || plaintext[0] != 0x00 || plaintext[1] != 0x20 {
+        // Parse private share message: [u8 scheme][ULEB128(32)=0x20][32B Fr LE].
+        // Scheme byte may be 0x00 (G1) or 0x01 (G2); Fr is the same field so the y-bytes are
+        // identical regardless of which group's commitment they were Feldman-checked against.
+        if plaintext.len() < 34
+            || (plaintext[0] != vss_common::session::SCHEME_BLS12381G1
+                && plaintext[0] != vss_common::session::SCHEME_BLS12381G2)
+            || plaintext[1] != 0x20
+        {
             return Err(anyhow!(
                 "DKG VSS session {} invalid share message format (len={}, prefix={:02x} {:02x})",
                 vss_addr, plaintext.len(),

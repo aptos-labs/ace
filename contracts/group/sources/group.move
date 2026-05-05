@@ -6,10 +6,12 @@
 ///
 /// Supported schemes:
 ///   0 = BLS12-381 G1 (with Fr scalars)
+///   1 = BLS12-381 G2 (with Fr scalars)
 module ace::group {
     use std::error;
     use aptos_std::bcs_stream::{Self, BCSStream};
     use ace::group_bls12381_g1;
+    use ace::group_bls12381_g2;
 
     // ── Error codes ──────────────────────────────────────────────────────────
 
@@ -20,32 +22,37 @@ module ace::group {
     // ── Scheme constants ─────────────────────────────────────────────────────
 
     const SCHEME__BLS12381G1: u8 = 0;
+    const SCHEME__BLS12381G2: u8 = 1;
 
     // ── Types ────────────────────────────────────────────────────────────────
 
     enum Scalar has copy, drop, store {
         Bls12381G1(group_bls12381_g1::PrivateScalar),
+        Bls12381G2(group_bls12381_g2::PrivateScalar),
     }
 
     enum Element has copy, drop, store {
         Bls12381G1(group_bls12381_g1::PublicPoint),
+        Bls12381G2(group_bls12381_g2::PublicPoint),
     }
 
     // ── Scheme accessors ─────────────────────────────────────────────────────
 
     public fun scheme_supported(scheme: u8): bool {
-        scheme == SCHEME__BLS12381G1
+        scheme == SCHEME__BLS12381G1 || scheme == SCHEME__BLS12381G2
     }
 
     public fun scalar_scheme(s: &Scalar): u8 {
         match (s) {
             Scalar::Bls12381G1(_) => SCHEME__BLS12381G1,
+            Scalar::Bls12381G2(_) => SCHEME__BLS12381G2,
         }
     }
 
     public fun element_scheme(e: &Element): u8 {
         match (e) {
             Element::Bls12381G1(_) => SCHEME__BLS12381G1,
+            Element::Bls12381G2(_) => SCHEME__BLS12381G2,
         }
     }
 
@@ -61,6 +68,9 @@ module ace::group {
         if (scheme == SCHEME__BLS12381G1) {
             let inner = group_bls12381_g1::deserialize_private_scalar(stream);
             Scalar::Bls12381G1(inner)
+        } else if (scheme == SCHEME__BLS12381G2) {
+            let inner = group_bls12381_g2::deserialize_private_scalar(stream);
+            Scalar::Bls12381G2(inner)
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -71,6 +81,9 @@ module ace::group {
         if (scheme == SCHEME__BLS12381G1) {
             let inner = group_bls12381_g1::deserialize_public_point(stream);
             Element::Bls12381G1(inner)
+        } else if (scheme == SCHEME__BLS12381G2) {
+            let inner = group_bls12381_g2::deserialize_public_point(stream);
+            Element::Bls12381G2(inner)
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -85,6 +98,9 @@ module ace::group {
         if (scheme == SCHEME__BLS12381G1) {
             let inner = group_bls12381_g1::point_sum(&elements.map_ref(|e| *to_bls12381g1_element(e)));
             Element::Bls12381G1(inner)
+        } else if (scheme == SCHEME__BLS12381G2) {
+            let inner = group_bls12381_g2::point_sum(&elements.map_ref(|e| *to_bls12381g2_element(e)));
+            Element::Bls12381G2(inner)
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -98,6 +114,11 @@ module ace::group {
                 to_bls12381g1_element(a),
                 to_bls12381g1_element(b),
             ))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Element::Bls12381G2(group_bls12381_g2::element_add(
+                to_bls12381g2_element(a),
+                to_bls12381g2_element(b),
+            ))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -108,6 +129,8 @@ module ace::group {
         assert!(scheme == element_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
         if (scheme == SCHEME__BLS12381G1) {
             group_bls12381_g1::point_eq(to_bls12381g1_element(a), to_bls12381g1_element(b))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            group_bls12381_g2::point_eq(to_bls12381g2_element(a), to_bls12381g2_element(b))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -121,6 +144,11 @@ module ace::group {
                 to_bls12381g1_element(element),
                 to_bls12381g1_scalar(scalar),
             ))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Element::Bls12381G2(group_bls12381_g2::scale_point(
+                to_bls12381g2_element(element),
+                to_bls12381g2_scalar(scalar),
+            ))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -133,6 +161,11 @@ module ace::group {
             Scalar::Bls12381G1(group_bls12381_g1::scalar_add(
                 to_bls12381g1_scalar(a),
                 to_bls12381g1_scalar(b),
+            ))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::scalar_add(
+                to_bls12381g2_scalar(a),
+                to_bls12381g2_scalar(b),
             ))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
@@ -148,22 +181,34 @@ module ace::group {
                 to_bls12381g1_scalar(b),
             );
             Scalar::Bls12381G1(inner)
+        } else if (scheme == SCHEME__BLS12381G2) {
+            let inner = group_bls12381_g2::scalar_mul(
+                to_bls12381g2_scalar(a),
+                to_bls12381g2_scalar(b),
+            );
+            Scalar::Bls12381G2(inner)
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
     }
 
     public fun scalar_neg(a: &Scalar): Scalar {
-        if (scalar_scheme(a) == SCHEME__BLS12381G1) {
+        let scheme = scalar_scheme(a);
+        if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::scalar_neg(to_bls12381g1_scalar(a)))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::scalar_neg(to_bls12381g2_scalar(a)))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
     }
 
     public fun scalar_inv(a: &Scalar): Scalar {
-        if (scalar_scheme(a) == SCHEME__BLS12381G1) {
+        let scheme = scalar_scheme(a);
+        if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::scalar_inv(to_bls12381g1_scalar(a)))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::scalar_inv(to_bls12381g2_scalar(a)))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -174,6 +219,8 @@ module ace::group {
         assert!(scheme == scalar_scheme(b), error::invalid_argument(E_UNSUPPORTED_SCHEME));
         if (scheme == SCHEME__BLS12381G1) {
             group_bls12381_g1::scalar_eq(to_bls12381g1_scalar(a), to_bls12381g1_scalar(b))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            group_bls12381_g2::scalar_eq(to_bls12381g2_scalar(a), to_bls12381g2_scalar(b))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -182,6 +229,8 @@ module ace::group {
     public fun scalar_from_u64(scheme: u8, x: u64): Scalar {
         if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::scalar_from_u64(x))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::scalar_from_u64(x))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -203,16 +252,25 @@ module ace::group {
                 scalars.map_ref(|s| *to_bls12381g1_scalar(s)),
             );
             Element::Bls12381G1(inner)
+        } else if (scheme == SCHEME__BLS12381G2) {
+            let inner = group_bls12381_g2::msm(
+                elements.map_ref(|e| *to_bls12381g2_element(e)),
+                scalars.map_ref(|s| *to_bls12381g2_scalar(s)),
+            );
+            Element::Bls12381G2(inner)
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
     }
 
     public fun scheme_bls12381_g1(): u8 { SCHEME__BLS12381G1 }
+    public fun scheme_bls12381_g2(): u8 { SCHEME__BLS12381G2 }
 
     public fun hash_to_scalar(scheme: u8, msg: vector<u8>): Scalar {
         if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::hash_to_scalar(&msg))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::hash_to_scalar(&msg))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -222,6 +280,8 @@ module ace::group {
     public fun rand_scalar(scheme: u8): Scalar {
         if (scheme == SCHEME__BLS12381G1) {
             Scalar::Bls12381G1(group_bls12381_g1::rand_scalar())
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::rand_scalar())
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -231,6 +291,8 @@ module ace::group {
     public fun rand_element(scheme: u8): Element {
         if (scheme == SCHEME__BLS12381G1) {
             Element::Bls12381G1(group_bls12381_g1::rand_element())
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Element::Bls12381G2(group_bls12381_g2::rand_element())
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -239,6 +301,8 @@ module ace::group {
     public fun element_from_hash(scheme: u8, msg: &vector<u8>): Element {
         if (scheme == SCHEME__BLS12381G1) {
             Element::Bls12381G1(group_bls12381_g1::element_from_hash(msg))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Element::Bls12381G2(group_bls12381_g2::element_from_hash(msg))
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
         }
@@ -249,12 +313,28 @@ module ace::group {
     fun to_bls12381g1_scalar(s: &Scalar): &group_bls12381_g1::PrivateScalar {
         match (s) {
             Scalar::Bls12381G1(inner) => inner,
+            Scalar::Bls12381G2(_) => abort error::invalid_argument(E_UNSUPPORTED_SCHEME),
         }
     }
 
     fun to_bls12381g1_element(e: &Element): &group_bls12381_g1::PublicPoint {
         match (e) {
             Element::Bls12381G1(inner) => inner,
+            Element::Bls12381G2(_) => abort error::invalid_argument(E_UNSUPPORTED_SCHEME),
+        }
+    }
+
+    fun to_bls12381g2_scalar(s: &Scalar): &group_bls12381_g2::PrivateScalar {
+        match (s) {
+            Scalar::Bls12381G2(inner) => inner,
+            Scalar::Bls12381G1(_) => abort error::invalid_argument(E_UNSUPPORTED_SCHEME),
+        }
+    }
+
+    fun to_bls12381g2_element(e: &Element): &group_bls12381_g2::PublicPoint {
+        match (e) {
+            Element::Bls12381G2(inner) => inner,
+            Element::Bls12381G1(_) => abort error::invalid_argument(E_UNSUPPORTED_SCHEME),
         }
     }
 }

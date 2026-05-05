@@ -6,6 +6,7 @@
   "description": "ACE integration tests",
   "scripts": {
     "test-vss-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-protocol.ts",
+    "test-vss-protocol-g2": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-protocol-g2.ts",
     "test-dkg-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkg-protocol.ts",
     "test-dkr-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol.ts",
     "test-network-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol.ts",

@@ -6,8 +6,11 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 
-pub const SCHEME_BLS12381G1: u8 = 0;
-pub const SCHEME_BLS12381G2: u8 = 1;
+// Group-level BCS mirror types and scheme constants now live in `crate::group`.
+// Re-exported here for back-compat with existing `vss_common::session::Bcs*` import paths.
+pub use crate::group::{
+    BcsElement, BcsPrivateScalar, BcsPublicPoint, BcsScalar, SCHEME_BLS12381G1, SCHEME_BLS12381G2,
+};
 
 pub const STATE_DEALER_DEAL: u8 = 0;
 pub const STATE_RECIPIENT_ACK: u8 = 1;
@@ -160,18 +163,9 @@ impl Session {
 }
 
 // ── BCS mirror types (for decoding get_session_bcs view output) ───────────────
-
-/// BCS mirror of `group_bls12381_g1::PublicPoint`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BcsPublicPoint {
-    pub point: Vec<u8>, // 48-byte G1 compressed point
-}
-
-/// BCS mirror of `group::Element` enum (variant 0 = Bls12381G1).
-#[derive(serde::Serialize, serde::Deserialize)]
-pub enum BcsElement {
-    Bls12381G1(BcsPublicPoint),
-}
+//
+// Group-level mirror types (`BcsElement`, `BcsScalar`, `BcsPublicPoint`,
+// `BcsPrivateScalar`) live in `crate::group` and are re-exported above.
 
 /// BCS mirror of `vss::PcsCommitment`.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -208,18 +202,6 @@ pub struct BcsDealerContribution0 {
     pub private_share_messages: Vec<crate::pke::BcsCiphertext>,
     pub dealer_state: Option<crate::pke::BcsCiphertext>,
     pub resharing_response: Option<BcsResharingDealerResponse>,
-}
-
-/// BCS mirror of `group_bls12381_g1::PrivateScalar`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BcsPrivateScalar {
-    pub scalar: Vec<u8>, // 32-byte Fr scalar (LE)
-}
-
-/// BCS mirror of `group::Scalar` enum (variant 0 = Bls12381G1).
-#[derive(serde::Serialize, serde::Deserialize)]
-pub enum BcsScalar {
-    Bls12381G1(BcsPrivateScalar),
 }
 
 /// BCS mirror of `vss::DealerContribution1`.

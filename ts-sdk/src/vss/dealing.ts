@@ -12,7 +12,7 @@
 import { sha3_512 } from "@noble/hashes/sha3";
 import { bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 import { bytesToHex } from "@noble/hashes/utils";
-import { frAdd, frInv, frMod, frMul } from "../group/bls12381g1";
+import { frAdd, frInv, frMod, frMul } from "../group/bls12381fr";
 
 /** First byte of `Secret` / `PublicCommitment` / `SecretShare` payloads. Bump when layout changes. */
 export const SSS_WIRE_VERSION = 4;

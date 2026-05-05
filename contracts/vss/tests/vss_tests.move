@@ -4,6 +4,7 @@
 #[test_only]
 module ace::vss_tests {
     use ace::vss;
+    use ace::group;
     use ace::group_bls12381_g1;
     use aptos_std::bcs_stream;
 
@@ -50,39 +51,12 @@ module ace::vss_tests {
         assert!(vss::dc1_is_some_at(&dc1, 2), 3);
     }
 
-    // ── group_bls12381_g1 scalar and point tests ─────────────────────────────
-
-    // Verify 3 * 4 == 12 in Fr by checking G^(3*4) == G^12.
-    #[test]
-    fun test_scalar_mul() {
-        let a = group_bls12381_g1::scalar_from_u64(3);
-        let b = group_bls12381_g1::scalar_from_u64(4);
-        let c = group_bls12381_g1::scalar_mul(&a, &b);
-        let twelve = group_bls12381_g1::scalar_from_u64(12);
-
-        let g = g1_generator_point();
-        let c_g = group_bls12381_g1::scale_point(&g, &c);
-        let twelve_g = group_bls12381_g1::scale_point(&g, &twelve);
-        assert!(group_bls12381_g1::point_eq(&c_g, &twelve_g), 0);
-    }
-
-    // MSM([G, G], [3, 9]) == scale_point(G, 12).
-    #[test]
-    fun test_msm() {
-        let s3 = group_bls12381_g1::scalar_from_u64(3);
-        let s9 = group_bls12381_g1::scalar_from_u64(9);
-        let s12 = group_bls12381_g1::scalar_from_u64(12);
-
-        let g = g1_generator_point();
-        let msm_result = group_bls12381_g1::msm(vector[g, g], vector[s3, s9]);
-        let twelve_g = group_bls12381_g1::scale_point(&g, &s12);
-        assert!(group_bls12381_g1::point_eq(&msm_result, &twelve_g), 0);
-    }
+    // ── Feldman-VSS check via the abstract `group::*` API (G1 and G2) ────────
 
     // Feldman verification: for polynomial f(x) = a0 + a1*x with a0=1, a1=2,
     // commitment C = [g^1, g^2]. Verify g^{f(1)} == MSM(C, [1, 1]) = g^{1+2} = g^3.
     #[test]
-    fun test_feldman_verification() {
+    fun test_feldman_verification_g1() {
         let a0 = group_bls12381_g1::scalar_from_u64(1); // f(0) = 1 = secret
         let a1 = group_bls12381_g1::scalar_from_u64(2);
 
@@ -105,5 +79,32 @@ module ace::vss_tests {
         let lhs2 = group_bls12381_g1::scale_point(&g, &f2);
         let rhs2 = group_bls12381_g1::msm(vector[c0, c1], vector[one, two]);
         assert!(group_bls12381_g1::point_eq(&lhs2, &rhs2), 1);
+    }
+
+    // Feldman verification driven through `group::*` over G2 to exercise the
+    // VSS-relevant abstract operations against the second scheme.
+    #[test]
+    fun test_feldman_verification_abstract_g2() {
+        let scheme = group::scheme_bls12381_g2();
+        let a0 = group::scalar_from_u64(scheme, 1);
+        let a1 = group::scalar_from_u64(scheme, 2);
+
+        let g = group::element_from_hash(scheme, &b"feldman-g2-base");
+        let c0 = group::scale_element(&g, &a0);
+        let c1 = group::scale_element(&g, &a1);
+
+        // f(1) = 3.
+        let one = group::scalar_from_u64(scheme, 1);
+        let f1 = group::scalar_from_u64(scheme, 3);
+        let lhs = group::scale_element(&g, &f1);
+        let rhs = group::msm(vector[c0, c1], vector[one, one]);
+        assert!(group::element_eq(&lhs, &rhs), 0);
+
+        // f(2) = 5.
+        let two = group::scalar_from_u64(scheme, 2);
+        let f2 = group::scalar_from_u64(scheme, 5);
+        let lhs2 = group::scale_element(&g, &f2);
+        let rhs2 = group::msm(vector[c0, c1], vector[one, two]);
+        assert!(group::element_eq(&lhs2, &rhs2), 1);
     }
 }

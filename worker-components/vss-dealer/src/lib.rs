@@ -5,16 +5,16 @@
 //! `main.rs` is a thin CLI wrapper over [`run`].
 
 use anyhow::{anyhow, Result};
-use ark_bls12_381::{Fr, G1Affine};
-use ark_ec::CurveGroup;
+use ark_bls12_381::Fr;
 use ark_ff::PrimeField;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rand::RngCore;
-use sha2::{Digest, Sha512};
 use tokio::sync::oneshot;
-use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, g1_compressed_with_base, pke_encrypt, poly_eval};
+use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, group_compressed_with_base, pke_encrypt, poly_eval};
+use vss_common::sigma_dlog_eq;
 use vss_common::TxnArg;
-use vss_common::session::{ACK_WINDOW_MICROS, BcsElement, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
+use vss_common::session::{
+    ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
+    STATE_VERIFY_DEALER_OPENING,
+};
 use vss_common::vss_types::{dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
@@ -176,58 +176,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     }
 }
 
-/// Sigma DLog equality proof: proves knowledge of `secret` s.t. `secret*b0 == p0` AND `secret*b1 == p1`.
-/// Returns `(p1_bytes, t0_bytes, t1_bytes, s_proof_bytes)`.
-/// Transcript matches the on-chain verifier in `ace::vss::on_dealer_contribution_0`.
-fn sigma_dlog_eq_prove(
-    chain_id: u8,
-    ace_addr_bytes: &[u8; 32],
-    b0_bytes: &[u8; 48],
-    p0_bytes: &[u8; 48],
-    b1_bytes: &[u8; 48],
-    secret: Fr,
-) -> Result<([u8; 48], [u8; 48], [u8; 48], [u8; 32])> {
-    let b0 = G1Affine::deserialize_compressed(b0_bytes.as_slice())
-        .map_err(|e| anyhow!("b0 deserialize: {}", e))?;
-    let b1 = G1Affine::deserialize_compressed(b1_bytes.as_slice())
-        .map_err(|e| anyhow!("b1 deserialize: {}", e))?;
-
-    let p1_proj = b1 * secret;
-    let mut p1_bytes = [0u8; 48];
-    p1_proj.into_affine().serialize_compressed(&mut p1_bytes[..]).expect("G1 serialize");
-
-    let mut r_bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut r_bytes);
-    let r = Fr::from_le_bytes_mod_order(&r_bytes);
-    let t0_proj = b0 * r;
-    let t1_proj = b1 * r;
-    let mut t0_bytes = [0u8; 48];
-    let mut t1_bytes = [0u8; 48];
-    t0_proj.into_affine().serialize_compressed(&mut t0_bytes[..]).expect("G1 serialize");
-    t1_proj.into_affine().serialize_compressed(&mut t1_bytes[..]).expect("G1 serialize");
-
-    // Fiat-Shamir transcript = BCS(FiatShamirTag) || BCS(b0) || BCS(p0) || BCS(b1) || BCS(p1) || BCS(t0) || BCS(t1)
-    // BCS(FiatShamirTag { chain_id: u8, module_addr: address, module_name: vector<u8> })
-    //   = [chain_id][32B addr][ULEB128(3)=0x03][b'v'][b's'][b's']
-    let mut trx: Vec<u8> = Vec::new();
-    trx.push(chain_id);
-    trx.extend_from_slice(ace_addr_bytes);
-    trx.extend_from_slice(&[0x03, b'v', b's', b's']);
-    // BCS(group::Element::Bls12381G1) = [0x00][0x30][48B]
-    for pt in [b0_bytes, p0_bytes, b1_bytes, &p1_bytes, &t0_bytes, &t1_bytes] {
-        trx.push(0x00);
-        trx.push(0x30);
-        trx.extend_from_slice(pt);
-    }
-
-    let hash = Sha512::digest(&trx);
-    let c = Fr::from_le_bytes_mod_order(&hash.iter().rev().cloned().collect::<Vec<_>>());
-    let s_proof = r + c * secret;
-    let s_bytes = fr_to_le_bytes(s_proof);
-
-    Ok((p1_bytes, t0_bytes, t1_bytes, s_bytes))
-}
-
 /// Fetch enc keys, build polynomial, encrypt shares + dealer state, submit dc0.
 async fn build_and_submit_dc0(
     rpc: &AptosRpc,
@@ -262,9 +210,8 @@ async fn build_and_submit_dc0(
     // Fetch the BCS session to get the actual base_point for the Feldman commitment.
     let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await
         .map_err(|e| anyhow!("failed to fetch BCS session: {}", e))?;
-    let base_point_bytes = match &bcs_session.base_point {
-        vss_common::session::BcsElement::Bls12381G1(p) => p.point.clone(),
-    };
+    let scheme = bcs_session.base_point.scheme();
+    let base_point_bytes: Vec<u8> = bcs_session.base_point.point_bytes().to_vec();
 
     // Fetch each recipient's encryption key.
     let mut enc_keys = Vec::with_capacity(n);
@@ -277,15 +224,15 @@ async fn build_and_submit_dc0(
     // Build per-recipient encrypted share messages.
     // Holder at index i (0-based) gets share y = f(i+1) (1-indexed evaluation point).
     let share_ciphertexts: Vec<vss_common::pke::Ciphertext> = (0..n)
-        .map(|i| {
+        .map(|i| -> Result<vss_common::pke::Ciphertext> {
             let x_fr = Fr::from((i + 1) as u64);
             let y_fr = poly_eval(&coefs, x_fr);
             let y_bytes = fr_to_le_bytes(y_fr);
 
-            let plaintext = private_share_message_bytes(&y_bytes);
-            pke_encrypt(&enc_keys[i], &plaintext)
+            let plaintext = private_share_message_bytes(scheme, &y_bytes)?;
+            Ok(pke_encrypt(&enc_keys[i], &plaintext))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     // Encrypt dealer state with enc_keys[0] (dealer = share_holders[0]).
     let dealer_state = DealerState::bls12381_fr(
@@ -295,15 +242,22 @@ async fn build_and_submit_dc0(
     let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
 
     // Build Feldman PCS commitment: v_k = coefs[k] * base_point for k = 0..threshold.
-    // Use the session's actual base_point (not necessarily G1::generator).
-    let commitment_v_values: Vec<[u8; 48]> = coefs.iter()
-        .map(|c| g1_compressed_with_base(*c, &base_point_bytes))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    // Use the session's actual base_point (not necessarily group::generator).
+    let commitment_v_values: Vec<Vec<u8>> = coefs.iter()
+        .map(|c| group_compressed_with_base(scheme, *c, &base_point_bytes))
+        .collect::<Result<Vec<_>>>()?;
 
     // Build optional resharing response if the session has a resharing challenge.
     let resharing_resp = if let Some(challenge) = &bcs_session.resharing_challenge {
         let chain_id = rpc.get_chain_id().await
             .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
+        if challenge.another_base_element.scheme() != scheme {
+            return Err(anyhow!(
+                "resharing_challenge scheme mismatch (base={}, another_base={})",
+                scheme,
+                challenge.another_base_element.scheme()
+            ));
+        }
 
         let ace_hex = ace.trim_start_matches("0x");
         let ace_raw = hex::decode(ace_hex)?;
@@ -311,16 +265,11 @@ async fn build_and_submit_dc0(
         let start = 32usize.saturating_sub(ace_raw.len());
         ace_bytes[start..].copy_from_slice(&ace_raw);
 
-        let b1_bytes: [u8; 48] = match &challenge.another_base_element {
-            BcsElement::Bls12381G1(p) => p.point.as_slice().try_into()
-                .map_err(|_| anyhow!("another_base_element is not 48 bytes"))?,
-        };
-        let p0_bytes: &[u8; 48] = base_point_bytes.as_slice().try_into()
-            .map_err(|_| anyhow!("base_point_bytes is not 48 bytes"))?;
-        let commitment_p0: [u8; 48] = commitment_v_values[0];
+        let b1_bytes = challenge.another_base_element.point_bytes();
+        let commitment_p0 = &commitment_v_values[0];
 
-        let (p1, t0, t1, s_proof) = sigma_dlog_eq_prove(
-            chain_id, &ace_bytes, p0_bytes, &commitment_p0, &b1_bytes, coefs[0],
+        let (p1, t0, t1, s_proof) = sigma_dlog_eq::prove(
+            scheme, chain_id, &ace_bytes, &base_point_bytes, commitment_p0, b1_bytes, coefs[0],
         )?;
         Some((p1, t0, t1, s_proof))
     } else {
@@ -328,14 +277,17 @@ async fn build_and_submit_dc0(
     };
 
     let payload = dc0_bytes(
+        scheme,
         &commitment_v_values,
         &share_ciphertexts,
         &dealer_state_ct,
-        resharing_resp.as_ref().map(|(p1, t0, t1, s)| (p1, t0, t1, s)),
-    );
+        resharing_resp
+            .as_ref()
+            .map(|(p1, t0, t1, s)| (p1.as_slice(), t0.as_slice(), t1.as_slice(), s)),
+    )?;
     println!(
-        "vss-dealer: dc0 payload {} bytes, {} shares, threshold {}",
-        payload.len(), n, threshold
+        "vss-dealer: dc0 payload {} bytes, {} shares, threshold {} (scheme={})",
+        payload.len(), n, threshold, scheme
     );
 
     let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
@@ -350,121 +302,6 @@ async fn build_and_submit_dc0(
     .await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ark_bls12_381::G1Affine;
-    use ark_ec::{AffineRepr, CurveGroup};
-    use ark_serialize::CanonicalSerialize;
-
-    /// Verifies `sigma_dlog_eq_prove` produces a mathematically valid proof.
-    /// Rebuilds the Fiat-Shamir challenge in the test and checks both equations:
-    ///   s*b0 == t0 + c*p0   AND   s*b1 == t1 + c*p1
-    #[test]
-    fn sigma_dlog_eq_prove_self_consistent() {
-        let chain_id = 4u8;
-        let ace_bytes = {
-            let mut b = [0u8; 32];
-            b[30] = 0xca;
-            b[31] = 0xfe;
-            b
-        };
-
-        let secret = Fr::from_le_bytes_mod_order(&[
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
-        ]);
-
-        let b0 = G1Affine::generator();
-        let b1: G1Affine = (b0 * Fr::from(7u64)).into_affine();
-        let p0: G1Affine = (b0 * secret).into_affine();
-
-        let mut b0_bytes = [0u8; 48];
-        let mut b1_bytes = [0u8; 48];
-        let mut p0_bytes = [0u8; 48];
-        b0.serialize_compressed(&mut b0_bytes[..]).unwrap();
-        b1.serialize_compressed(&mut b1_bytes[..]).unwrap();
-        p0.serialize_compressed(&mut p0_bytes[..]).unwrap();
-
-        let (p1_bytes, t0_bytes, t1_bytes, s_bytes) =
-            sigma_dlog_eq_prove(chain_id, &ace_bytes, &b0_bytes, &p0_bytes, &b1_bytes, secret)
-                .unwrap();
-
-        let p1 = G1Affine::deserialize_compressed(p1_bytes.as_slice()).unwrap();
-        let t0 = G1Affine::deserialize_compressed(t0_bytes.as_slice()).unwrap();
-        let t1 = G1Affine::deserialize_compressed(t1_bytes.as_slice()).unwrap();
-        let s_fr = Fr::from_le_bytes_mod_order(&s_bytes);
-
-        // Rebuild challenge c exactly as sigma_dlog_eq_prove does.
-        let mut trx: Vec<u8> = Vec::new();
-        trx.push(chain_id);
-        trx.extend_from_slice(&ace_bytes);
-        trx.extend_from_slice(&[0x03, b'v', b's', b's']);
-        for pt in [&b0_bytes, &p0_bytes, &b1_bytes, &p1_bytes, &t0_bytes, &t1_bytes] {
-            trx.push(0x00);
-            trx.push(0x30);
-            trx.extend_from_slice(pt);
-        }
-        let hash = Sha512::digest(&trx);
-        let c = Fr::from_le_bytes_mod_order(&hash.iter().rev().cloned().collect::<Vec<_>>());
-
-        // Check: s*b0 == t0 + c*p0
-        let lhs0: G1Affine = (b0 * s_fr).into_affine();
-        let rhs0: G1Affine = (t0.into_group() + p0 * c).into_affine();
-        assert_eq!(lhs0, rhs0, "s*b0 != t0 + c*p0");
-
-        // Check: s*b1 == t1 + c*p1
-        let lhs1: G1Affine = (b1 * s_fr).into_affine();
-        let rhs1: G1Affine = (t1.into_group() + p1 * c).into_affine();
-        assert_eq!(lhs1, rhs1, "s*b1 != t1 + c*p1");
-    }
-
-    /// Verifies that a wrong secret produces a proof that fails verification.
-    #[test]
-    fn sigma_dlog_eq_prove_wrong_secret_fails() {
-        let chain_id = 1u8;
-        let ace_bytes = [0u8; 32];
-
-        let secret = Fr::from_le_bytes_mod_order(&[1u8; 32]);
-        let wrong_secret = Fr::from_le_bytes_mod_order(&[2u8; 32]);
-
-        let b0 = G1Affine::generator();
-        let b1: G1Affine = (b0 * Fr::from(3u64)).into_affine();
-        let p0: G1Affine = (b0 * secret).into_affine();
-
-        let mut b0_bytes = [0u8; 48];
-        let mut b1_bytes = [0u8; 48];
-        let mut p0_bytes = [0u8; 48];
-        b0.serialize_compressed(&mut b0_bytes[..]).unwrap();
-        b1.serialize_compressed(&mut b1_bytes[..]).unwrap();
-        p0.serialize_compressed(&mut p0_bytes[..]).unwrap();
-
-        // Prove with wrong_secret (doesn't satisfy secret*b0 == p0)
-        let (p1_bytes, t0_bytes, t1_bytes, s_bytes) =
-            sigma_dlog_eq_prove(chain_id, &ace_bytes, &b0_bytes, &p0_bytes, &b1_bytes, wrong_secret)
-                .unwrap();
-
-        let t0 = G1Affine::deserialize_compressed(t0_bytes.as_slice()).unwrap();
-        let s_fr = Fr::from_le_bytes_mod_order(&s_bytes);
-
-        let mut trx: Vec<u8> = Vec::new();
-        trx.push(chain_id);
-        trx.extend_from_slice(&ace_bytes);
-        trx.extend_from_slice(&[0x03, b'v', b's', b's']);
-        for pt in [&b0_bytes, &p0_bytes, &b1_bytes, &p1_bytes, &t0_bytes, &t1_bytes] {
-            trx.push(0x00); trx.push(0x30); trx.extend_from_slice(pt);
-        }
-        let hash = Sha512::digest(&trx);
-        let c = Fr::from_le_bytes_mod_order(&hash.iter().rev().cloned().collect::<Vec<_>>());
-
-        let lhs0: G1Affine = (b0 * s_fr).into_affine();
-        let rhs0: G1Affine = (t0.into_group() + p0 * c).into_affine();
-        // p0 = secret*b0 but proof was made with wrong_secret, so this should not hold
-        assert_ne!(lhs0, rhs0, "proof with wrong secret should not verify");
-    }
-}
 
 /// Re-derive polynomial, build shares-to-reveal vector, submit dc1.
 ///
@@ -483,6 +320,11 @@ async fn build_and_submit_dc1(
 ) -> Result<String> {
     let n = session.share_holders.len();
     let threshold = session.threshold as usize;
+
+    // Look up the session's group scheme.
+    let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await
+        .map_err(|e| anyhow!("failed to fetch BCS session: {}", e))?;
+    let scheme = bcs_session.base_point.scheme();
 
     // Re-derive the same polynomial (must match DC0 exactly).
     let coefs: Vec<Fr> = {
@@ -512,8 +354,8 @@ async fn build_and_submit_dc1(
         })
         .collect();
 
-    let payload = dc1_bytes(&shares_to_reveal);
-    println!("vss-dealer: dc1 payload {} bytes", payload.len());
+    let payload = dc1_bytes(scheme, &shares_to_reveal)?;
+    println!("vss-dealer: dc1 payload {} bytes (scheme={})", payload.len(), scheme);
 
     let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
     rpc.submit_txn(

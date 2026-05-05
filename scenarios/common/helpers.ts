@@ -278,11 +278,21 @@ export async function submitTxn(
         entryFunction,
         args,
         rpcUrl = LOCALNET_URL,
+        awaitEventType,
     }: {
         signer: Account,
         entryFunction: `${string}::${string}::${string}`,
         args: any[],
         rpcUrl?: string,
+        /**
+         * Optional fully-qualified event type (e.g. "0xabc::dkg::SessionCreated"). When
+         * set, after the txn commits we poll `getTransactionByHash` until at least one
+         * event of this type appears, or 5 s elapses. Use this when the test depends on
+         * a specific user-emitted event being present in the response — the node can
+         * return a committed txn whose `events` array already contains framework events
+         * (FeeStatement, etc.) before user events are fully indexed.
+         */
+        awaitEventType?: string,
     }
 ): Promise<Result<CommittedTxn>> {
     return Result.captureAsync({
@@ -304,7 +314,12 @@ export async function submitTxn(
             // The node sometimes returns a committed transaction before its events are
             // fully indexed (race condition, more common on slow CI runners).
             // Retry at 500 ms intervals for up to 5 s total.
-            for (let i = 0; i < 10 && !((waited.events as unknown[])?.length); i++) {
+            const eventsArray = (w: Record<string, unknown>) =>
+                ((w.events as { type?: string }[] | undefined) ?? []);
+            const ready = awaitEventType
+                ? (w: Record<string, unknown>) => eventsArray(w).some(e => String(e?.type ?? '') === awaitEventType)
+                : (w: Record<string, unknown>) => eventsArray(w).length > 0;
+            for (let i = 0; i < 10 && !ready(waited); i++) {
                 await new Promise(r => setTimeout(r, 500));
                 waited = await aptos.getTransactionByHash({ transactionHash: hash }) as Record<string, unknown>;
             }

@@ -2,22 +2,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Feldman VSS over BLS12-381: secrets in Fr, commitments in G1.
+ * Feldman VSS over BLS12-381 G2: secrets in Fr, commitments in G2.
+ *
+ * Mirror of `bls12381g1.ts` with G1 → G2. Fr is shared between G1 and G2 (same prime
+ * order), so scalar/share/dealer-state semantics are identical; we duplicate the
+ * types so the abstract `Scalar` / `Element` layer can carry a scheme tag faithfully.
  *
  * - PrivateScalar: a secret s ∈ Fr.
- * - PublicPoint: a G1 element (used in Feldman commitment: g^{a_k}).
- * - SecretShare: the evaluation y = f(i) ∈ Fr for holder at index i (1-indexed; x is implicit).
- * - PcsCommitment: t G1 points [g^{a_0}, ..., g^{a_{t-1}}] (Feldman commitment).
+ * - PublicPoint: a G2 element (used in Feldman commitment: g^{a_k} for g ∈ G2).
+ * - SecretShare: the evaluation y = f(i) ∈ Fr for holder at index i (1-indexed).
+ * - PcsCommitment: t G2 points [g^{a_0}, ..., g^{a_{t-1}}].
  * - DealerState: dealer's polynomial coefficients [a_0, ..., a_{t-1}] (a_0 = secret).
  */
 
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bls12_381 } from "@noble/curves/bls12-381";
+import { Fp2 } from "@noble/curves/abstract/tower";
 import { bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
 import { Result } from "../result";
+import { lagrangeAtZero } from "../vss/dealing";
+import { randBytes } from "../utils";
 
-// ── BLS12-381 Fr field arithmetic ─────────────────────────────────────────────
+// ── BLS12-381 Fr field arithmetic (re-exported from the shared Fr module) ─────
 
 export {
     FR_MODULUS,
@@ -28,9 +36,6 @@ export {
     assertCanonicalFrScalar,
 } from "./bls12381fr";
 import { FR_MODULUS, frMod, frAdd, frMul } from "./bls12381fr";
-import { lagrangeAtZero } from "../vss/dealing";
-import { randBytes } from "../utils";
-import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
 
 // ── PrivateScalar ─────────────────────────────────────────────────────────────
 
@@ -81,55 +86,46 @@ export class PrivateScalar {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     static fromHex(hex: string): Result<PrivateScalar> {
         return Result.capture({
             recordsExecutionTimeMs: false,
-            task: () => {
-                const bytes = hexToBytes(hex);
-                return PrivateScalar.fromBytes(bytes).unwrapOrThrow("deserialization failed");
-            },
+            task: () => PrivateScalar.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
 }
 
 // ── PublicPoint ───────────────────────────────────────────────────────────────
 
-/** A BLS12-381 G1 element. Wire format: [uleb128(48)][48-byte compressed G1]. */
-/** Returns the BLS12-381 G1 generator as a PublicPoint. */
-export function g1Generator(): PublicPoint {
-    return new PublicPoint(bls12_381.G1.ProjectivePoint.BASE as unknown as WeierstrassPoint<bigint>);
+/** Returns the BLS12-381 G2 generator as a PublicPoint. */
+export function g2Generator(): PublicPoint {
+    return new PublicPoint(bls12_381.G2.ProjectivePoint.BASE as unknown as WeierstrassPoint<Fp2>);
 }
 
+/** A BLS12-381 G2 element. Wire format: [uleb128(96)][96-byte compressed G2]. */
 export class PublicPoint {
-    constructor(readonly pt: WeierstrassPoint<bigint>) {}
+    constructor(readonly pt: WeierstrassPoint<Fp2>) {}
 
-    /** Parse from raw 48-byte compressed G1 bytes (not BCS-encoded). */
+    /** Parse from raw 96-byte compressed G2 bytes (not BCS-encoded). */
     static fromRawBytes(rawBytes: Uint8Array): Result<PublicPoint> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
-                if (rawBytes.length !== 48) throw 'expected 48 bytes';
-                const pt = bls12_381.G1.ProjectivePoint.fromHex(rawBytes) as unknown as WeierstrassPoint<bigint>;
+                if (rawBytes.length !== 96) throw 'expected 96 bytes';
+                const pt = bls12_381.G2.ProjectivePoint.fromHex(rawBytes) as unknown as WeierstrassPoint<Fp2>;
                 return new PublicPoint(pt);
             },
         });
     }
 
-    /** Raw 48-byte compressed G1 bytes. */
-    rawBytes(): Uint8Array {
-        return (this.pt as any).toBytes();
-    }
+    /** Raw 96-byte compressed G2 bytes. */
+    rawBytes(): Uint8Array { return (this.pt as any).toBytes(); }
 
-    /** Serialize as BCS bytes field: [uleb128(48)][48 bytes]. */
     serialize(serializer: Serializer): void {
         serializer.serializeBytes(this.rawBytes());
     }
 
-    /** BCS-encoded bytes (same as what serialize() writes). */
     toBytes(): Uint8Array {
         const serializer = new Serializer();
         this.serialize(serializer);
@@ -141,7 +137,7 @@ export class PublicPoint {
             recordsExecutionTimeMs: false,
             task: () => {
                 const ptBytes = deserializer.deserializeBytes();
-                return PublicPoint.fromRawBytes(ptBytes).unwrapOrThrow('invalid G1 point');
+                return PublicPoint.fromRawBytes(ptBytes).unwrapOrThrow('invalid G2 point');
             },
         });
     }
@@ -158,14 +154,12 @@ export class PublicPoint {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     /** Scalar multiplication: returns scalar * this. */
     scale(scalar: PrivateScalar): PublicPoint {
         const result = (this.pt as any).multiply(scalar.scalar);
-        return new PublicPoint(result as unknown as WeierstrassPoint<bigint>);
+        return new PublicPoint(result as unknown as WeierstrassPoint<Fp2>);
     }
 
     /** Projective equality check. */
@@ -178,7 +172,6 @@ export class PublicPoint {
 
 /**
  * A Feldman share for holder at (implicit) index i: y = f(i) ∈ Fr.
- * The evaluation point x = i is implicit (1-indexed by position in share_holders list).
  * Wire format: [uleb128(32)][32-byte Fr LE].
  */
 export class SecretShare {
@@ -228,9 +221,7 @@ export class SecretShare {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     add(other: SecretShare): SecretShare {
         const sum = frMod(this.y + other.y);
@@ -240,10 +231,7 @@ export class SecretShare {
     static fromHex(hex: string): Result<SecretShare> {
         return Result.capture({
             recordsExecutionTimeMs: false,
-            task: () => {
-                const bytes = hexToBytes(hex);
-                return SecretShare.fromBytes(bytes).unwrapOrThrow("deserialization failed");
-            },
+            task: () => SecretShare.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
 }
@@ -251,11 +239,11 @@ export class SecretShare {
 // ── PcsCommitment ─────────────────────────────────────────────────────────────
 
 /**
- * Feldman polynomial commitment: t G1 points [g^{a_0}, ..., g^{a_{t-1}}].
- * Wire format (no scheme prefix): [uleb128 t] { [uleb128(48)] [48-byte G1] } × t.
+ * Feldman polynomial commitment: t G2 points [g^{a_0}, ..., g^{a_{t-1}}].
+ * Wire format (no scheme prefix): [uleb128 t] { [uleb128(96)] [96-byte G2] } × t.
  */
 export class PcsCommitment {
-    constructor(readonly vValues: WeierstrassPoint<bigint>[]) {}
+    constructor(readonly vValues: WeierstrassPoint<Fp2>[]) {}
 
     serialize(serializer: Serializer): void {
         serializer.serializeU32AsUleb128(this.vValues.length);
@@ -269,10 +257,10 @@ export class PcsCommitment {
             recordsExecutionTimeMs: false,
             task: () => {
                 const len = deserializer.deserializeUleb128AsU32();
-                const vValues: WeierstrassPoint<bigint>[] = [];
+                const vValues: WeierstrassPoint<Fp2>[] = [];
                 for (let i = 0; i < len; i++) {
                     const ptBytes = deserializer.deserializeBytes();
-                    const pt = bls12_381.G1.ProjectivePoint.fromHex(ptBytes) as unknown as WeierstrassPoint<bigint>;
+                    const pt = bls12_381.G2.ProjectivePoint.fromHex(ptBytes) as unknown as WeierstrassPoint<Fp2>;
                     vValues.push(pt);
                 }
                 return new PcsCommitment(vValues);
@@ -298,17 +286,12 @@ export class PcsCommitment {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     static fromHex(hex: string): Result<PcsCommitment> {
         return Result.capture({
             recordsExecutionTimeMs: false,
-            task: () => {
-                const bytes = hexToBytes(hex);
-                return PcsCommitment.fromBytes(bytes).unwrapOrThrow("deserialization failed");
-            },
+            task: () => PcsCommitment.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
 }
@@ -316,8 +299,7 @@ export class PcsCommitment {
 // ── DealerState ───────────────────────────────────────────────────────────────
 
 /**
- * Dealer's private polynomial coefficients [a_0, ..., a_{t-1}].
- * a_0 = the secret s = f(0).
+ * Dealer's private polynomial coefficients [a_0, ..., a_{t-1}]. a_0 = secret.
  * Wire format: [u64 n] [uleb128 t] { [uleb128(32)] [32-byte Fr LE] } × t
  */
 export class DealerState {
@@ -371,9 +353,7 @@ export class DealerState {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     static fromHex(hex: string): Result<DealerState> {
         return Result.capture({
@@ -413,7 +393,6 @@ export function reconstruct({ indexedShares }: {
 
 /**
  * Split a 32-byte LE Fr secret into Shamir shares over BLS12-381 Fr.
- * Returns `total` shares as 32-byte LE encodings.
  */
 export function split(secret: Uint8Array, threshold: number, total: number): Result<Uint8Array[]> {
     return Result.capture({

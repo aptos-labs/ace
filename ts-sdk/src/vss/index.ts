@@ -4,24 +4,39 @@
 import { AccountAddress, Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import * as Bls12381Fr from "../group/bls12381g1";
+import * as Bls12381G1 from "../group/bls12381g1";
+import * as Bls12381G2 from "../group/bls12381g2";
 import * as pke from "../pke";
-import { Scalar, Element, SCHEME_BLS12381G1 } from "../group";
+import { Scalar, Element, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
 
-export { Scalar as PrivateScalar, Element as PublicPoint, SCHEME_BLS12381G1 } from "../group";
-export const SCHEME_BLS12381G2 = 1;
+export { Scalar as PrivateScalar, Element as PublicPoint, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
+
+// Bls12381G1's Fr-only types (PrivateScalar / SecretShare / DealerState) are byte-for-byte
+// identical to Bls12381G2's; we keep separate inner classes per scheme so the dispatch is
+// uniform with how Element / PublicPoint is structured.
+//
+// TODO: extract Fr-only code (PrivateScalar / SecretShare / DealerState / sample / reconstruct
+// / split) to a shared bls12381fr module and remove the duplication.
 
 
 export function sample(scheme: number): Scalar {
     if (scheme === SCHEME_BLS12381G1) {
-        const secret = Bls12381Fr.sample();
+        const secret = Bls12381G1.sample();
         return new Scalar(SCHEME_BLS12381G1, secret);
+    }
+    if (scheme === SCHEME_BLS12381G2) {
+        const secret = Bls12381G2.sample();
+        return new Scalar(SCHEME_BLS12381G2, secret);
     }
     throw new Error(`sample: unsupported scheme ${scheme}`);
 }
 
 export function sampleBLS12381G1(): Scalar {
     return sample(SCHEME_BLS12381G1);
+}
+
+export function sampleBLS12381G2(): Scalar {
+    return sample(SCHEME_BLS12381G2);
 }
 
 export function reconstruct({ indexedShares }: {
@@ -38,12 +53,20 @@ export function reconstruct({ indexedShares }: {
             if (scheme === SCHEME_BLS12381G1) {
                 const inners = indexedShares.map(({ index, share }) => ({
                     index,
-                    share: share.inner as Bls12381Fr.SecretShare,
+                    share: share.inner as Bls12381G1.SecretShare,
                 }));
-                const s = Bls12381Fr.reconstruct({ indexedShares: inners }).unwrapOrThrow("reconstruct: Bls12381G1 failed");
+                const s = Bls12381G1.reconstruct({ indexedShares: inners }).unwrapOrThrow("reconstruct: Bls12381G1 failed");
                 return new Scalar(SCHEME_BLS12381G1, s);
             }
-            throw `unsupported scheme`;
+            if (scheme === SCHEME_BLS12381G2) {
+                const inners = indexedShares.map(({ index, share }) => ({
+                    index,
+                    share: share.inner as Bls12381G2.SecretShare,
+                }));
+                const s = Bls12381G2.reconstruct({ indexedShares: inners }).unwrapOrThrow("reconstruct: Bls12381G2 failed");
+                return new Scalar(SCHEME_BLS12381G2, s);
+            }
+            throw `reconstruct: unsupported scheme ${scheme}`;
         },
     });
 }
@@ -60,10 +83,14 @@ export class SecretShare {
                 const scheme = deserializer.deserializeU8();
                 extra["scheme"] = scheme;
                 if (scheme === SCHEME_BLS12381G1) {
-                    const inner = Bls12381Fr.SecretShare.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    const inner = Bls12381G1.SecretShare.deserialize(deserializer).unwrapOrThrow("deserialize failed");
                     return new SecretShare(SCHEME_BLS12381G1, inner);
                 }
-                throw 'unsupported scheme';
+                if (scheme === SCHEME_BLS12381G2) {
+                    const inner = Bls12381G2.SecretShare.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new SecretShare(SCHEME_BLS12381G2, inner);
+                }
+                throw `unsupported scheme ${scheme}`;
             },
         });
     }
@@ -97,9 +124,11 @@ export class SecretShare {
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
         if (this.scheme === SCHEME_BLS12381G1) {
-            (this.inner as Bls12381Fr.SecretShare).serialize(serializer);
+            (this.inner as Bls12381G1.SecretShare).serialize(serializer);
+        } else if (this.scheme === SCHEME_BLS12381G2) {
+            (this.inner as Bls12381G2.SecretShare).serialize(serializer);
         } else {
-            throw 'unsupported scheme';
+            throw `unsupported scheme ${this.scheme}`;
         }
     }
 
@@ -116,8 +145,12 @@ export class SecretShare {
     add(other: SecretShare): SecretShare {
         if (this.scheme !== other.scheme) throw 'SecretShare.add: scheme mismatch';
         if (this.scheme === SCHEME_BLS12381G1) {
-            const inner = (this.inner as Bls12381Fr.SecretShare).add(other.inner as Bls12381Fr.SecretShare);
+            const inner = (this.inner as Bls12381G1.SecretShare).add(other.inner as Bls12381G1.SecretShare);
             return new SecretShare(SCHEME_BLS12381G1, inner);
+        }
+        if (this.scheme === SCHEME_BLS12381G2) {
+            const inner = (this.inner as Bls12381G2.SecretShare).add(other.inner as Bls12381G2.SecretShare);
+            return new SecretShare(SCHEME_BLS12381G2, inner);
         }
         throw `SecretShare.add: unsupported scheme ${this.scheme}`;
     }
@@ -132,9 +165,15 @@ export class SecretShare {
 export class PcsCommitment {
     constructor(readonly points: Element[]) {}
 
-    static fromBls12381G1(innerPoints: Bls12381Fr.PcsCommitment): PcsCommitment {
+    static fromBls12381G1(innerPoints: Bls12381G1.PcsCommitment): PcsCommitment {
         return new PcsCommitment(
-            innerPoints.vValues.map((pt) => Element.fromBls12381G1(new Bls12381Fr.PublicPoint(pt)))
+            innerPoints.vValues.map((pt) => Element.fromBls12381G1(new Bls12381G1.PublicPoint(pt)))
+        );
+    }
+
+    static fromBls12381G2(innerPoints: Bls12381G2.PcsCommitment): PcsCommitment {
+        return new PcsCommitment(
+            innerPoints.vValues.map((pt) => Element.fromBls12381G2(new Bls12381G2.PublicPoint(pt)))
         );
     }
 
@@ -255,9 +294,14 @@ export class DealerState {
         this.inner.serialize(serializer);
     }
 
-    asBls12381Fr(): Bls12381Fr.DealerState {
+    asBls12381Fr(): Bls12381G1.DealerState {
         if (this.scheme !== SCHEME_BLS12381G1) throw 'wrong scheme';
-        return this.inner as Bls12381Fr.DealerState;
+        return this.inner as Bls12381G1.DealerState;
+    }
+
+    asBls12381G2DealerState(): Bls12381G2.DealerState {
+        if (this.scheme !== SCHEME_BLS12381G2) throw 'wrong scheme';
+        return this.inner as Bls12381G2.DealerState;
     }
 
     static deserialize(deserializer: Deserializer): Result<DealerState> {
@@ -266,10 +310,14 @@ export class DealerState {
             task: () => {
                 const scheme = deserializer.deserializeU8();
                 if (scheme === SCHEME_BLS12381G1) {
-                    const inner = Bls12381Fr.DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    const inner = Bls12381G1.DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
                     return new DealerState(SCHEME_BLS12381G1, inner);
                 }
-                throw 'unsupported scheme';
+                if (scheme === SCHEME_BLS12381G2) {
+                    const inner = Bls12381G2.DealerState.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new DealerState(SCHEME_BLS12381G2, inner);
+                }
+                throw `unsupported scheme ${scheme}`;
             },
         });
     }
@@ -324,13 +372,26 @@ export interface ResharingDealerResponse {
 
 function deserializeScalar(deserializer: Deserializer): Scalar {
     const scheme = deserializer.deserializeU8();
-    const inner = Bls12381Fr.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
-    return new Scalar(scheme, inner);
+    if (scheme === SCHEME_BLS12381G1) {
+        const inner = Bls12381G1.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
+        return new Scalar(scheme, inner);
+    }
+    if (scheme === SCHEME_BLS12381G2) {
+        const inner = Bls12381G2.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
+        return new Scalar(scheme, inner);
+    }
+    throw `deserializeScalar: unsupported scheme ${scheme}`;
 }
 
 function serializeScalar(serializer: Serializer, s: Scalar): void {
     serializer.serializeU8(s.scheme);
-    (s.inner as Bls12381Fr.PrivateScalar).serialize(serializer);
+    if (s.scheme === SCHEME_BLS12381G1) {
+        (s.inner as Bls12381G1.PrivateScalar).serialize(serializer);
+    } else if (s.scheme === SCHEME_BLS12381G2) {
+        (s.inner as Bls12381G2.PrivateScalar).serialize(serializer);
+    } else {
+        throw `serializeScalar: unsupported scheme ${s.scheme}`;
+    }
 }
 
 // ── DealerContribution0 ───────────────────────────────────────────────────────
@@ -477,7 +538,14 @@ export class DealerContribution1 {
                         sharesToReveal.push(undefined);
                     } else if (tag === 1) {
                         const scheme = deserializer.deserializeU8(); // scheme/variant byte
-                        const inner = Bls12381Fr.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
+                        let inner: Bls12381G1.PrivateScalar | Bls12381G2.PrivateScalar;
+                        if (scheme === SCHEME_BLS12381G1) {
+                            inner = Bls12381G1.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
+                        } else if (scheme === SCHEME_BLS12381G2) {
+                            inner = Bls12381G2.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
+                        } else {
+                            throw `sharesToReveal[${i}]: unsupported scheme ${scheme}`;
+                        }
                         sharesToReveal.push(new Scalar(scheme, inner));
                     } else {
                         throw `sharesToReveal[${i}]: invalid option tag ${tag}`;

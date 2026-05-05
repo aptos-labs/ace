@@ -5,10 +5,17 @@ import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import * as Bls12381G1 from "./bls12381g1";
+import * as Bls12381G2 from "./bls12381g2";
 
 export * as bls12381G1 from "./bls12381g1";
+export * as bls12381G2 from "./bls12381g2";
 
 export const SCHEME_BLS12381G1 = 0;
+export const SCHEME_BLS12381G2 = 1;
+
+export function schemeSupported(scheme: number): boolean {
+    return scheme === SCHEME_BLS12381G1 || scheme === SCHEME_BLS12381G2;
+}
 
 // ── Scalar ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +25,11 @@ export class Scalar {
     asBls12381G1(): Bls12381G1.PrivateScalar {
         if (this.scheme !== SCHEME_BLS12381G1) throw 'wrong scheme';
         return this.inner as Bls12381G1.PrivateScalar;
+    }
+
+    asBls12381G2(): Bls12381G2.PrivateScalar {
+        if (this.scheme !== SCHEME_BLS12381G2) throw 'wrong scheme';
+        return this.inner as Bls12381G2.PrivateScalar;
     }
 
     static deserialize(deserializer: Deserializer): Result<Scalar> {
@@ -30,7 +42,11 @@ export class Scalar {
                     const inner = Bls12381G1.PrivateScalar.deserialize(deserializer).unwrapOrThrow("deserialize failed");
                     return new Scalar(SCHEME_BLS12381G1, inner);
                 }
-                throw 'unsupported scheme';
+                if (scheme === SCHEME_BLS12381G2) {
+                    const inner = Bls12381G2.PrivateScalar.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new Scalar(SCHEME_BLS12381G2, inner);
+                }
+                throw `unsupported scheme ${scheme}`;
             },
         });
     }
@@ -50,10 +66,7 @@ export class Scalar {
     static fromHex(hex: string): Result<Scalar> {
         return Result.capture({
             recordsExecutionTimeMs: false,
-            task: () => {
-                const bytes = hexToBytes(hex);
-                return Scalar.fromBytes(bytes).unwrapOrThrow("deserialization failed");
-            },
+            task: () => Scalar.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
 
@@ -61,8 +74,10 @@ export class Scalar {
         serializer.serializeU8(this.scheme);
         if (this.scheme === SCHEME_BLS12381G1) {
             (this.inner as Bls12381G1.PrivateScalar).serialize(serializer);
+        } else if (this.scheme === SCHEME_BLS12381G2) {
+            (this.inner as Bls12381G2.PrivateScalar).serialize(serializer);
         } else {
-            throw 'unsupported scheme';
+            throw `unsupported scheme ${this.scheme}`;
         }
     }
 
@@ -72,9 +87,7 @@ export class Scalar {
         return serializer.toUint8Array();
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 }
 
 // ── Element ───────────────────────────────────────────────────────────────────
@@ -86,11 +99,22 @@ export class Element {
         return new Element(SCHEME_BLS12381G1, inner);
     }
 
-    /** Scalar multiplication: returns scalar * this. */
+    static fromBls12381G2(inner: Bls12381G2.PublicPoint): Element {
+        return new Element(SCHEME_BLS12381G2, inner);
+    }
+
+    /** Scalar multiplication: returns scalar * this. Schemes must match. */
     scale(scalar: Scalar): Element {
+        if (this.scheme !== scalar.scheme) {
+            throw `scale: scheme mismatch (element=${this.scheme}, scalar=${scalar.scheme})`;
+        }
         if (this.scheme === SCHEME_BLS12381G1) {
             const result = (this.inner as Bls12381G1.PublicPoint).scale(scalar.asBls12381G1());
             return new Element(SCHEME_BLS12381G1, result);
+        }
+        if (this.scheme === SCHEME_BLS12381G2) {
+            const result = (this.inner as Bls12381G2.PublicPoint).scale(scalar.asBls12381G2());
+            return new Element(SCHEME_BLS12381G2, result);
         }
         throw `scale: unsupported scheme ${this.scheme}`;
     }
@@ -101,6 +125,9 @@ export class Element {
         if (this.scheme === SCHEME_BLS12381G1) {
             return (this.inner as Bls12381G1.PublicPoint).equals(other.inner as Bls12381G1.PublicPoint);
         }
+        if (this.scheme === SCHEME_BLS12381G2) {
+            return (this.inner as Bls12381G2.PublicPoint).equals(other.inner as Bls12381G2.PublicPoint);
+        }
         throw `equals: unsupported scheme ${this.scheme}`;
     }
 
@@ -108,8 +135,10 @@ export class Element {
         serializer.serializeU8(this.scheme);
         if (this.scheme === SCHEME_BLS12381G1) {
             (this.inner as Bls12381G1.PublicPoint).serialize(serializer);
+        } else if (this.scheme === SCHEME_BLS12381G2) {
+            (this.inner as Bls12381G2.PublicPoint).serialize(serializer);
         } else {
-            throw 'unsupported scheme';
+            throw `unsupported scheme ${this.scheme}`;
         }
     }
 
@@ -123,7 +152,11 @@ export class Element {
                     const inner = Bls12381G1.PublicPoint.deserialize(deserializer).unwrapOrThrow("deserialize failed");
                     return new Element(SCHEME_BLS12381G1, inner);
                 }
-                throw 'unsupported scheme';
+                if (scheme === SCHEME_BLS12381G2) {
+                    const inner = Bls12381G2.PublicPoint.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                    return new Element(SCHEME_BLS12381G2, inner);
+                }
+                throw `unsupported scheme ${scheme}`;
             },
         });
     }
@@ -146,9 +179,7 @@ export class Element {
         });
     }
 
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
+    toHex(): string { return bytesToHex(this.toBytes()); }
 
     static fromHex(hex: string): Result<Element> {
         return Result.capture({

@@ -208,3 +208,32 @@ pub fn g1_compressed_with_base(scalar: Fr, base_point_bytes: &[u8]) -> anyhow::R
     pt.serialize_compressed(&mut bytes[..]).expect("G1 serialize failed");
     Ok(bytes)
 }
+
+/// Compute the compressed 96-byte BLS12-381 G2 point `scalar * base_point`.
+pub fn g2_compressed_with_base(scalar: Fr, base_point_bytes: &[u8]) -> anyhow::Result<[u8; 96]> {
+    use ark_serialize::CanonicalDeserialize;
+    let base = ark_bls12_381::G2Affine::deserialize_compressed(base_point_bytes)
+        .map_err(|e| anyhow::anyhow!("base_point G2 deserialize: {}", e))?;
+    let pt: ark_bls12_381::G2Affine = (base * scalar).into_affine();
+    let mut bytes = [0u8; 96];
+    pt.serialize_compressed(&mut bytes[..]).expect("G2 serialize failed");
+    Ok(bytes)
+}
+
+/// Group-aware variant: dispatches on scheme byte. Returns variable-length compressed bytes
+/// (48 for G1, 96 for G2).
+pub fn group_compressed_with_base(
+    scheme: u8,
+    scalar: Fr,
+    base_point_bytes: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    match scheme {
+        crate::session::SCHEME_BLS12381G1 => {
+            Ok(g1_compressed_with_base(scalar, base_point_bytes)?.to_vec())
+        }
+        crate::session::SCHEME_BLS12381G2 => {
+            Ok(g2_compressed_with_base(scalar, base_point_bytes)?.to_vec())
+        }
+        s => Err(anyhow::anyhow!("unsupported group scheme {}", s)),
+    }
+}

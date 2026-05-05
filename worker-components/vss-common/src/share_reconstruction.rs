@@ -257,8 +257,13 @@ fn decrypt_and_extract_fr(
         }
     };
 
-    // Format: [scheme=0x00][ULEB128(32)=0x20][32B Fr LE]
-    if plaintext.len() < 34 || plaintext[0] != 0x00 || plaintext[1] != 0x20 {
+    // Format: [group scheme][ULEB128(32)=0x20][32B Fr LE]. Scheme may be 0x00 (G1) or 0x01 (G2);
+    // Fr is the same prime field for both, so the y-bytes are interchangeable.
+    if plaintext.len() < 34
+        || (plaintext[0] != crate::session::SCHEME_BLS12381G1
+            && plaintext[0] != crate::session::SCHEME_BLS12381G2)
+        || plaintext[1] != 0x20
+    {
         return Err(anyhow!(
             "VSS {} invalid share format (len={}, prefix={:02x?})",
             context,

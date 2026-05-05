@@ -179,6 +179,7 @@ jobs:
           - test-dkr-protocol
           - test-dkr-protocol-g2
           - test-network-protocol
+          - test-network-protocol-shortsig
           - full-happy-path
           - test-access-failures
           - test-fault-tolerance

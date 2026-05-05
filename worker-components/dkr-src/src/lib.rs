@@ -230,7 +230,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
     // Reconstruct share immediately — previous_session is always DONE when dkr::new_session runs.
     println!("dkr-src: reconstructing share from previous session={}", session.previous_session);
-    let (dkg_share_bytes, _) = reconstruct_share(
+    let (dkg_share_bytes, _, _) = reconstruct_share(
         &rpc,
         &ace,
         &session.previous_session,

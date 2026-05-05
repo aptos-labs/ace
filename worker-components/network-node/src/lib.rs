@@ -255,7 +255,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     // Multiple epoch entries coexist during the ~30-second post-transition buffer window
     // so that clients who fetched the committee just before an epoch change can still be
     // served by nodes that have since rotated to the new epoch's shares.
-    let keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>> =
+    let keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     // Scheduled evictions: (deadline, keypair_id, epoch).  URH tasks push here on
@@ -488,16 +488,26 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
             tokio::spawn(async move {
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
-                    Ok((scalar_le32, keypair_id)) => {
+                    Ok((scalar_le32, keypair_id, group_scheme)) => {
+                        let tibe_scheme = match crate::crypto::tibe_scheme_for_group(group_scheme) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                wlog!(
+                                    "network-node: [urh] {}: unsupported group scheme {}: {:#}",
+                                    keypair_id, group_scheme, e
+                                );
+                                return;
+                            }
+                        };
                         shares
                             .write()
                             .await
                             .entry(keypair_id.clone())
                             .or_default()
-                            .insert(epoch, scalar_le32);
+                            .insert(epoch, (scalar_le32, tibe_scheme));
                         wlog!(
-                            "network-node: [urh] registered keypair_id={} epoch={}",
-                            keypair_id, epoch
+                            "network-node: [urh] registered keypair_id={} epoch={} tibe_scheme={}",
+                            keypair_id, epoch, tibe_scheme
                         );
                         let _ = rx.await;
                         // Defer removal by 30 s so clients who fetched the committee

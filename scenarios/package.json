@@ -12,6 +12,7 @@
     "test-dkr-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol.ts",
     "test-dkr-protocol-g2": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol-g2.ts",
     "test-network-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol.ts",
+    "test-network-protocol-shortsig": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol-shortsig.ts",
     "full-happy-path": "pnpm --filter @aptos-labs/ace-sdk build && tsx full-happy-path.ts",
     "test-access-failures": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures.ts",
     "test-fault-tolerance": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-fault-tolerance.ts",

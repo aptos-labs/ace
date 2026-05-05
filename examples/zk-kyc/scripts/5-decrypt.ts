@@ -67,7 +67,7 @@ async function main() {
     const ciphertext = Uint8Array.from(Buffer.from(session.ciphertext, 'hex'));
     const label      = Uint8Array.from(Buffer.from(session.label, 'hex'));
 
-    const callerKeypair = ACE.pke.keygen();
+    const callerKeypair = await ACE.pke.keygen();
     const encPk = new Uint8Array(callerKeypair.encryptionKey.toBytes());
     const encSk = new Uint8Array(callerKeypair.decryptionKey.toBytes());
 

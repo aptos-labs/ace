@@ -110,7 +110,7 @@ describe("custom-acl", () => {
         console.log(`✓ Code registered (label="${label.toString()}")`);
 
         // ── Generate caller PKE keypair ───────────────────────────────────────
-        const callerKeypair = ACE.pke.keygen();
+        const callerKeypair = await ACE.pke.keygen();
         const encPk = callerKeypair.encryptionKey.toBytes();
         const encSk = callerKeypair.decryptionKey.toBytes();
 

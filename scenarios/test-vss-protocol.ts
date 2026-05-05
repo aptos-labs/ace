@@ -16,7 +16,7 @@ async function main() {
         // 1 admin account and 4 worker accounts.
         const numWorkers = 4;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: numWorkers }, () => ace.pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -93,15 +93,20 @@ async function main() {
             
 
             log('Secret reconstruction should work and match on-chain public key.');
-            const shares = session!.dealerContribution0!.privateShareMessages.slice(0, session!.threshold).map((ciphertext: ace.pke.Ciphertext, i: number) => {
-                let msgBytes = ace.pke.decrypt({
-                    decryptionKey: encKeypairs[i].decryptionKey,
-                    ciphertext,
-                }).unwrapOrThrow('Failed to decrypt share.');
-                
-                const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes).unwrapOrThrow('Failed to parse private share message.');
-                return msg.share;
-            });
+            const shares = await Promise.all(
+                session!.dealerContribution0!.privateShareMessages
+                    .slice(0, session!.threshold)
+                    .map(async (ciphertext: ace.pke.Ciphertext, i: number) => {
+                        const msgBytes = (await ace.pke.decrypt({
+                            decryptionKey: encKeypairs[i].decryptionKey,
+                            ciphertext,
+                        })).unwrapOrThrow('Failed to decrypt share.');
+
+                        const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
+                            .unwrapOrThrow('Failed to parse private share message.');
+                        return msg.share;
+                    })
+            );
 
             const reconstructedSecret = ace.vss.reconstruct({ indexedShares: shares.map((share, i) => ({ index: i + 1, share })) }).unwrapOrThrow('Failed to reconstruct secret.');
 

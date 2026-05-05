@@ -654,7 +654,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
                 try {
-                    const encReqHex = pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes}).toHex();
+                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
                     const ctrl = new AbortController();
                     const tid = setTimeout(() => ctrl.abort(), 8000);
                     const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal: ctrl.signal});
@@ -670,7 +670,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
                         return null;
                     }
-                    const shareBytes = pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt}).okValue ?? null;
+                    const shareBytes = (await pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt})).okValue ?? null;
                     if (shareBytes === null) {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response decryption failed`);
                         return null;
@@ -758,7 +758,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
                 try {
-                    const encReqHex = pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes}).toHex();
+                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
                     const ctrl = new AbortController();
                     const tid = setTimeout(() => ctrl.abort(), 8000);
                     const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal: ctrl.signal});
@@ -774,7 +774,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
                         return null;
                     }
-                    const shareBytes = pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt}).okValue ?? null;
+                    const shareBytes = (await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt})).okValue ?? null;
                     if (shareBytes === null) {
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`);
                         return null;

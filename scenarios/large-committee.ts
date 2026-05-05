@@ -29,7 +29,7 @@ async function main() {
 
     try {
         const accounts = Array.from({ length: NUM_WORKERS + 1 }, () => Account.generate());
-        const encKeypairs = Array.from({ length: NUM_WORKERS }, () => ace.pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => ace.pke.keygen()));
         for (const account of accounts) await fundAccount(account.accountAddress);
 
         const adminAccount = accounts[NUM_WORKERS];

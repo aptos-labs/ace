@@ -213,7 +213,7 @@ describe("access-control", () => {
      * - Only release key shares if verification passes
      */
     async function bobOpenGreenBoxV0(): Promise<Result<Uint8Array>> {
-      const session = ACE.SolanaBasicFlow.DecryptionSession.create({
+      const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
@@ -240,7 +240,7 @@ describe("access-control", () => {
     }
 
     async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
-      const session = ACE.SolanaBasicFlow.DecryptionSession.create({
+      const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,

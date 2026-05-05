@@ -139,7 +139,7 @@ async function main() {
 
         // ── Step 4: Register all workers on-chain ────────────────────────────
         step(4, 'Register all worker PKE keys and endpoints on-chain (before start_initial_epoch)');
-        const encKeypairs = Array.from({ length: TOTAL_WORKERS }, () => pke.keygen());
+        const encKeypairs = await Promise.all(Array.from({ length: TOTAL_WORKERS }, () => pke.keygen()));
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
             console.log(`  Registering worker ${i}: ${endpoint}`);
@@ -317,7 +317,7 @@ async function main() {
         // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
         step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
-            const pingSession = ACE.AptosBasicFlow.DecryptionSession.create({
+            const pingSession = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -440,7 +440,7 @@ async function main() {
         console.log('  Alice purchased pong-blob');
 
         {
-            const pongSession = ACE.AptosBasicFlow.DecryptionSession.create({
+            const pongSession = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair1Id,
                 chainId: CHAIN_ID,

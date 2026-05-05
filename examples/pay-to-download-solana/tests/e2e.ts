@@ -296,8 +296,23 @@ describe("access-control", () => {
       .rpc();
 
     await confirmTransaction(connection, purchaseTxn);
-    // Extra delay to ensure state is propagated to RPC
-    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Wait until the worker's view of the receipt PDA shows program ownership.
+    // `confirmTransaction` returns at "confirmed" commitment, but Solana account-state
+    // propagation to the simulator can lag behind the txn confirmation by several seconds
+    // on slow runners — workers see receipt.owner = system program (11111...111) and
+    // assert_access fails with InvalidAccountOwner. Poll until the program owns it,
+    // then a small grace delay for any remaining replicas.
+    const receiptPda = deriveAccessReceiptPda(aliceAptosAddrBytes, fileName, bob.publicKey, program.programId);
+    const expectedOwner = accessControlProgram.programId.toBase58();
+    const pollDeadlineMs = Date.now() + 30_000;
+    while (Date.now() < pollDeadlineMs) {
+      const info = await connection.getAccountInfo(receiptPda, 'confirmed');
+      if (info && info.owner.toBase58() === expectedOwner) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    // Small extra grace for the worker's RPC view (independent connection).
+    await new Promise(resolve => setTimeout(resolve, 500));
     console.log("✓ Purchase complete - Receipt PDA created");
 
     // ========================================================================

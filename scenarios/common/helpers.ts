@@ -319,7 +319,8 @@ export async function submitTxn(
             const ready = awaitEventType
                 ? (w: Record<string, unknown>) => eventsArray(w).some(e => String(e?.type ?? '') === awaitEventType)
                 : (w: Record<string, unknown>) => eventsArray(w).length > 0;
-            for (let i = 0; i < 10 && !ready(waited); i++) {
+            // Up to 30 s for CI runners where event indexing can lag well past 5 s.
+            for (let i = 0; i < 60 && !ready(waited); i++) {
                 await new Promise(r => setTimeout(r, 500));
                 waited = await aptos.getTransactionByHash({ transactionHash: hash }) as Record<string, unknown>;
             }

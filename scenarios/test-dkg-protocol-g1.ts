@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * DKG protocol e2e over BLS12-381 G2 (scheme = 1).
+ * DKG protocol e2e — legacy regression coverage for BLS12-381 G1 (scheme = 0).
  *
- * Mirror of test-dkg-protocol.ts. Same flow, but the on-chain `base_point` is the G2
- * generator instead of the G1 generator. Verifies that the group-parametric VSS/DKG
- * plumbing works end-to-end across Move + TS SDK + Rust workers.
+ * The default DKG scenario (test-dkg-protocol.ts) uses G2; this one keeps G1 covered
+ * since both group schemes are still supported.
  */
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
@@ -17,6 +16,7 @@ import { buildRustWorkspace, spawnDKGRun } from './common/dkg-clients';
 async function main() {
     const localnetProc = await startLocalnet();
     try {
+        // 1 admin account and 4 worker accounts.
         const numWorkers = 4;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
@@ -39,11 +39,11 @@ async function main() {
             })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
         }
 
-        // Build base_point bytes: G2 generator as [u8 scheme=0x01][uleb128(96)][96B].
-        const g2Inner = ace.group.bls12381G2.g2Generator();
-        const basePointBytes = ace.group.Element.fromBls12381G2(g2Inner).toBytes();
+        // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
+        const g1Inner = ace.group.bls12381G1.g1Generator();
+        const basePointBytes = ace.group.Element.fromBls12381G1(g1Inner).toBytes();
 
-        log('Start DKG session over BLS12-381 G2.');
+        log('Start DKG session.');
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::dkg::new_session_entry`,
@@ -82,22 +82,19 @@ async function main() {
                 await sleep(5_000);
             }
             if (!session?.isCompleted()) throw 'DKG session did not complete in time.';
-            if (!session.resultPk) throw 'DKG session completed but resultPk is missing.';
 
-            log('Confirm session is over G2 (scheme = 1).');
-            if (session.basePoint.scheme !== ace.vss.SCHEME_BLS12381G2) {
-                throw `expected base_point scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${session.basePoint.scheme}`;
-            }
-            if (session.resultPk.scheme !== ace.vss.SCHEME_BLS12381G2) {
-                throw `expected resultPk scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${session.resultPk.scheme}`;
-            }
-            log(`DKG complete (G2). resultPk: ${session.resultPk.toHex()}`);
+            if (!session.resultPk) throw 'DKG session completed but resultPk is missing.';
+            log(`DKG complete. resultPk: ${session.resultPk.toHex()}`);
 
             log('Fetch contributing VSS sessions and reconstruct combined secret.');
+
+            // Which VSS sessions contributed to the result.
             const contributingIndices = session.doneFlags
                 .map((done, i) => (done ? i : -1))
                 .filter(i => i >= 0);
 
+            // For each contributing VSS session, decrypt every worker's sub-share.
+            // subShares[vi][j] = SecretShare from dealer contributingIndices[vi] for worker j.
             const subShares: ace.vss.SecretShare[][] = [];
             for (const i of contributingIndices) {
                 const vssSession = (await getVssSession(adminAccount.accountAddress, session.vssSessions[i]))
@@ -115,25 +112,27 @@ async function main() {
                 subShares.push(sharesForVss);
             }
 
+            // Combine sub-shares per worker using SecretShare.add (Fr arithmetic).
             const combinedShares: ace.vss.SecretShare[] = workerAccounts.map((_, j) =>
                 subShares.slice(1).reduce((acc, sharesForVss) => acc.add(sharesForVss[j]), subShares[0][j])
             );
 
+            // Reconstruct the combined secret from the first `threshold` combined shares.
             const reconstructedSecret = ace.vss.reconstruct({
                 indexedShares: combinedShares.slice(0, session.threshold).map((share, j) => ({ index: j + 1, share })),
             }).unwrapOrThrow('Failed to reconstruct combined secret.');
-            if (reconstructedSecret.scheme !== ace.vss.SCHEME_BLS12381G2) {
-                throw `expected reconstructed scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${reconstructedSecret.scheme}`;
-            }
 
+            // Verify s * B == resultPk.
             const computedPk = session.basePoint.scale(reconstructedSecret);
-            if (!computedPk.equals(session.resultPk)) throw 'Reconstructed secret does not match DKG result PK (G2).';
-            log(`DKG correctness verified (G2). resultPk: ${session.resultPk.toHex()}`);
+            if (!computedPk.equals(session.resultPk)) throw 'Reconstructed secret does not match DKG result PK.';
+            log(`DKG correctness verified. resultPk: ${session.resultPk.toHex()}`);
         } finally {
             for (const proc of dkgProcs) {
                 proc.kill();
+                //TODO: save logs to file and print the path.
             }
         }
+
     } finally {
         localnetProc.kill();
     }

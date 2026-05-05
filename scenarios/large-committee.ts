@@ -70,7 +70,7 @@ async function main() {
         log('Admin: propose new_secret(scheme=0); threshold approvers sign.');
         {
             const approvers = workerAccounts.slice(0, THRESHOLD);
-            await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(0));
+            await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));
         }
 
         log('Poll until DKG epoch change completes (deadline: 5 min).');

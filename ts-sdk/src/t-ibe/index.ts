@@ -5,8 +5,10 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { group } from "..";
 import { Result } from "../result";
 import * as BfibeBls12381ShortPkOtpHmac from "./bfibe-bls12381-shortpk-otp-hmac";
+import * as BfibeBls12381ShortSigAead from "./bfibe-bls12381-shortsig-aead";
 
 export const SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 0;
+export const SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD = 1;
 
 export class MasterPublicKey {
     scheme: number;
@@ -28,9 +30,60 @@ export class MasterPublicKey {
         });
     }
 
+    /** Build a shortsig-aead `MasterPublicKey` from on-chain G2 elements. */
+    static newBonehFranklinBls12381ShortSigAead(basePoint: group.Element, pk: group.Element): Result<MasterPublicKey> {
+        return Result.capture({
+            task: (_extra: Record<string, any>) => {
+                const basePointInner = (basePoint.inner as group.bls12381G2.PublicPoint).pt;
+                const pkInner = (pk.inner as group.bls12381G2.PublicPoint).pt;
+                const inner = new BfibeBls12381ShortSigAead.MasterPublicKey(basePointInner, pkInner);
+                return new MasterPublicKey(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, inner);
+            },
+            recordsExecutionTimeMs: false,
+        });
+    }
+
     /** @internal */
-    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.MasterPublicKey): MasterPublicKey {
+    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.MasterPublicKey | BfibeBls12381ShortSigAead.MasterPublicKey): MasterPublicKey {
         return new MasterPublicKey(scheme, inner);
+    }
+
+    /**
+     * Build a `MasterPublicKey` for the requested t-IBE `scheme` from on-chain DKG group
+     * elements, validating that the elements live in the group expected by `scheme`.
+     *
+     * Returns Err with an explicit "incompatible" message if `basePoint` / `resultPk` were
+     * produced by a DKG over a different group than `scheme` requires (e.g. asking for
+     * shortsig-aead but the keypair's DKG is over G1).
+     *
+     *   shortpk-otp-hmac (= 0) requires basePoint + resultPk in BLS12-381 G1.
+     *   shortsig-aead    (= 1) requires basePoint + resultPk in BLS12-381 G2.
+     */
+    static fromGroupElements(
+        scheme: number,
+        basePoint: group.Element,
+        resultPk: group.Element,
+    ): Result<MasterPublicKey> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: (_extra: Record<string, any>) => {
+                if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+                    if (basePoint.scheme !== group.SCHEME_BLS12381G1 || resultPk.scheme !== group.SCHEME_BLS12381G1) {
+                        throw `tibe.MasterPublicKey.fromGroupElements: scheme=shortpk-otp-hmac requires G1 basepoint and resultPk, got basePoint.scheme=${basePoint.scheme}, resultPk.scheme=${resultPk.scheme}`;
+                    }
+                    return MasterPublicKey.newBonehFranklinBls12381ShortPkOtpHmac(basePoint, resultPk)
+                        .unwrapOrThrow('newBonehFranklinBls12381ShortPkOtpHmac');
+                }
+                if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                    if (basePoint.scheme !== group.SCHEME_BLS12381G2 || resultPk.scheme !== group.SCHEME_BLS12381G2) {
+                        throw `tibe.MasterPublicKey.fromGroupElements: scheme=shortsig-aead requires G2 basepoint and resultPk, got basePoint.scheme=${basePoint.scheme}, resultPk.scheme=${resultPk.scheme}`;
+                    }
+                    return MasterPublicKey.newBonehFranklinBls12381ShortSigAead(basePoint, resultPk)
+                        .unwrapOrThrow('newBonehFranklinBls12381ShortSigAead');
+                }
+                throw `tibe.MasterPublicKey.fromGroupElements: unknown scheme ${scheme}`;
+            },
+        });
     }
 
     static deserialize(deserializer: Deserializer): Result<MasterPublicKey> {
@@ -38,6 +91,10 @@ export class MasterPublicKey {
             const scheme = deserializer.deserializeU8();
             if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
                 const inner = BfibeBls12381ShortPkOtpHmac.MasterPublicKey.deserialize(deserializer).unwrapOrThrow('MasterPublicKey inner deserialization failed');
+                return new MasterPublicKey(scheme, inner);
+            }
+            if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                const inner = BfibeBls12381ShortSigAead.MasterPublicKey.deserialize(deserializer).unwrapOrThrow('MasterPublicKey inner deserialization failed');
                 return new MasterPublicKey(scheme, inner);
             }
             throw `MasterPublicKey deserialization failed with unknown scheme: ${scheme}`;
@@ -63,7 +120,13 @@ export class MasterPublicKey {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        (this.inner as BfibeBls12381ShortPkOtpHmac.MasterPublicKey).serialize(serializer);
+        if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            (this.inner as BfibeBls12381ShortPkOtpHmac.MasterPublicKey).serialize(serializer);
+        } else if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            (this.inner as BfibeBls12381ShortSigAead.MasterPublicKey).serialize(serializer);
+        } else {
+            throw `MasterPublicKey.serialize: unknown scheme ${this.scheme}`;
+        }
     }
 
     toBytes(): Uint8Array {
@@ -86,7 +149,7 @@ export class MasterPrivateKey {
     }
 
     /** @internal */
-    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.MasterPrivateKey): MasterPrivateKey {
+    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.MasterPrivateKey | BfibeBls12381ShortSigAead.MasterPrivateKey): MasterPrivateKey {
         return new MasterPrivateKey(scheme, inner);
     }
 
@@ -95,6 +158,10 @@ export class MasterPrivateKey {
             const scheme = deserializer.deserializeU8();
             if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
                 const inner = BfibeBls12381ShortPkOtpHmac.MasterPrivateKey.deserialize(deserializer).unwrapOrThrow('MasterPrivateKey inner deserialization failed');
+                return new MasterPrivateKey(scheme, inner);
+            }
+            if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                const inner = BfibeBls12381ShortSigAead.MasterPrivateKey.deserialize(deserializer).unwrapOrThrow('MasterPrivateKey inner deserialization failed');
                 return new MasterPrivateKey(scheme, inner);
             }
             throw `MasterPrivateKey deserialization failed with unknown scheme: ${scheme}`;
@@ -120,7 +187,13 @@ export class MasterPrivateKey {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        (this.inner as BfibeBls12381ShortPkOtpHmac.MasterPrivateKey).serialize(serializer);
+        if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            (this.inner as BfibeBls12381ShortPkOtpHmac.MasterPrivateKey).serialize(serializer);
+        } else if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            (this.inner as BfibeBls12381ShortSigAead.MasterPrivateKey).serialize(serializer);
+        } else {
+            throw `MasterPrivateKey.serialize: unknown scheme ${this.scheme}`;
+        }
     }
 
     toBytes(): Uint8Array {
@@ -143,7 +216,7 @@ export class Ciphertext {
     }
 
     /** @internal */
-    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.Ciphertext): Ciphertext {
+    static _create(scheme: number, inner: BfibeBls12381ShortPkOtpHmac.Ciphertext | BfibeBls12381ShortSigAead.Ciphertext): Ciphertext {
         return new Ciphertext(scheme, inner);
     }
 
@@ -152,6 +225,10 @@ export class Ciphertext {
             const scheme = deserializer.deserializeU8();
             if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
                 const inner = BfibeBls12381ShortPkOtpHmac.Ciphertext.deserialize(deserializer).unwrapOrThrow('Ciphertext inner deserialization failed');
+                return new Ciphertext(scheme, inner);
+            }
+            if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                const inner = BfibeBls12381ShortSigAead.Ciphertext.deserialize(deserializer).unwrapOrThrow('Ciphertext inner deserialization failed');
                 return new Ciphertext(scheme, inner);
             }
             throw `Ciphertext deserialization failed with unknown scheme: ${scheme}`;
@@ -177,7 +254,13 @@ export class Ciphertext {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        (this.inner as BfibeBls12381ShortPkOtpHmac.Ciphertext).serialize(serializer);
+        if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            (this.inner as BfibeBls12381ShortPkOtpHmac.Ciphertext).serialize(serializer);
+        } else if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            (this.inner as BfibeBls12381ShortSigAead.Ciphertext).serialize(serializer);
+        } else {
+            throw `Ciphertext.serialize: unknown scheme ${this.scheme}`;
+        }
     }
 
     toBytes(): Uint8Array {
@@ -209,11 +292,26 @@ export class IdentityDecryptionKeyShare {
         });
     }
 
+    /** Build a shortsig-aead IDK share. `idkShare` is in G1 (48 bytes compressed). */
+    static newBonehFranklinBls12381ShortSigAead(evalPoint: bigint, idkShare: WeierstrassPoint<bigint>, proof?: Uint8Array): Result<IdentityDecryptionKeyShare> {
+        return Result.capture({
+            task: (_extra: Record<string, any>) => {
+                const inner = new BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare(evalPoint, idkShare, proof);
+                return new IdentityDecryptionKeyShare(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, inner);
+            },
+            recordsExecutionTimeMs: false,
+        });
+    }
+
     static deserialize(deserializer: Deserializer): Result<IdentityDecryptionKeyShare> {
         const task = (_extra: Record<string, any>) => {
             const scheme = deserializer.deserializeU8();
             if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
                 const inner = BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare.deserialize(deserializer).unwrapOrThrow('IdentityDecryptionKeyShare inner deserialization failed');
+                return new IdentityDecryptionKeyShare(scheme, inner);
+            }
+            if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                const inner = BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare.deserialize(deserializer).unwrapOrThrow('IdentityDecryptionKeyShare inner deserialization failed');
                 return new IdentityDecryptionKeyShare(scheme, inner);
             }
             throw `IdentityDecryptionKeyShare deserialization failed with unknown scheme: ${scheme}`;
@@ -239,7 +337,13 @@ export class IdentityDecryptionKeyShare {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        (this.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare).serialize(serializer);
+        if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            (this.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare).serialize(serializer);
+        } else if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            (this.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare).serialize(serializer);
+        } else {
+            throw `IdentityDecryptionKeyShare.serialize: unknown scheme ${this.scheme}`;
+        }
     }
 
     toBytes(): Uint8Array {
@@ -260,7 +364,11 @@ export function keygenForTesting(scheme?: number): Result<MasterPrivateKey> {
             const msk = BfibeBls12381ShortPkOtpHmac.keygenForTesting();
             return MasterPrivateKey._create(scheme, msk);
         }
-        throw 'keygenForTesting failed with unknown scheme';
+        if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const msk = BfibeBls12381ShortSigAead.keygenForTesting();
+            return MasterPrivateKey._create(scheme, msk);
+        }
+        throw `keygenForTesting failed with unknown scheme ${scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
@@ -271,7 +379,11 @@ export function derivePublicKey(msk: MasterPrivateKey): Result<MasterPublicKey> 
             const mpk = BfibeBls12381ShortPkOtpHmac.derivePublicKey(msk.inner as BfibeBls12381ShortPkOtpHmac.MasterPrivateKey);
             return MasterPublicKey._create(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, mpk);
         }
-        throw 'derivePublicKey failed with unknown scheme';
+        if (msk.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const mpk = BfibeBls12381ShortSigAead.derivePublicKey(msk.inner as BfibeBls12381ShortSigAead.MasterPrivateKey);
+            return MasterPublicKey._create(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, mpk);
+        }
+        throw `derivePublicKey failed with unknown scheme ${msk.scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
@@ -286,7 +398,15 @@ export function encrypt({mpk, id, plaintext}: {mpk: MasterPublicKey, id: Uint8Ar
             }).unwrapOrThrow('encrypt failed');
             return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, innerCiph);
         }
-        throw 'unknown scheme';
+        if (mpk.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const innerCiph = BfibeBls12381ShortSigAead.encrypt({
+                mpk: mpk.inner as BfibeBls12381ShortSigAead.MasterPublicKey,
+                id,
+                plaintext,
+            }).unwrapOrThrow('encrypt failed');
+            return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, innerCiph);
+        }
+        throw `encrypt: unknown scheme ${mpk.scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
@@ -303,7 +423,16 @@ export function encryptWithRandomness({mpk, id, plaintext, randomness}: {mpk: Ma
             );
             return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, innerCiph);
         }
-        throw 'unknown scheme';
+        if (mpk.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const innerCiph = BfibeBls12381ShortSigAead.encryptWithRandomness(
+                mpk.inner as BfibeBls12381ShortSigAead.MasterPublicKey,
+                id,
+                plaintext,
+                randomness,
+            );
+            return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, innerCiph);
+        }
+        throw `encryptWithRandomness: unknown scheme ${mpk.scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
@@ -321,17 +450,27 @@ export function verifyShare({basePoint, sharePk, id, share}: {
     share: IdentityDecryptionKeyShare,
 }): Result<boolean> {
     const task = (_extra: Record<string, any>) => {
-        if (share.scheme !== SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
-            throw `verifyShare: unknown share scheme ${share.scheme}`;
+        if (share.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            const basePointInner = (basePoint.inner as group.bls12381G1.PublicPoint).pt;
+            const sharePkInner = (sharePk.inner as group.bls12381G1.PublicPoint).pt;
+            return BfibeBls12381ShortPkOtpHmac.verifyShare({
+                basePoint: basePointInner,
+                sharePk: sharePkInner,
+                id,
+                share: share.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare,
+            });
         }
-        const basePointInner = (basePoint.inner as group.bls12381G1.PublicPoint).pt;
-        const sharePkInner = (sharePk.inner as group.bls12381G1.PublicPoint).pt;
-        return BfibeBls12381ShortPkOtpHmac.verifyShare({
-            basePoint: basePointInner,
-            sharePk: sharePkInner,
-            id,
-            share: share.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare,
-        });
+        if (share.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const basePointInner = (basePoint.inner as group.bls12381G2.PublicPoint).pt;
+            const sharePkInner = (sharePk.inner as group.bls12381G2.PublicPoint).pt;
+            return BfibeBls12381ShortSigAead.verifyShare({
+                basePoint: basePointInner,
+                sharePk: sharePkInner,
+                id,
+                share: share.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare,
+            });
+        }
+        throw `verifyShare: unknown share scheme ${share.scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
@@ -340,13 +479,19 @@ export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionK
     const task = (_extra: Record<string, any>) => {
         const scheme = ciphertext.scheme;
         for (const idkShare of idkShares) if (idkShare.scheme !== scheme) throw 'scheme mismatch';
-        if (ciphertext.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+        if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
             return BfibeBls12381ShortPkOtpHmac.decrypt({
                 idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare),
                 ciphertext: ciphertext.inner as BfibeBls12381ShortPkOtpHmac.Ciphertext,
             }).unwrapOrThrow('decrypt failed');
         }
-        throw 'unknown scheme';
+        if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            return BfibeBls12381ShortSigAead.decrypt({
+                idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare),
+                ciphertext: ciphertext.inner as BfibeBls12381ShortSigAead.Ciphertext,
+            }).unwrapOrThrow('decrypt failed');
+        }
+        throw `decrypt: unknown scheme ${scheme}`;
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }

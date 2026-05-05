@@ -18,9 +18,11 @@ use crate::{
 
 /// Reconstruct this node's Shamir scalar share from a completed DKG or DKR session.
 ///
-/// Returns `(scalar_le32, keypair_id)` where:
+/// Returns `(scalar_le32, keypair_id, group_scheme)` where:
 /// - `scalar_le32`: 32-byte LE Fr scalar = this node's Shamir share of the secret
 /// - `keypair_id`: original DKG session address (= `keypairId` used by SDK clients)
+/// - `group_scheme`: byte from the underlying VSS session's `base_point` — 0 = BLS12-381 G1,
+///   1 = BLS12-381 G2. Determines which t-IBE variant the worker should serve from this share.
 ///
 /// **DKG session**: `scalar = Σ_{k: done_flags[k]} decrypt(vss[k].share_messages[my_idx])`
 /// **DKR session**: `scalar = Σ_{j ∈ H} L_{j+1}^H(0) · decrypt(vss[j].share_messages[my_idx])`
@@ -30,7 +32,7 @@ pub async fn reconstruct_share(
     session_addr: &str,
     my_addr: &str,
     pke_dk_bytes: &[u8],
-) -> Result<([u8; 32], String)> {
+) -> Result<([u8; 32], String, u8)> {
     let session_addr = normalize_account_addr(session_addr);
     let my_addr = normalize_account_addr(my_addr);
 
@@ -57,7 +59,7 @@ async fn reconstruct_from_dkg(
     dkg_data: &serde_json::Value,
     my_addr: &str,
     pke_dk_bytes: &[u8],
-) -> Result<([u8; 32], String)> {
+) -> Result<([u8; 32], String, u8)> {
     let my_addr_bytes = addr_to_bytes(my_addr)?;
 
     let vss_sessions: Vec<String> = parse_addr_array(&dkg_data["vss_sessions"])?;
@@ -72,6 +74,7 @@ async fn reconstruct_from_dkg(
     }
 
     let mut my_idx: Option<usize> = None;
+    let mut group_scheme: Option<u8> = None;
     let mut share_fr = Fr::from(0u64);
 
     for (k, vss_addr) in vss_sessions.iter().enumerate() {
@@ -84,7 +87,7 @@ async fn reconstruct_from_dkg(
             .await
             .map_err(|e| anyhow!("decode DKG VSS {}: {}", vss_addr, e))?;
 
-        // Derive my_idx on the first done session.
+        // Derive my_idx + group_scheme on the first done session.
         if my_idx.is_none() {
             my_idx = bcs_session.share_holders.iter().position(|h| h == &my_addr_bytes);
             if my_idx.is_none() {
@@ -94,6 +97,7 @@ async fn reconstruct_from_dkg(
                     vss_addr
                 ));
             }
+            group_scheme = Some(bcs_session.base_point.scheme());
         }
         let idx = my_idx.unwrap();
 
@@ -109,11 +113,10 @@ async fn reconstruct_from_dkg(
         share_fr += decrypt_and_extract_fr(ct, pke_dk_bytes, vss_addr)?;
     }
 
-    if my_idx.is_none() {
-        return Err(anyhow!("no done VSS sessions in DKG {}", session_addr));
-    }
+    let group_scheme = group_scheme
+        .ok_or_else(|| anyhow!("no done VSS sessions in DKG {}", session_addr))?;
 
-    Ok((fr_to_le_bytes(share_fr), session_addr.to_string()))
+    Ok((fr_to_le_bytes(share_fr), session_addr.to_string(), group_scheme))
 }
 
 /// DKR case: `keypair_id = original_session`, share = Lagrange combination at x=0 using old eval points.
@@ -125,7 +128,7 @@ async fn reconstruct_from_dkr(
     dkr_data: &serde_json::Value,
     my_addr: &str,
     pke_dk_bytes: &[u8],
-) -> Result<([u8; 32], String)> {
+) -> Result<([u8; 32], String, u8)> {
     let original_session = normalize_account_addr(
         dkr_data["original_session"]
             .as_str()
@@ -165,12 +168,17 @@ async fn reconstruct_from_dkr(
 
     // Decrypt sub-share z_{j, my_idx} for each j ∈ H.
     let mut sub_shares: Vec<Fr> = Vec::with_capacity(contributing.len());
+    let mut group_scheme: Option<u8> = None;
     for &j in &contributing {
         let vss_addr = &vss_sessions[j];
         let bcs_session = rpc
             .get_session_bcs_decoded(ace, vss_addr)
             .await
             .map_err(|e| anyhow!("decode DKR VSS {}: {}", vss_addr, e))?;
+
+        if group_scheme.is_none() {
+            group_scheme = Some(bcs_session.base_point.scheme());
+        }
 
         let dc0 = bcs_session
             .dealer_contribution_0
@@ -183,6 +191,8 @@ async fn reconstruct_from_dkr(
 
         sub_shares.push(decrypt_and_extract_fr(ct, pke_dk_bytes, vss_addr)?);
     }
+    let group_scheme = group_scheme
+        .ok_or_else(|| anyhow!("no contributing VSS sessions yielded a group scheme"))?;
 
     // Lagrange-combine at x=0 using old eval points {j+1 : j ∈ H}.
     //   combined_share = Σ_{i} L_{x_i}^H(0) · z_{j_i, my_idx}
@@ -203,7 +213,7 @@ async fn reconstruct_from_dkr(
         })
         .fold(Fr::from(0u64), |acc, term| acc + term);
 
-    Ok((fr_to_le_bytes(combined_share), original_session))
+    Ok((fr_to_le_bytes(combined_share), original_session, group_scheme))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

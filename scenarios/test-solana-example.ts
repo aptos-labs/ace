@@ -125,7 +125,7 @@ async function main() {
             newSecretApprovers[0]!,
             newSecretApprovers,
             aceContract,
-            serializeNewSecretProposal(0),
+            serializeNewSecretProposal(1),
         );
 
         log('Waiting for DKG epoch change to complete...');

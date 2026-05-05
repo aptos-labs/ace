@@ -205,7 +205,7 @@ async function main() {
             committeeAApprovers[0]!,
             committeeAApprovers,
             adminAddr,
-            serializeNewSecretProposal(0),
+            serializeNewSecretProposal(1),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done (epoch advances to 1)', async () => {
@@ -346,7 +346,7 @@ async function main() {
             committeeBApprovers[0]!,
             committeeBApprovers,
             adminAddr,
-            serializeNewSecretProposal(0),
+            serializeNewSecretProposal(1),
         );
         await waitFor('keypair-1 DKG done (epoch advances to 4)', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);

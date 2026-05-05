@@ -182,7 +182,7 @@ async function main() {
             onlineEpoch0Workers[0]!,
             onlineEpoch0Workers,
             adminAddr,
-            serializeNewSecretProposal(0),
+            serializeNewSecretProposal(1),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done', async () => {

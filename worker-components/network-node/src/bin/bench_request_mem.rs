@@ -95,7 +95,12 @@ async fn simulate_request(client: &reqwest::Client, url: &str) {
 
     // BLS partial extraction runs after verification returns.
     let scalar = [42u8; 32];
-    let _ = network_node::crypto::partial_extract_idk_share(&_fdd_bytes, &scalar, 1);
+    let _ = network_node::crypto::partial_extract_idk_share(
+        network_node::crypto::SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+        &_fdd_bytes,
+        &scalar,
+        1,
+    );
 }
 
 // ── Measurement ───────────────────────────────────────────────────────────────

@@ -22,14 +22,10 @@ use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
 use crate::{wlog, ChainRpcConfig};
 
-/// Serialized size of a `pke::EncryptionKey` for scheme 0 (ElGamal-OTP-Ristretto255):
-/// [0x00 scheme][0x20 ULEB128(32)][32B enc_base][0x20 ULEB128(32)][32B public_point] = 67 bytes.
-const ENC_KEY_SIZE: usize = 67;
-
 /// Shared state for the HTTP handler.
 #[derive(Clone)]
 pub struct AppState {
-    pub keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
+    pub keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>>,
     pub cur_nodes: Arc<RwLock<Vec<String>>>,
     pub my_addr: String,
     /// Per-chain RPC config, used for on-chain proof verification.
@@ -43,7 +39,7 @@ pub struct AppState {
 /// Spawn the axum server on `port`.  Runs until the process exits.
 pub async fn run(
     port: u16,
-    keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, [u8; 32]>>>>,
+    keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>>,
     cur_nodes: Arc<RwLock<Vec<String>>>,
     my_addr: String,
     chain_rpc: Arc<ChainRpcConfig>,
@@ -119,17 +115,14 @@ async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, Statu
     fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
 
     let ek_start = 40 + fdd.byte_len;
-    if req.len() < ek_start + ENC_KEY_SIZE {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let ephemeral_ek = EncryptionKey::from_bytes(&req[ek_start..ek_start + ENC_KEY_SIZE])
+    let (ephemeral_ek, ek_size) = EncryptionKey::parse_prefix(&req[ek_start..])
         .map_err(|e| {
             wlog!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
-    let proof_bytes = &req[ek_start + ENC_KEY_SIZE..];
+    let proof_bytes = &req[ek_start + ek_size..];
 
-    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ek_size], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             wlog!("http-server: basic flow: proof verification failed: {:#}", e);
@@ -158,17 +151,14 @@ async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, Stat
     fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
 
     let enc_pk_start = 40 + fdd.byte_len;
-    if req.len() < enc_pk_start + ENC_KEY_SIZE {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let caller_enc_key = EncryptionKey::from_bytes(&req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE])
+    let (caller_enc_key, ek_size) = EncryptionKey::parse_prefix(&req[enc_pk_start..])
         .map_err(|e| {
             wlog!("http-server: custom flow: enc key parse failed: {:#}", e);
             StatusCode::BAD_REQUEST
         })?;
-    let proof_bytes = &req[enc_pk_start + ENC_KEY_SIZE..];
+    let proof_bytes = &req[enc_pk_start + ek_size..];
 
-    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ENC_KEY_SIZE], proof_bytes, &state.chain_rpc)
+    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ek_size], proof_bytes, &state.chain_rpc)
         .await
         .map_err(|e| {
             wlog!("http-server: custom flow: proof verification failed: {:#}", e);
@@ -186,7 +176,7 @@ async fn extract_and_respond(
     fdd_bytes: &[u8],
     response_enc_key: &EncryptionKey,
 ) -> Result<String, StatusCode> {
-    let scalar_le32 = {
+    let (scalar_le32, tibe_scheme) = {
         let shares = state.keypair_shares.read().await;
         shares.get(keypair_id).and_then(|by_epoch| by_epoch.get(&epoch)).copied()
     }
@@ -201,8 +191,10 @@ async fn extract_and_respond(
     }
     .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let share_hex = crate::crypto::partial_extract_idk_share(fdd_bytes, &scalar_le32, eval_point)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let share_hex = crate::crypto::partial_extract_idk_share(
+        tibe_scheme, fdd_bytes, &scalar_le32, eval_point,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let share_bytes = hex::decode(&share_hex).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let resp_ct = vss_common::crypto::pke_encrypt(response_enc_key, &share_bytes);
     Ok(hex::encode(resp_ct.to_bytes()))

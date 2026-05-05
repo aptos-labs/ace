@@ -1,6 +1,14 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * VSS protocol e2e — default group: BLS12-381 G2 (scheme = 1).
+ *
+ * Exercises the full VSS protocol with a G2 base point, which is the project default
+ * (paired with the bfibe-bls12381-shortsig-aead t-IBE variant). For G1 regression
+ * coverage see test-vss-protocol-g1.ts.
+ */
+
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
 import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getVssSession } from './common/helpers';
@@ -13,7 +21,6 @@ import {
 async function main() {
     const localnetProc = await startLocalnet();
     try {
-        // 1 admin account and 4 worker accounts.
         const numWorkers = 4;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
@@ -37,12 +44,12 @@ async function main() {
             });
             maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
         }
-        
-        // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
-        const g1Inner = ace.group.bls12381G1.g1Generator();
-        const basePointBytes = ace.group.Element.fromBls12381G1(g1Inner).toBytes();
 
-        log('Start VSS session.');
+        // Build base_point bytes: G2 generator as [u8 scheme=0x01][uleb128(96)][96B].
+        const g2Inner = ace.group.bls12381G2.g2Generator();
+        const basePointBytes = ace.group.Element.fromBls12381G2(g2Inner).toBytes();
+
+        log('Start VSS session over BLS12-381 G2.');
         const maybeCommittedTxn = await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAccount.accountAddress}::vss::new_session_entry`,
@@ -51,8 +58,8 @@ async function main() {
                 dealerAccount.accountAddress,
                 recipientAccounts.map(w => w.accountAddress),
                 3, // threshold
-                basePointBytes,       // base_point: vector<u8>
-                new Uint8Array(0),    // secretly_scaled_element: empty = None (not a resharing)
+                basePointBytes,
+                new Uint8Array(0),
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
@@ -91,7 +98,11 @@ async function main() {
                 await sleep(1000);
             }
             if (!(session?.isCompleted())) throw 'VSS session did not complete in time.';
-            
+
+            log('Confirm session is over G2 (scheme = 1).');
+            if (session!.basePoint.scheme !== ace.vss.SCHEME_BLS12381G2) {
+                throw `expected base_point scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${session!.basePoint.scheme}`;
+            }
 
             log('Secret reconstruction should work and match on-chain public key.');
             const shares = await Promise.all(
@@ -105,28 +116,33 @@ async function main() {
 
                         const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
                             .unwrapOrThrow('Failed to parse private share message.');
+                        if (msg.share.scheme !== ace.vss.SCHEME_BLS12381G2) {
+                            throw `expected share scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${msg.share.scheme}`;
+                        }
                         return msg.share;
                     })
             );
 
-            const reconstructedSecret = ace.vss.reconstruct({ indexedShares: shares.map((share, i) => ({ index: i + 1, share })) }).unwrapOrThrow('Failed to reconstruct secret.');
+            const reconstructedSecret = ace.vss.reconstruct({
+                indexedShares: shares.map((share, i) => ({ index: i + 1, share })),
+            }).unwrapOrThrow('Failed to reconstruct secret.');
+            if (reconstructedSecret.scheme !== ace.vss.SCHEME_BLS12381G2) {
+                throw `expected reconstructed scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${reconstructedSecret.scheme}`;
+            }
 
-            log('Verify s*B == pcsCommitment.points[0].');
+            log('Verify s*B == pcsCommitment.points[0] (in G2).');
             const computedPk = session!.basePoint.scale(reconstructedSecret);
             const expectedPk = session!.dealerContribution0!.pcsCommitment.points[0];
-            if (!computedPk.equals(expectedPk)) throw 'Reconstructed secret does not match on-chain public key.';
-            console.log(`Reconstructed PK: ${computedPk.toHex()}`);
+            if (!computedPk.equals(expectedPk)) throw 'Reconstructed secret does not match on-chain public key (G2).';
+            console.log(`Reconstructed PK (G2): ${computedPk.toHex()}`);
         } finally {
             for (const proc of [dealerProc, ...recipientProcs]) {
                 proc.kill();
-                //TODO: save logs to file and print the path.
             }
         }
-
     } finally {
         localnetProc.kill();
     }
-
 }
 
 main();

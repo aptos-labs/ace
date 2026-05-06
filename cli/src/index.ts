@@ -12,6 +12,7 @@ import { editNodeCommand } from './commands/edit-node.js';
 import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from './commands/profile.js';
 import { logCommand } from './commands/log.js';
 import { deploymentListCommand, deploymentDeleteCommand, deploymentDefaultCommand } from './commands/deployment.js';
+import { updateContractsCommand } from './commands/update-contracts.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
@@ -56,6 +57,21 @@ deploymentCmd
             const key = alias ?? opts.account;
             if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
             deploymentDefaultCommand(key);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('update-contracts')
+    .description('Republish all 11 Move packages to the deployment (admin profile required)')
+    .option('-p, --profile <alias>', 'Deployment profile alias to use')
+    .option('-a, --account <addr>', 'Admin account address of the profile to use')
+    .option('--version <X.Y.Z>', 'Version override (default: read from repo-root NEXT_RELEASE)')
+    .option('-y, --yes', 'Skip the confirmation prompt')
+    .action(async (opts: { profile?: string; account?: string; version?: string; yes?: boolean }) => {
+        try {
+            await updateContractsCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

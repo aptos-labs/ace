@@ -22,7 +22,7 @@ For the higher-level protocol (DKG / DKR / decryption-request flow), see [`proto
 
 ## 2. Public-Key Encryption (`pke::*`)
 
-The PKE layer is used to encrypt **VSS share messages** (dealer → recipient) and **decryption-request bodies** (client ↔ worker). Two schemes are supported; the wire format is a discriminated enum and the wire-bytes scheme tag is the 1-byte ULEB128 of the variant index.
+The PKE layer is used to encrypt **VSS share messages** (dealer → recipient) and **decryption-request bodies** (client ↔ worker). Two schemes are supported, selected by a 1-byte scheme tag.
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
@@ -107,7 +107,7 @@ Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~
 
 ## 3. Threshold Identity-Based Encryption (`t-ibe::*`)
 
-t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, domain)`); decryption requires `t`-of-`n` workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret; the master public key is the on-chain DKG result_pk.
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair\_id, contract\_id, domain)`); decryption requires $t$-of-$n$ workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
@@ -284,26 +284,22 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 2. **Private authenticated channel = PKE.** The paper assumes private authenticated channels between dealer and each node. ACE realizes this by **PKE-encrypting each share to the recipient's registered `pke_enc_key`**, with the resulting ciphertext riding the public broadcast channel. Confidentiality reduces to PKE security (§2). The auth side is provided by the chain layer: the share ciphertext is bound to the dealer's account by virtue of the `on_dealer_contribution_0` signed transaction.
 3. **Byzantine broadcast channel = the L1 chain.** Total ordering, immutability, and authentication of the transcript come from the Aptos L1 (Aptos's BFT consensus replaces the abstract `BB` channel). Trust assumption shifts from "broadcast channel exists" to "Aptos validator quorum is honest". Documented in [`trust-model.md`](./trust-model.md) §5.
 4. **Signed `ACK` = on-chain transaction.** The paper has nodes send `⟨ACK, σ_i⟩` over the broadcast channel, where `σ_i = sign(sk_i, v)`. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* `σ_i`, and the chain naturally rejects `(t)` ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
-5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent is `DealerContribution1.shares_to_reveal: Vec<Option<BcsScalar>>` — `Some(y_j)` for each non-acker `j`, `None` for ackers. With Feldman the proof drops out (modification 1), so `s` and `π` collapse to a single `Option<BcsScalar>` vector. On-chain `vss::touch` runs the equivalent of `PC.BatchVerify` lazily (MSM per revealed share).
+5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent reveals only the scalar shares of non-ackers as a vector of optional scalars (one slot per holder; `None` if they acked, `Some(y_j)` otherwise). With Feldman the proof drops out (modification 1), so the second-round message carries scalars only — the verifier (an on-chain incremental computation) re-runs the Feldman MSM check on each revealed share.
 6. **Lazy `touch()` progression.** Move's per-transaction gas budget forces splitting the second-round verification across multiple `touch()` calls (one share-PK MSM per call). The paper's protocol is single-shot. This is a realization detail, not a security modification — `touch()` only ratchets state forward and is monotonic.
-7. **Resharing-dealer challenge.** ACE adds an *optional* `ResharingDealerChallenge { expected_scaled_element, another_base_element }` plus a sigma-DLog-Eq proof (§5) that pins the dealer's polynomial constant term `a_0` to a previously-known share `s_j` (the `s_j · basePoint_old` from the parent DKG/DKR). Used by DKR to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of sigma-DLog-Eq — see §5 below.
+7. **Resharing-dealer challenge.** ACE adds an *optional* challenge `(\text{expected\_scaled\_element}, \text{another\_base\_element})$` plus a Sigma-DLog-Eq proof (§5) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $\text{expected\_scaled\_element} = s_j \cdot B_{\text{old}}$ from the parent DKG/DKR). Used by Distributed Key Resharing (DKR — see §4.0.1) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq — see §5 below.
 8. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
 9. **Single threshold only.** ACE uses `secrecy threshold = reconstruction threshold = t`; the paper's dual-threshold variant (`ℓ ∈ [t, n-t]`) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
-10. **Synchrony bound.** The paper's `2Δ` round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides Δ-monotonicity; honest dealers and honest nodes are assumed to broadcast their messages within 5s of receiving the prior message. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
+10. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
 
-### 4.0.1 DKR resharing: origin and modifications
+### 4.0.1 Distributed Key Resharing (DKR): origin and modifications
 
-DKR (`contracts/dkr/sources/dkr.move`) is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret `s` from an old committee `(curr_nodes, t)` to a new committee `(new_nodes, t')` without `s` ever existing in cleartext.
+DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(\text{curr\_nodes}, t)$ to a new committee $(\text{new\_nodes}, t')$ without $s$ ever existing in cleartext. ACE's instance lives in `contracts/dkr/sources/dkr.move`.
 
-**Construction.** Each old node `j` runs a fresh degree-`(t'-1)` VSS as dealer with `g_j(0) := s_j` (their own old share, where `s_j = f(j+1)` is their share of the underlying polynomial `f`), recipients = `new_nodes`. The resharing-dealer challenge (§4.3) forces `g_j(0) = s_j`. Once `≥ t` such VSS reach `STATE__SUCCESS`, the contributing set `H` is frozen on-chain (by `dkr::touch`), and each new node `i ∈ new_nodes` derives its new share via Lagrange-at-zero over the contributing old indices:
+**Construction.** Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $\text{new\_nodes}$. The resharing-dealer challenge (§4.3) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq \text{curr\_nodes}$ is frozen on-chain, and each new node $i \in \text{new\_nodes}$ derives its new share via Lagrange-at-zero over the contributing old indices:
 
-```
-S_i := Σ_{j ∈ H} λ_j · z_{j, i}
-     where z_{j, i} = g_j(i+1)
-           λ_j     = Lagrange basis coefficient for {(j+1)}_{j ∈ H} evaluated at 0
-```
+$$S_i := \sum_{j \in H} \lambda_j \cdot z_{j,i}, \qquad z_{j,i} = g_j(i+1), \qquad \lambda_j = \prod_{k \in H, k \neq j} \frac{0 - (k+1)}{(j+1) - (k+1)} \pmod r$$
 
-The combined polynomial `F(x) := Σ_{j ∈ H} λ_j · g_j(x)` has degree `t'-1` and satisfies `F(0) = Σ λ_j · s_j = f(0) = s` (since `λ_j` Lagrange-interpolate `f` at 0 over `H`).
+The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degree $t'-1$ and satisfies $F(0) = \sum_j \lambda_j s_j = f(0) = s$ (since the $\lambda_j$ Lagrange-interpolate $f$ at $0$ over $H$).
 
 **References.**
 - *Sourav Das, Zhuolun Xiang, Alin Tomescu, Alexander Spiegelman, Benny Pinkas, Ling Ren.* "Verifiable Secret Sharing Simplified." IACR ePrint 2023/1196 — already cited above; it provides the underlying VSS (Algorithm 1) used inside each per-old-dealer reshare.
@@ -313,35 +309,35 @@ The combined polynomial `F(x) := Σ_{j ∈ H} λ_j · g_j(x)` has degree `t'-1` 
 
 **Modifications relative to classical PSS / the blog construction.**
 
-1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for `s_j`. ACE prevents this by carrying `expected_scaled_element = s_j · basePoint_old` (read from the previous DKG/DKR's `share_pks`) into the new VSS as a `ResharingDealerChallenge`, and requiring a Sigma-DLog-Eq proof (§5) that the new polynomial's constant term equals the known `s_j`. Soundness of this binding reduces to soundness of Sigma-DLog-Eq.
-2. **Agreement on contributing set `H` = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which `t` VSS sessions to combine. ACE delegates this to the L1: `dkr::touch` deterministically reads `vss::completed(...)` for each VSS and freezes `vss_contribution_flags` the first time `count ≥ t`. Every observer reads the same `H` from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same modification pattern as VSS §4.0 item 3.
-3. **Lagrange coefficients computed on-chain.** `dkr::lagrange_coeffs_at_zero` runs in Move once per session (state `CALC_LAGRANGE_COEFFS`); new nodes don't compute their own coefficients. Saves cross-committee replay and ensures every party uses the same `λ_j`.
+1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this by carrying $s_j \cdot B_{\text{old}}$ (read from the previous DKG/DKR's on-chain share-PK list) into the new VSS as a resharing challenge, and requiring a Sigma-DLog-Eq proof (§5) that the new polynomial's constant term equals the known $s_j$. Soundness reduces to soundness of Sigma-DLog-Eq.
+2. **Agreement on contributing set $H$ = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which $t$ VSS sessions to combine. ACE delegates this to the L1: the on-chain orchestrator deterministically reads each VSS's completion flag and freezes the contributing set the first time $|\{j : \text{vss}_j \text{ done}\}| \geq t$. Every observer reads the same $H$ from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same modification pattern as VSS §4.0 item 3.
+3. **Lagrange coefficients computed on-chain.** Move computes $\{\lambda_j\}_{j \in H}$ once per session; new nodes don't compute their own. Saves cross-committee replay and ensures every party uses the same $\lambda_j$.
 4. **No within-epoch share refresh.** Classical PSS refreshes shares periodically within an epoch to handle a mobile adversary. ACE refreshes only at epoch boundaries (`epoch_duration_micros ≥ 30s`); within an epoch, shares are static.
 
 **Corruption model.** Across the resharing transition window, the standard PSS analysis tolerates:
-- `b_old < t` corrupted nodes in the old committee, **and**
-- `b_new < t'` corrupted nodes in the new committee.
+- $b_{\text{old}} < t$ corrupted nodes in the old committee, **and**
+- $b_{\text{new}} < t'$ corrupted nodes in the new committee.
 
-This is the **dual** of the user-friendly liveness phrasing "≥ `t` honest old + ≥ `t'` honest new" — note the inequality direction: secrecy needs `b_old ≤ t-1`, liveness needs `(n - b_old) ≥ t` (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
+This is the **dual** of the user-friendly liveness phrasing "$\geq t$ honest old + $\geq t'$ honest new" — note the inequality direction: secrecy needs $b_{\text{old}} \leq t-1$, liveness needs $n - b_{\text{old}} \geq t$ (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
 
 **Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates one or two nodes. With overlap:
-- A node in the overlap that is corrupted contributes to **both** `b_old` and `b_new`.
-- The *abstract* secrecy bound is unchanged: still `b_old < t AND b_new < t'`.
-- The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size `k`, corrupting up to `min(t-1, t'-1)` overlap-nodes counts double — a `t-1`-bounded attacker on the old side automatically gets `t-1` corruptions on the new side too if every corruption is an overlap node.
-- In the limit (`old_nodes = new_nodes`, full overlap, `t = t'`), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts `≥ t` of those nodes.
+- A node in the overlap that is corrupted contributes to **both** $b_{\text{old}}$ and $b_{\text{new}}$.
+- The *abstract* secrecy bound is unchanged: still $b_{\text{old}} < t \;\land\; b_{\text{new}} < t'$.
+- The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size $k$, corrupting up to $\min(t-1, t'-1)$ overlap-nodes counts double — a $(t-1)$-bounded attacker on the old side automatically gets $t-1$ corruptions on the new side too if every corruption is an overlap node.
+- In the limit ($\text{old\_nodes} = \text{new\_nodes}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
 
 This is the expected behavior for any PSS — the proactive benefit comes from changing the corrupted set, not from the polynomial refresh. The overlap level is a *deployment policy* choice: small overlap maximizes proactive benefit at the cost of operational continuity; large overlap maximizes continuity at the cost of attacker-cost reduction.
 
 **Liveness.** DKR completes when:
-- `≥ t` honest-and-online old dealers submit a valid `DealerContribution0` (with valid sigma-DLog-Eq proof for resharing); the chain advances `vss_contribution_flags`.
-- For each of those VSS sessions, `≥ t'` honest-and-online new ackers call `on_share_holder_ack` within `ACK_WINDOW_MICROS = 10s` (or the dealer reveals the missing shares in DC1).
+- $\geq t$ honest-and-online old dealers submit a valid first-round message (with valid Sigma-DLog-Eq proof for resharing); the chain advances the contribution flags.
+- For each of those VSS sessions, $\geq t'$ honest-and-online new ackers ACK within the 10-second window (or the dealer reveals the missing shares in the second round).
 
 Heavy overlap also helps liveness: a single honest-and-online physical node serves both as old dealer and as new acker.
 
 **Audit notes.**
-- `expected_scaled_element` is read from the previous session's on-chain `share_pks`; auditors should confirm the read path in `dkr::new_session` cannot be poisoned by a malicious admin upgrading the predecessor module.
+- $s_j \cdot B_{\text{old}}$ is read from the previous session's on-chain share-PK list; auditors should confirm the read path cannot be poisoned by a malicious admin upgrading the predecessor module.
 - A chain liveness halt during DKR stalls the epoch transition arbitrarily long — *liveness* concern, not *safety*.
-- Heavy overlap is a deployment policy; the protocol does not enforce or reject it. A deployment that rotates ≥1 node per epoch but is otherwise stable inherits the analysis above.
+- Heavy overlap is a deployment policy; the protocol does not enforce or reject it. A deployment that rotates $\geq 1$ node per epoch but is otherwise stable inherits the analysis above.
 
 ### 4.1 Polynomial commitment
 
@@ -372,11 +368,11 @@ where
 
 ### 4.3 Resharing-dealer challenge
 
-A VSS session created as part of a DKR (resharing) carries a `ResharingDealerChallenge { expected_scaled_element, another_base_element }` so the dealer must prove it's resharing a *specific* known secret rather than dealing a fresh one. The challenge geometry:
-- `expected_scaled_element` is the dealer's old share PK from the previous session: `s · basePoint_old`.
-- `another_base_element` is `H = hash_to_curve_G(expected_scaled_element)` — independent of `basePoint_old` in the random-oracle model.
+A VSS session created as part of DKR carries a *resharing challenge* — a pair $(P, H)$ — so the dealer must prove they're resharing a *specific* known secret rather than dealing a fresh one. The challenge geometry:
+- $P = s \cdot B_{\text{old}}$, the dealer's existing share-PK (read from the parent DKG/DKR's on-chain state).
+- $H = \mathsf{HashToCurve}_G(P)$, an independent base point in the random-oracle model.
 
-The dealer must produce a Sigma DLog-Eq proof (§5) that the committed secret `a_0` (via `v_0 = a_0 · basePoint_old`) equals the secret used to scale `H` (via `H · s = another_scaled_element`). Verified on-chain in `vss::on_dealer_contribution_0` (`contracts/vss/sources/vss.move:209`).
+The dealer must produce a Sigma-DLog-Eq proof (§5) that the constant term $a_0$ committed via $v_0 = a_0 \cdot B_{\text{old}}$ equals the secret used to scale $H$ to a publicly-revealed $a_0 \cdot H$. The on-chain verifier checks this proof during the dealer's first-round message; a forged or absent proof aborts the VSS.
 
 ### 4.4 DKG and DKR composition
 
@@ -389,48 +385,44 @@ See [`protocols.md`](./protocols.md) for the on-chain state machines, error path
 
 ## 5. Sigma DLog-Eq Proof
 
-**Statement.** Prover knows a witness `s ∈ Fr` such that
-```
-P0 = s · B0   (∈ G)
-P1 = s · B1   (∈ G)
-```
-for a chosen group `G ∈ {G1, G2}`, given the four points `(B0, P0, B1, P1)`.
+**Statement.** Prover knows a witness $s \in \mathbb{F}_r$ such that
 
-**Use.** The VSS resharing dealer (§4.3) uses this with `B0 = basePoint_old`, `P0 = a_0 · basePoint_old = v_0`, `B1 = another_base_element`, `P1 = another_scaled_element`. Convinces the verifier that the committed `a_0` equals the original secret share `s`.
+$$P_0 = s \cdot B_0, \qquad P_1 = s \cdot B_1, \qquad \text{both in } G \in \{G_1, G_2\}$$
+
+given the four points $(B_0, P_0, B_1, P_1)$.
+
+**Use.** The VSS resharing dealer (§4.3) uses this with $B_0 = B_{\text{old}}$, $P_0 = a_0 \cdot B_{\text{old}}$ (= the first commitment $v_0$), $B_1 = H$, $P_1 = a_0 \cdot H$. Convinces the verifier that the committed $a_0$ equals the original secret share $s_j$.
 
 ### 5.1 Prove (Schnorr + Fiat–Shamir)
 
-(`worker-components/vss-common/src/sigma_dlog_eq.rs:29-67`)
 ```
-r ← Fr                                        # OsRng, fresh per proof
+r ← Fr                                        # CSPRNG, fresh per proof
 t0 := r · B0                                  ∈ G
 t1 := r · B1                                  ∈ G
-P1 := s · B1                                  ∈ G   # also returned (used by verifier as "another_scaled_element")
-trx := chain_id (1B)                          # per `aptos::chain_id::get()`
-     || ace_addr (32B)                        # ACE deployment address, big-endian
-     || 0x03 || "vss"                         # BCS-encoded String "vss" (= ULEB128(3) || UTF-8)
+P1 := s · B1                                  ∈ G   # also returned
+trx := chain_id (1B)                          # Aptos chain id
+     || ace_addr (32B)                        # ACE deployment address
+     || 0x03 || "vss"                         # BCS-encoded String "vss"
      || for each pt in (B0, P0, B1, P1, t0, t1):
             scheme (1B) || u8(|pt|) || pt     # scheme = 0=G1, 1=G2
-c   := Fr::from_le_bytes_mod_order(SHA-512(trx))
+c       := Fr::from_le_bytes_mod_order( SHA-512(trx) )
 s_proof := r + c·s                            ∈ Fr
-return Proof { t0, t1, s_proof }, P1
+return (t0, t1, s_proof, P1)
 ```
 
-**Important transcript shape.** The element-length byte is a plain `u8` (not a ULEB128) — for G1 it's 48, for G2 it's 96, both fit in one byte. Audit point: if a future `group::` adds a >255-byte element, the transcript must be widened.
+**Transcript shape note.** The element-length byte is a plain `u8` (not a ULEB128) — for G1 it's 48, for G2 it's 96, both fit in one byte. Audit point: if a future group adds a > 255-byte element, the transcript must be widened.
 
 ### 5.2 Verify
 
-On-chain in `contracts/sigma-dlog-eq/sources/sigma_dlog_eq.move`. Reconstructs the same Fiat–Shamir transcript from `(B0, P0, B1, P1, t0, t1)` and the bound `(chain_id, ace_addr, "vss")`, derives `c`, and checks two group equations:
-```
-s_proof · B0 == t0 + c · P0
-s_proof · B1 == t1 + c · P1
-```
+The on-chain verifier reconstructs the same Fiat–Shamir transcript from $(B_0, P_0, B_1, P_1, t_0, t_1)$ and the bound $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$, derives $c$, and checks:
 
-**Security.** Standard Schnorr-style argument; soundness holds in the algebraic group model under DLog in `G`; HVZK in the ROM. ~128-bit security level on BLS12-381.
+$$s_{\text{proof}} \cdot B_0 = t_0 + c \cdot P_0, \qquad s_{\text{proof}} \cdot B_1 = t_1 + c \cdot P_1$$
+
+**Security.** Standard Schnorr-style argument; soundness holds in the algebraic group model under DLog in $G$; HVZK in the ROM. ~128-bit security level on BLS12-381.
 
 **Audit notes.**
-- The `(chain_id, ace_addr, "vss")` binding prevents cross-chain / cross-deployment proof replay. `chain_id` is the Aptos chain id (1B), `ace_addr` is the 32B account address of the ACE contract, `"vss"` is the literal module name. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
-- `from_le_bytes_mod_order` of a SHA-512 digest produces a uniformly-distributed `Fr` element with negligible bias (`r > 2²⁵²`, hash output is 512 bits).
+- The $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$ binding prevents cross-chain / cross-deployment proof replay. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
+- `from_le_bytes_mod_order` of a SHA-512 digest produces a uniformly-distributed $\mathbb{F}_r$ element with negligible bias ($r > 2^{252}$, hash output is 512 bits).
 
 ---
 
@@ -522,3 +514,33 @@ The following were called out in earlier discussions and are **not** in the curr
 - **256-bit security level PKE.** Both PKE schemes are ~128-bit. (Future: HPKE-X448-HKDF-SHA512-ChaCha20Poly1305 or similar.)
 - **t-IBE share proof.** The `IdentityDecryptionKeyShare` wire format reserves a 1-byte "proof" flag for a future per-share Schnorr proof; today it is always `0x00` (no proof). The verification check in §3.1 / §3.2 uses on-chain `share_pks` instead, which is sufficient for honest-majority assumptions but not for accountability under accusatory failure.
 - **Move-side HPKE / shortsig-aead encrypt-decrypt.** Move only decodes these formats; the on-chain side never holds a private key for either, so no on-chain encrypt or decrypt is needed.
+
+---
+
+## 10. References
+
+**Standards.**
+- RFC 2104 — HMAC: Keyed-Hashing for Message Authentication.
+- RFC 5869 — HKDF: HMAC-based Extract-and-Expand Key Derivation Function.
+- RFC 7748 — Elliptic Curves for Security (Curve25519, Curve448).
+- RFC 8032 — Edwards-Curve Digital Signature Algorithm (EdDSA / Ed25519).
+- RFC 8439 — ChaCha20 and Poly1305 for IETF Protocols.
+- RFC 9180 — Hybrid Public Key Encryption (HPKE).
+- RFC 9380 — Hashing to Elliptic Curves.
+- RFC 9496 — The Ristretto255 and Decaf448 Groups.
+- FIPS 202 — SHA-3 Standard (Keccak).
+- IRTF CFRG draft — `draft-irtf-cfrg-bls-signature` (BLS Signatures, "minimal-signature-size" / "minimal-pubkey-size" variants).
+
+**Academic.**
+- Boneh, Franklin. "Identity-Based Encryption from the Weil Pairing." CRYPTO 2001. <https://crypto.stanford.edu/~dabo/papers/bfibe.pdf>
+- Boneh, Lynn, Shacham. "Short Signatures from the Weil Pairing." ASIACRYPT 2001.
+- Fujisaki, Okamoto. "Secure Integration of Asymmetric and Symmetric Encryption Schemes." CRYPTO 1999.
+- Shamir. "How to Share a Secret." Commun. ACM 22(11), 1979.
+- Feldman. "A Practical Scheme for Non-Interactive Verifiable Secret Sharing." FOCS 1987.
+- Schnorr. "Efficient Signature Generation by Smart Cards." J. Cryptology 4(3), 1991.
+- Herzberg, Jakobsson, Jarecki, Krawczyk, Yung. "Proactive Secret Sharing or: How to Cope with Perpetual Leakage." CRYPTO 1995.
+- Desmedt, Jajodia. "Redistributing Secret Shares to New Access Structures and Its Applications." ISSE-TR-97-01, 1997.
+- Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren. "Verifiable Secret Sharing Simplified." IACR ePrint 2023/1196. <https://eprint.iacr.org/2023/1196>
+
+**Other.**
+- Tomescu, Alin. "How to reshare a secret." 2024. <https://alinush.github.io/2024/04/26/How-to-reshare-a-secret.html>

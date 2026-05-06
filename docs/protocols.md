@@ -1,12 +1,50 @@
 # ACE Protocols
 
-This document describes the on-chain state machines (VSS, DKG, DKR, voting, epoch-change, network) and the off-chain decryption-request flow. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md).
+This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md).
 
 > **Convention.** State-code values listed below are the literal `u8` constants in the corresponding Move module (`STATE__*`). Function signatures are abridged; see the source for full types.
 
 ---
 
-## 1. Map of Move modules
+## 1. Overview
+
+### 1.1 Sub-protocols and what they do
+
+ACE runs four orchestration sub-protocols plus one request/response flow. Each is described below at the conceptual level; the state-machine realizations are §2 onward.
+
+- **VSS — Verifiable Secret Sharing** (single-dealer building block). One designated *dealer* commits to a secret-bearing degree-$(t-1)$ polynomial and distributes Feldman-verifiable shares to $n$ designated *recipients*. After a synchrony window, the dealer publicly reveals shares for any recipient who failed to acknowledge. Outputs: a public commitment vector and per-recipient share-PKs that anyone can verify on-chain. Used as a primitive by DKG and DKR.
+
+- **DKG — Distributed Key Generation.** Each member of the committee runs one VSS as dealer (and is a recipient in all $n$ VSSes). The joint master secret $s$ is the sum of the constant terms of the $\geq t$ contributing dealer polynomials; nobody ever holds $s$ in the clear. Each committee member ends up holding a Shamir share of $s$. Outputs: the master public key $\mathsf{mpk}$ on-chain, and one share per committee member off-chain (re-derivable from the on-chain VSS messages by that member).
+
+- **DKR — Distributed Key Resharing.** Hands an existing master secret from an *old committee* $(curr\_nodes, t)$ to a *new committee* $(new\_nodes, t')$ without $s$ ever existing in cleartext. Each old node runs a fresh VSS as dealer, *bound* by a sigma-dlog-eq proof to be resharing their actual current share (not a fresh secret). New shares are Lagrange combinations of the contributing old reshares at $x=0$. See [`crypto-spec.md`](./crypto-spec.md) §4.0.1 for the construction and references.
+
+- **Epoch-change orchestrator.** Runs zero-or-more DKRs (one per master secret being preserved) and zero-or-more DKGs (one per fresh master secret) in parallel, then signals the network module to advance the epoch. Triggered either by a passed proposal (committee change, fresh secret) or automatically when the current epoch's duration expires.
+
+- **Decryption-request flow.** A user assembles a proof-of-permission, encrypts it (PKE) to each committee member's registered key, and POSTs to all of them in parallel. Each worker decrypts the request, verifies the proof against the user-specified contract on the appropriate chain, and (if accepted) returns a partial t-IBE identity decryption key share encrypted to a fresh ephemeral key the user supplied. The user assembles $\geq t$ valid shares and decrypts.
+
+### 1.2 Roles
+
+| Role | Who | What they do |
+|------|-----|--------------|
+| **App developer** | A team using ACE | Deploys the access-control contract; encrypts data; integrates the SDK in their app. Off-chain, no protocol participation. |
+| **Encrypter** | An end user (or their app) | Computes a t-IBE ciphertext bound to `(keypair_id, contract_id, domain)`. No on-chain action. |
+| **Decrypter** | An end user | Constructs a proof-of-permission the contract will accept; runs the decryption-request flow. |
+| **Operator** | Runs one worker process | Holds an Ed25519 account key + a PKE decryption key. Participates in DKG (as dealer + recipient), DKR (as dealer if in old committee, as recipient if in new committee), and serves decryption requests. |
+| **Admin** | Controls the ACE contract | Bootstraps the initial epoch; can propose committee changes; cannot decrypt or hold shares. |
+| **Aptos chain** | Validators | Hosts the orchestration state, agrees on every transition, provides timestamps, executes view functions truthfully. The chain *is* the trust anchor; see [`trust-model.md`](./trust-model.md). |
+
+### 1.3 Why on-chain state machines?
+
+ACE's sub-protocols are realized as Move state machines. This is a common pattern: **off-chain workers follow on-chain orchestration.** A few notes on why and what it costs:
+
+- **Tamper-resistant transcript.** A round-based protocol like VSS / DKG / DKR needs every honest party to see the same messages and the same state at the same logical time. The chain provides this for free — every `vss::new_session(...)`, `vss::on_dealer_contribution_0(...)`, `on_share_holder_ack(...)` is a totally-ordered, BFT-agreed-upon, immutable record. ACE doesn't need a separate broadcast or BA primitive.
+- **State-as-instruction.** Workers don't run their own copy of the protocol logic and try to reach consensus. Instead, each worker periodically reads the on-chain state and acts on whatever the contract says it should do next: "I'm in `STATE__RECIPIENT_ACK` and my Feldman check passed → submit `on_share_holder_ack`". The contract is the single source of truth for "what step are we at".
+- **Move's gas budget forces incremental progress.** A single Move transaction has bounded gas. Some on-chain steps (like deriving $n$ share-PKs by MSM after DC1, or computing Lagrange coefficients in DKR) don't fit in one txn. The state machines split this work over multiple `touch()` calls — anyone can `touch()`, each call ratchets state forward by one increment, the protocol completes when enough `touch()`es have happened. This is a realization detail; it doesn't affect security.
+- **Clocks come from the chain.** `aptos_framework::timestamp::now_microseconds` gives every observer a consistent monotonic clock. Synchrony-bounded steps (e.g., the 10-second VSS ACK window) are enforced by comparing the chain's view of "now" against a recorded time, not by local wall-clock. A liveness halt of the chain stalls the timer too — a *liveness* concern, not a *safety* concern.
+
+The cost: a small per-transaction gas footprint for every protocol step, and a dependency on the underlying L1 for liveness and order. The benefit: no separate consensus / broadcast / agreement infrastructure for ACE itself.
+
+### 1.4 Map of Move modules
 
 | Module | File | Purpose |
 |--------|------|---------|
@@ -500,42 +538,14 @@ A typical use: payload is a Groth16 ZK proof bound to `encPk` so a captured proo
 
 Same shape but the proof is again a structurally-valid Solana txn that calls an `assert_custom_acl` instruction; the worker decodes `CustomFullRequestBytes` from the instruction data and matches all five fields (`keypair_id, epoch, enc_pk, label, payload`) against its reconstruction. Then `simulateTransaction`.
 
-### 8.6 What if `< t` workers respond?
+### 8.6 Latency, timeouts, and partial response
 
-The SDK collects responses and short-circuits as soon as it has `t` valid shares. If, after all workers respond / time out, fewer than `t` valid shares were collected, the SDK returns an error. The client retries (typically with a fresh ephemeral keypair).
+The SDK fans out to all $n$ workers in parallel via `Promise.all` over fetches with a per-worker 8-second `AbortController` timeout. There is **no short-circuit on $t$ valid shares** — the SDK waits for every worker (success, HTTP error, or 8s timeout) before assembling the share set:
 
----
+- Latency = max over the $n$ per-worker round-trips, capped by the 8s individual timeout.
+- Concretely: with $t = 3, n = 4$, three workers responding in 1s and the fourth in 5s → the user gets the plaintext at $\approx 5\,\text{s}$, not 1s.
+- A worker that takes longer than 8s contributes `null` (counts as a non-responder) and the SDK keeps the rest.
 
-## 9. Error handling and abort codes
+After collection, the SDK filters out failed/null responses and verifies each remaining share against the on-chain share-PK list (pairing check from [`crypto-spec.md`](./crypto-spec.md) §3.1 / §3.2). If $\geq t$ valid shares remain, it Lagrange-reconstructs the IDK and runs t-IBE decrypt. Otherwise it errors and the client may retry (typically with a fresh ephemeral keypair).
 
-Every entry function uses Move's `assert!` with a numeric error code. The codes are module-local (defined as `const E_*: u64 = N;` at the top of each module). Auditors should treat any abort as a hard halt for that transaction; the protocol does not silently swallow errors.
-
-Selected codes auditors will see most:
-| Code | Meaning | Module |
-|------|---------|--------|
-| `E_INVALID_THRESHOLD` | `threshold` doesn't satisfy `2t > n, t ≥ 2, t ≤ n` | vss, dkg, network |
-| `E_INVALID_DEALER` / `E_INVALID_RECIPIENT` | dealer / share holder not registered in `worker_config` | vss |
-| `E_NOT_IN_PROGRESS` | Wrong state for this entry | vss, dkg, dkr, voting |
-| `E_NOT_ENOUGH_ACKS` | `on_dealer_open` called with `< threshold` acks | vss |
-| `E_TOO_EARLY_TO_OPEN` | `on_dealer_open` called within 10s of DC0 | vss |
-| `E_INVALID_SCALED_ELEMENT_PROOF` | sigma-dlog-eq verification failed in resharing | vss |
-| `E_INVALID_SHARE` | Publicly-revealed share fails Feldman verification on-chain | vss |
-| `E_ONLT_DEALER_CAN_DO_THIS` | (sic) entry function called by non-dealer | vss |
-| `E_EPOCH_CHANGE_ALREADY_IN_PROGRESS` | new_proposal during in-flight epoch change | network |
-| `E_YOU_ALREADY_PROPOSED_IN_THIS_EPOCH` | Same proposer already has an open proposal | network |
-| `E_ALREADY_VOTED` | Voter already cast a vote | voting |
-
-A defense-in-depth note: the worker's HTTP layer maps verification failures to HTTP 403 (`worker-components/network-node/src/http_server.rs::handle_basic_flow / handle_custom_flow`); other internal errors map to 400 / 500. Auditors should verify that no path leaks a worker share via the error response body.
-
----
-
-## 10. Timeouts (single source of truth)
-
-| Constant | Value | Defined | Meaning |
-|----------|-------|---------|---------|
-| `vss::ACK_WINDOW_MICROS` | 10_000_000 (10s) | `vss.move:47` | Min time between DC0 and DC1 |
-| `network::MIN_RESHARING_INTERVAL_SECS` | 30 | `network.move:17` | Lower bound on `epoch_duration_micros` |
-| (TS SDK request timeout) | 30s default | `ts-sdk/src/_internal/common.ts` | Per-worker HTTP timeout in decryption flow |
-| (Worker HTTP server) | unbounded per request | `network-node/src/http_server.rs` | Bounded only by the concurrency semaphore |
-
-A future optional addition (currently absent): a maximum DKG / DKR session lifetime on-chain that lets `network::touch` give up on a stuck epoch change.
+A future optimization (not in this version): switch to a $t$-of-$n$ short-circuit (`Promise.any` with quorum) so latency tracks the $t$-th-fastest response instead of the slowest.

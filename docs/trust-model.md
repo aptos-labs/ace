@@ -8,16 +8,14 @@ For cryptographic constructions, see [`crypto-spec.md`](./crypto-spec.md). For p
 
 ## 0. Deployment model
 
-This version of ACE is a **permissioned protocol**. Operators are explicitly admitted by the existing committee (or by the admin in the bootstrap epoch) via on-chain proposals + threshold-vote approval (`network::new_proposal` + `voting::vote`). There is no on-chain reward, fee, or stake mechanism for operators; the design assumes operators are **incentivized by default** — typically because they are members of a consortium, app developers running their own workers for their own applications, or compensated out-of-band by the admin.
+This version of ACE is a **permissioned protocol**. Operators are explicitly admitted by the existing committee (or by the admin in the bootstrap epoch) via on-chain proposals + threshold-vote approval. There is no on-chain reward, fee, or stake mechanism for operators; the design assumes operators are **incentivized by default** — typically because they are part of a consortium that wants the system to exist, or are compensated out-of-band by the admin.
 
 **Implications for the threat model.**
 
 - **Sybil resistance is operational, not cryptoeconomic.** The protocol does not gate operator admission on stake, work, or external identity. The committee's vote *is* the gate. An admin or supermajority that admits unqualified operators bypasses ACE's security entirely.
-- **No on-chain accountability.** A misbehaving operator (returns wrong shares, refuses to deal, refuses to ACK) is removed via `CommitteeChange`, not by automatic slashing. ACE has no "punish a worker" primitive.
+- **No on-chain accountability.** A misbehaving operator (returns wrong shares, refuses to deal, refuses to ACK) is removed via committee-change vote, not by automatic slashing. ACE has no "punish a worker" primitive.
 - **Operators trust other operators institutionally.** The committee is small (typically 3–10), known to each other, and aligned by incentives outside the protocol.
 - **Threat actors are a *subset* of admitted operators**, plus the usual external parties (decryption requesters, RPC providers, chain validators).
-
-**A permissionless variant** would need to add: stake / bond, on-chain rewards (per-decryption-share fee, per-DKG fee), slashing rules tied to verifiable misbehavior, and a Sybil-resistant admission gate. None of those are in this version. Auditors should not flag the absence of these mechanisms; the rest of the document assumes the deployment model above.
 
 ---
 
@@ -80,71 +78,16 @@ The resharing-VSS carries a `ResharingDealerChallenge { expected_scaled_element,
 
 ## 3. What each actor can do (and what they can't)
 
-### 3.1 The end user (decrypter)
+The §2 claims are organized by security guarantee; this section organizes the same surface by adversary class — the view auditors use when threat-modeling.
 
-**Can:**
-- Construct an arbitrary proof-of-permission and submit it to all workers.
-- Reuse an `(account_addr, signature)` pair across multiple `(keypairId, epoch, contractId, domain, ephemeralEncKey)` tuples — but the signature *covers* all five, so the proof is only valid for the exact tuple it was signed for.
-- Choose any `ephemeralEncKey`; the IDK shares will be encrypted to whatever they specified.
-
-**Cannot:**
-- Recover the master secret without colluding with `t` workers.
-- Force a worker to release a share for a request the on-chain `check_permission` rejects.
-- Replay a captured Solana proof-txn — Solana's `simulateTransaction` with `sigVerify=true` checks the txn signature against the **current** account state and a recent blockhash; a stale blockhash → simulation rejects.
-
-### 3.2 An operator (single, malicious)
-
-**Can:**
-- Refuse to serve. Workers are unable to compel each other.
-- Return a wrong IDK share. The SDK detects this via the share-verification pairing check (§3.1/§3.2 of `crypto-spec.md`) and discards the bad share.
-- Withhold their dealer contribution in DKG/DKR — this stalls *that* worker's contribution but as long as `t` other dealers complete, the joint secret is still established.
-- See every decryption request that hits *their* worker (request body, including the proof-of-permission, ephemeral pubkey, and the requested `(keypair_id, epoch, identity)`). They learn **what** is being decrypted by **whom**, but not the plaintext.
-
-**Cannot:**
-- Decrypt anything alone.
-- Pollute the master public key (DKG-protected) or secret reshares (DKR + sigma-dlog-eq protected).
-- Cause a false positive on `check_permission` (workers verify on-chain independently; one worker's lie has no effect on the others).
-
-### 3.3 A `t-1` malicious-operator coalition
-
-**Can:** all of the above, in aggregate. Specifically:
-- Stall any decryption by collectively refusing.
-- DOS the DKG/DKR by collectively refusing to deal — but the protocol still completes if at least `t` honest workers deal.
-- Stall an epoch transition for an extended period **if** they're a majority of the *next* committee that needs to receive shares (the resharing VSS needs `t` recipient ACKs).
-
-**Cannot:**
-- Decrypt any ciphertext on their own.
-- Forge a master public key.
-- Make a "false-positive" share — the share-verification pairing check on the SDK side prevents accepting wrong shares from any source, including a `t-1` coalition.
-
-### 3.4 A `t` malicious-operator coalition
-
-> **Trust assumption is broken.** A `t-of-n` coalition can reconstruct any master secret from the epoch they all hold shares for, and decrypt every ciphertext bound to those `keypair_id`s. They can also collude with the admin to push a `CommitteeChange` proposal that admits more colluders.
-
-The protocol does not protect against this. Defense is purely operational (committee composition, geographic / organizational diversity).
-
-### 3.5 The admin
-
-**Can:**
-- Deploy / upgrade the ACE contract. **A malicious upgrade can change `check_permission` semantics, alter the view function being called, or extract worker secrets via a new view that they re-add to `worker_config`.** The contract's upgrade policy on Aptos is a critical control.
-- Propose committee changes (with voting threshold approval).
-- Set `epoch_duration_micros` (subject to `MIN_RESHARING_INTERVAL_SECS = 30s`).
-
-**Cannot:**
-- Decrypt anything. Admin holds no shares, no PKE dk, no t-IBE secret.
-- Bypass the voting threshold for committee changes (admin proposals also require committee votes per `network::touch`).
-- Freeze the protocol — any committee member can also propose; epoch transitions auto-trigger on `epoch_duration_micros` expiry even with no admin or committee action.
-
-### 3.6 The RPC provider (per chain, per worker)
-
-> **This is the thinnest part of the trust model.** A malicious RPC provider that the worker queries can return:
-> - Arbitrary view-function results (turning `check_permission` from `false` to `true`, or vice versa).
-> - Arbitrary chain state (forge that an account's `authentication_key` matches a different public key, accepting a forged signature).
-> - Arbitrary `simulateTransaction` results on Solana.
-
-A worker's defense is to run its own fullnode or to trust a fullnode operator they trust. Workers that share an RPC provider with their adversary inherit that provider's trust assumptions.
-
-This is documented in the README (`README.md:288-294`) but should be repeated in every operator-onboarding flow. Auditors should treat any deployment running on a third-party RPC as having a single point of compromise per chain. Mitigation in scope: the worker's own fullnode. Mitigation **not** in scope: light-client verification, fraud proofs, multi-RPC quorum.
+| Adversary class | Can | Cannot |
+|-----------------|-----|--------|
+| **Decrypter (single user)** | Submit any proof-of-permission to all workers; choose any ephemeral encryption key. | Recover the master secret. Force a worker to release a share for a request the on-chain `check_permission` / `check_acl` rejects. Replay a signed message across `(keypair_id, epoch, contract_id, domain, ephemeralEncKey)` tuples — the signature binds all five. Replay a captured Solana proof-txn — `simulateTransaction` checks against current account state and a recent blockhash. |
+| **Single malicious operator** | Refuse to serve; return a wrong share (SDK detects via on-chain share-PK pairing check and discards); withhold their dealer contribution (protocol completes from $\geq t$ other dealers); see request metadata they handle. | Decrypt anything alone. Pollute the master public key (DKG/DKR-protected). Cause a false positive on `check_permission` for any other worker (each verifies independently on-chain). |
+| **$t-1$ malicious-operator coalition** | All of the above in aggregate. Stall any decryption by collective refusal. Stall DKG/DKR by collective non-dealing (but the protocol completes if $\geq t$ honest workers deal). Stall an epoch transition if they form a recipient-blocking majority of the next committee. | Decrypt any ciphertext. Forge a master public key. Inject false-positive shares (SDK pairing-check rejects them, regardless of source). |
+| **$t$ malicious-operator coalition** | **Trust assumption broken.** Reconstruct any master secret they hold shares for; decrypt every ciphertext bound to those `keypair_id`s. With admin collusion, push a committee-change proposal admitting more colluders. | — *(no protocol-level defense; mitigated only operationally — committee composition, organizational diversity)* |
+| **Admin** | Deploy / upgrade the ACE contract (a malicious upgrade can change `check_permission` semantics or add an exfiltrating view — the upgrade policy on Aptos is the critical control). Propose committee changes (subject to vote). Set `epoch_duration_micros` ($\geq 30\,\text{s}$). | Decrypt anything (holds no shares). Bypass the voting threshold (admin proposals also require committee votes). Freeze the protocol — any committee member can also propose; auto-rotation triggers on epoch-duration expiry. |
+| **RPC provider** | Return arbitrary view-function results, arbitrary chain state (e.g., forged `authentication_key`), arbitrary `simulateTransaction` results — to whichever worker queries them. **Thinnest part of the trust model.** | — *(defense is "run your own fullnode" or trust one you trust; light-client verification, fraud proofs, and multi-RPC quorum are out of scope.)* |
 
 ---
 
@@ -164,7 +107,7 @@ Workers see, in plaintext:
 
 A worker that logs requests can reconstruct a per-user access pattern across all encrypted assets bound to that worker's committee. **There is no on-chain or off-chain mixing layer.** Applications that need access-pattern privacy (private information retrieval, oblivious workers) are out of scope.
 
-The SDK's network manager (`ts-sdk/src/_internal/common.ts`) sends to **all** committee workers in parallel and uses the first `t` responses, so a single malicious worker that ignores or stalls requests does not learn more than its honest peers.
+The SDK fans out to **all** committee workers in parallel; each gets the same request body (encrypted under that worker's key). A single malicious worker that ignores or stalls a request learns no more than its honest peers — they all see the same metadata. See [`protocols.md`](./protocols.md) §8.6 for the latency model.
 
 ### 4.3 Front-running and timing
 

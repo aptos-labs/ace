@@ -546,6 +546,6 @@ The SDK fans out to all $n$ workers in parallel via `Promise.all` over fetches w
 - Concretely: with $t = 3, n = 4$, three workers responding in 1s and the fourth in 5s → the user gets the plaintext at $\approx 5\,\text{s}$, not 1s.
 - A worker that takes longer than 8s contributes `null` (counts as a non-responder) and the SDK keeps the rest.
 
-After collection, the SDK filters out failed/null responses and verifies each remaining share against the on-chain share-PK list (pairing check from [`crypto-spec.md`](./crypto-spec.md) §3.1 / §3.2). If $\geq t$ valid shares remain, it Lagrange-reconstructs the IDK and runs t-IBE decrypt. Otherwise it errors and the client may retry (typically with a fresh ephemeral keypair).
+After collection, the SDK filters out failed/null responses and verifies each remaining share against the on-chain share-PK list (pairing check from [`crypto-spec.md`](./crypto-spec.md) §3.1). If $\geq t$ valid shares remain, it Lagrange-reconstructs the IDK and runs t-IBE decrypt. Otherwise it errors and the client may retry (typically with a fresh ephemeral keypair).
 
 A future optimization (not in this version): switch to a $t$-of-$n$ short-circuit (`Promise.any` with quorum) so latency tracks the $t$-th-fastest response instead of the slowest.

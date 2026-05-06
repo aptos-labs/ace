@@ -46,18 +46,21 @@ function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {
 /**
  * Render on-chain network state as a string.
  * profiles: loaded config.nodes — used to annotate committee addresses with aliases.
+ * deployedVersion: optional Move-package version (read from `0x1::code::PackageRegistry`).
  */
 export function renderNetworkState(
     state: aceNetwork.State,
     profiles: Record<string, TrackedNode>,
     rpcUrl: string,
     aceAddr: string,
+    deployedVersion?: string | null,
 ): string {
     const lines: string[] = [];
 
     const networkLabel = deriveRpcLabel(rpcUrl);
     lines.push(`${B}ACE Network${R}  ${networkLabel}  |  ${B}Epoch ${state.epoch}${R}  ${epochTimerStr(state)}`);
-    lines.push(`Contract: ${aceAddr}`);
+    const versionTag = deployedVersion ? `  ${D}(v${deployedVersion})${R}` : '';
+    lines.push(`Contract: ${aceAddr}${versionTag}`);
     lines.push('');
 
     // Committee
@@ -172,7 +175,7 @@ export function renderNodeStatus(
             : `${D}not started${R}`;
         lines.push(`${B}Process${R}  local build  ${procStatus}`);
         if (node.local.logFile) lines.push(`  Log: ${node.local.logFile}`);
-        if (!alive) lines.push(`  ${D}Run \`${CLI} edit-node\` to restart.${R}`);
+        if (!alive) lines.push(`  ${D}Run \`${CLI} node edit\` to restart.${R}`);
     } else if (!node.platform) {
         lines.push(`${D}No deployment platform configured.${R}`);
     } else if (deployDiff instanceof Error) {
@@ -205,7 +208,7 @@ export function renderNodeStatus(
                 lines.push(row.match ? `${D}${line}${R}` : `${E}${line}  ✗${R}`);
             }
             lines.push('');
-            lines.push(`  ${D}Run \`${CLI} edit-node [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
+            lines.push(`  ${D}Run \`${CLI} node edit [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
         }
     }
 

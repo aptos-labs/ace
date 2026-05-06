@@ -174,7 +174,7 @@ The worker process expects two pieces of secret material at startup, both passed
 
 (`worker-components/network-node/src/main.rs:42-46`.)
 
-The operator-CLI's onboarding wizard (`operator-cli/src/onboarding.ts`) generates both secrets locally, prints a `gcloud run deploy` / `docker run` command that writes them as Cloud Run secrets / env vars, and registers the public counterparts on-chain.
+The CLI's onboarding wizard (`cli/src/onboarding.ts`) generates both secrets locally, prints a `gcloud run deploy` / `docker run` command that writes them as Cloud Run secrets / env vars, and registers the public counterparts on-chain.
 
 **Audit hooks:**
 - A worker that loses its `pke-dk` cannot be replaced with a fresh PKE dk without losing all its current Shamir shares (because share derivation is deterministic on the dk per §4.2 of `crypto-spec.md`). Recovery requires either a DKR (which fails if the worker's dk is unrecoverable and they hold above-threshold shares) or admin intervention via `CommitteeChange`.

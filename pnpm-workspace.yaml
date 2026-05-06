@@ -1,7 +1,7 @@
 packages:
   - "ts-sdk"
   - "worker"
-  - "operator-cli"
+  - "cli"
   - "examples/*"
   - "examples/*/demo-cli-flow"
   - "scenarios"

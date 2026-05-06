@@ -13,8 +13,11 @@ export async function networkStatusCommand(opts: { profile?: string; account?: s
         const { node } = resolveProfile(opts.profile, opts.account);
         const profiles = loadConfig().nodes;
         const client = new NetworkClient(node.rpcUrl, node.aceAddr, node.rpcApiKey);
-        const state = await client.getNetworkState();
-        return renderNetworkState(state, profiles, node.rpcUrl, node.aceAddr);
+        const [state, version] = await Promise.all([
+            client.getNetworkState(),
+            client.getDeployedContractVersion(),
+        ]);
+        return renderNetworkState(state, profiles, node.rpcUrl, node.aceAddr, version);
     };
 
     if (opts.watch) {

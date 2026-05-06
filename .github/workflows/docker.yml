@@ -6,15 +6,15 @@ name: Docker / network-node
 on:
   push:
     tags:
-      - 'node/v*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch, tag, or commit SHA to build (e.g. main, node/v0.1.0, abc1234)'
+        description: 'Branch, tag, or commit SHA to build (e.g. main, v0.1.0, abc1234)'
         required: false
         default: 'main'
       image_tag:
-        description: 'Image tag to push (e.g. v0.1.0, main, dev). Defaults to short SHA.'
+        description: 'Image tag to push (e.g. 0.1.0, main, dev). Defaults to short SHA.'
         required: false
       dry_run:
         description: 'If true, skip the Docker Hub copy step'
@@ -46,8 +46,8 @@ jobs:
               echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
             fi
           else
-            # push: tags — strip node/ prefix
-            echo "value=${GITHUB_REF_NAME#node/}" >> "$GITHUB_OUTPUT"
+            # push: tags — strip leading `v` so e.g. `v1.2.3` → image tag `1.2.3`
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: aptos-labs/actions/gar-auth@main

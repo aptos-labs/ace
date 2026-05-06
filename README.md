@@ -63,7 +63,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 |---------|-------------|
 | [`docs`](./docs) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
 | [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
-| [`operator-cli`](./operator-cli) | Operator CLI (`ace`) for node onboarding and management |
+| [`cli`](./cli) | Operator CLI (`ace`) for node onboarding and management |
 | [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
 | [`scenarios`](./scenarios) | Local network setup scripts |
 | [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
@@ -225,7 +225,7 @@ Operator                              Admin / existing committee
                                           { rpcUrl, aceAddr, rpcApiKey?,
                                             gasStationKey? }
 
-(2) `pnpm dev new-node` — paste blob;
+(2) `pnpm dev node new` — paste blob;
     wizard generates keys, prints
     a docker/gcloud command to
     start the worker, registers
@@ -233,12 +233,12 @@ Operator                              Admin / existing committee
 
 (3) Share account address with admin
 
-                                      (4) `pnpm dev new-proposal` — proposes
+                                      (4) `pnpm dev proposal new` — proposes
                                           adding the new node to the
                                           committee
 
                                       (5) Each committee member:
-                                          `pnpm dev review-proposal`
+                                          `pnpm dev proposal review`
                                           until threshold is reached
 
 (6) Node joins the committee and
@@ -255,10 +255,10 @@ cd ace
 pnpm install
 ```
 
-All CLI commands below run as `pnpm dev <subcommand>` from the `operator-cli/` directory:
+All CLI commands below run as `pnpm dev <subcommand>` from the `cli/` directory:
 
 ```bash
-cd operator-cli
+cd cli
 pnpm dev <subcommand>
 ```
 
@@ -267,7 +267,7 @@ To update later: `git pull && pnpm install`.
 **Onboard a new node**
 
 ```bash
-pnpm dev new-node
+pnpm dev node new
 ```
 
 The guided wizard asks for the deployment blob from the admin, generates node keys, prints the `docker run` or `gcloud run deploy` command to start the worker, and registers your node on-chain. At the end it prints your **account address** — send this to the admin.
@@ -275,15 +275,23 @@ The guided wizard asks for the deployment blob from the admin, generates node ke
 **Useful commands**
 
 ```bash
-pnpm dev network-status [-w]              # committee, epoch, active proposals
-pnpm dev node-status    [-w]              # your node's registration and key state
-pnpm dev new-proposal                     # propose a committee change (committee members only)
-pnpm dev review-proposal [-s <session>]   # review and vote on a proposal (interactive TUI)
-pnpm dev edit-node                        # update image, API key, or gas station key
-pnpm dev log [--since <t>] [--until <t>] [-w]  # stream or query node logs
-pnpm dev profile list                     # list saved node profiles
-pnpm dev profile delete <alias>           # delete a saved profile
-pnpm dev profile default <alias>          # set the default profile
+pnpm dev network-status [-w]              # committee, epoch, active proposals, contract version
+pnpm dev node status    [-w]              # your node's registration and key state
+pnpm dev proposal new                     # propose a committee change (committee members or admin)
+pnpm dev proposal review [-s <session>]   # review and vote on a proposal (interactive TUI)
+pnpm dev node edit                        # update image, API key, or gas station key
+pnpm dev node log [--since <t>] [--until <t>] [-w]   # stream or query node logs
+pnpm dev node ls                          # list saved node profiles
+pnpm dev node delete <alias>              # delete a saved node profile
+pnpm dev node default <alias>             # set the default node profile
+
+# Admin (deployment) side
+pnpm dev deployment new                   # full deployment wizard (requires tagged clean commit)
+pnpm dev deployment update-contracts      # republish all 11 packages at NEXT_RELEASE version
+pnpm dev deployment edit                  # edit RPC URL, API keys, alias of a deployment profile
+pnpm dev deployment ls                    # list deployment profiles
+pnpm dev deployment delete <alias>        # delete a deployment profile (local-only)
+pnpm dev deployment default <alias>       # set the default deployment profile
 ```
 
 **Fullnodes** *(optional for testing, recommended for production)*

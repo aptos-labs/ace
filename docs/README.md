@@ -17,5 +17,5 @@ Audit-oriented technical specifications. These docs are versioned with the code;
 ## Out of scope (for the docs)
 
 - App-developer tutorials → see top-level [`README.md`](../README.md) and [`examples/`](../examples/).
-- Operator runbooks → see [`README.md`](../README.md) "Operator Guide" section and `operator-cli/`.
+- Operator runbooks → see [`README.md`](../README.md) "Operator Guide" section and `cli/`.
 - API references → see `ts-sdk/src/` JSDoc comments and `cargo doc` for the worker crates.

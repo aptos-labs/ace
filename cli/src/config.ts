@@ -41,6 +41,32 @@ export interface LocalConfig {
     logMaxMb?: number;    // Max log file size in MB for logrotate config
 }
 
+/**
+ * An ACE deployment you administer. Persists the admin private key + RPC config.
+ * Created by `ace deployment new`; consumed by `ace deployment {update-contracts,edit,...}`.
+ *
+ * `aceAddr` and `adminAddress` are the same Aptos account in this codebase (the package
+ * is published *at* the admin address). They're stored as separate fields for clarity
+ * and so a future "delegated admin" deployment shape doesn't need a migration.
+ */
+export interface TrackedDeployment {
+    rpcUrl:            string;
+    aceAddr:           string;
+    adminAddress:      string;
+    adminPrivateKey:   string;       // 0x-prefixed hex
+    sharedNodeApiKey?: string;
+    gasStationApiKey?: string;
+    alias?:            string;
+    /** One of `mainnet | testnet | devnet | localnet | custom`. Tags the deployment for display. */
+    network?:          string;
+    /** Git tag (e.g. `v1.0.0`) at which the contracts were deployed; `deployment new` enforces strict tag+clean. */
+    deployedAtTag?:    string;
+    /** Commit SHA at which the contracts were deployed. */
+    deployedAtCommit?: string;
+    /** ISO timestamp of the deploy (or last `update-contracts`). */
+    deployedAt?:       string;
+}
+
 /** A node you control or watch. Network connection info is embedded directly. */
 export interface TrackedNode {
     // Network connection (formerly TrackedNetwork)
@@ -65,8 +91,10 @@ export interface TrackedNode {
 }
 
 export interface Config {
-    defaultNode?: string;
-    nodes: Record<string, TrackedNode>;
+    defaultNode?:        string;
+    defaultDeployment?:  string;
+    nodes:               Record<string, TrackedNode>;
+    deployments:         Record<string, TrackedDeployment>;
 }
 
 // ── Key derivation ────────────────────────────────────────────────────────────
@@ -97,16 +125,24 @@ export function displayNode(key: string, node: TrackedNode): string {
     return node.alias ? `${key} (${node.alias})` : key;
 }
 
+export function makeDeploymentKey(rpcUrl: string, aceAddr: string): string {
+    return `${deriveRpcLabel(rpcUrl)}/${aceAddr}`;
+}
+
+export function displayDeployment(key: string, dep: TrackedDeployment): string {
+    return dep.alias ? `${key} (${dep.alias})` : key;
+}
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 export function loadConfig(): Config {
-    if (!existsSync(CONFIG_PATH)) return { nodes: {} };
+    if (!existsSync(CONFIG_PATH)) return { nodes: {}, deployments: {} };
     try {
         const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as any;
 
         // Migrate from old format: { networks: {...}, nodes: { networkKey, ... } }
         if (raw.networks && raw.nodes) {
-            const migrated: Config = { defaultNode: raw.defaultNode, nodes: {} };
+            const migrated: Config = { defaultNode: raw.defaultNode, nodes: {}, deployments: {} };
             for (const [nodeKey, n] of Object.entries(raw.nodes as Record<string, any>)) {
                 const net = (raw.networks as Record<string, any>)[n.networkKey];
                 if (!net) continue;
@@ -132,9 +168,10 @@ export function loadConfig(): Config {
         }
 
         raw.nodes ??= {};
+        raw.deployments ??= {};
         return raw as Config;
     } catch {
-        return { nodes: {} };
+        return { nodes: {}, deployments: {} };
     }
 }
 
@@ -146,4 +183,9 @@ export function saveConfig(config: Config): void {
 export function resolveDefaultNode(config: Config): TrackedNode | undefined {
     if (!config.defaultNode) return undefined;
     return config.nodes[config.defaultNode];
+}
+
+export function resolveDefaultDeployment(config: Config): TrackedDeployment | undefined {
+    if (!config.defaultDeployment) return undefined;
+    return config.deployments[config.defaultDeployment];
 }

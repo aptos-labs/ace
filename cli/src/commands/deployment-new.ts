@@ -199,15 +199,19 @@ export async function deploymentNewCommand(): Promise<void> {
         console.log('  ✓ funded.\n');
     }
 
-    // 5. Optional API keys.
-    const sharedNodeApiKey = (await input({ message: 'Shared Node API Key (optional, blank to skip):' })).trim() || undefined;
-    const gasStationApiKey = (await input({ message: 'Gas Station API Key (optional, blank to skip):' })).trim() || undefined;
-    if (sharedNodeApiKey) process.env.NODE_API_KEY = sharedNodeApiKey;
-
-    // 6. Deploy contracts.
+    // 5. Deploy contracts.
+    // We optionally accept NODE_API_KEY from the caller's environment to skip rate-limit
+    // throttling during the publish step. Geomi inputs (sharedNodeApiKey, gasStationApiKey)
+    // are collected AFTER deploy — those are operator-onboarding concerns and asking for
+    // them up-front is annoying when the user just wants to see the contracts land first.
     console.log(`\nDeploying ${ACE_CONTRACT_PACKAGES.length} packages at version ${version} ...\n`);
+    if (process.env.NODE_API_KEY) console.log(`  (using NODE_API_KEY from environment for rate-limited RPC)\n`);
     await deployContracts(adminAccount, rpcUrl, ACE_CONTRACT_PACKAGES, version);
     console.log('\n  ✓ All contracts deployed.\n');
+
+    // 6. Geomi inputs (optional, for operator onboarding).
+    const sharedNodeApiKey = (await input({ message: 'Shared Node API Key for operators (optional, blank to skip):' })).trim() || undefined;
+    const gasStationApiKey = (await input({ message: 'Gas Station API Key for operators (optional, blank to skip):' })).trim() || undefined;
 
     // 7. Operator onboarding blob.
     const operatorBlob = JSON.stringify(

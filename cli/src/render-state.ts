@@ -46,18 +46,21 @@ function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {
 /**
  * Render on-chain network state as a string.
  * profiles: loaded config.nodes — used to annotate committee addresses with aliases.
+ * deployedVersion: optional Move-package version (read from `0x1::code::PackageRegistry`).
  */
 export function renderNetworkState(
     state: aceNetwork.State,
     profiles: Record<string, TrackedNode>,
     rpcUrl: string,
     aceAddr: string,
+    deployedVersion?: string | null,
 ): string {
     const lines: string[] = [];
 
     const networkLabel = deriveRpcLabel(rpcUrl);
     lines.push(`${B}ACE Network${R}  ${networkLabel}  |  ${B}Epoch ${state.epoch}${R}  ${epochTimerStr(state)}`);
-    lines.push(`Contract: ${aceAddr}`);
+    const versionTag = deployedVersion ? `  ${D}(v${deployedVersion})${R}` : '';
+    lines.push(`Contract: ${aceAddr}${versionTag}`);
     lines.push('');
 
     // Committee

@@ -14,6 +14,7 @@ import { logCommand } from './commands/log.js';
 import { deploymentListCommand, deploymentDeleteCommand, deploymentDefaultCommand } from './commands/deployment.js';
 import { updateContractsCommand } from './commands/update-contracts.js';
 import { deploymentEditCommand } from './commands/deployment-edit.js';
+import { deploymentNewCommand } from './commands/deployment-new.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
@@ -23,6 +24,17 @@ program.name('ace').description('ACE network CLI (operator + admin)').version('0
 // ──────────────────────────────────────────────────────────────────────────────
 
 const deploymentCmd = program.command('deployment').description('Manage ACE deployments (admin profiles)');
+
+deploymentCmd
+    .command('new')
+    .description('Deploy ACE contracts to a chosen network and persist an admin profile (requires tagged clean commit)')
+    .action(async () => {
+        try {
+            await deploymentNewCommand();
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
 
 deploymentCmd
     .command('ls')

@@ -56,7 +56,7 @@ Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~
 **Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
 
 **Caveats / audit notes.**
-- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer (sigma-DLog-Eq, Aptos full-message signature, Solana txn simulation) provides binding instead.
+- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer (Sigma-DLog-Eq, Aptos full-message signature, Solana txn simulation) provides binding instead.
 - Implementations across TS/Rust/Move use **independent** HPKE libraries — wire-compatibility is verified by the round-trip tests in `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:166-307` and `contracts/pke/tests/`.
 
 ---
@@ -180,7 +180,7 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 4. **Signed `ACK` = on-chain transaction.** The paper has nodes send `⟨ACK, σ_i⟩` over the broadcast channel, where `σ_i = sign(sk_i, v)`. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* `σ_i`, and the chain naturally rejects `(t)` ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
 5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent reveals only the scalar shares of non-ackers as a vector of optional scalars (one slot per holder; `None` if they acked, `Some(y_j)` otherwise). With Feldman the proof drops out (modification 1), so the second-round message carries scalars only — the verifier (an on-chain incremental computation) re-runs the Feldman MSM check on each revealed share.
 6. **Lazy `touch()` progression.** Move's per-transaction gas budget forces splitting the second-round verification across multiple `touch()` calls (one share-PK MSM per call). The paper's protocol is single-shot. This is a realization detail, not a security modification — `touch()` only ratchets state forward and is monotonic.
-7. **Resharing-dealer challenge.** ACE adds an *optional* challenge `(\text{expected\_scaled\_element}, \text{another\_base\_element})$` plus a Sigma-DLog-Eq proof (§5) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $\text{expected\_scaled\_element} = s_j \cdot B_{\text{old}}$ from the parent DKG/DKR). Used by Distributed Key Resharing (DKR — see §4.0.1) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq — see §5 below.
+7. **Resharing-dealer challenge.** ACE adds an *optional* challenge $(P, H)$ plus a Sigma-DLog-Eq proof (§5) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $P = s_j \cdot B_{\text{old}}$ from the parent DKG/DKR, and $H$ is an independent base derived from $P$). Used by Distributed Key Resharing (DKR — see §4.0.1) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq — see §5 below.
 8. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
 9. **Single threshold only.** ACE uses `secrecy threshold = reconstruction threshold = t`; the paper's dual-threshold variant (`ℓ ∈ [t, n-t]`) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
 10. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
@@ -277,7 +277,7 @@ See [`protocols.md`](./protocols.md) for the on-chain state machines, error path
 
 ---
 
-## 5. Sigma DLog-Eq Proof
+## 5. Sigma-DLog-Eq Proof
 
 **Statement.** Prover knows a witness $s \in \mathbb{F}_r$ such that
 
@@ -375,7 +375,7 @@ Source: `worker-components/vss-common/src/crypto.rs:76-96` (Rust), `ts-sdk/src/u
 | Component | RNG | Usage |
 |-----------|-----|-------|
 | TS SDK | WebCrypto `crypto.getRandomValues` (browser) / Node `crypto.randomBytes` | All ephemerals (`r` in PKE/IBE encrypt, ephemeral encryption keys) |
-| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen, sigma-dlog-eq proof randomness |
+| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen, Sigma-DLog-Eq proof randomness |
 | Move (on-chain) | `aptos_framework::randomness` API | DKG basepoint sampling (e.g. `epoch_change::touch` uses `randomness::generate(...)` for new G2 base points) |
 
 **Audit notes.**

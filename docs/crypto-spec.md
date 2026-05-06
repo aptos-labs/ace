@@ -268,6 +268,29 @@ Audit hook: any change to this canonicalization breaks cross-implementation inte
 
 ACE uses a Feldman-style PCS over an abstract `group::Element` (BLS12-381 G1 or G2). The core building block is a single dealer-driven VSS session; DKG composes `n` VSS sessions in parallel.
 
+### 4.0 Origin and modifications
+
+ACE's VSS implements the **synchronous VSS** of Algorithm 1, §5 in:
+
+> Sourav Das, Zhuolun Xiang, Alin Tomescu, Alexander Spiegelman, Benny Pinkas, Ling Ren. **"Verifiable Secret Sharing Simplified."** IACR ePrint 2023/1196. <https://eprint.iacr.org/2023/1196>
+
+The paper presents a publicly-verifiable, complete, t-resilient VSS for `n ≥ 2t+1` synchronous nodes assuming a polynomial commitment scheme `PC`, signatures, and a Byzantine broadcast channel. ACE preserves the protocol skeleton — single-round dealer share-out, ACK collection, second-round reveal of unacked shares — and inherits the paper's correctness, completeness, and secrecy theorems (Theorem 1, Theorem 4 in App. C) modulo the modifications listed below.
+
+The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) are NOT adapted; ACE relies on synchrony.
+
+**Modifications relative to Algorithm 1.** Auditors should re-check the security argument against each:
+
+1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic (their Appendix A.2 instantiates with KZG-style PCS for `O(κn²)` communication; their Pedersen-based VE construction in §7 is for the dual-threshold case). ACE pins `PC` to **Feldman commitments over BLS12-381 G1 or G2** (the dealer publishes `v_k = a_k · basePoint`). Consequence: `PC.Open` is trivial — the share `y_i` *is* the witness, and `PC.Verify` is the equation `y_i · basePoint == Σ_k (i+1)^k · v_k`. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". This loses the *hiding* property of a PCS-with-randomness (Feldman is *not* hiding), but the secret sharing itself remains `(t-1)`-private under DLog because at most `t-1` evaluation points are revealed during normal operation. See §4.1.
+2. **Private authenticated channel = PKE.** The paper assumes private authenticated channels between dealer and each node. ACE realizes this by **PKE-encrypting each share to the recipient's registered `pke_enc_key`**, with the resulting ciphertext riding the public broadcast channel. Confidentiality reduces to PKE security (§2). The auth side is provided by the chain layer: the share ciphertext is bound to the dealer's account by virtue of the `on_dealer_contribution_0` signed transaction.
+3. **Byzantine broadcast channel = the L1 chain.** Total ordering, immutability, and authentication of the transcript come from the Aptos L1 (Aptos's BFT consensus replaces the abstract `BB` channel). Trust assumption shifts from "broadcast channel exists" to "Aptos validator quorum is honest". Documented in [`trust-model.md`](./trust-model.md) §5.
+4. **Signed `ACK` = on-chain transaction.** The paper has nodes send `⟨ACK, σ_i⟩` over the broadcast channel, where `σ_i = sign(sk_i, v)`. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* `σ_i`, and the chain naturally rejects `(t)` ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
+5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent is `DealerContribution1.shares_to_reveal: Vec<Option<BcsScalar>>` — `Some(y_j)` for each non-acker `j`, `None` for ackers. With Feldman the proof drops out (modification 1), so `s` and `π` collapse to a single `Option<BcsScalar>` vector. On-chain `vss::touch` runs the equivalent of `PC.BatchVerify` lazily (MSM per revealed share).
+6. **Lazy `touch()` progression.** Move's per-transaction gas budget forces splitting the second-round verification across multiple `touch()` calls (one share-PK MSM per call). The paper's protocol is single-shot. This is a realization detail, not a security modification — `touch()` only ratchets state forward and is monotonic.
+7. **Resharing-dealer challenge.** ACE adds an *optional* `ResharingDealerChallenge { expected_scaled_element, another_base_element }` plus a sigma-DLog-Eq proof (§5) that pins the dealer's polynomial constant term `a_0` to a previously-known share `s_j` (the `s_j · basePoint_old` from the parent DKG/DKR). Used by DKR to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of sigma-DLog-Eq — see §5 below.
+8. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
+9. **Single threshold only.** ACE uses `secrecy threshold = reconstruction threshold = t`; the paper's dual-threshold variant (`ℓ ∈ [t, n-t]`) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
+10. **Synchrony bound.** The paper's `2Δ` round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides Δ-monotonicity; honest dealers and honest nodes are assumed to broadcast their messages within 5s of receiving the prior message. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
+
 ### 4.1 Polynomial commitment
 
 Given a polynomial `f(x) = a_0 + a_1·x + … + a_{t-1}·x^{t-1}` over Fr, the dealer publishes a commitment vector

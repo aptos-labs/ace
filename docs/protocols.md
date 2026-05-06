@@ -27,6 +27,8 @@ This document describes the on-chain state machines (VSS, DKG, DKR, voting, epoc
 
 A single dealer commits to a degree-`t-1` polynomial over `Fr` and distributes Feldman-verifiable shares to `n` recipients. Used as a building block by DKG and DKR.
 
+The state machine below implements §5 / Algorithm 1 of [Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren — "Verifiable Secret Sharing Simplified", IACR ePrint 2023/1196](https://eprint.iacr.org/2023/1196), with the crypto-relevant modifications enumerated in [`crypto-spec.md`](./crypto-spec.md) §4.0 (Feldman PCS in place of generic `PC`, PKE-as-private-channel, the chain as broadcast channel, on-chain ACK, selective reveal as `Option<BcsScalar>` vector, resharing-dealer challenge for DKR).
+
 ### 2.1 Session struct (abridged)
 
 `contracts/vss/sources/vss.move:89-104`

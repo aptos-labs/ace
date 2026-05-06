@@ -12,7 +12,7 @@ use ark_ff::Field;
 use crate::{
     crypto::{fr_from_le_bytes, fr_to_le_bytes},
     normalize_account_addr,
-    pke::{pke_decrypt, BcsCiphertext},
+    pke::{pke_decrypt, Ciphertext},
     AptosRpc,
 };
 
@@ -246,26 +246,12 @@ fn parse_bool_array(v: &serde_json::Value) -> Result<Vec<bool>> {
 }
 
 fn decrypt_and_extract_fr(
-    ct: &BcsCiphertext,
+    ct: &Ciphertext,
     pke_dk_bytes: &[u8],
     context: &str,
 ) -> Result<Fr> {
-    let plaintext = match ct {
-        BcsCiphertext::ElGamalOtpRistretto255(inner) => pke_decrypt(pke_dk_bytes, inner)
-            .map_err(|e| anyhow!("VSS {} decrypt failed: {}", context, e))?,
-        BcsCiphertext::HpkeX25519ChaCha20Poly1305(inner) => {
-            let dk = crate::pke_hpke_x25519_chacha20poly1305::DecryptionKey::from_bytes(
-                pke_dk_bytes
-                    .strip_prefix(&[crate::pke::SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305])
-                    .ok_or_else(|| {
-                        anyhow!("VSS {} dk scheme byte mismatch (expected HPKE)", context)
-                    })?,
-            )
-            .map_err(|e| anyhow!("VSS {} dk parse failed: {}", context, e))?;
-            crate::pke_hpke_x25519_chacha20poly1305::decrypt(&dk, inner, b"")
-                .map_err(|e| anyhow!("VSS {} HPKE decrypt failed: {}", context, e))?
-        }
-    };
+    let plaintext = pke_decrypt(pke_dk_bytes, ct)
+        .map_err(|e| anyhow!("VSS {} decrypt failed: {}", context, e))?;
 
     // Format: [group scheme][ULEB128(32)=0x20][32B Fr LE]. Scheme may be 0x00 (G1) or 0x01 (G2);
     // Fr is the same prime field for both, so the y-bytes are interchangeable.

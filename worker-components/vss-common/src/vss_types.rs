@@ -10,7 +10,7 @@
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 
-use crate::pke::{BcsCiphertext, Ciphertext};
+use crate::pke::Ciphertext;
 use crate::session::{
     BcsDealerContribution0, BcsDealerContribution1, BcsElement, BcsPcsCommitment,
     BcsPublicPoint, BcsResharingDealerResponse, BcsScalar, BcsSigmaDlogEqProof,
@@ -75,8 +75,8 @@ pub fn dc0_bytes(
                 .map(|v| element_for_scheme(scheme, v))
                 .collect::<Result<Vec<_>>>()?,
         },
-        private_share_messages: share_ciphertexts.iter().map(BcsCiphertext::from).collect(),
-        dealer_state: Some(BcsCiphertext::from(dealer_state_ct)),
+        private_share_messages: share_ciphertexts.to_vec(),
+        dealer_state: Some(dealer_state_ct.clone()),
         resharing_response: resharing_response
             .map(|(p1, t0, t1, s)| -> Result<_> {
                 Ok(BcsResharingDealerResponse {
@@ -229,15 +229,15 @@ fn feldman_verify_g2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pke::Ciphertext;
+    use crate::pke::{Ciphertext, ElGamalOtpRistretto255Ciphertext};
 
     fn fake_ciphertext() -> Ciphertext {
-        Ciphertext::ElGamalOtpRistretto255 {
-            c0: [0u8; 32],
-            c1: [0u8; 32],
+        Ciphertext::ElGamalOtpRistretto255(ElGamalOtpRistretto255Ciphertext {
+            c0: vec![0u8; 32],
+            c1: vec![0u8; 32],
             sym_ciph: vec![0xaau8; 4],
-            mac: [0u8; 32],
-        }
+            mac: vec![0u8; 32],
+        })
     }
 
     fn minimal_dc0_base_g1() -> (Vec<Vec<u8>>, Vec<Ciphertext>, Ciphertext) {

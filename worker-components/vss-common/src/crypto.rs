@@ -100,11 +100,22 @@ pub fn hmac_sha3_256(key: &[u8; 32], msg: &[u8]) -> [u8; 32] {
 /// Encrypt `plaintext` under `key`, matching `ts-sdk/src/pke/elgamal_otp_ristretto255.ts::encrypt`.
 pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertext {
     match key {
-        pke::EncryptionKey::ElGamalOtpRistretto255 { enc_base, public_point } => {
-            let enc_base_pt = CompressedRistretto(*enc_base)
+        pke::EncryptionKey::ElGamalOtpRistretto255(inner) => {
+            let enc_base_arr: [u8; 32] = inner
+                .enc_base
+                .as_slice()
+                .try_into()
+                .expect("enc_base must be 32 bytes");
+            let public_point_arr: [u8; 32] = inner
+                .public_point
+                .as_slice()
+                .try_into()
+                .expect("public_point must be 32 bytes");
+
+            let enc_base_pt = CompressedRistretto(enc_base_arr)
                 .decompress()
                 .expect("enc_base is not a valid Ristretto point");
-            let public_point_pt = CompressedRistretto(*public_point)
+            let public_point_pt = CompressedRistretto(public_point_arr)
                 .decompress()
                 .expect("public_point is not a valid Ristretto point");
 
@@ -132,18 +143,17 @@ pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertex
             let hmac_key: [u8; 32] = hmac_key_vec.try_into().expect("kdf produced 32 bytes");
             let mac = hmac_sha3_256(&hmac_key, &sym_ciph);
 
-            pke::Ciphertext::ElGamalOtpRistretto255 { c0, c1, sym_ciph, mac }
+            pke::Ciphertext::ElGamalOtpRistretto255(pke::ElGamalOtpRistretto255Ciphertext {
+                c0: c0.to_vec(),
+                c1: c1.to_vec(),
+                sym_ciph,
+                mac: mac.to_vec(),
+            })
         }
-        pke::EncryptionKey::HpkeX25519ChaCha20Poly1305 { pk } => {
-            let ek = crate::pke_hpke_x25519_chacha20poly1305::EncryptionKey { pk: pk.to_vec() };
-            let ct = crate::pke_hpke_x25519_chacha20poly1305::encrypt(&ek, plaintext, b"")
+        pke::EncryptionKey::HpkeX25519ChaCha20Poly1305(ek) => {
+            let ct = crate::pke_hpke_x25519_chacha20poly1305::encrypt(ek, plaintext, b"")
                 .expect("HPKE encrypt: invalid public key");
-            let enc: [u8; 32] = ct
-                .enc
-                .as_slice()
-                .try_into()
-                .expect("HPKE encapped key must be 32 bytes");
-            pke::Ciphertext::HpkeX25519ChaCha20Poly1305 { enc, aead_ct: ct.aead_ct }
+            pke::Ciphertext::HpkeX25519ChaCha20Poly1305(ct)
         }
     }
 }

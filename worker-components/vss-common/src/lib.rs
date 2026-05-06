@@ -4,7 +4,6 @@
 //! Shared types and utilities for VSS dealer / recipient binaries.
 
 pub mod aptos;
-pub mod bcs_stream;
 pub mod crypto;
 pub mod group;
 pub mod pke;

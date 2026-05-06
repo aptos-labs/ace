@@ -664,7 +664,7 @@ impl AptosRpc {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("expected string in view result"))?;
         let bytes = hex::decode(hex.trim_start_matches("0x"))?;
-        crate::pke::EncryptionKey::from_bytes(&bytes)
+        bcs::from_bytes(&bytes).map_err(|e| anyhow!("EncryptionKey BCS decode: {}", e))
     }
 
     pub async fn wait_for_txn(&self, hash: &str) -> Result<()> {

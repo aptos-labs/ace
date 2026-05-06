@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use vss_common::{
     crypto::{fr_from_le_bytes, fr_to_le_bytes},
     normalize_account_addr,
-    pke::pke_decrypt_bcs,
+    pke::pke_decrypt,
     parse_ed25519_signing_key_hex,
     reconstruct_share,
     AptosRpc,
@@ -172,7 +172,7 @@ async fn reconstruct_dkg_share(
                 vss_addr, dc0.private_share_messages.len(), idx
             ))?;
 
-        let plaintext = pke_decrypt_bcs(pke_dk_bytes, ct)
+        let plaintext = pke_decrypt(pke_dk_bytes, ct)
             .map_err(|e| anyhow!("DKG VSS session {} decryption failed: {}", vss_addr, e))?;
 
         // Parse private share message: [u8 scheme][ULEB128(32)=0x20][32B Fr LE].

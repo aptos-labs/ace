@@ -19,13 +19,13 @@ export function resolveProfile(alias?: string, account?: string): ResolvedProfil
 
     if (account) {
         const found = entries.find(([, n]) => n.accountAddr === account);
-        if (!found) throw new Error(`No profile with account address "${account}". Run \`${CLI} profile list\` to see available profiles.`);
+        if (!found) throw new Error(`No node profile with account address "${account}". Run \`${CLI} node ls\` to see available profiles.`);
         return { nodeKey: found[0], node: found[1] };
     }
 
     if (alias) {
         const found = entries.find(([, n]) => n.alias === alias);
-        if (!found) throw new Error(`No profile with alias "${alias}". Run \`${CLI} profile list\` to see available profiles.`);
+        if (!found) throw new Error(`No node profile with alias "${alias}". Run \`${CLI} node ls\` to see available profiles.`);
         return { nodeKey: found[0], node: found[1] };
     }
 
@@ -38,10 +38,10 @@ export function resolveProfile(alias?: string, account?: string): ResolvedProfil
     }
 
     if (entries.length === 0) {
-        throw new Error(`No profiles configured. Run \`${CLI} new-node\` to set one up.`);
+        throw new Error(`No node profiles configured. Run \`${CLI} node new\` to set one up.`);
     }
 
     throw new Error(
-        `Multiple profiles configured — use --profile <alias> or set a default with \`${CLI} profile default <alias>\`.`,
+        `Multiple node profiles configured — use --profile <alias> or set a default with \`${CLI} node default <alias>\`.`,
     );
 }

@@ -172,7 +172,7 @@ export function renderNodeStatus(
             : `${D}not started${R}`;
         lines.push(`${B}Process${R}  local build  ${procStatus}`);
         if (node.local.logFile) lines.push(`  Log: ${node.local.logFile}`);
-        if (!alive) lines.push(`  ${D}Run \`${CLI} edit-node\` to restart.${R}`);
+        if (!alive) lines.push(`  ${D}Run \`${CLI} node edit\` to restart.${R}`);
     } else if (!node.platform) {
         lines.push(`${D}No deployment platform configured.${R}`);
     } else if (deployDiff instanceof Error) {
@@ -205,7 +205,7 @@ export function renderNodeStatus(
                 lines.push(row.match ? `${D}${line}${R}` : `${E}${line}  ✗${R}`);
             }
             lines.push('');
-            lines.push(`  ${D}Run \`${CLI} edit-node [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
+            lines.push(`  ${D}Run \`${CLI} node edit [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);
         }
     }
 

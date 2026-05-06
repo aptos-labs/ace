@@ -13,12 +13,16 @@ import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from 
 import { logCommand } from './commands/log.js';
 
 const program = new Command();
-program.name('ace').description('ACE network operator CLI').version('0.1.0');
+program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
 
-// ── new-node ──────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// `ace node` — operator-side commands
+// ──────────────────────────────────────────────────────────────────────────────
 
-program
-    .command('new-node')
+const nodeCmd = program.command('node').description('Manage and operate ACE worker nodes');
+
+nodeCmd
+    .command('new')
     .description('Set up a new ACE node (guided wizard)')
     .action(async () => {
         try {
@@ -33,27 +37,61 @@ program
         }
     });
 
-// ── network-status ────────────────────────────────────────────────────────────
-
-program
-    .command('network-status')
-    .description('Show on-chain network state (epoch, committee, proposals)')
-    .option('-p, --profile <alias>', 'Profile alias to use')
-    .option('-a, --account <addr>', 'Account address of the profile to use')
-    .option('-w, --watch', 'Continuously refresh every 2s (press Q to quit)')
-    .action(async (opts: { profile?: string; account?: string; watch?: boolean }) => {
+nodeCmd
+    .command('ls')
+    .description('List all node profiles')
+    .action(() => {
         try {
-            await networkStatusCommand(opts);
+            profileListCommand();
         } catch (e) {
             exitOnError(e);
         }
     });
 
-// ── node-status ───────────────────────────────────────────────────────────────
+nodeCmd
+    .command('delete [alias]')
+    .description('Delete a node profile by alias or account address')
+    .option('-a, --account <addr>', 'Match profile by account address')
+    .action(async (alias: string | undefined, opts: { account?: string }) => {
+        try {
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            await profileDeleteCommand(key);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
 
-program
-    .command('node-status')
-    .description('Show node profile, credentials, committee membership, and deployment comparison')
+nodeCmd
+    .command('default [alias]')
+    .description('Set the default node profile by alias or account address')
+    .option('-a, --account <addr>', 'Match profile by account address')
+    .action((alias: string | undefined, opts: { account?: string }) => {
+        try {
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            profileDefaultCommand(key);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+nodeCmd
+    .command('edit')
+    .description('Update node image, API key, gas station key, etc.')
+    .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (opts: { profile?: string; account?: string }) => {
+        try {
+            await editNodeCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+nodeCmd
+    .command('status')
+    .description('Show node profile, credentials, committee membership, deployment diff')
     .option('-p, --profile <alias>', 'Profile alias to use')
     .option('-a, --account <addr>', 'Account address of the profile to use')
     .option('-w, --watch', 'Continuously refresh every 2s (press Q to quit)')
@@ -66,55 +104,7 @@ program
         }
     });
 
-// ── propose ───────────────────────────────────────────────────────────────────
-
-program
-    .command('new-proposal [file]')
-    .description('Create a new on-chain proposal (opens $EDITOR; pass a .toml file to skip editor)')
-    .option('-p, --profile <alias>', 'Profile alias to use')
-    .option('-a, --account <addr>', 'Account address of the profile to use')
-    .action(async (file: string | undefined, opts: { profile?: string; account?: string }) => {
-        try {
-            await proposeCommand({ ...opts, file });
-        } catch (e) {
-            exitOnError(e);
-        }
-    });
-
-// ── review-proposal ───────────────────────────────────────────────────────────
-
-program
-    .command('review-proposal')
-    .description('Review a proposal and optionally vote on it (interactive TUI)')
-    .option('-s, --session <addr>', 'Voting session address of the proposal')
-    .option('-p, --profile <alias>', 'Profile alias to use')
-    .option('-a, --account <addr>', 'Account address of the profile to use')
-    .action(async (opts: { session?: string; profile?: string; account?: string }) => {
-        try {
-            await reviewProposalCommand(opts);
-        } catch (e) {
-            exitOnError(e);
-        }
-    });
-
-// ── edit-node ─────────────────────────────────────────────────────────────────
-
-program
-    .command('edit-node')
-    .description('Update node image, API key, or gas station key')
-    .option('-p, --profile <alias>', 'Profile alias to use')
-    .option('-a, --account <addr>', 'Account address of the profile to use')
-    .action(async (opts: { profile?: string; account?: string }) => {
-        try {
-            await editNodeCommand(opts);
-        } catch (e) {
-            exitOnError(e);
-        }
-    });
-
-// ── log ───────────────────────────────────────────────────────────────────────
-
-program
+nodeCmd
     .command('log')
     .description('Stream or query node logs (docker / gcp / local)')
     .option('-p, --profile <alias>', 'Profile alias to use')
@@ -130,46 +120,52 @@ program
         }
     });
 
-// ── profile ───────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// `ace proposal` — committee-change & secret-rotation proposals (admin or node)
+// ──────────────────────────────────────────────────────────────────────────────
 
-const profileCmd = program
-    .command('profile')
-    .description('Manage node profiles');
+const proposalCmd = program.command('proposal').description('Create or review on-chain proposals');
 
-profileCmd
-    .command('list')
-    .description('List all profiles')
-    .action(() => {
+proposalCmd
+    .command('new [file]')
+    .description('Create a new on-chain proposal (opens $EDITOR; pass a .toml file to skip editor)')
+    .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (file: string | undefined, opts: { profile?: string; account?: string }) => {
         try {
-            profileListCommand();
+            await proposeCommand({ ...opts, file });
         } catch (e) {
             exitOnError(e);
         }
     });
 
-profileCmd
-    .command('delete [alias]')
-    .description('Delete a profile by alias or account address')
-    .option('-a, --account <addr>', 'Match profile by account address')
-    .action(async (alias: string | undefined, opts: { account?: string }) => {
+proposalCmd
+    .command('review')
+    .description('Review a proposal and optionally vote on it (interactive TUI)')
+    .option('-s, --session <addr>', 'Voting session address of the proposal')
+    .option('-p, --profile <alias>', 'Profile alias to use')
+    .option('-a, --account <addr>', 'Account address of the profile to use')
+    .action(async (opts: { session?: string; profile?: string; account?: string }) => {
         try {
-            const key = alias ?? opts.account;
-            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
-            await profileDeleteCommand(key);
+            await reviewProposalCommand(opts);
         } catch (e) {
             exitOnError(e);
         }
     });
 
-profileCmd
-    .command('default [alias]')
-    .description('Set the default profile by alias or account address')
-    .option('-a, --account <addr>', 'Match profile by account address')
-    .action((alias: string | undefined, opts: { account?: string }) => {
+// ──────────────────────────────────────────────────────────────────────────────
+// `ace network-status` — chain-side read; works with either profile type
+// ──────────────────────────────────────────────────────────────────────────────
+
+program
+    .command('network-status')
+    .description('Show on-chain network state (epoch, committee, proposals, contract version)')
+    .option('-p, --profile <alias>', 'Node or deployment profile alias to use')
+    .option('-a, --account <addr>', 'Account address (node or admin) of the profile to use')
+    .option('-w, --watch', 'Continuously refresh every 2s (press Q to quit)')
+    .action(async (opts: { profile?: string; account?: string; watch?: boolean }) => {
         try {
-            const key = alias ?? opts.account;
-            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
-            profileDefaultCommand(key);
+            await networkStatusCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

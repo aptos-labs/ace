@@ -13,7 +13,7 @@ export function profileListCommand(): void {
     const entries = Object.entries(config.nodes);
 
     if (entries.length === 0) {
-        console.log(`No profiles configured. Run \`${CLI} new-node\` to set one up.`);
+        console.log(`No node profiles configured. Run \`${CLI} node new\` to set one up.`);
         return;
     }
 
@@ -52,7 +52,7 @@ export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
     const config = loadConfig();
     const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} profile list\` to see available profiles.`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} node ls\` to see available profiles.`);
         process.exit(1);
     }
     const [key, node] = entry;
@@ -84,7 +84,7 @@ export function profileDefaultCommand(aliasOrKey: string): void {
     const config = loadConfig();
     const entry = findProfile(config, aliasOrKey);
     if (!entry) {
-        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} profile list\` to see available profiles.`);
+        console.error(`No profile matching "${aliasOrKey}". Run \`${CLI} node ls\` to see available profiles.`);
         process.exit(1);
     }
     const [key, node] = entry;

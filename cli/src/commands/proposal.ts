@@ -128,7 +128,7 @@ function tomlToProposalInput(doc: Record<string, unknown>, targetEpoch: number):
 
 /**
  * Build a ProposalInput from a pre-existing TOML file (skips editor).
- * Used when the user passes a file path to `new-proposal`.
+ * Used when the user passes a file path to `proposal new`.
  */
 export async function proposalFromFile(filePath: string, state: aceNetwork.State): Promise<ProposalInput | null> {
     let content: string;

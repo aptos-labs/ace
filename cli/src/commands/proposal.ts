@@ -1,13 +1,12 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { spawnSync } from 'child_process';
-import { writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { readFileSync } from 'fs';
 import { parse as parseToml } from 'smol-toml';
 import { AccountAddress } from '@aptos-labs/ts-sdk';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
+
+import { buildFromEditor } from '../editor.js';
 import type { ProposalInput } from '../network-client.js';
 
 // ── Template generation ───────────────────────────────────────────────────────
@@ -128,7 +127,7 @@ function tomlToProposalInput(doc: Record<string, unknown>, targetEpoch: number):
 
 /**
  * Build a ProposalInput from a pre-existing TOML file (skips editor).
- * Used when the user passes a file path to `new-proposal`.
+ * Used when the user passes a file path to `proposal new`.
  */
 export async function proposalFromFile(filePath: string, state: aceNetwork.State): Promise<ProposalInput | null> {
     let content: string;
@@ -145,35 +144,7 @@ export async function proposalFromFile(filePath: string, state: aceNetwork.State
  * Returns null if the user cancelled (empty file or non-zero editor exit).
  */
 export async function buildProposalFor(state: aceNetwork.State): Promise<ProposalInput | null> {
-    const template = generateTemplate(state);
-    const tmpFile = join(tmpdir(), `ace-proposal-${Date.now()}.toml`);
-    writeFileSync(tmpFile, template, 'utf8');
-
-    const editorRaw = process.env.EDITOR ?? process.env.VISUAL ?? 'vi';
-    const editorParts = editorRaw.trim().split(/\s+/);
-    const editor = editorParts[0]!;
-    const editorArgs = [...editorParts.slice(1), tmpFile];
-
-    const result = spawnSync(editor, editorArgs, { stdio: 'inherit' });
-
-    let content: string;
-    try {
-        content = readFileSync(tmpFile, 'utf8');
-    } finally {
-        try { unlinkSync(tmpFile); } catch {}
-    }
-
-    if (result.status !== 0) {
-        console.log('Editor exited with non-zero status — cancelled.');
-        return null;
-    }
-
-    if (content.trim() === '' || content.trim() === template.trim()) {
-        console.log('No changes made — cancelled.');
-        return null;
-    }
-
-    return parseAndValidate(content, state);
+    return buildFromEditor(generateTemplate(state), c => parseAndValidate(c, state), { fileTag: 'proposal' });
 }
 
 function parseAndValidate(content: string, state: aceNetwork.State): ProposalInput | null {

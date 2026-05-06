@@ -106,6 +106,32 @@ export class NetworkClient {
             .unwrapOrThrow('Failed to parse network StateViewV0');
     }
 
+    /**
+     * Fetch the deployed Move package version for the named ACE package (default `Network`).
+     * Reads `0x1::code::PackageRegistry` at the contract address; the per-package `manifest`
+     * field is gzip-compressed Move.toml bytes, from which we grep `version = "..."`.
+     * Returns null on any failure (RPC error, missing package, parse failure).
+     *
+     * Assumption: every ACE package shares the same version per release, so reading one
+     * is sufficient. The republish flow (`ace deployment update-contracts`) enforces this.
+     */
+    async getDeployedContractVersion(packageName: string = 'Network'): Promise<string | null> {
+        try {
+            const resource = await this.aptos.getAccountResource({
+                accountAddress: AccountAddress.fromString(this.aceAddr),
+                resourceType: '0x1::code::PackageRegistry',
+            });
+            const packages = (resource as { packages?: Array<{ name: string; manifest: string }> }).packages ?? [];
+            const pkg = packages.find(p => p.name === packageName);
+            if (!pkg?.manifest) return null;
+            const zlib = await import('zlib');
+            const tomlStr = zlib.gunzipSync(Buffer.from(pkg.manifest.replace(/^0x/, ''), 'hex')).toString('utf8');
+            return tomlStr.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+        } catch {
+            return null;
+        }
+    }
+
     async getAccountBalance(addr: string): Promise<bigint> {
         const octas = await this.aptos.getAccountAPTAmount({ accountAddress: AccountAddress.fromString(addr) });
         return BigInt(octas);

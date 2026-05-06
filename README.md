@@ -63,7 +63,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 |---------|-------------|
 | [`docs`](./docs) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
 | [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
-| [`operator-cli`](./operator-cli) | Operator CLI (`ace`) for node onboarding and management |
+| [`cli`](./cli) | Operator CLI (`ace`) for node onboarding and management |
 | [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
 | [`scenarios`](./scenarios) | Local network setup scripts |
 | [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
@@ -255,10 +255,10 @@ cd ace
 pnpm install
 ```
 
-All CLI commands below run as `pnpm dev <subcommand>` from the `operator-cli/` directory:
+All CLI commands below run as `pnpm dev <subcommand>` from the `cli/` directory:
 
 ```bash
-cd operator-cli
+cd cli
 pnpm dev <subcommand>
 ```
 

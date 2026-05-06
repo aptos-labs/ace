@@ -95,13 +95,41 @@ function patchMoveTomlAdminPlaceholders(contractsDir: string, adminAddressStr: s
 }
 
 /**
- * Copy `contractsRoot` into a temp directory and replace {@link ADMIN_PLACEHOLDER_FOR_MOVE_TOML} in every `Move.toml`.
+ * Rewrite the `version = "..."` line in every `Move.toml` under `contractsDir` to `versionStr`.
+ * The shipped values are placeholders (`1.0.0`); the canonical version comes from `NEXT_RELEASE`
+ * at publish time.
  */
-export function prepareContractsPublishScratch(contractsRoot: string, adminAddressStr: string): ContractsPublishScratch {
+function patchMoveTomlVersions(contractsDir: string, versionStr: string): void {
+    const re = /^(\s*version\s*=\s*)"[^"]*"/m;
+    const walk = (dir: string): void => {
+        for (const ent of readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, ent.name);
+            if (ent.isDirectory()) {
+                walk(full);
+            } else if (ent.name === 'Move.toml') {
+                const text = readFileSync(full, 'utf8');
+                if (!re.test(text)) continue;
+                writeFileSync(full, text.replace(re, `$1"${versionStr}"`), 'utf8');
+            }
+        }
+    };
+    walk(contractsDir);
+}
+
+/**
+ * Copy `contractsRoot` into a temp directory and replace {@link ADMIN_PLACEHOLDER_FOR_MOVE_TOML} in every `Move.toml`.
+ * If `versionStr` is given, also rewrite each `Move.toml`'s `version = "..."` line.
+ */
+export function prepareContractsPublishScratch(
+    contractsRoot: string,
+    adminAddressStr: string,
+    versionStr?: string,
+): ContractsPublishScratch {
     const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'ace-contracts-'));
     const contractsDir = path.join(tmpRoot, 'publish-root');
     cpSync(contractsRoot, contractsDir, { recursive: true });
     patchMoveTomlAdminPlaceholders(contractsDir, adminAddressStr);
+    if (versionStr) patchMoveTomlVersions(contractsDir, versionStr);
     return { tmpRoot, contractsDir };
 }
 
@@ -138,11 +166,19 @@ export function ed25519PrivateKeyHex(account: Account): string {
 /**
  * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
  * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
+ *
+ * If `versionStr` is provided, every `Move.toml`'s `version = "..."` line is rewritten to that value
+ * before publishing (the shipped values are placeholders — the canonical version comes from `NEXT_RELEASE`).
  */
-export async function deployContracts(adminAccount: Account, packageFolders: string[], rpcUrl = LOCALNET_URL): Promise<void> {
+export async function deployContracts(
+    adminAccount: Account,
+    packageFolders: string[],
+    rpcUrl = LOCALNET_URL,
+    versionStr?: string,
+): Promise<void> {
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
-    const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr);
+    const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr, versionStr);
     try {
         for (const folder of packageFolders) {
             const packageDir = path.join(scratch.contractsDir, folder);

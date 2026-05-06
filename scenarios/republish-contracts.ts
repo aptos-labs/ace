@@ -8,7 +8,13 @@
  * a deployment JSON of the shape produced by `pnpm new-{devnet,testnet}-deployment`.
  *
  * Usage:
- *   pnpm republish-contracts <path-to-deployment-json> [--yes]
+ *   pnpm republish-contracts <path-to-deployment-json> [--yes] [--version X.Y.Z]
+ *
+ * Version handling:
+ * - The `version = "..."` line in every contract's `Move.toml` is a placeholder.
+ *   At publish time we rewrite all of them to a single version string.
+ * - Default version is read from the repo-root `NEXT_RELEASE` file.
+ * - Pass `--version X.Y.Z` to override.
  *
  * Notes:
  * - Assumes the on-chain modules are still publishable under their existing
@@ -21,10 +27,12 @@
  */
 
 import * as readline from 'readline';
+import * as path from 'path';
 import { readFileSync } from 'fs';
 import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 
 import { deployContracts, log } from './common/helpers';
+import { REPO_ROOT } from './common/config';
 
 // Canonical dep order — must match the new-{devnet,testnet}-deployment scripts.
 const PACKAGES = [
@@ -41,8 +49,23 @@ interface DeploymentJson {
 }
 
 function usage(): never {
-    console.error('Usage: pnpm republish-contracts <path-to-deployment-json> [--yes]');
+    console.error('Usage: pnpm republish-contracts <path-to-deployment-json> [--yes] [--version X.Y.Z]');
     process.exit(2);
+}
+
+function parseVersionFlag(argv: string[]): string | undefined {
+    // Supports `--version X.Y.Z` and `--version=X.Y.Z`.
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === '--version') return argv[i + 1];
+        if (a.startsWith('--version=')) return a.slice('--version='.length);
+    }
+    return undefined;
+}
+
+function readNextReleaseVersion(): string {
+    const filePath = path.join(REPO_ROOT, 'NEXT_RELEASE');
+    return readFileSync(filePath, 'utf8').trim();
 }
 
 async function confirm(prompt: string): Promise<boolean> {
@@ -56,10 +79,18 @@ async function confirm(prompt: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-    const args = process.argv.slice(2).filter(a => !a.startsWith('-'));
-    const flags = new Set(process.argv.slice(2).filter(a => a.startsWith('-')));
-    if (args.length !== 1) usage();
-    const jsonPath = args[0];
+    const argv = process.argv.slice(2);
+    // Strip flag values (`--version X.Y.Z`) so they don't end up in the positional list.
+    const versionOverride = parseVersionFlag(argv);
+    const positionals = argv.filter((a, i) => {
+        if (a.startsWith('-')) return false;
+        const prev = argv[i - 1];
+        if (prev === '--version') return false;
+        return true;
+    });
+    const flags = new Set(argv.filter(a => a.startsWith('-') && !a.startsWith('--version')));
+    if (positionals.length !== 1) usage();
+    const jsonPath = positionals[0];
 
     const json = JSON.parse(readFileSync(jsonPath, 'utf8')) as DeploymentJson;
     if (!json.rpcUrl || !json.adminPrivateKey) {
@@ -80,12 +111,19 @@ async function main(): Promise<void> {
         process.env.NODE_API_KEY = json.sharedNodeApiKey;
     }
 
+    const version = versionOverride ?? readNextReleaseVersion();
+    if (!/^\d+\.\d+\.\d+$/.test(version)) {
+        console.error(`version "${version}" is not in X.Y.Z form`);
+        process.exit(2);
+    }
+
     log('');
     log('Republishing ACE contracts:');
     log(`  network : ${json.network ?? '(unspecified)'}`);
     log(`  rpcUrl  : ${json.rpcUrl}`);
     log(`  admin   : ${adminAddr}`);
     log(`  api key : ${json.sharedNodeApiKey ? 'present (NODE_API_KEY set)' : 'none'}`);
+    log(`  version : ${version}${versionOverride ? ' (--version override)' : ' (from NEXT_RELEASE)'}`);
     log(`  packages: ${PACKAGES.join(', ')}`);
     log('');
 
@@ -96,9 +134,9 @@ async function main(): Promise<void> {
         }
     }
 
-    await deployContracts(adminAccount, PACKAGES, json.rpcUrl);
+    await deployContracts(adminAccount, PACKAGES, json.rpcUrl, version);
     log('');
-    log('All 11 packages republished.');
+    log(`All 11 packages republished at version ${version}.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

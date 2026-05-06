@@ -12,9 +12,9 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
   - **Aptos:** `(chain_id: u8, module_addr: address, module_name: string, function_name: string)`. The view function called as `{module_addr}::{module_name}::{function_name}(...)`.
   - **Solana:** `(known_chain_name: string, program_id: bytes)`. The Anchor program whose instruction the proof-of-permission must call.
 
-- **`domain`** *(basic flow)* / **`label`** *(custom flow)* — Application-chosen bytes that scope a ciphertext within a `(keypair_id, contract_id)`. Two different `domain` values bound to the same `(keypair_id, contract_id)` produce independent ciphertexts; the contract receives `domain` (as `label`) and uses it to look up access records (e.g. "who paid for blob X").
+- **`label`** *(also: app-specific label)* — Application-chosen bytes that scope a ciphertext within a `(keypair_id, contract_id)`. Two different labels bound to the same `(keypair_id, contract_id)` produce independent ciphertexts; the contract's view function receives `label` and uses it to look up access records (e.g. "who paid for blob X"). *Wire-format note: the basic-flow request struct names this field `domain` for historical reasons; the Move side has always called it `label`. The spec docs use `label` throughout.*
 
-- **`identity`** *(IBE identity)* — The bytes hashed to a curve point $Q_{\text{id}}$ in t-IBE. Computed as `keypair_id || BCS(contract_id) || BCS(domain)`. Same identity → same $Q_{\text{id}}$; different identities → independent IBE ciphertexts.
+- **`identity`** *(IBE identity)* — The bytes hashed to a curve point $Q_{\text{id}}$ in t-IBE. Computed as `keypair_id || BCS(contract_id) || BCS(label)`. Same identity → same $Q_{\text{id}}$; different identities → independent IBE ciphertexts.
 
 - **`epoch`** — A `u64` counter on the network state, monotonically incremented each time the orchestrator completes a committee change or auto-resharing. Workers in epoch $e$ hold shares of all currently-active master secrets at epoch $e$; shares from earlier epochs are not interchangeable. The decryption-request flow includes `epoch` so workers can serve stragglers from the just-prior epoch for ~30s after rotation.
 
@@ -28,7 +28,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **App developer** — A team using ACE. Deploys an access-control contract, integrates the SDK. Off-chain only; not a protocol participant.
 
-- **Encrypter / Decrypter** — End users (or their apps) at the two ends of an ACE flow. The encrypter computes a t-IBE ciphertext bound to a `(keypair_id, contract_id, domain)`. The decrypter constructs a proof the contract will accept and runs the decryption-request flow.
+- **Encrypter / Decrypter** — End users (or their apps) at the two ends of an ACE flow. The encrypter computes a t-IBE ciphertext bound to a `(keypair_id, contract_id, label)`. The decrypter constructs a proof the contract will accept and runs the decryption-request flow.
 
 - **Operator / worker** — Synonyms. Runs one worker process; holds an Ed25519 account key + a PKE decryption key + Shamir shares of every currently-active master secret. Participates in DKG, DKR, and serves decryption requests.
 
@@ -101,7 +101,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 ## Proofs
 
 - **Proof-of-permission** — The user-supplied evidence a worker uses to decide whether to release its IDK share.
-  - **Aptos basic flow:** Ed25519 signature over a pretty-printed `DecryptionRequestPayload` covering `(keypair_id, epoch, contract_id, domain, ephemeralEncKey)`.
+  - **Aptos basic flow:** Ed25519 signature over a pretty-printed `DecryptionRequestPayload` covering `(keypair_id, epoch, contract_id, label, ephemeralEncKey)`.
   - **Solana basic flow:** A structurally-valid (but unsubmitted) Solana transaction calling the configured Anchor program with instruction data containing `FullRequestBytes`. The worker validates structure + simulates with `sigVerify=true`.
   - **Aptos custom flow:** Arbitrary bytes the contract's `check_acl(label, encPk, payload)` will validate.
   - **Solana custom flow:** Like basic, but with `CustomFullRequestBytes` and the program's `assert_custom_acl` instruction.

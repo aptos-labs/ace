@@ -24,7 +24,7 @@ This version of ACE is a **permissioned protocol**. Operators are explicitly adm
 | Actor | What they hold | What they're trusted for |
 |-------|----------------|--------------------------|
 | **App developer** | The Move/Anchor access-control contract; the encryption key (public) | Writing a contract whose `check_permission` / `check_acl` view function returns `true` only for legitimate decryption requests. **Their contract is the access gate; ACE just enforces what the contract says.** |
-| **End user (encrypter)** | The plaintext; the contract address it's bound to | Choosing the right contract + label for their privacy goal. |
+| **End user (encrypter)** | The plaintext; the contract address it's bound to | Choosing the right contract + app-specific label for their privacy goal. |
 | **End user (decrypter)** | A valid permission predicate (signature / ZK proof / Solana txn) | Constructing a request the contract will accept. |
 | **Operator** | One Ed25519 account-signing key + one PKE decryption key + one Shamir share of every active master secret per epoch | Running a worker that (a) participates honestly in DKG/DKR, (b) only releases IDK shares to requests that pass on-chain `check_permission`/`check_acl`, (c) cooperates in epoch transitions. |
 | **Admin** | Permissions to deploy the ACE contract, propose committee changes, and trigger initial epoch | Bootstrapping; admitting/rotating operators; setting `epoch_duration_micros`. |
@@ -58,9 +58,9 @@ Enforced by `worker-components/network-node/src/verify.rs::verify_basic` / `veri
 
 > **A captured proof-of-permission cannot be replayed by a different requester or to extract a share encrypted to a different ephemeral public key.**
 
-For Aptos: the Ed25519 signature covers the pretty-printed message including `keypairId`, `epoch`, `contractId`, `domain`, **and `ephemeralEncKey`**. Substituting any field invalidates the signature. (`worker-components/network-node/src/verify.rs::aptos_decryption_request_message`.)
+For Aptos: the Ed25519 signature covers the pretty-printed message including `keypairId`, `epoch`, `contractId`, `label`, **and `ephemeralEncKey`**. Substituting any field invalidates the signature. (`worker-components/network-node/src/verify.rs::aptos_decryption_request_message`.)
 
-For Solana: the program instruction binds `keypair_id`, `epoch`, `enc_pk` (ephemeral key), and `domain` (or `label`) into the data, and the worker compares those bytes against its own reconstruction. (`ace_anchor_kit::build_full_request_bytes`.)
+For Solana: the program instruction binds `keypair_id`, `epoch`, `enc_pk` (ephemeral key), and `label` into the data, and the worker compares those bytes against its own reconstruction. (`ace_anchor_kit::build_full_request_bytes`.)
 
 ### Claim 4: No silent dealer cheating
 
@@ -82,7 +82,7 @@ The §2 claims are organized by security guarantee; this section organizes the s
 
 | Adversary class | Can | Cannot |
 |-----------------|-----|--------|
-| **Decrypter (single user)** | Submit any proof-of-permission to all workers; choose any ephemeral encryption key. | Recover the master secret. Force a worker to release a share for a request the on-chain `check_permission` / `check_acl` rejects. Replay a signed message across `(keypair_id, epoch, contract_id, domain, ephemeralEncKey)` tuples — the signature binds all five. Replay a captured Solana proof-txn — `simulateTransaction` checks against current account state and a recent blockhash. |
+| **Decrypter (single user)** | Submit any proof-of-permission to all workers; choose any ephemeral encryption key. | Recover the master secret. Force a worker to release a share for a request the on-chain `check_permission` / `check_acl` rejects. Replay a signed message across `(keypair_id, epoch, contract_id, label, ephemeralEncKey)` tuples — the signature binds all five. Replay a captured Solana proof-txn — `simulateTransaction` checks against current account state and a recent blockhash. |
 | **Single malicious operator** | Refuse to serve; return a wrong share (SDK detects via on-chain share-PK pairing check and discards); withhold their dealer contribution (protocol completes from $\geq t$ other dealers); see request metadata they handle. | Decrypt anything alone. Pollute the master public key (DKG/DKR-protected). Cause a false positive on `check_permission` for any other worker (each verifies independently on-chain). |
 | **$t-1$ malicious-operator coalition** | All of the above in aggregate. Stall any decryption by collective refusal. Stall DKG/DKR by collective non-dealing (but the protocol completes if $\geq t$ honest workers deal). Stall an epoch transition if they form a recipient-blocking majority of the next committee. | Decrypt any ciphertext. Forge a master public key. Inject false-positive shares (SDK pairing-check rejects them, regardless of source). |
 | **$t$ malicious-operator coalition** | **Trust assumption broken.** Reconstruct any master secret they hold shares for; decrypt every ciphertext bound to those `keypair_id`s. With admin collusion, push a committee-change proposal admitting more colluders. | — *(no protocol-level defense; mitigated only operationally — committee composition, organizational diversity)* |
@@ -103,7 +103,7 @@ Both PKE and t-IBE leak the plaintext length in their ciphertext size (no paddin
 
 Workers see, in plaintext:
 - Every decryption request body (the proof-of-permission, the requester's `userAddr` for basic-flow Aptos, the ephemeral pubkey).
-- The `(keypair_id, epoch, contract_id, domain)` of every request.
+- The `(keypair_id, epoch, contract_id, label)` of every request.
 
 A worker that logs requests can reconstruct a per-user access pattern across all encrypted assets bound to that worker's committee. **There is no on-chain or off-chain mixing layer.** Applications that need access-pattern privacy (private information retrieval, oblivious workers) are out of scope.
 
@@ -191,7 +191,7 @@ Recommended operator practices (not enforced):
 ## 7. On-chain "contract is truth" caveat
 
 The ACE worker treats the on-chain view-function result as gospel. Specifically:
-- The worker calls `{moduleAddr}::{moduleName}::{functionName}(userAddr, domain)` (basic flow Aptos) or `{moduleAddr}::{moduleName}::{functionName}(label, encPk, payload)` (custom flow Aptos), via the configured RPC.
+- The worker calls `{moduleAddr}::{moduleName}::{functionName}(label, encPk, userAddr)` (basic flow Aptos) or `{moduleAddr}::{moduleName}::{functionName}(label, encPk, payload)` (custom flow Aptos), via the configured RPC.
 - A `bool == true` response → the worker releases its share.
 - The worker does **not** sandbox, fuzz, or verify the view function semantically.
 

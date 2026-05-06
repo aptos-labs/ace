@@ -63,7 +63,7 @@ Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~
 
 ## 3. Threshold Identity-Based Encryption (`t-ibe::*`)
 
-t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair\_id, contract\_id, domain)`); decryption requires $t$-of-$n$ workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair\_id, contract\_id, label)`, where `label` is the app-specific scoping bytes); decryption requires $t$-of-$n$ workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|

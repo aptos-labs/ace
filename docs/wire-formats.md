@@ -108,7 +108,7 @@ struct BasicFlowRequest {
     keypair_id:        [u8; 32],
     epoch:             u64,
     contract_id:       ContractId,
-    domain:            Vec<u8>,
+    domain:            Vec<u8>,           // app-specific label (called `label` in spec docs and Move; field is named `domain` for historical reasons — see glossary)
     ephemeral_enc_key: pke::EncryptionKey,
     proof:             ProofOfPermission,
 }
@@ -117,7 +117,7 @@ struct BasicFlowRequest {
 Wire layout (after the outer `00` enum tag):
 
 ```
-[32B keypair_id] [8B epoch LE] [ContractId] [ULEB | domain] [EncryptionKey] [ProofOfPermission]
+[32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission]
 ```
 
 ### 2.3 `CustomFlowRequest`
@@ -127,7 +127,7 @@ struct CustomFlowRequest {
     keypair_id: [u8; 32],
     epoch:      u64,
     contract_id: ContractId,
-    label:      Vec<u8>,             // semantically the same slot as `domain` in basic flow
+    label:      Vec<u8>,             // app-specific label
     enc_pk:     pke::EncryptionKey,
     proof:      CustomFlowProof,
 }
@@ -227,10 +227,10 @@ The IBE identity passed to `hash_to_curve` is the BCS-concatenation of three fie
 ```
 identity := keypair_id (32B raw)
          || BCS(contract_id)        # (1 byte enum tag + chain-specific fields)
-         || BCS(domain or label)    # ULEB(len) || raw bytes
+         || BCS(label)              # ULEB(len) || raw bytes
 ```
 
-This is implemented as `verify::identity_bytes(keypair_id, contract_id, domain)` in Rust (`worker-components/network-node/src/verify.rs`) and as `FullDecryptionDomain.toBytes()` in TS (`ts-sdk/src/_internal/common.ts:115-160`).
+(In TS / Rust source the third argument is named `domain` for the basic flow and `label` for the custom flow; the bytes that go into the BCS-concat are the same.) This is implemented as `verify::identity_bytes(keypair_id, contract_id, label)` in Rust (`worker-components/network-node/src/verify.rs`) and as `FullDecryptionDomain.toBytes()` in TS (`ts-sdk/src/_internal/common.ts:115-160`).
 
 > **Audit invariant.** A future change to ACE that, say, separates the `keypair_id` and `contract_id` for some new flow MUST keep `identity_bytes` byte-identical for already-encrypted ciphertexts to remain decryptable. The function above is the single source of truth.
 
@@ -247,11 +247,11 @@ struct FullRequestBytes {
     keypair_id:        [u8; 32],
     epoch:             u64,
     ephemeral_enc_key: Vec<u8>,        // = bcs::to_bytes(&EncryptionKey)
-    domain:            Vec<u8>,
+    domain:            Vec<u8>,        // app-specific label (field name `domain` is historical, see §2.2)
 }
 ```
 
-Wire: `[32B keypair_id] [8B epoch LE] [ULEB(L) | L B enc_key_wire] [ULEB(D) | D B domain]`.
+Wire: `[32B keypair_id] [8B epoch LE] [ULEB(L) | L B enc_key_wire] [ULEB(D) | D B label]`.
 
 ### 4.2 `CustomFullRequestBytes`
 
@@ -458,11 +458,11 @@ contractId:
       moduleAddr: 0x{64 hex chars}
       moduleName: {string}
       functionName: {string}
-domain: 0x{hex of domain bytes}
+domain: 0x{hex of label bytes}
 ephemeralEncKey: {hex of EncryptionKey BCS, no 0x prefix}
 ```
 
-(Note the 6-space indent on the `inner:` fields — derived from `pad = "  ".repeat(indent + 2)` in TS.)
+(Note the 6-space indent on the `inner:` fields — derived from `pad = "  ".repeat(indent + 2)` in TS. The literal label `domain:` is what the SDK emits today; the bytes after it are the app-specific label per the spec — see §2.2.)
 
 Two acceptance modes (`worker-components/network-node/src/verify.rs::verify_aptos_sig`):
 - The user's `fullMessage` literally contains this string, OR

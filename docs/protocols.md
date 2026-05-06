@@ -1,6 +1,6 @@
 # ACE Protocols
 
-This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md). For terms used without definition (`keypair_id`, `domain`, `epoch`, dealer/recipient roles, etc.), see [`glossary.md`](./glossary.md).
+This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md). For terms used without definition (`keypair_id`, `label`, `epoch`, dealer/recipient roles, etc.), see [`glossary.md`](./glossary.md).
 
 > **Convention.** State-code values listed below are the literal `u8` constants in the corresponding Move module (`STATE__*`). Function signatures are abridged; see the source for full types.
 
@@ -27,7 +27,7 @@ ACE runs four orchestration sub-protocols plus one request/response flow. Each i
 | Role | Who | What they do |
 |------|-----|--------------|
 | **App developer** | A team using ACE | Deploys the access-control contract; encrypts data; integrates the SDK in their app. Off-chain, no protocol participation. |
-| **Encrypter** | An end user (or their app) | Computes a t-IBE ciphertext bound to `(keypair_id, contract_id, domain)`. No on-chain action. |
+| **Encrypter** | An end user (or their app) | Computes a t-IBE ciphertext bound to `(keypair_id, contract_id, label)`. No on-chain action. |
 | **Decrypter** | An end user | Constructs a proof-of-permission the contract will accept; runs the decryption-request flow. |
 | **Operator** | Runs one worker process | Holds an Ed25519 account key + a PKE decryption key. Participates in DKG (as dealer + recipient), DKR (as dealer if in old committee, as recipient if in new committee), and serves decryption requests. |
 | **Admin** | Controls the ACE contract | Bootstraps the initial epoch; can propose committee changes; cannot decrypt or hold shares. |
@@ -447,7 +447,7 @@ The full flow that turns a user's "decrypt this ciphertext" intent into plaintex
 
 1. SDK reads on-chain state via `network::state_view_v0_bcs()` to find the active `(keypair_id, master_pk, scheme, epoch)` for the application's chosen `keypair_id`.
 2. SDK validates that `master_pk`'s group matches the chosen t-IBE scheme (`tibe::MasterPublicKey::fromGroupElements`).
-3. Computes IBE identity: `identity = keypair_id || BCS(contract_id) || BCS(domain)`.
+3. Computes IBE identity: `identity = keypair_id || BCS(contract_id) || BCS(label)`.
 4. Encrypts via `tibe::encrypt(master_pk, identity, plaintext)` (§3 of [`crypto-spec.md`](./crypto-spec.md)).
 
 The output `Ciphertext` is what the application persists / publishes.
@@ -462,7 +462,7 @@ SDK                                    Workers (n in committee, threshold t)
 
 (2) Build DecryptionRequestPayload =
     { keypairId, epoch, contractId,
-      domain, ephemeralEncKey }
+      label, ephemeralEncKey }
 
 (3) User signs `pretty(payload)`
     with their Ed25519 account
@@ -490,7 +490,7 @@ SDK                                    Workers (n in committee, threshold t)
                                               (a + RPC call)
                                            c. checkPermission: view-call
                                               {moduleAddr}::{moduleName}::{functionName}
-                                              (userAddr, domain) → expects true
+                                              (label, encPk, userAddr) → expects true
                                        (10) Look up cached share for (keypairId, epoch)
                                             → (scalar_le32, tibe_scheme)
                                        (11) eval_point := my position in cur_nodes + 1
@@ -514,7 +514,7 @@ SDK                                    Workers (n in committee, threshold t)
 
 Steps 1-2 and 5-16 are identical. Steps 3-4 and 9 differ:
 
-3'. User builds a Solana txn that calls a known program-id with instruction data containing `build_full_request_bytes(keypair_id, epoch, encKey, domain)` (`ace-anchor-kit/src/lib.rs:28-36`). They sign that txn but do NOT submit it to the chain. The ACL program is a no-op happy-path; the txn is structurally valid + recently-blockhash-bound but never lands.
+3'. User builds a Solana txn that calls a known program-id with instruction data containing `build_full_request_bytes(keypair_id, epoch, encKey, label)` (`ace-anchor-kit/src/lib.rs:28-36`). They sign that txn but do NOT submit it to the chain. The ACL program is a no-op happy-path; the txn is structurally valid + recently-blockhash-bound but never lands.
 
 4'. Build BasicFlowRequest with `SolanaProofOfPermission { inner_scheme, txn_bytes }`.
 
@@ -528,9 +528,9 @@ The Solana ACL program is responsible for asserting access (e.g. that a payment 
 
 ### 8.4 Decrypt — custom flow (Aptos)
 
-Steps 1-2 are identical. Step 3 differs: instead of an Ed25519 signature, the user supplies a `payload: Vec<u8>` that the contract's `check_acl(label, encPk, payload) -> bool` will verify. The `domain` field is renamed `label` to emphasize that it is the named binding key that `check_acl` looks up.
+Steps 1-2 are identical. Step 3 differs: instead of an Ed25519 signature, the user supplies a `payload: Vec<u8>` that the contract's `check_acl(label, encPk, payload) -> bool` will verify.
 
-The CustomFlowRequest carries `CustomFlowProof::Aptos(payload)`. `verify_custom_aptos` view-calls `check_acl(label, encPk, payload)` on the chain via the worker's RPC.
+The `CustomFlowRequest` carries `CustomFlowProof::Aptos(payload)`. The worker view-calls `check_acl(label, encPk, payload)` on the chain via the configured RPC.
 
 A typical use: payload is a Groth16 ZK proof bound to `encPk` so a captured proof cannot be reused with a different ephemeral keypair.
 

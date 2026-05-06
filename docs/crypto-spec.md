@@ -1,0 +1,449 @@
+# ACE Cryptographic Specification
+
+This document specifies the cryptographic primitives used in ACE — exact constructions, parameters, domain-separation tags, and security assumptions. It is the canonical reference for auditors and for future implementations.
+
+For the higher-level protocol (DKG / DKR / decryption-request flow), see [`protocols.md`](./protocols.md). For the on-the-wire byte layouts, see [`wire-formats.md`](./wire-formats.md).
+
+> All byte-counts below assume the wire/BCS encoding shipped today. ULEB128 length prefixes for `Vec<u8>` fields are noted explicitly. Citations are `path:line` against the repository at the doc-PR commit.
+
+---
+
+## 1. Notation and conventions
+
+- `Fr` — scalar field of BLS12-381, prime order `r ≈ 2²⁵²`.
+- `G1`, `G2` — the two pairing-friendly subgroups of BLS12-381 (cofactor-cleared).
+- `Gt` — target group, `Fp¹²` in BLS12-381.
+- `Ristretto255` — prime-order group derived from Ed25519 (RFC 9496 candidate).
+- `||` denotes byte concatenation. `LE64(x)` means 8-byte little-endian. `BCS(·)` is Aptos's Binary Canonical Serialization (`Vec<u8>` ⇒ `ULEB128(len) || bytes`).
+- All hash-to-curve uses RFC 9380 (`hash_to_curve`) with the per-suite DST listed below.
+- Random sampling uses each platform's CSPRNG (`OsRng` in Rust, `crypto.getRandomValues` / Web Crypto in TS).
+
+---
+
+## 2. Public-Key Encryption (`pke::*`)
+
+The PKE layer is used to encrypt **VSS share messages** (dealer → recipient) and **decryption-request bodies** (client ↔ worker). Two schemes are supported; the wire format is a discriminated enum and the wire-bytes scheme tag is the 1-byte ULEB128 of the variant index.
+
+| Scheme | Tag | Status | Defined |
+|--------|-----|--------|---------|
+| ElGamal-OTP-Ristretto255 | `0x00` | legacy | `ts-sdk/src/pke/elgamal_otp_ristretto255.ts`, `worker-components/vss-common/src/{pke.rs,crypto.rs}`, `contracts/pke/sources/pke_elgamal_otp_ristretto255.move` |
+| HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | `0x01` | **default** | `ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`, `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs`, `contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move` |
+
+### 2.1 ElGamal-OTP-Ristretto255 (scheme `0x00`)
+
+A textbook ElGamal-in-the-exponent construction, with the "message" being a fresh group element `m` whose canonical bytes seed an OTP+HMAC DEM applied to the actual plaintext. This is roughly the Cramer–Shoup-light variant; HMAC binds the plaintext to the seed.
+
+**Parameters.** Group `G = Ristretto255`. KDF = `kdf` (§6.1). MAC = `HMAC-SHA3-256` (§6.2).
+
+**Key generation** (`ts-sdk/src/pke/elgamal_otp_ristretto255.ts`):
+```
+encBase ← Ristretto255    (32 random bytes mapped to a point)
+sk      ← Fr_R255         (random 32-byte scalar)
+pk      ← sk · encBase
+EncryptionKey  := (encBase, pk)
+DecryptionKey  := (encBase, sk)        # encBase repeated for self-contained DK serialization
+```
+
+**Encrypt** `(EncryptionKey, plaintext)`:
+```
+m  ← Ristretto255         (random element)
+r  ← Fr_R255              (random scalar)
+c0 := r · encBase
+c1 := m + r · pk
+seed := BCS(m.compress())                          # 33 bytes: ULEB128(32)=0x20 || 32B
+otp     := kdf(seed, "OTP/ELGAMAL_OTP_RISTRETTO255",  |plaintext|)
+mac_key := kdf(seed, "HMAC/ELGAMAL_OTP_RISTRETTO255", 32)
+sym_ciph := plaintext XOR otp
+mac      := HMAC-SHA3-256(mac_key, sym_ciph)
+return (c0, c1, sym_ciph, mac)
+```
+
+**Decrypt** `(DecryptionKey, (c0, c1, sym_ciph, mac))`:
+```
+m  := c1 - sk · c0
+seed := BCS(m.compress())
+mac_key := kdf(seed, "HMAC/ELGAMAL_OTP_RISTRETTO255", 32)
+require HMAC-SHA3-256(mac_key, sym_ciph) == mac        # constant-time compare
+otp := kdf(seed, "OTP/ELGAMAL_OTP_RISTRETTO255", |sym_ciph|)
+return otp XOR sym_ciph
+```
+
+**Security.** This is **CCA-secure under DDH on Ristretto255 in the random-oracle model** (KDF + HMAC modeled as ROs). The MAC is over `sym_ciph` only — both `c0` and `c1` are reconstructed from `sk` so are implicitly authenticated by the seed agreement; tampering with `c0/c1` leads to a wrong `m`, a wrong `seed`, and almost-certainly a wrong `mac_key`, causing the MAC check to fail. ~128-bit security level.
+
+**Caveats / audit notes.**
+- The plaintext-length leak is unmitigated (`sym_ciph` is the same length as `plaintext`).
+- The MAC binds `sym_ciph` to the seed but **does not bind the ciphertext to the EncryptionKey**. A chosen-ciphertext re-encryption to a different recipient would still decrypt to the same plaintext. Acceptable for the use cases here (DEM-style authentication is what's needed) but worth noting for any future re-use.
+- HMAC is built on SHA3-256, which is sponge-based and immune to length-extension, so the plain-HMAC construction is overkill but correct.
+
+### 2.2 HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 (scheme `0x01`, default)
+
+[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180) HPKE in **base mode** (no PSK, no auth).
+
+**Ciphersuite.**
+```
+KemId  = 0x0020   (DHKEM(X25519, HKDF-SHA256))
+KdfId  = 0x0001   (HKDF-SHA256)
+AeadId = 0x0003   (ChaCha20-Poly1305)
+info   = b""       (empty)
+aad    = b""       (empty by default; callers do NOT pass AAD)
+```
+
+**TS implementation** uses [`@hpke/core`](https://www.npmjs.com/package/@hpke/core) for browser+node WebCrypto-backed primitives (`ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`). **Rust implementation** uses [`hpke`](https://docs.rs/hpke/latest/hpke/) crate (`worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:19-23`). **Move implementation** is decoder-only (`contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move`); no on-chain encrypt/decrypt is needed.
+
+**Wire shapes.**
+```
+EncryptionKey: [ULEB128(32) | 32B X25519 public key]                    # 33 bytes
+DecryptionKey: [ULEB128(32) | 32B X25519 private key]                   # 33 bytes
+Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~2 bytes; aead_ct = ct || 16B Poly1305 tag
+```
+
+**Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
+
+**Caveats / audit notes.**
+- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer (sigma-DLog-Eq, Aptos full-message signature, Solana txn simulation) provides binding instead.
+- Implementations across TS/Rust/Move use **independent** HPKE libraries — wire-compatibility is verified by the round-trip tests in `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:166-307` and `contracts/pke/tests/`.
+
+---
+
+## 3. Threshold Identity-Based Encryption (`t-ibe::*`)
+
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, domain)`); decryption requires `t`-of-`n` workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret; the master public key is the on-chain DKG result_pk.
+
+| Scheme | Tag | Status | Defined |
+|--------|-----|--------|---------|
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | legacy | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
+| BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs:35` |
+
+The choice is downstream of the underlying DKG basepoint group:
+
+| DKG basepoint group | t-IBE scheme |
+|---------------------|--------------|
+| BLS12-381 G1 (`group::SCHEME_BLS12381G1 = 0`) | shortpk-otp-hmac |
+| BLS12-381 G2 (`group::SCHEME_BLS12381G2 = 1`, default) | shortsig-aead |
+
+The mapping is a static dispatch in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`.
+
+Both schemes follow Boneh–Franklin (BasicIdent extended to threshold via Shamir) with a [Fujisaki–Okamoto](https://link.springer.com/chapter/10.1007/3-540-48405-1_34)-style DEM on top. The two schemes differ in **which group carries the master public key** (and therefore which group carries the IDK share), in their **DEM** (legacy OTP+HMAC vs. modern HKDF→AEAD), and in their **wire sizes**.
+
+### 3.1 BFIBE-BLS12381-ShortPK-OTP-HMAC (scheme `0x00`)
+
+- **Master public key** lives in **G1** (48-byte compressed) — hence "short pk".
+- **Identity hash** maps to **G2** via RFC 9380 hash-to-curve.
+- **IDK share** lives in **G2** (96-byte compressed).
+- **DEM** is the same OTP + `HMAC-SHA3-256` construction as PKE scheme 0.
+
+**DSTs** (`ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts:21-23`):
+```
+DST_OTP    = "BONEH_FRANKLIN_BLS12381_SHORT_PK/OTP"
+DST_ID_HASH= "BONEH_FRANKLIN_BLS12381_SHORT_PK/HASH_ID_TO_CURVE"
+DST_MAC    = "BONEH_FRANKLIN_BLS12381_SHORT_PK/MAC"
+```
+
+**Hash-to-curve suite.** `BLS12381G2_XMD:SHA-256_SSWU_RO_` (RFC 9380 §8.8.2) with the DST above.
+
+**Master keypair.**
+```
+basePoint ← G1                               # provided on-chain (DKG public_base_element)
+s         ← Fr (committee-jointly via DKG)
+pk        := s · basePoint                    ∈ G1
+MasterPublicKey  = (basePoint ∈ G1, pk ∈ G1)   # 48 + 48 bytes (excluding ULEB)
+MasterPrivateKey = s ∈ Fr                      # secret-shared via Shamir, never reconstructed
+```
+
+**Encrypt** `(MasterPublicKey, identity_bytes, plaintext)`:
+```
+r       ← Fr
+c0      := r · basePoint                      ∈ G1                         # 48B compressed
+Q_id    := hash_to_curve_G2(identity_bytes, DST_ID_HASH)                    ∈ G2
+seed_gt := pairing(r · pk, Q_id)              ∈ Gt                          # = e(basePoint, Q_id)^{r·s}
+seed    := bls12381_gt_repr_to_bytes(seed_gt)                               # 576 bytes; canonical Aptos LE-per-limb form (§3.3)
+otp     := kdf(seed, DST_OTP, |plaintext|)
+mac_key := kdf(seed, DST_MAC, 32)
+sym_ciph := plaintext XOR otp
+mac      := HMAC-SHA3-256(mac_key, sym_ciph)
+Ciphertext = (c0, sym_ciph, mac)              # 48 + |plaintext| + 32 bytes (excluding wire ULEBs)
+```
+
+**Decrypt** with `t`-of-`n` IDK shares:
+```
+For each share i:
+  share_i = (eval_point_i, idk_share_i)  where idk_share_i = s_i · Q_id  ∈ G2
+  s_i     = Shamir share of master secret at x = eval_point_i
+
+Verify share i (optional, but enforced by SDK):
+  pairing(basePoint, idk_share_i) == pairing(share_pk_i, Q_id)              # share_pk_i is on-chain
+  where share_pk_i = s_i · basePoint  (read from VSS::share_pks)
+
+Reconstruct full IDK:
+  λ_i := ∏_{j ≠ i} (0 - x_j) / (x_i - x_j)   in Fr     (Lagrange basis at x=0)
+  idk := Σ_i λ_i · idk_share_i                ∈ G2          # = s · Q_id
+
+Recover seed:
+  seed_gt := pairing(c0, idk)                 ∈ Gt          # = e(basePoint, Q_id)^{r·s}, identical to encrypt
+  seed    := bls12381_gt_repr_to_bytes(seed_gt)
+  mac_key := kdf(seed, DST_MAC, 32)
+  require HMAC-SHA3-256(mac_key, sym_ciph) == mac
+  otp     := kdf(seed, DST_OTP, |sym_ciph|)
+  return otp XOR sym_ciph
+```
+
+**Output sizes** (excluding wire ULEBs):
+- Ciphertext: **80 + |plaintext|** bytes.
+- IDK share (the bytes a worker returns over HTTP): **129 bytes** = 32B `eval_point` LE || 96B G2 || 1B share-proof flag.
+
+**Security.** CCA-secure under [Boneh–Franklin 2001 / FullIdent](https://crypto.stanford.edu/~dabo/papers/bfibe.pdf) on BLS12-381 (BDH assumption), threshold-extended via Shamir over `Fr`, in the random-oracle model. The DEM (OTP + HMAC) is non-malleable in ROM. ~128-bit security level.
+
+**Audit notes.**
+- The "share verification" pairing check is performed by the SDK after collecting shares (`ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts:284-294`). The on-chain `share_pks` come from `vss::share_pks(...)` after the VSS session reaches `STATE__SUCCESS`.
+- A malicious dealer that pollutes a VSS session with bad commitments cannot pass Feldman verification (see `vss-common::vss_types::feldman_verify`); a dishonest worker that returns a wrong share is caught by the pairing check above. In both cases the SDK simply discards that share and proceeds with the next.
+- The plaintext length is leaked.
+
+### 3.2 BFIBE-BLS12381-ShortSig-AEAD (scheme `0x01`, default)
+
+- **Master public key** lives in **G2** (96-byte compressed).
+- **Identity hash** maps to **G1** via RFC 9380 hash-to-curve.
+- **IDK share** lives in **G1** (48-byte compressed) — hence "short sig". This matches `draft-irtf-cfrg-bls-signature` "minimal-signature-size", and the share is computationally a [BLS](https://www.iacr.org/archive/asiacrypt2001/22480516.pdf) signature on the identity.
+- **DEM** is `HKDF-SHA256` keying `ChaCha20-Poly1305` — the same primitive set as the HPKE-X25519 PKE, with a single derived (key, nonce) pair.
+
+**DSTs** (`ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts:38-42`):
+```
+DST_HASH_ID_TO_CURVE = "BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"
+DST_KDF              = "BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/KDF"
+```
+
+**Hash-to-curve suite.** `BLS12381G1_XMD:SHA-256_SSWU_RO_` (RFC 9380 §8.8.1) with the DST above.
+
+**Master keypair.**
+```
+basePoint ← G2                                 # 96B compressed
+s         ← Fr (committee-jointly via DKG)
+pk        := s · basePoint                      ∈ G2
+MasterPublicKey  = (basePoint ∈ G2, pk ∈ G2)
+```
+
+**Encrypt** `(MasterPublicKey, identity_bytes, plaintext)`:
+```
+r       ← Fr
+c0      := r · basePoint                       ∈ G2                          # 96B compressed
+Q_id    := hash_to_curve_G1(identity_bytes, DST_HASH_ID_TO_CURVE)             ∈ G1
+seed_gt := pairing(Q_id, r · pk)               ∈ Gt
+seed    := bls12381_gt_repr_to_bytes(seed_gt)                                 # 576 bytes
+okm     := HKDF-SHA256(IKM=seed, salt=∅, info=DST_KDF, L=32+12)               # = 44 bytes
+key     := okm[0..32]                                                         # ChaCha20 key
+nonce   := okm[32..44]                                                        # 12B nonce
+aead_ct := ChaCha20-Poly1305(key, nonce, AAD=∅).encrypt(plaintext)
+                                                                              # ciphertext || 16B Poly1305 tag
+Ciphertext = (c0, aead_ct)                     # 96 + |plaintext| + 16 bytes (excluding wire ULEBs)
+```
+
+**Decrypt.** Same Lagrange reconstruction as §3.1 but in G1:
+```
+idk := Σ_i λ_i · idk_share_i  ∈ G1                  # = s · Q_id
+seed_gt := pairing(idk, c0)                          # = e(Q_id, basePoint)^{r·s}
+... (HKDF + AEAD as above; AEAD .decrypt() throws on tag mismatch)
+```
+
+**Output sizes** (excluding wire ULEBs):
+- Ciphertext: **112 + |plaintext|** bytes.
+- IDK share: **81 bytes** = 32B `eval_point` LE || 48B G1 || 1B share-proof flag.
+
+**Security.** Same threshold-FullIdent argument as §3.1. The AEAD provides authenticated encryption with a single-use derived (key, nonce) — no nonce reuse risk because each fresh `r` derives a fresh seed and therefore a fresh `(key, nonce)`. ~128-bit security level.
+
+**Audit notes.**
+- Share verification is `pairing(idk_share_i, basePoint) == pairing(Q_id, share_pk_i)` (`ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts:374-380`).
+- The HKDF `info` parameter is the DST literal — there is no per-ciphertext context beyond the seed itself. Because the seed already binds `Q_id`, the basePoint, and the random `r`, this is sound; but if you ever add a second use of HKDF with the same seed, you must change `info`.
+- HKDF L=44 is exactly key+nonce; the AEAD's internal IV expansion is per the AEAD spec.
+
+### 3.3 Gt → bytes canonicalization
+
+Both t-IBE schemes feed a Gt element into either KDF or HKDF. Gt is `Fp¹²` (576 bytes uncompressed). The canonical byte representation is the noble/`hpke-js` *big-endian per limb* output of `bls12_381.fields.Fp12.toBytes`, then reversed limb-by-limb to **little-endian per 48-byte Fp limb** to match the on-chain Move convention.
+
+Implementation: `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts::bls12381GtReprNobleToAptos` and the Rust mirror in `worker-components/network-node/src/crypto.rs`.
+
+Audit hook: any change to this canonicalization breaks cross-implementation interop silently. Round-trip tests in `ts-sdk/tests/bfibe-bls12381-*.test.ts` are the regression gate.
+
+---
+
+## 4. Verifiable Secret Sharing (VSS) and DKG
+
+ACE uses a Feldman-style PCS over an abstract `group::Element` (BLS12-381 G1 or G2). The core building block is a single dealer-driven VSS session; DKG composes `n` VSS sessions in parallel.
+
+### 4.1 Polynomial commitment
+
+Given a polynomial `f(x) = a_0 + a_1·x + … + a_{t-1}·x^{t-1}` over Fr, the dealer publishes a commitment vector
+```
+v_k = a_k · basePoint ∈ G   for k = 0..t-1
+```
+where `basePoint` is the `public_base_element` of the VSS session. Verifying a share `y_i = f(i+1)` against the commitment amounts to checking
+```
+y_i · basePoint == Σ_{k=0}^{t-1} ((i+1)^k mod r) · v_k
+```
+(Multi-scalar multiplication on-chain.) Implemented in `worker-components/vss-common/src/vss_types.rs::feldman_verify` (Rust) and `contracts/vss/sources/vss.move::touch` (Move).
+
+### 4.2 Share derivation
+
+VSS shares are encrypted to recipients with the per-recipient PKE encryption key registered in `worker_config`. Each recipient's plaintext is a single Fr scalar serialized as `[scheme_byte u8][ULEB128(32) = 0x20][32B y_LE]`.
+
+The dealer's polynomial coefficients are **deterministically derived** from its PKE decryption key:
+```
+a_0 := if secret_override.is_some() { Fr::from_le_bytes_mod_order(secret_override) } else { fr_from_dk_bytes(pke_dk_bytes, 0) }
+a_k := fr_from_dk_bytes(pke_dk_bytes, k)    for k = 1..t-1
+where
+  fr_from_dk_bytes(dk, idx) := Fr::from_le_bytes_mod_order(SHA3-256("vss-coef-v1/" || dk || LE64(idx)))
+```
+(Source: `worker-components/vss-common/src/crypto.rs::fr_from_dk_bytes` + `worker-components/vss-dealer/src/lib.rs:198-208`.)
+
+**Audit note.** Determinism is intentional: it lets a dealer recover its own contribution after a crash, and lets failed recipients have their share revealed by `on_dealer_open` without re-running the whole VSS. The downside is that **anyone who learns a dealer's PKE decryption key learns every secret that dealer has ever contributed to**. The `worker-config` registration step therefore commits the dealer to a single PKE key per `account_addr` for the duration of its membership.
+
+### 4.3 Resharing-dealer challenge
+
+A VSS session created as part of a DKR (resharing) carries a `ResharingDealerChallenge { expected_scaled_element, another_base_element }` so the dealer must prove it's resharing a *specific* known secret rather than dealing a fresh one. The challenge geometry:
+- `expected_scaled_element` is the dealer's old share PK from the previous session: `s · basePoint_old`.
+- `another_base_element` is `H = hash_to_curve_G(expected_scaled_element)` — independent of `basePoint_old` in the random-oracle model.
+
+The dealer must produce a Sigma DLog-Eq proof (§5) that the committed secret `a_0` (via `v_0 = a_0 · basePoint_old`) equals the secret used to scale `H` (via `H · s = another_scaled_element`). Verified on-chain in `vss::on_dealer_contribution_0` (`contracts/vss/sources/vss.move:209`).
+
+### 4.4 DKG and DKR composition
+
+- **DKG**: every committee member runs one VSS as dealer; the joint master secret is the sum of `t` of those individual contributions; `share_pk_i` for recipient `i` is the sum of per-VSS `share_pks[i]` over the `t` contributing dealers; `master_pk = Σ (a_0)_dealer · basePoint`.
+- **DKR**: every old-committee member runs one VSS as dealer **with the resharing challenge** so they're committed to resharing their existing share `s_i`; new shares for the new committee are Lagrange combinations of the contributing old shares at `x = 0`. (`contracts/dkr/sources/dkr.move::touch`.)
+
+See [`protocols.md`](./protocols.md) for the on-chain state machines, error paths, and timeouts.
+
+---
+
+## 5. Sigma DLog-Eq Proof
+
+**Statement.** Prover knows a witness `s ∈ Fr` such that
+```
+P0 = s · B0   (∈ G)
+P1 = s · B1   (∈ G)
+```
+for a chosen group `G ∈ {G1, G2}`, given the four points `(B0, P0, B1, P1)`.
+
+**Use.** The VSS resharing dealer (§4.3) uses this with `B0 = basePoint_old`, `P0 = a_0 · basePoint_old = v_0`, `B1 = another_base_element`, `P1 = another_scaled_element`. Convinces the verifier that the committed `a_0` equals the original secret share `s`.
+
+### 5.1 Prove (Schnorr + Fiat–Shamir)
+
+(`worker-components/vss-common/src/sigma_dlog_eq.rs:29-67`)
+```
+r ← Fr                                        # OsRng, fresh per proof
+t0 := r · B0                                  ∈ G
+t1 := r · B1                                  ∈ G
+P1 := s · B1                                  ∈ G   # also returned (used by verifier as "another_scaled_element")
+trx := chain_id (1B)                          # per `aptos::chain_id::get()`
+     || ace_addr (32B)                        # ACE deployment address, big-endian
+     || 0x03 || "vss"                         # BCS-encoded String "vss" (= ULEB128(3) || UTF-8)
+     || for each pt in (B0, P0, B1, P1, t0, t1):
+            scheme (1B) || u8(|pt|) || pt     # scheme = 0=G1, 1=G2
+c   := Fr::from_le_bytes_mod_order(SHA-512(trx))
+s_proof := r + c·s                            ∈ Fr
+return Proof { t0, t1, s_proof }, P1
+```
+
+**Important transcript shape.** The element-length byte is a plain `u8` (not a ULEB128) — for G1 it's 48, for G2 it's 96, both fit in one byte. Audit point: if a future `group::` adds a >255-byte element, the transcript must be widened.
+
+### 5.2 Verify
+
+On-chain in `contracts/sigma-dlog-eq/sources/sigma_dlog_eq.move`. Reconstructs the same Fiat–Shamir transcript from `(B0, P0, B1, P1, t0, t1)` and the bound `(chain_id, ace_addr, "vss")`, derives `c`, and checks two group equations:
+```
+s_proof · B0 == t0 + c · P0
+s_proof · B1 == t1 + c · P1
+```
+
+**Security.** Standard Schnorr-style argument; soundness holds in the algebraic group model under DLog in `G`; HVZK in the ROM. ~128-bit security level on BLS12-381.
+
+**Audit notes.**
+- The `(chain_id, ace_addr, "vss")` binding prevents cross-chain / cross-deployment proof replay. `chain_id` is the Aptos chain id (1B), `ace_addr` is the 32B account address of the ACE contract, `"vss"` is the literal module name. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
+- `from_le_bytes_mod_order` of a SHA-512 digest produces a uniformly-distributed `Fr` element with negligible bias (`r > 2²⁵²`, hash output is 512 bits).
+
+---
+
+## 6. Symmetric primitives
+
+### 6.1 KDF
+
+A SHA3-256-based deterministic KDF that mirrors `ts-sdk/src/utils.ts::kdf`.
+
+```
+kdf(seed, dst, target_len) → Vec<u8> of length target_len
+
+block_idx := 0
+output    := []
+while target_len > 0:
+    block := SHA3-256( BCS(seed) || BCS(dst) || LE64(target_len_total) || LE64(block_idx) )
+    take  := min(32, target_len)
+    output ||= block[0..take]
+    target_len -= take
+    block_idx  += 1
+return output
+```
+where `BCS(bytes) = ULEB128(bytes.len()) || bytes` and `target_len_total` is the **original** requested length (not the decreasing remaining).
+
+Source: `worker-components/vss-common/src/crypto.rs:26-48` (Rust), `ts-sdk/src/utils.ts` (TS).
+
+**Audit notes.**
+- Domain separation is provided by `dst`. `seed.len()` is also covered (via the BCS length prefix), so colliding `(seed, dst)` requires colliding the entire SHA3-256 input.
+- `target_len` is included in the per-block hash, so the same `(seed, dst, block_idx)` produces a different block for a different `target_len`. This is non-standard relative to HKDF and serves no obvious security purpose — but it's harmless and matches the TS / on-chain Move spec.
+- SHA3-256 is used (Keccak), not SHA-256. Sponge construction → no length-extension risk.
+
+### 6.2 HMAC-SHA3-256
+
+Standard HMAC ([RFC 2104](https://www.rfc-editor.org/rfc/rfc2104)) with SHA3-256 and a fixed 32-byte key.
+
+```
+hmac_sha3_256(key[32], msg) → [32]
+  pad := key || 0x00·32      # 64 bytes
+  ipad := pad XOR (0x36·64)
+  opad := pad XOR (0x5c·64)
+  inner := SHA3-256(ipad || msg)
+  outer := SHA3-256(opad || inner)
+  return outer
+```
+Source: `worker-components/vss-common/src/crypto.rs:76-96` (Rust), `ts-sdk/src/utils.ts` (TS).
+
+**Audit notes.**
+- HMAC is overkill on a sponge primitive (SHA3-256 is not vulnerable to length-extension), but the construction is well-understood and the cost is one extra hash.
+- The 64-byte block size is the SHA3-256 *capacity-block* convention used in this repo for HMAC; it is not the SHA3-256 rate (which is 136 bytes). Result: this is **not** the FIPS 198-1 HMAC-SHA3-256 (which uses a 136-byte block). It is an HMAC-like construction with a fixed 64-byte block, identical across TS, Rust, and (transitively) Move-side roundtrips. **External tooling that expects FIPS HMAC-SHA3-256 will compute different MACs.**
+- This is intentional and load-bearing; it is the contract between `ts-sdk` and the workers. Auditors should verify (a) it's used consistently and (b) the implication is documented.
+
+---
+
+## 7. Random number generation
+
+| Component | RNG | Usage |
+|-----------|-----|-------|
+| TS SDK | WebCrypto `crypto.getRandomValues` (browser) / Node `crypto.randomBytes` | All ephemerals (`r` in PKE/IBE encrypt, ephemeral encryption keys) |
+| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen, sigma-dlog-eq proof randomness |
+| Move (on-chain) | `aptos_framework::randomness` API | DKG basepoint sampling (e.g. `epoch_change::touch` uses `randomness::generate(...)` for new G2 base points) |
+
+**Audit notes.**
+- VSS dealer randomness is **derived from the dealer's PKE decryption key** (§4.2), not freshly sampled. This is intentional and security-equivalent provided the PKE dk is itself uniformly random; the operator-CLI generates the dk via `WebCrypto` at onboarding and stores it in the provider-specific secret manager (Cloud Run Secret, etc.).
+- Aptos's on-chain `randomness::generate` is itself a threshold protocol. Trust assumption: the Aptos validator quorum is honest. This is part of the "contract is truth" trust premise — see [`trust-model.md`](./trust-model.md).
+
+---
+
+## 8. Curve and group identifiers (cheat sheet)
+
+| Curve / Group | Field | Element size (compressed) | Hash-to-curve suite |
+|---------------|-------|--------------------------:|---------------------|
+| BLS12-381 G1 | Fp (381b) | **48 B** | `BLS12381G1_XMD:SHA-256_SSWU_RO_` |
+| BLS12-381 G2 | Fp² | **96 B** | `BLS12381G2_XMD:SHA-256_SSWU_RO_` |
+| BLS12-381 Fr | scalar (252b) | 32 B (LE) | n/a |
+| BLS12-381 Gt | Fp¹² | 576 B (custom canonicalization, §3.3) | n/a |
+| Ristretto255 | derived from Ed25519 (252b) | 32 B | n/a (rejection-sampled) |
+| X25519 (Curve25519 Mont) | Fp (255b) | 32 B (raw clamp) | n/a |
+| Ed25519 (verifying key) | Fp | 32 B | n/a — used only for ProofOfPermission |
+
+`group::SCHEME_BLS12381G1 = 0x00`, `group::SCHEME_BLS12381G2 = 0x01`. Defined in `contracts/group/sources/group.move` and mirrored in `worker-components/vss-common/src/session.rs`.
+
+---
+
+## 9. Out of scope (not yet implemented)
+
+The following were called out in earlier discussions and are **not** in the current codebase. Auditors should not flag their absence; they're tracked as future work.
+
+- **Post-quantum PKE.** No PQ-hybrid or PQ-only scheme is currently shipped. (Future: HPKE-X-Wing or Kyber-hybrid; tracked separately.)
+- **256-bit security level PKE.** Both PKE schemes are ~128-bit. (Future: HPKE-X448-HKDF-SHA512-ChaCha20Poly1305 or similar.)
+- **t-IBE share proof.** The `IdentityDecryptionKeyShare` wire format reserves a 1-byte "proof" flag for a future per-share Schnorr proof; today it is always `0x00` (no proof). The verification check in §3.1 / §3.2 uses on-chain `share_pks` instead, which is sufficient for honest-majority assumptions but not for accountability under accusatory failure.
+- **Move-side HPKE / shortsig-aead encrypt-decrypt.** Move only decodes these formats; the on-chain side never holds a private key for either, so no on-chain encrypt or decrypt is needed.

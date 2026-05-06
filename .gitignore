@@ -18,6 +18,9 @@ target/
 *.swp
 *.swo
 
+# Claude Code project state (per-clone)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

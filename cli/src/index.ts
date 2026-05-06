@@ -11,9 +11,55 @@ import { reviewProposalCommand } from './commands/review-proposal.js';
 import { editNodeCommand } from './commands/edit-node.js';
 import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from './commands/profile.js';
 import { logCommand } from './commands/log.js';
+import { deploymentListCommand, deploymentDeleteCommand, deploymentDefaultCommand } from './commands/deployment.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
+
+// ──────────────────────────────────────────────────────────────────────────────
+// `ace deployment` — admin-side commands (manage deployment profiles)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const deploymentCmd = program.command('deployment').description('Manage ACE deployments (admin profiles)');
+
+deploymentCmd
+    .command('ls')
+    .description('List all deployment profiles')
+    .action(() => {
+        try {
+            deploymentListCommand();
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('delete [alias]')
+    .description('Delete a deployment profile by alias or admin address (local-only; on-chain contracts remain)')
+    .option('-a, --account <addr>', 'Match deployment by admin address')
+    .action(async (alias: string | undefined, opts: { account?: string }) => {
+        try {
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            await deploymentDeleteCommand(key);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('default [alias]')
+    .description('Set the default deployment profile by alias or admin address')
+    .option('-a, --account <addr>', 'Match deployment by admin address')
+    .action((alias: string | undefined, opts: { account?: string }) => {
+        try {
+            const key = alias ?? opts.account;
+            if (!key) exitOnError(new Error('Provide an alias or --account <addr>'));
+            deploymentDefaultCommand(key);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
 
 // ──────────────────────────────────────────────────────────────────────────────
 // `ace node` — operator-side commands

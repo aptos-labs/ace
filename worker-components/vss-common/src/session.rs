@@ -199,8 +199,8 @@ pub struct BcsResharingDealerChallenge {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsDealerContribution0 {
     pub pcs_commitment: BcsPcsCommitment,
-    pub private_share_messages: Vec<crate::pke::BcsCiphertext>,
-    pub dealer_state: Option<crate::pke::BcsCiphertext>,
+    pub private_share_messages: Vec<crate::pke::Ciphertext>,
+    pub dealer_state: Option<crate::pke::Ciphertext>,
     pub resharing_response: Option<BcsResharingDealerResponse>,
 }
 

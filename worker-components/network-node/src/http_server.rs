@@ -4,13 +4,12 @@
 //! HTTP server that handles `POST /` requests for threshold-IBE partial key extraction.
 //!
 //! Request body:  hex-encoded PKE ciphertext (encrypted to this node's registered key) whose
-//!                plaintext is a BCS `RequestForDecryptionKey`
+//!                plaintext is a BCS [`verify::RequestForDecryptionKey`].
 //! Response body: hex-encoded PKE ciphertext (encrypted to the client's key) whose
-//!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare`
+//!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare`.
 //!
-//! `RequestForDecryptionKey` wire format:
-//!   [scheme: u8]    0 = BasicFlow, 1 = CustomFlow
-//!   ... rest depends on scheme (see handle_basic_flow / handle_custom_flow)
+//! Adding a new request flow or chain is a one-arm change in `verify::RequestForDecryptionKey`
+//! and a matching arm here — no manual byte-walking, no per-scheme size tables.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,8 +17,10 @@ use std::sync::Arc;
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
 use tokio::sync::{RwLock, Semaphore};
 use vss_common::normalize_account_addr;
+use vss_common::crypto::pke_encrypt;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
+use crate::verify::{self, BasicFlowRequest, CustomFlowRequest, RequestForDecryptionKey};
 use crate::{wlog, ChainRpcConfig};
 
 /// Shared state for the HTTP handler.
@@ -62,8 +63,6 @@ pub async fn run(
     }
 }
 
-/// POST handler: body = hex PKE-encrypted `RequestForDecryptionKey`.
-/// Dispatches to `handle_basic_flow` or `handle_custom_flow` based on scheme byte.
 async fn handle_request(
     State(state): State<AppState>,
     body: Bytes,
@@ -80,92 +79,42 @@ async fn handle_request(
         StatusCode::BAD_REQUEST
     })?;
 
-    if req_bytes.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let scheme = req_bytes[0];
-    let rest = &req_bytes[1..];
+    let request: RequestForDecryptionKey = bcs::from_bytes(&req_bytes).map_err(|e| {
+        wlog!("http-server: BCS decode RequestForDecryptionKey failed: {:#}", e);
+        StatusCode::BAD_REQUEST
+    })?;
 
-    match scheme {
-        0 => handle_basic_flow(&state, rest).await,
-        1 => handle_custom_flow(&state, rest).await,
-        _ => {
-            wlog!("http-server: unknown request scheme {}", scheme);
-            Err(StatusCode::BAD_REQUEST)
-        }
+    match request {
+        RequestForDecryptionKey::Basic(req) => handle_basic_flow(&state, req).await,
+        RequestForDecryptionKey::Custom(req) => handle_custom_flow(&state, req).await,
     }
 }
 
-/// Handle a BasicFlow request.
-///
-/// Layout of `req` (after the scheme byte):
-///   keypairId[32] + epoch[8 LE] + FDD(contractId+domain)[BCS] + ephemeralEncKey[67] + ProofOfPermission
-async fn handle_basic_flow(state: &AppState, req: &[u8]) -> Result<String, StatusCode> {
-    if req.len() < 40 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let keypair_id_bytes: [u8; 32] = req[0..32].try_into().unwrap();
-    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(keypair_id_bytes)));
-    let epoch = u64::from_le_bytes(req[32..40].try_into().unwrap());
+async fn handle_basic_flow(state: &AppState, req: BasicFlowRequest) -> Result<String, StatusCode> {
+    verify::verify_basic(&req, &state.chain_rpc).await.map_err(|e| {
+        wlog!("http-server: basic flow: proof verification failed: {:#}", e);
+        StatusCode::FORBIDDEN
+    })?;
 
-    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req[40..])
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
-    fdd_bytes.extend_from_slice(&keypair_id_bytes);
-    fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
-
-    let ek_start = 40 + fdd.byte_len;
-    let (ephemeral_ek, ek_size) = EncryptionKey::parse_prefix(&req[ek_start..])
-        .map_err(|e| {
-            wlog!("http-server: basic flow: ephemeral enc key parse failed: {:#}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-    let proof_bytes = &req[ek_start + ek_size..];
-
-    crate::verify::verify(&fdd, epoch, &req[ek_start..ek_start + ek_size], proof_bytes, &state.chain_rpc)
-        .await
-        .map_err(|e| {
-            wlog!("http-server: basic flow: proof verification failed: {:#}", e);
-            StatusCode::FORBIDDEN
-        })?;
-
-    extract_and_respond(state, &keypair_id, epoch, &fdd_bytes, &ephemeral_ek).await
+    let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.domain);
+    let keypair_id = keypair_id_str(&req.keypair_id);
+    extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.ephemeral_enc_key).await
 }
 
-/// Handle a CustomFlow request.
-///
-/// Layout of `req` (after the scheme byte):
-///   keypairId[32] + epoch[8 LE] + FDD(contractId+label)[BCS] + encPk[67] + CustomFlowProof
-async fn handle_custom_flow(state: &AppState, req: &[u8]) -> Result<String, StatusCode> {
-    if req.len() < 40 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let keypair_id_bytes: [u8; 32] = req[0..32].try_into().unwrap();
-    let keypair_id = normalize_account_addr(&format!("0x{}", hex::encode(keypair_id_bytes)));
-    let epoch = u64::from_le_bytes(req[32..40].try_into().unwrap());
+async fn handle_custom_flow(state: &AppState, req: CustomFlowRequest) -> Result<String, StatusCode> {
+    verify::verify_custom(&req, &state.chain_rpc).await.map_err(|e| {
+        wlog!("http-server: custom flow: proof verification failed: {:#}", e);
+        StatusCode::FORBIDDEN
+    })?;
 
-    let fdd = crate::verify::parse_fdd(keypair_id_bytes, &req[40..])
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let mut fdd_bytes = Vec::with_capacity(32 + fdd.byte_len);
-    fdd_bytes.extend_from_slice(&keypair_id_bytes);
-    fdd_bytes.extend_from_slice(&req[40..40 + fdd.byte_len]);
+    // Custom-flow identity uses `label` in place of `domain`; ContractId is unchanged.
+    let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.label);
+    let keypair_id = keypair_id_str(&req.keypair_id);
+    extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.enc_pk).await
+}
 
-    let enc_pk_start = 40 + fdd.byte_len;
-    let (caller_enc_key, ek_size) = EncryptionKey::parse_prefix(&req[enc_pk_start..])
-        .map_err(|e| {
-            wlog!("http-server: custom flow: enc key parse failed: {:#}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-    let proof_bytes = &req[enc_pk_start + ek_size..];
-
-    crate::verify::verify_custom(&fdd, epoch, &req[enc_pk_start..enc_pk_start + ek_size], proof_bytes, &state.chain_rpc)
-        .await
-        .map_err(|e| {
-            wlog!("http-server: custom flow: proof verification failed: {:#}", e);
-            StatusCode::FORBIDDEN
-        })?;
-
-    extract_and_respond(state, &keypair_id, epoch, &fdd_bytes, &caller_enc_key).await
+fn keypair_id_str(keypair_id: &[u8; 32]) -> String {
+    normalize_account_addr(&format!("0x{}", hex::encode(keypair_id)))
 }
 
 /// Look up the scalar share, compute the IDK share, and encrypt it to `response_enc_key`.
@@ -173,7 +122,7 @@ async fn extract_and_respond(
     state: &AppState,
     keypair_id: &str,
     epoch: u64,
-    fdd_bytes: &[u8],
+    identity: &[u8],
     response_enc_key: &EncryptionKey,
 ) -> Result<String, StatusCode> {
     let (scalar_le32, tibe_scheme) = {
@@ -192,10 +141,10 @@ async fn extract_and_respond(
     .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let share_hex = crate::crypto::partial_extract_idk_share(
-        tibe_scheme, fdd_bytes, &scalar_le32, eval_point,
+        tibe_scheme, identity, &scalar_le32, eval_point,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let share_bytes = hex::decode(&share_hex).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let resp_ct = vss_common::crypto::pke_encrypt(response_enc_key, &share_bytes);
-    Ok(hex::encode(resp_ct.to_bytes()))
+    let resp_ct = pke_encrypt(response_enc_key, &share_bytes);
+    Ok(hex::encode(bcs::to_bytes(&resp_ct).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?))
 }

@@ -1,258 +1,200 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Proof-of-permission verification for `RequestForDecryptionKey`.
+//! Wire-format types for `RequestForDecryptionKey` and proof-of-permission verification.
 //!
-//! Mirrors `verifyAndExtract` and its helpers from `ts-sdk/src/ace-ex/`:
-//!   - `aptos.ts` — `verifyPermission` (verifySig + checkAuthKey + checkPermission)
-//!   - `solana.ts` — `verifyPermission` (validateTxn + simulateTransaction)
+//! The on-the-wire request layout mirrors `ts-sdk/src/_internal/common.ts` and is decoded
+//! in one shot via `bcs::from_bytes` (`#[derive(Serialize, Deserialize)]` on every nested
+//! type). Adding a new variant — chain, proof scheme, flow — is one new enum arm.
+//!
+//! Verification entry points:
+//!   - [`verify_basic`] — checks an `AptosProofOfPermission` (sig + auth-key + permission view)
+//!     or `SolanaProofOfPermission` (txn structure + RPC simulation).
+//!   - [`verify_custom`] — checks a custom-flow ACL view (Aptos) or Solana custom-instruction.
+//!
+//! Mirrors `verifyAndExtract` and its helpers in `ts-sdk/src/ace-ex/{aptos,solana}.ts`.
 //!
 //! Supported combinations:
-//!   Chain scheme 0 (Aptos) + proof scheme 0 (Aptos)
-//!     → Ed25519 sig check, on-chain auth-key check, view-function permission check
-//!   Chain scheme 1 (Solana) + proof scheme 1 (Solana)
-//!     → Instruction structure check + Solana RPC simulation with sigVerify=true
+//!   ContractId::Aptos  + ProofOfPermission::Aptos   → Ed25519 sig + on-chain auth key + permission view
+//!   ContractId::Solana + ProofOfPermission::Solana  → instruction structure + RPC simulation (sigVerify=true)
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use vss_common::pke::EncryptionKey;
 
 use crate::ChainRpcConfig;
 
-// ── Parsed FDD ────────────────────────────────────────────────────────────────
+// ── Wire types ────────────────────────────────────────────────────────────────
 
-/// Parsed `FullDecryptionDomain` (keypairId + ContractID + domain), extracted from the request.
-pub struct ParsedFdd {
+/// Top-level request body. Outer enum tag picks between the basic and custom flows.
+#[derive(Serialize, Deserialize)]
+pub enum RequestForDecryptionKey {
+    Basic(BasicFlowRequest),
+    Custom(CustomFlowRequest),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BasicFlowRequest {
     pub keypair_id: [u8; 32],
-    pub chain: ParsedChain,
+    pub epoch: u64,
+    pub contract_id: ContractId,
     pub domain: Vec<u8>,
-    /// Byte length of the ContractID+domain portion in the original request buffer (excludes keypairId).
-    pub byte_len: usize,
+    pub ephemeral_enc_key: EncryptionKey,
+    pub proof: ProofOfPermission,
 }
 
-pub enum ParsedChain {
-    Aptos {
-        chain_id: u8,
-        module_addr_bytes: [u8; 32],
-        module_name: String,
-        function_name: String,
-    },
-    Solana {
-        known_chain_name: String,
-        program_id: [u8; 32],
-    },
+#[derive(Serialize, Deserialize)]
+pub struct CustomFlowRequest {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub contract_id: ContractId,
+    pub label: Vec<u8>,
+    pub enc_pk: EncryptionKey,
+    pub proof: CustomFlowProof,
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+#[derive(Serialize, Deserialize)]
+pub enum ContractId {
+    Aptos(AptosContractId),
+    Solana(SolanaContractId),
+}
 
-/// Verify `proof_bytes` against `fdd`.
-///
-/// `chain_rpc` provides per-chain RPC endpoints for auth-key and permission checks.
-pub async fn verify(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8], proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let outer_scheme = proof_bytes
-        .first()
-        .copied()
-        .ok_or_else(|| anyhow!("verify: empty proof bytes"))?;
-    let inner = &proof_bytes[1..];
+#[derive(Serialize, Deserialize)]
+pub struct AptosContractId {
+    pub chain_id: u8,
+    pub module_addr: [u8; 32],
+    pub module_name: String,
+    pub function_name: String,
+}
 
-    match (outer_scheme, &fdd.chain) {
-        (0, ParsedChain::Aptos { .. }) => {
-            let proof = parse_aptos_proof(inner)?;
-            verify_aptos(fdd, epoch, ephemeral_enc_key_bytes, &proof, chain_rpc).await
+#[derive(Serialize, Deserialize)]
+pub struct SolanaContractId {
+    pub known_chain_name: String,
+    pub program_id: Vec<u8>, // 32 bytes
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ProofOfPermission {
+    Aptos(AptosProofOfPermission),
+    Solana(SolanaProofOfPermission),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AptosProofOfPermission {
+    pub user_addr: [u8; 32],
+    pub pk_scheme: u8,
+    pub public_key: Vec<u8>,
+    pub sig_scheme: u8,
+    pub signature: Vec<u8>,
+    pub full_message: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SolanaProofOfPermission {
+    pub inner_scheme: u8, // 0 = legacy/unversioned, 1 = versioned
+    pub txn_bytes: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum CustomFlowProof {
+    /// Aptos custom flow carries a free-form payload that the configured ACL view
+    /// will interpret. The worker just relays it.
+    Aptos(Vec<u8>),
+    Solana(SolanaProofOfPermission),
+}
+
+// ── Identity bytes ────────────────────────────────────────────────────────────
+
+/// IBE identity = `keypair_id (32B raw) ++ BCS(contract_id) ++ BCS(domain)`. This is the
+/// same identity TS computes when encrypting (`FullDecryptionDomain.toBytes()`).
+pub fn identity_bytes(keypair_id: &[u8; 32], contract_id: &ContractId, domain: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(keypair_id);
+    out.extend(bcs::to_bytes(contract_id).expect("BCS"));
+    out.extend(bcs::to_bytes(domain).expect("BCS"));
+    out
+}
+
+// ── Entry points ──────────────────────────────────────────────────────────────
+
+/// Verify a basic-flow request: checks the proof-of-permission and binds it to the
+/// keypair_id, epoch, contract_id, domain, and ephemeral encryption key in `req`.
+pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
+    let ephemeral_ek_bytes = bcs::to_bytes(&req.ephemeral_enc_key)
+        .map_err(|e| anyhow!("verify_basic: serialize ephemeral_enc_key: {}", e))?;
+
+    match (&req.contract_id, &req.proof) {
+        (ContractId::Aptos(contract), ProofOfPermission::Aptos(proof)) => {
+            verify_aptos(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
         }
-        (1, ParsedChain::Solana { .. }) => {
-            let proof = parse_solana_proof(inner)?;
-            verify_solana(fdd, epoch, ephemeral_enc_key_bytes, &proof, chain_rpc).await
+        (ContractId::Solana(contract), ProofOfPermission::Solana(proof)) => {
+            verify_solana(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
         }
-        (s, chain) => Err(anyhow!(
-            "verify: unsupported scheme combination proof={} chain={}",
-            s,
-            match chain {
-                ParsedChain::Aptos { .. } => 0,
-                ParsedChain::Solana { .. } => 1,
-            }
+        (contract, proof) => Err(anyhow!(
+            "verify_basic: contract/proof scheme mismatch (contract={}, proof={})",
+            contract.tag_name(),
+            proof.tag_name()
         )),
     }
 }
 
-// ── FDD Parsing ───────────────────────────────────────────────────────────────
+/// Verify a custom-flow request: dispatches to the chain-specific ACL check.
+pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
+    let enc_pk_bytes = bcs::to_bytes(&req.enc_pk)
+        .map_err(|e| anyhow!("verify_custom: serialize enc_pk: {}", e))?;
 
-/// Parse the ContractID+domain portion of a `FullDecryptionDomain`.
-///
-/// `keypair_id` is already parsed separately (first 32 bytes of the request).
-/// `bytes` points to the start of the ContractID (after keypairId and epoch).
-///
-/// Layout: `[outer_scheme(1B)][ContractID body][domain(BCS bytes)]`
-///
-/// Returns the parsed FDD, with `byte_len` = bytes consumed from `bytes` (excludes keypairId).
-pub fn parse_fdd(keypair_id: [u8; 32], bytes: &[u8]) -> Result<ParsedFdd> {
-    let mut pos = 0usize;
-
-    let scheme = *bytes.get(pos).ok_or_else(|| anyhow!("FDD: missing scheme byte"))?;
-    pos += 1;
-
-    let chain = match scheme {
-        0 => {
-            // Aptos ContractID: chainId(1B) + moduleAddr(32B fixed) + moduleName(str) + functionName(str)
-            if bytes.len() < pos + 1 + 32 {
-                return Err(anyhow!("FDD: too short for Aptos ContractID"));
-            }
-            let chain_id = bytes[pos];
-            pos += 1;
-            let module_addr_bytes: [u8; 32] = bytes[pos..pos + 32]
-                .try_into()
-                .map_err(|_| anyhow!("FDD: moduleAddr slice"))?;
-            pos += 32;
-            let (module_name, n) = read_bcs_string(bytes, pos)?;
-            pos += n;
-            let (function_name, n) = read_bcs_string(bytes, pos)?;
-            pos += n;
-            ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name }
+    match (&req.contract_id, &req.proof) {
+        (ContractId::Aptos(contract), CustomFlowProof::Aptos(payload)) => {
+            verify_custom_aptos(contract, &req.label, &enc_pk_bytes, payload, chain_rpc).await
         }
-        1 => {
-            // Solana ContractID: knownChainName(str) + programId(BCS bytes = ULEB128(32)+32B)
-            let (known_chain_name, n) = read_bcs_string(bytes, pos)?;
-            pos += n;
-            let (pid_len, n) = read_uleb128(bytes, pos)?;
-            pos += n;
-            if pid_len != 32 {
-                return Err(anyhow!("FDD: Solana programId length {} != 32", pid_len));
-            }
-            if bytes.len() < pos + 32 {
-                return Err(anyhow!("FDD: Solana programId truncated"));
-            }
-            let program_id: [u8; 32] = bytes[pos..pos + 32]
-                .try_into()
-                .map_err(|_| anyhow!("FDD: programId slice"))?;
-            pos += 32;
-            ParsedChain::Solana { known_chain_name, program_id }
+        (ContractId::Solana(contract), CustomFlowProof::Solana(proof)) => {
+            verify_custom_solana(req, contract, proof, &enc_pk_bytes, chain_rpc).await
         }
-        _ => return Err(anyhow!("FDD: unknown chain scheme {}", scheme)),
-    };
-
-    // Domain: BCS bytes = ULEB128(len) + raw bytes
-    let (domain_len, n) = read_uleb128(bytes, pos)?;
-    pos += n;
-    if bytes.len() < pos + domain_len as usize {
-        return Err(anyhow!("FDD: domain truncated"));
+        (contract, proof) => Err(anyhow!(
+            "verify_custom: contract/proof scheme mismatch (contract={}, proof={})",
+            contract.tag_name(),
+            proof.tag_name()
+        )),
     }
-    let domain = bytes[pos..pos + domain_len as usize].to_vec();
-    pos += domain_len as usize;
-
-    Ok(ParsedFdd { keypair_id, chain, domain, byte_len: pos })
 }
 
-// ── Aptos Proof Parsing ───────────────────────────────────────────────────────
-
-struct AptosProof {
-    user_addr: [u8; 32],
-    pk_scheme: u8,
-    pubkey_bytes: Vec<u8>,  // raw bytes, no length prefix
-    sig_scheme: u8,
-    sig_bytes: Vec<u8>,     // raw bytes, no length prefix
-    full_message: String,
+impl ContractId {
+    fn tag_name(&self) -> &'static str {
+        match self {
+            ContractId::Aptos(_) => "aptos",
+            ContractId::Solana(_) => "solana",
+        }
+    }
 }
 
-/// Parse the inner `AptosProofOfPermission` bytes (outer scheme byte already consumed).
-///
-/// Layout:
-///   userAddr (32B fixed AccountAddress)
-///   publicKeyScheme (1B)
-///   publicKey (BCS bytes: ULEB128(len)+raw)
-///   signatureScheme (1B)
-///   signature (BCS bytes: ULEB128(len)+raw)
-///   fullMessage (BCS string: ULEB128(len)+UTF-8)
-fn parse_aptos_proof(bytes: &[u8]) -> Result<AptosProof> {
-    let mut pos = 0usize;
-
-    if bytes.len() < pos + 32 {
-        return Err(anyhow!("AptosProof: too short for userAddr"));
+impl ProofOfPermission {
+    fn tag_name(&self) -> &'static str {
+        match self {
+            ProofOfPermission::Aptos(_) => "aptos",
+            ProofOfPermission::Solana(_) => "solana",
+        }
     }
-    let user_addr: [u8; 32] = bytes[pos..pos + 32]
-        .try_into()
-        .map_err(|_| anyhow!("AptosProof: userAddr slice"))?;
-    pos += 32;
-
-    let pk_scheme = *bytes.get(pos).ok_or_else(|| anyhow!("AptosProof: missing pk scheme"))?;
-    pos += 1;
-
-    let (pk_len, n) = read_uleb128(bytes, pos)?;
-    pos += n;
-    if bytes.len() < pos + pk_len as usize {
-        return Err(anyhow!("AptosProof: pubkey truncated"));
-    }
-    let pubkey_bytes = bytes[pos..pos + pk_len as usize].to_vec();
-    pos += pk_len as usize;
-
-    let sig_scheme = *bytes.get(pos).ok_or_else(|| anyhow!("AptosProof: missing sig scheme"))?;
-    pos += 1;
-
-    let (sig_len, n) = read_uleb128(bytes, pos)?;
-    pos += n;
-    if bytes.len() < pos + sig_len as usize {
-        return Err(anyhow!("AptosProof: signature truncated"));
-    }
-    let sig_bytes = bytes[pos..pos + sig_len as usize].to_vec();
-    pos += sig_len as usize;
-
-    let (msg_len, n) = read_uleb128(bytes, pos)?;
-    pos += n;
-    if bytes.len() < pos + msg_len as usize {
-        return Err(anyhow!("AptosProof: fullMessage truncated"));
-    }
-    let full_message = String::from_utf8(bytes[pos..pos + msg_len as usize].to_vec())
-        .map_err(|e| anyhow!("AptosProof: fullMessage not UTF-8: {}", e))?;
-    pos += msg_len as usize;
-
-    if pos != bytes.len() {
-        return Err(anyhow!(
-            "AptosProof: trailing bytes ({} extra)",
-            bytes.len() - pos
-        ));
-    }
-
-    Ok(AptosProof { user_addr, pk_scheme, pubkey_bytes, sig_scheme, sig_bytes, full_message })
 }
 
-// ── Solana Proof Parsing ──────────────────────────────────────────────────────
-
-struct SolanaProof {
-    inner_scheme: u8, // 0 = legacy/unversioned, 1 = versioned
-    txn_bytes: Vec<u8>,
+impl CustomFlowProof {
+    fn tag_name(&self) -> &'static str {
+        match self {
+            CustomFlowProof::Aptos(_) => "aptos",
+            CustomFlowProof::Solana(_) => "solana",
+        }
+    }
 }
 
-/// Parse the inner `SolanaProofOfPermission` bytes (outer scheme byte already consumed).
-///
-/// Layout:
-///   inner_scheme (1B: 0=unversioned, 1=versioned)
-///   txn_bytes (BCS bytes: ULEB128(len)+raw)
-fn parse_solana_proof(bytes: &[u8]) -> Result<SolanaProof> {
-    let mut pos = 0usize;
+// ── Aptos verification ────────────────────────────────────────────────────────
 
-    let inner_scheme =
-        *bytes.get(pos).ok_or_else(|| anyhow!("SolanaProof: missing inner scheme"))?;
-    pos += 1;
-
-    let (txn_len, n) = read_uleb128(bytes, pos)?;
-    pos += n;
-    if bytes.len() < pos + txn_len as usize {
-        return Err(anyhow!("SolanaProof: txn bytes truncated"));
-    }
-    let txn_bytes = bytes[pos..pos + txn_len as usize].to_vec();
-    pos += txn_len as usize;
-
-    if pos != bytes.len() {
-        return Err(anyhow!(
-            "SolanaProof: trailing bytes ({} extra)",
-            bytes.len() - pos
-        ));
-    }
-
-    Ok(SolanaProof { inner_scheme, txn_bytes })
-}
-
-// ── Aptos Verification ────────────────────────────────────────────────────────
-
-async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8], proof: &AptosProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
+async fn verify_aptos(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    ephemeral_ek_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
     // Only legacy Ed25519 (pk_scheme=0, sig_scheme=0) is currently supported.
     if proof.pk_scheme != 0 {
         return Err(anyhow!("verify_aptos: unsupported public key scheme {}", proof.pk_scheme));
@@ -260,40 +202,35 @@ async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8
     if proof.sig_scheme != 0 {
         return Err(anyhow!("verify_aptos: unsupported signature scheme {}", proof.sig_scheme));
     }
-    if proof.pubkey_bytes.len() != 32 {
+    if proof.public_key.len() != 32 {
         return Err(anyhow!(
             "verify_aptos: Ed25519 pubkey must be 32 bytes, got {}",
-            proof.pubkey_bytes.len()
+            proof.public_key.len()
         ));
     }
-    if proof.sig_bytes.len() != 64 {
+    if proof.signature.len() != 64 {
         return Err(anyhow!(
             "verify_aptos: Ed25519 sig must be 64 bytes, got {}",
-            proof.sig_bytes.len()
+            proof.signature.len()
         ));
     }
 
-    let pk_arr: [u8; 32] = proof.pubkey_bytes.as_slice().try_into().unwrap();
+    let pk_arr: [u8; 32] = proof.public_key.as_slice().try_into().unwrap();
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
         .map_err(|e| anyhow!("verify_aptos: invalid Ed25519 pubkey: {}", e))?;
 
-    let sig_arr: [u8; 64] = proof.sig_bytes.as_slice().try_into().unwrap();
+    let sig_arr: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
     let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
 
-    // Run 3 checks: sig, auth-key, permission.
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
-    verify_aptos_sig(fdd, epoch, ephemeral_enc_key_bytes, proof, &vk, &sig)?;
+    verify_aptos_sig(req, contract, proof, ephemeral_ek_bytes, &vk, &sig)?;
 
-    let chain_id = match &fdd.chain {
-        ParsedChain::Aptos { chain_id, .. } => *chain_id,
-        _ => unreachable!(),
-    };
-    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
 
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
         check_aptos_auth_key(proof, &vk, rpc),
-        check_aptos_permission(fdd, proof, rpc),
+        check_aptos_permission(contract, &req.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;
@@ -306,16 +243,16 @@ async fn verify_aptos(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8
 /// Checks that `fullMessage` contains the decryption request's pretty-printed representation
 /// (or its hex encoding, to handle AptosConnect wallets), then verifies the Ed25519 signature.
 fn verify_aptos_sig(
-    fdd: &ParsedFdd,
-    epoch: u64,
-    ephemeral_enc_key_bytes: &[u8],
-    proof: &AptosProof,
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    ephemeral_ek_bytes: &[u8],
     vk: &ed25519_dalek::VerifyingKey,
     sig: &ed25519_dalek::Signature,
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let pretty_msg = aptos_decryption_request_message(fdd, epoch, ephemeral_enc_key_bytes)?;
+    let pretty_msg = aptos_decryption_request_message(req, contract, ephemeral_ek_bytes);
     // AptosConnect embeds hex(UTF-8(pretty_msg)) rather than the raw string.
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
 
@@ -347,7 +284,7 @@ fn verify_aptos_sig(
 /// Verifies that the Ed25519 public key's authentication key (SHA3-256(pk||0x00))
 /// matches the on-chain `authentication_key` for `userAddr`.
 async fn check_aptos_auth_key(
-    proof: &AptosProof,
+    proof: &AptosProofOfPermission,
     vk: &ed25519_dalek::VerifyingKey,
     rpc: &vss_common::AptosRpc,
 ) -> Result<()> {
@@ -355,7 +292,7 @@ async fn check_aptos_auth_key(
     // This is identical to `vss_common::compute_account_address`.
     let computed = vss_common::compute_account_address(vk);
 
-    let user_addr_str = format!("0x{}", hex::encode(&proof.user_addr));
+    let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
     let account = rpc
         .get_account(&user_addr_str)
         .await
@@ -376,20 +313,19 @@ async fn check_aptos_auth_key(
 /// Calls the on-chain view function `{moduleAddr}::{moduleName}::{functionName}(userAddr, domain)`
 /// and expects `true` to be returned.
 async fn check_aptos_permission(
-    fdd: &ParsedFdd,
-    proof: &AptosProof,
+    contract: &AptosContractId,
+    domain: &[u8],
+    proof: &AptosProofOfPermission,
     rpc: &vss_common::AptosRpc,
 ) -> Result<()> {
-    let (module_addr_bytes, module_name, function_name) = match &fdd.chain {
-        ParsedChain::Aptos { module_addr_bytes, module_name, function_name, .. } => {
-            (module_addr_bytes, module_name.as_str(), function_name.as_str())
-        }
-        _ => return Err(anyhow!("check_aptos_permission: chain is not Aptos")),
-    };
-
-    let func = format!("0x{}::{}::{}", hex::encode(module_addr_bytes), module_name, function_name);
-    let user_addr = format!("0x{}", hex::encode(&proof.user_addr));
-    let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
+    let func = format!(
+        "0x{}::{}::{}",
+        hex::encode(contract.module_addr),
+        contract.module_name,
+        contract.function_name,
+    );
+    let user_addr = format!("0x{}", hex::encode(proof.user_addr));
+    let domain_hex = format!("0x{}", hex::encode(domain));
 
     let result = rpc
         .call_view(&func, &[json!(user_addr), json!(domain_hex)])
@@ -406,15 +342,16 @@ async fn check_aptos_permission(
     Ok(())
 }
 
-// ── Solana Verification ───────────────────────────────────────────────────────
+// ── Solana verification ───────────────────────────────────────────────────────
 
-async fn verify_solana(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8], proof: &SolanaProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let (known_chain_name, expected_program_id) = match &fdd.chain {
-        ParsedChain::Solana { known_chain_name, program_id } => {
-            (known_chain_name.as_str(), program_id)
-        }
-        _ => return Err(anyhow!("verify_solana: chain is not Solana")),
-    };
+async fn verify_solana(
+    req: &BasicFlowRequest,
+    contract: &SolanaContractId,
+    proof: &SolanaProofOfPermission,
+    ephemeral_ek_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let expected_program_id = solana_program_id(contract)?;
 
     // NOTE: do NOT detect is_versioned from the first byte of txn_bytes.  A serialized
     // VersionedTransaction starts with the compact-u16 signature count (e.g. 0x01 for
@@ -423,14 +360,27 @@ async fn verify_solana(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u
     let is_versioned = proof.inner_scheme == 1;
 
     // 1. Structural validation: instruction count, program ID, full_request_bytes in data.
-    let expected = ace_anchor_kit::build_full_request_bytes(&fdd.keypair_id, epoch, ephemeral_enc_key_bytes, &fdd.domain);
-    validate_solana_txn(&proof.txn_bytes, expected_program_id, &expected, is_versioned)?;
+    let expected = ace_anchor_kit::build_full_request_bytes(
+        &req.keypair_id,
+        req.epoch,
+        ephemeral_ek_bytes,
+        &req.domain,
+    );
+    validate_solana_txn(&proof.txn_bytes, &expected_program_id, &expected, is_versioned)?;
 
     // 2. Signature + program execution via RPC simulation.
-    let rpc_url = chain_rpc.solana_rpc_for_chain_name(known_chain_name)?;
+    let rpc_url = chain_rpc.solana_rpc_for_chain_name(&contract.known_chain_name)?;
     simulate_solana_txn(&proof.txn_bytes, &rpc_url, &chain_rpc.solana_client).await?;
 
     Ok(())
+}
+
+fn solana_program_id(contract: &SolanaContractId) -> Result<[u8; 32]> {
+    contract
+        .program_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("Solana programId must be 32 bytes, got {}", contract.program_id.len()))
 }
 
 fn validate_solana_txn(
@@ -464,11 +414,8 @@ fn validate_solana_txn(
     }
     let param = &ix.data[8..];
     let vec_len = u32::from_le_bytes([param[0], param[1], param[2], param[3]]) as usize;
-    if param.len() < 4 + vec_len {
-        return Err(anyhow!("Solana: instruction data truncated"));
-    }
     if param.len() != 4 + vec_len {
-        return Err(anyhow!("Solana: unexpected extra bytes in instruction data"));
+        return Err(anyhow!("Solana: instruction data length mismatch"));
     }
     if &param[4..4 + vec_len] != expected_full_request_bytes {
         return Err(anyhow!("Solana: full_request_bytes mismatch in instruction data"));
@@ -607,101 +554,49 @@ async fn simulate_solana_txn(txn_bytes: &[u8], rpc_url: &str, client: &reqwest::
 /// Binding the ephemeralEncKey is critical: it is the public key that the IDK share is encrypted
 /// to in the response.  If it were not part of the signed message, anyone holding a valid proof
 /// could replay it with a substituted ephemeralEncKey and have shares re-encrypted to themselves.
-fn aptos_decryption_request_message(fdd: &ParsedFdd, epoch: u64, ephemeral_enc_key_bytes: &[u8]) -> Result<String> {
-    let (chain_id, module_addr_bytes, module_name, function_name) = match &fdd.chain {
-        ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name } => {
-            (chain_id, module_addr_bytes, module_name.as_str(), function_name.as_str())
-        }
-        _ => return Err(anyhow!("aptos_decryption_request_message: chain is not Aptos")),
-    };
-
+fn aptos_decryption_request_message(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    ephemeral_ek_bytes: &[u8],
+) -> String {
     // moduleAddr.toStringLong() = "0x" + 64 lowercase hex chars (32 bytes)
-    let module_addr = format!("0x{}", hex::encode(module_addr_bytes));
-    let domain_hex = format!("0x{}", hex::encode(&fdd.domain));
-    // `pke.EncryptionKey.toHex()` = bytesToHex(toBytes()) where toBytes() writes
-    // [scheme(1B)][inner...]; for scheme 0 the wire form is exactly 67 bytes, identical
-    // to the slice carried in the request body.  Note: `toHex()` does NOT prepend "0x"
-    // (unlike AccountAddress.toStringLong() or the explicit "0x" on the domain line).
-    let ephemeral_ek_hex = hex::encode(ephemeral_enc_key_bytes);
+    let module_addr = format!("0x{}", hex::encode(contract.module_addr));
+    let domain_hex = format!("0x{}", hex::encode(&req.domain));
+    // `pke.EncryptionKey.toHex()` = bytesToHex(toBytes()); does NOT prepend "0x".
+    let ephemeral_ek_hex = hex::encode(ephemeral_ek_bytes);
+    let keypair_id_hex = format!("0x{}", hex::encode(req.keypair_id));
 
-    // Matches DecryptionRequestPayload.toPrettyMessage(indent=0):
-    //   "ACE Decryption Request"
-    //   "\nkeypairId: 0x{keypairIdHex}"
-    //   "\nepoch: {epoch}"
-    //   "\ncontractId:"
-    //   ContractID.toPrettyMessage(indent=1):          pad="  "
-    //     "\n  scheme: aptos"
-    //     "\n  inner:"
-    //     AptosContractID.toPrettyMessage(indent=3):   pad="      "
-    //       "\n      chainId: {chainId}"
-    //       "\n      moduleAddr: {moduleAddr}"
-    //       "\n      moduleName: {moduleName}"
-    //       "\n      functionName: {functionName}"
-    //   "\ndomain: 0x{domainHex}"
-    //   "\nephemeralEncKey: 0x{ephemeralEncKeyHex}"
-    let keypair_id_hex = format!("0x{}", hex::encode(fdd.keypair_id));
-    Ok(format!(
+    // Matches DecryptionRequestPayload.toPrettyMessage(indent=0) — see TS source for layout.
+    format!(
         "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}\nephemeralEncKey: {}",
-        keypair_id_hex, epoch, chain_id, module_addr, module_name, function_name, domain_hex, ephemeral_ek_hex,
-    ))
+        keypair_id_hex,
+        req.epoch,
+        contract.chain_id,
+        module_addr,
+        contract.module_name,
+        contract.function_name,
+        domain_hex,
+        ephemeral_ek_hex,
+    )
 }
 
 // ── Custom-flow verification ──────────────────────────────────────────────────
 
-/// Verify a `CustomFlowProof` for a `CustomFlowRequest`.
-///
-/// `enc_pk_bytes` is the caller's PKE public key (67B), passed as-is to `check_acl`.
-/// `proof_bytes` starts with the proof scheme byte.
-pub async fn verify_custom(fdd: &ParsedFdd, epoch: u64, enc_pk_bytes: &[u8], proof_bytes: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let outer_scheme = proof_bytes
-        .first()
-        .copied()
-        .ok_or_else(|| anyhow!("verify_custom: empty proof bytes"))?;
-    let inner = &proof_bytes[1..];
-
-    match (outer_scheme, &fdd.chain) {
-        (0, ParsedChain::Aptos { .. }) => {
-            let (payload, _) = read_bcs_bytes_at(inner, 0)?;
-            verify_custom_aptos(fdd, enc_pk_bytes, &payload, chain_rpc).await
-        }
-        (1, ParsedChain::Solana { .. }) => {
-            let proof = parse_solana_proof(inner)?;
-            verify_custom_solana(fdd, epoch, enc_pk_bytes, &proof, chain_rpc).await
-        }
-        (s, chain) => Err(anyhow!(
-            "verify_custom: unsupported scheme combination proof={} chain={}",
-            s,
-            match chain {
-                ParsedChain::Aptos { .. } => 0,
-                ParsedChain::Solana { .. } => 1,
-            }
-        )),
-    }
-}
-
-async fn verify_custom_aptos(fdd: &ParsedFdd, enc_pk_bytes: &[u8], payload: &[u8], chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let (chain_id, module_addr_bytes, module_name, function_name) = match &fdd.chain {
-        ParsedChain::Aptos { chain_id, module_addr_bytes, module_name, function_name } => {
-            (*chain_id, module_addr_bytes, module_name.as_str(), function_name.as_str())
-        }
-        _ => return Err(anyhow!("verify_custom_aptos: chain is not Aptos")),
-    };
-    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
-    check_aptos_acl(fdd, enc_pk_bytes, payload, module_addr_bytes, module_name, function_name, rpc).await
-}
-
-/// Calls `{moduleAddr}::{moduleName}::{functionName}(label, encPk, payload)` and expects `true`.
-async fn check_aptos_acl(
-    fdd: &ParsedFdd,
+async fn verify_custom_aptos(
+    contract: &AptosContractId,
+    label: &[u8],
     enc_pk_bytes: &[u8],
     payload: &[u8],
-    module_addr_bytes: &[u8; 32],
-    module_name: &str,
-    function_name: &str,
-    rpc: &vss_common::AptosRpc,
+    chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    let func = format!("0x{}::{}::{}", hex::encode(module_addr_bytes), module_name, function_name);
-    let label_hex = format!("0x{}", hex::encode(&fdd.domain));
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let func = format!(
+        "0x{}::{}::{}",
+        hex::encode(contract.module_addr),
+        contract.module_name,
+        contract.function_name,
+    );
+    let label_hex = format!("0x{}", hex::encode(label));
     let enc_pk_hex = format!("0x{}", hex::encode(enc_pk_bytes));
     let payload_hex = format!("0x{}", hex::encode(payload));
 
@@ -719,24 +614,27 @@ async fn check_aptos_acl(
     Ok(())
 }
 
-async fn verify_custom_solana(fdd: &ParsedFdd, epoch: u64, enc_pk_bytes: &[u8], proof: &SolanaProof, chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let (known_chain_name, expected_program_id) = match &fdd.chain {
-        ParsedChain::Solana { known_chain_name, program_id } => (known_chain_name.as_str(), program_id),
-        _ => return Err(anyhow!("verify_custom_solana: chain is not Solana")),
-    };
-
+async fn verify_custom_solana(
+    req: &CustomFlowRequest,
+    contract: &SolanaContractId,
+    proof: &SolanaProofOfPermission,
+    enc_pk_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let expected_program_id = solana_program_id(contract)?;
     let is_versioned = proof.inner_scheme == 1;
+
     validate_solana_custom_txn(
         &proof.txn_bytes,
-        expected_program_id,
-        &fdd.keypair_id,
-        epoch,
+        &expected_program_id,
+        &req.keypair_id,
+        req.epoch,
         enc_pk_bytes,
-        &fdd.domain,
+        &req.label,
         is_versioned,
     )?;
 
-    let rpc_url = chain_rpc.solana_rpc_for_chain_name(known_chain_name)?;
+    let rpc_url = chain_rpc.solana_rpc_for_chain_name(&contract.known_chain_name)?;
     simulate_solana_txn(&proof.txn_bytes, &rpc_url, &chain_rpc.solana_client).await?;
     Ok(())
 }
@@ -798,57 +696,28 @@ fn validate_solana_custom_txn(
     Ok(())
 }
 
-// ── BCS / binary helpers ──────────────────────────────────────────────────────
+// ── Misc helpers ──────────────────────────────────────────────────────────────
 
-/// Read a BCS-encoded `Vec<u8>` (ULEB128 length + bytes) starting at `pos`.
-///
-/// Returns `(bytes, bytes_consumed)`.
-fn read_bcs_bytes_at(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usize)> {
-    let (len, n) = read_uleb128(bytes, pos)?;
-    let end = pos + n + len as usize;
-    if bytes.len() < end {
-        return Err(anyhow!("BCS bytes truncated at pos {}", pos));
-    }
-    Ok((bytes[pos + n..end].to_vec(), n + len as usize))
-}
-
-fn read_bcs_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
-    let (len, n) = read_uleb128(bytes, start)?;
-    let end = start + n + len as usize;
-    if bytes.len() < end {
-        return Err(anyhow!("BCS string truncated at pos {}", start));
-    }
-    let s = std::str::from_utf8(&bytes[start + n..end])
-        .map_err(|e| anyhow!("BCS string not UTF-8: {}", e))?
-        .to_string();
-    Ok((s, n + len as usize))
-}
-
-pub fn read_uleb128(bytes: &[u8], start: usize) -> Result<(u64, usize)> {
+fn read_compact_u16(bytes: &[u8], start: usize) -> Result<(u16, usize)> {
     let mut result = 0u64;
     let mut shift = 0u32;
     let mut i = start;
     loop {
-        let b = *bytes.get(i).ok_or_else(|| anyhow!("ULEB128 out of bounds at {}", i))?;
+        let b = *bytes.get(i).ok_or_else(|| anyhow!("compact-u16 out of bounds at {}", i))?;
         i += 1;
         result |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
             break;
         }
         shift += 7;
-        if shift > 63 {
-            return Err(anyhow!("ULEB128 overflow"));
+        if shift > 21 {
+            return Err(anyhow!("compact-u16 overflow"));
         }
     }
-    Ok((result, i - start))
-}
-
-fn read_compact_u16(bytes: &[u8], start: usize) -> Result<(u16, usize)> {
-    let (v, n) = read_uleb128(bytes, start)?;
-    if v > u16::MAX as u64 {
-        return Err(anyhow!("compact-u16 overflow: {}", v));
+    if result > u16::MAX as u64 {
+        return Err(anyhow!("compact-u16 overflow: {}", result));
     }
-    Ok((v as u16, n))
+    Ok((result as u16, i - start))
 }
 
 /// Returns true if `s` is a valid hex string (optional "0x" prefix, all hex digits).

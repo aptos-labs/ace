@@ -2,7 +2,7 @@
 
 Authoritative byte-level reference for every BCS-encoded wire format in the ACE codebase. After PR #55, every wire type below is `#[derive(Serialize, Deserialize)]` in Rust, and every field's BCS encoding is determined mechanically from its Rust type. This doc is a human-readable mirror of those derivations.
 
-For the cryptographic operations that produce / consume these bytes, see [`crypto-spec.md`](./crypto-spec.md). For protocol context, see [`protocols.md`](./protocols.md).
+For the cryptographic operations that produce / consume these bytes, see [`crypto-spec.md`](./crypto-spec.md). For protocol context, see [`protocols.md`](./protocols.md). For protocol-level term definitions (`keypair_id`, `epoch`, `identity`, etc.), see [`glossary.md`](./glossary.md).
 
 ---
 

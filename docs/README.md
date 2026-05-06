@@ -4,6 +4,7 @@ Audit-oriented technical specifications. These docs are versioned with the code;
 
 | Document | Audience | Covers |
 |----------|----------|--------|
+| [`glossary.md`](./glossary.md) | All readers | Shared definitions of identifiers, roles, cryptographic objects, sub-protocol acronyms, parameters. **Hit an undefined term in any doc? Look here first.** |
 | [`crypto-spec.md`](./crypto-spec.md) | Cryptographic auditor | Primitives (PKE, t-IBE, sigma-dlog-eq, KDF, HMAC), parameters, DSTs, security assumptions |
 | [`trust-model.md`](./trust-model.md) | Protocol auditor / security reviewer | Actors, threat model, what each adversary class can/cannot do, non-goals |
 | [`protocols.md`](./protocols.md) | Protocol auditor / implementer | On-chain state machines (VSS, DKG, DKR, voting, epoch_change, network), end-to-end decryption-request flow |

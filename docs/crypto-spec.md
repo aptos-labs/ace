@@ -2,7 +2,7 @@
 
 This document specifies the cryptographic primitives used in ACE — exact constructions, parameters, domain-separation tags, and security assumptions. It is the canonical reference for auditors and for future implementations.
 
-For the higher-level protocol (DKG / DKR / decryption-request flow), see [`protocols.md`](./protocols.md). For the on-the-wire byte layouts, see [`wire-formats.md`](./wire-formats.md).
+For the higher-level protocol (DKG / DKR / decryption-request flow), see [`protocols.md`](./protocols.md). For the on-the-wire byte layouts, see [`wire-formats.md`](./wire-formats.md). For terms used without definition (`keypair_id`, `epoch`, `share-PK`, `t`, `n`, $Q_{\text{id}}$, etc.), see [`glossary.md`](./glossary.md).
 
 > All byte-counts below assume the wire/BCS encoding shipped today. ULEB128 length prefixes for `Vec<u8>` fields are noted explicitly. Citations are `path:line` against the repository at the doc-PR commit.
 

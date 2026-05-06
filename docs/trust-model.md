@@ -2,7 +2,7 @@
 
 This document is the threat model for the ACE protocol — who is trusted, what they're trusted for, what an adversary can do, and what specifically is *not* protected.
 
-For cryptographic constructions, see [`crypto-spec.md`](./crypto-spec.md). For protocol state machines, see [`protocols.md`](./protocols.md).
+For cryptographic constructions, see [`crypto-spec.md`](./crypto-spec.md). For protocol state machines, see [`protocols.md`](./protocols.md). For shared term definitions, see [`glossary.md`](./glossary.md).
 
 ---
 
@@ -201,13 +201,3 @@ This means:
 
 **Defense.** Apps SHOULD deploy `check_permission` as part of an immutable / governance-locked module. Aptos's package upgrade policies (`upgrade_policy: arbitrary` vs `compatible` vs `immutable`) are the primary control here. Auditors of an ACE-using application MUST check the upgrade policy on the access-control contract.
 
----
-
-## 8. Glossary
-
-- **Keypair-id** — On-chain address of the DKG session that established a master secret. Used as a stable identifier for the (master_pk, master_secret) pair across DKR-based reshares.
-- **Epoch** — A monotonically-increasing counter on `network::State`. Workers in the current epoch hold shares of all currently-active master secrets. Shares from earlier epochs are not interchangeable.
-- **Domain / Label** — Application-chosen bytes that scope a piece of ciphertext within a `keypair_id`. The contract receives these as `label` in its view function.
-- **Identity (IBE)** — The IBE identity is the BCS-encoded triple `(keypair_id, contract_id, domain)`. Internally called `fdd_bytes` (FullDecryptionDomain bytes).
-- **Ephemeral encryption key** — A fresh PKE keypair the requester generates for a single decryption flow; IDK shares are encrypted to it.
-- **DKG / DKR / VSS** — see [`protocols.md`](./protocols.md).

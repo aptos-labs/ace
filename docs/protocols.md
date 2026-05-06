@@ -1,6 +1,6 @@
 # ACE Protocols
 
-This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md).
+This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`crypto-spec.md`](./crypto-spec.md). For wire formats, see [`wire-formats.md`](./wire-formats.md). For terms used without definition (`keypair_id`, `domain`, `epoch`, dealer/recipient roles, etc.), see [`glossary.md`](./glossary.md).
 
 > **Convention.** State-code values listed below are the literal `u8` constants in the corresponding Move module (`STATE__*`). Function signatures are abridged; see the source for full types.
 

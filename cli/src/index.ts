@@ -13,6 +13,7 @@ import { profileListCommand, profileDeleteCommand, profileDefaultCommand } from 
 import { logCommand } from './commands/log.js';
 import { deploymentListCommand, deploymentDeleteCommand, deploymentDefaultCommand } from './commands/deployment.js';
 import { updateContractsCommand } from './commands/update-contracts.js';
+import { deploymentEditCommand } from './commands/deployment-edit.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
@@ -72,6 +73,19 @@ deploymentCmd
     .action(async (opts: { profile?: string; account?: string; version?: string; yes?: boolean }) => {
         try {
             await updateContractsCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('edit')
+    .description('Edit a deployment profile in $EDITOR (alias, rpcUrl, network, API keys)')
+    .option('-p, --profile <alias>', 'Deployment profile alias to use')
+    .option('-a, --account <addr>', 'Admin account address of the profile to use')
+    .action(async (opts: { profile?: string; account?: string }) => {
+        try {
+            await deploymentEditCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

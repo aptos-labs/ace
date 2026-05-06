@@ -291,6 +291,58 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 9. **Single threshold only.** ACE uses `secrecy threshold = reconstruction threshold = t`; the paper's dual-threshold variant (`ℓ ∈ [t, n-t]`) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
 10. **Synchrony bound.** The paper's `2Δ` round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides Δ-monotonicity; honest dealers and honest nodes are assumed to broadcast their messages within 5s of receiving the prior message. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
 
+### 4.0.1 DKR resharing: origin and modifications
+
+DKR (`contracts/dkr/sources/dkr.move`) is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret `s` from an old committee `(curr_nodes, t)` to a new committee `(new_nodes, t')` without `s` ever existing in cleartext.
+
+**Construction.** Each old node `j` runs a fresh degree-`(t'-1)` VSS as dealer with `g_j(0) := s_j` (their own old share, where `s_j = f(j+1)` is their share of the underlying polynomial `f`), recipients = `new_nodes`. The resharing-dealer challenge (§4.3) forces `g_j(0) = s_j`. Once `≥ t` such VSS reach `STATE__SUCCESS`, the contributing set `H` is frozen on-chain (by `dkr::touch`), and each new node `i ∈ new_nodes` derives its new share via Lagrange-at-zero over the contributing old indices:
+
+```
+S_i := Σ_{j ∈ H} λ_j · z_{j, i}
+     where z_{j, i} = g_j(i+1)
+           λ_j     = Lagrange basis coefficient for {(j+1)}_{j ∈ H} evaluated at 0
+```
+
+The combined polynomial `F(x) := Σ_{j ∈ H} λ_j · g_j(x)` has degree `t'-1` and satisfies `F(0) = Σ λ_j · s_j = f(0) = s` (since `λ_j` Lagrange-interpolate `f` at 0 over `H`).
+
+**References.**
+- *Sourav Das, Zhuolun Xiang, Alin Tomescu, Alexander Spiegelman, Benny Pinkas, Ling Ren.* "Verifiable Secret Sharing Simplified." IACR ePrint 2023/1196 — already cited above; it provides the underlying VSS (Algorithm 1) used inside each per-old-dealer reshare.
+- *Alin Tomescu*, ["How to reshare a secret"](https://alinush.github.io/2024/04/26/How-to-reshare-a-secret.html), 2024 — pedagogical overview of the exact construction ACE implements (Lagrange-at-zero combination of fresh VSS per old node).
+- *Herzberg, Jakobsson, Jarecki, Krawczyk, Yung.* **"Proactive Secret Sharing or: How to Cope with Perpetual Leakage."** CRYPTO '95 — original PSS paper.
+- *Desmedt, Jajodia.* **"Redistributing Secret Shares to New Access Structures and Its Applications."** Tech report ISSE-TR-97-01, 1997 — share-redistribution variant for distinct old/new committees.
+
+**Modifications relative to classical PSS / the blog construction.**
+
+1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for `s_j`. ACE prevents this by carrying `expected_scaled_element = s_j · basePoint_old` (read from the previous DKG/DKR's `share_pks`) into the new VSS as a `ResharingDealerChallenge`, and requiring a Sigma-DLog-Eq proof (§5) that the new polynomial's constant term equals the known `s_j`. Soundness of this binding reduces to soundness of Sigma-DLog-Eq.
+2. **Agreement on contributing set `H` = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which `t` VSS sessions to combine. ACE delegates this to the L1: `dkr::touch` deterministically reads `vss::completed(...)` for each VSS and freezes `vss_contribution_flags` the first time `count ≥ t`. Every observer reads the same `H` from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same modification pattern as VSS §4.0 item 3.
+3. **Lagrange coefficients computed on-chain.** `dkr::lagrange_coeffs_at_zero` runs in Move once per session (state `CALC_LAGRANGE_COEFFS`); new nodes don't compute their own coefficients. Saves cross-committee replay and ensures every party uses the same `λ_j`.
+4. **No within-epoch share refresh.** Classical PSS refreshes shares periodically within an epoch to handle a mobile adversary. ACE refreshes only at epoch boundaries (`epoch_duration_micros ≥ 30s`); within an epoch, shares are static.
+
+**Corruption model.** Across the resharing transition window, the standard PSS analysis tolerates:
+- `b_old < t` corrupted nodes in the old committee, **and**
+- `b_new < t'` corrupted nodes in the new committee.
+
+This is the **dual** of the user-friendly liveness phrasing "≥ `t` honest old + ≥ `t'` honest new" — note the inequality direction: secrecy needs `b_old ≤ t-1`, liveness needs `(n - b_old) ≥ t` (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
+
+**Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates one or two nodes. With overlap:
+- A node in the overlap that is corrupted contributes to **both** `b_old` and `b_new`.
+- The *abstract* secrecy bound is unchanged: still `b_old < t AND b_new < t'`.
+- The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size `k`, corrupting up to `min(t-1, t'-1)` overlap-nodes counts double — a `t-1`-bounded attacker on the old side automatically gets `t-1` corruptions on the new side too if every corruption is an overlap node.
+- In the limit (`old_nodes = new_nodes`, full overlap, `t = t'`), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts `≥ t` of those nodes.
+
+This is the expected behavior for any PSS — the proactive benefit comes from changing the corrupted set, not from the polynomial refresh. The overlap level is a *deployment policy* choice: small overlap maximizes proactive benefit at the cost of operational continuity; large overlap maximizes continuity at the cost of attacker-cost reduction.
+
+**Liveness.** DKR completes when:
+- `≥ t` honest-and-online old dealers submit a valid `DealerContribution0` (with valid sigma-DLog-Eq proof for resharing); the chain advances `vss_contribution_flags`.
+- For each of those VSS sessions, `≥ t'` honest-and-online new ackers call `on_share_holder_ack` within `ACK_WINDOW_MICROS = 10s` (or the dealer reveals the missing shares in DC1).
+
+Heavy overlap also helps liveness: a single honest-and-online physical node serves both as old dealer and as new acker.
+
+**Audit notes.**
+- `expected_scaled_element` is read from the previous session's on-chain `share_pks`; auditors should confirm the read path in `dkr::new_session` cannot be poisoned by a malicious admin upgrading the predecessor module.
+- A chain liveness halt during DKR stalls the epoch transition arbitrarily long — *liveness* concern, not *safety*.
+- Heavy overlap is a deployment policy; the protocol does not enforce or reject it. A deployment that rotates ≥1 node per epoch but is otherwise stable inherits the analysis above.
+
 ### 4.1 Polynomial commitment
 
 Given a polynomial `f(x) = a_0 + a_1·x + … + a_{t-1}·x^{t-1}` over Fr, the dealer publishes a commitment vector

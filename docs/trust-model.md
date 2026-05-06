@@ -6,6 +6,21 @@ For cryptographic constructions, see [`crypto-spec.md`](./crypto-spec.md). For p
 
 ---
 
+## 0. Deployment model
+
+This version of ACE is a **permissioned protocol**. Operators are explicitly admitted by the existing committee (or by the admin in the bootstrap epoch) via on-chain proposals + threshold-vote approval (`network::new_proposal` + `voting::vote`). There is no on-chain reward, fee, or stake mechanism for operators; the design assumes operators are **incentivized by default** — typically because they are members of a consortium, app developers running their own workers for their own applications, or compensated out-of-band by the admin.
+
+**Implications for the threat model.**
+
+- **Sybil resistance is operational, not cryptoeconomic.** The protocol does not gate operator admission on stake, work, or external identity. The committee's vote *is* the gate. An admin or supermajority that admits unqualified operators bypasses ACE's security entirely.
+- **No on-chain accountability.** A misbehaving operator (returns wrong shares, refuses to deal, refuses to ACK) is removed via `CommitteeChange`, not by automatic slashing. ACE has no "punish a worker" primitive.
+- **Operators trust other operators institutionally.** The committee is small (typically 3–10), known to each other, and aligned by incentives outside the protocol.
+- **Threat actors are a *subset* of admitted operators**, plus the usual external parties (decryption requesters, RPC providers, chain validators).
+
+**A permissionless variant** would need to add: stake / bond, on-chain rewards (per-decryption-share fee, per-DKG fee), slashing rules tied to verifiable misbehavior, and a Sybil-resistant admission gate. None of those are in this version. Auditors should not flag the absence of these mechanisms; the rest of the document assumes the deployment model above.
+
+---
+
 ## 1. Actors
 
 | Actor | What they hold | What they're trusted for |
@@ -163,11 +178,21 @@ Master secrets rotate on every epoch (auto every `epoch_duration_micros` ≥ 30s
 - A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. **The PKE decryption key derivation step (§4.2 of `crypto-spec.md`) deterministically derives polynomial coefficients from the dealer's PKE dk, so the dealer can always recover their old contributions while their PKE dk lives.** Operationally, deleting old shares from disk is the operator's responsibility; the protocol does not enforce it.
 - See [`project_epoch_in_decryption_request`](../.claude/projects/-Users-zhoujun-ma-repos-aptos-labs-ace/memory/project_epoch_in_decryption_request.md) — workers retain old shares for ~30s after rotation to handle in-flight requests.
 
-### 4.5 Denial-of-service
+### 4.5 Sybil resistance and cryptoeconomic incentives
+
+Per §0, ACE is permissioned and assumes external incentives for operators. Out of scope:
+
+- **Sybil-resistant operator admission.** Anyone the committee votes in can join; the protocol does not check stake, work, or identity.
+- **Per-request fees / rewards.** Workers do not earn on-chain rewards for serving decryption requests, dealing in DKG/DKR, or staying online.
+- **Slashing for verifiable misbehavior.** Wrong shares, refusal to deal, or refusal to ACK are addressed by manual `CommitteeChange`, not by an automatic on-chain penalty.
+
+A future permissionless variant that adds stake / rewards / slashing is a *different protocol*; the analysis here doesn't carry over.
+
+### 4.6 Denial-of-service
 
 The HTTP server has a concurrency semaphore (`worker-components/network-node/src/http_server.rs:36`) but no per-source rate limit, no PoW, no IP filtering. A worker exposed to the public internet can be DoS'd cheaply. Mitigations are operational (Cloud Run autoscaling, gateway rate limits) and not in the protocol layer.
 
-### 4.6 Implementation faults
+### 4.7 Implementation faults
 
 Out of scope for the protocol-level trust model:
 - TS / Rust / Move bugs that break wire-format compatibility (covered by integration tests).

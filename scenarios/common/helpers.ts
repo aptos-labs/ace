@@ -316,8 +316,19 @@ export async function submitTxn(
             // Retry at 500 ms intervals for up to 5 s total.
             const eventsArray = (w: Record<string, unknown>) =>
                 ((w.events as { type?: string }[] | undefined) ?? []);
-            const ready = awaitEventType
-                ? (w: Record<string, unknown>) => eventsArray(w).some(e => String(e?.type ?? '') === awaitEventType)
+            // Address normalization: Aptos returns event types with leading zeros stripped
+            // (e.g. "0xe3...::dkg::SessionCreated" instead of "0x0e3...::dkg::SessionCreated").
+            // Comparing raw strings randomly fails when the contract address happens to start
+            // with a 0x0_ digit (1/16 chance per fresh deploy). Normalize both sides to canonical
+            // 64-hex-char form before comparing.
+            const normalizeEventType = (t: string): string => {
+                const m = t.match(/^(0x[0-9a-fA-F]+)(::.*)$/);
+                if (!m) return t;
+                return `0x${m[1]!.slice(2).padStart(64, '0').toLowerCase()}${m[2]}`;
+            };
+            const wantNormalized = awaitEventType ? normalizeEventType(awaitEventType) : undefined;
+            const ready = wantNormalized
+                ? (w: Record<string, unknown>) => eventsArray(w).some(e => normalizeEventType(String(e?.type ?? '')) === wantNormalized)
                 : (w: Record<string, unknown>) => eventsArray(w).length > 0;
             // Up to 60 s for CI runners where event indexing can lag well past 30 s.
             // The polling itself is cheap (one HTTP GET per iteration) and exits early

@@ -12,7 +12,7 @@ export function deploymentListCommand(): void {
     const entries = Object.entries(config.deployments);
 
     if (entries.length === 0) {
-        console.log(`No deployment profiles configured. Run \`${CLI} deployment new\` to set one up.`);
+        console.log(`No deployment profiles configured yet. Create one with \`${CLI} deployment new\`.`);
         return;
     }
 
@@ -25,9 +25,12 @@ export function deploymentListCommand(): void {
         console.log(`    Network    : ${dep.network ?? deriveRpcLabel(dep.rpcUrl)}`);
         console.log(`    Contract   : ${dep.aceAddr}`);
         console.log(`    Admin addr : ${dep.adminAddress}`);
-        if (dep.deployedAtTag) console.log(`    Deployed   : ${dep.deployedAtTag}${dep.deployedAt ? ` (${dep.deployedAt})` : ''}`);
+        if (dep.deployedAtTag) {
+            console.log(`    Last deploy: ${dep.deployedAtTag}${dep.deployedAt ? `  (${dep.deployedAt})` : ''}`);
+        }
         console.log();
     }
+    console.log(`(Profile data lives in ~/.ace/config.json — admin private keys are stored there. Keep it safe.)`);
 }
 
 function findDeployment(
@@ -43,15 +46,18 @@ export async function deploymentDeleteCommand(aliasOrKey: string): Promise<void>
     const config = loadConfig();
     const entry = findDeployment(config, aliasOrKey);
     if (!entry) {
-        console.error(`No deployment profile matching "${aliasOrKey}". Run \`${CLI} deployment ls\`.`);
+        console.error(`No deployment profile matching "${aliasOrKey}". See available profiles with \`${CLI} deployment ls\`.`);
         process.exit(1);
     }
     const [key, dep] = entry;
     const label = dep.alias ?? key;
 
     const ok = await confirm({
-        message: `Delete deployment profile "${label}"?  ` +
-            `This only removes the local profile entry — the on-chain contracts at ${dep.aceAddr} remain published.`,
+        message:
+            `Delete the local profile entry for "${label}"?  ` +
+            `(On-chain contracts at ${dep.aceAddr} stay published — this only removes the local ` +
+            `record of the admin key + RPC URL. If the admin key is not backed up elsewhere you ` +
+            `will lose admin control of the deployment.)`,
         default: false,
     });
     if (!ok) { console.log('Cancelled.'); return; }
@@ -59,18 +65,18 @@ export async function deploymentDeleteCommand(aliasOrKey: string): Promise<void>
     delete config.deployments[key];
     if (config.defaultDeployment === key) delete config.defaultDeployment;
     saveConfig(config);
-    console.log(`✓ Deployment profile "${label}" deleted.`);
+    console.log(`✓ Deployment profile "${label}" removed from ~/.ace/config.json.`);
 }
 
 export function deploymentDefaultCommand(aliasOrKey: string): void {
     const config = loadConfig();
     const entry = findDeployment(config, aliasOrKey);
     if (!entry) {
-        console.error(`No deployment profile matching "${aliasOrKey}". Run \`${CLI} deployment ls\`.`);
+        console.error(`No deployment profile matching "${aliasOrKey}". See available profiles with \`${CLI} deployment ls\`.`);
         process.exit(1);
     }
     const [key, dep] = entry;
     config.defaultDeployment = key;
     saveConfig(config);
-    console.log(`✓ Default deployment profile set to "${dep.alias ?? key}".`);
+    console.log(`✓ Default deployment profile set to "${dep.alias ?? key}". \`ace deployment …\` commands without --profile/--account will use it.`);
 }

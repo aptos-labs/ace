@@ -19,21 +19,28 @@ const ALLOWED_KEYS = ['alias', 'rpcUrl', 'network', 'sharedNodeApiKey', 'gasStat
 type AllowedKey = typeof ALLOWED_KEYS[number];
 
 function generateTemplate(dep: TrackedDeployment, deploymentKey: string): string {
-    return `# ACE deployment profile — edit the values below, then save & quit.
-# Lines starting with '#' are comments; identity fields (commented out) are
-# read-only — re-introducing them in the live TOML will be rejected.
+    return `# ACE deployment profile — edit the values below, then save and quit your editor.
 #
-# Profile key: ${deploymentKey}
+#   * Empty string ("") clears an optional field.
+#   * Lines starting with "#" are comments and ignored.
+#   * Identity fields (admin address / private key, contract address, deploy
+#     metadata) are shown commented-out for reference. Uncommenting any of
+#     them will be rejected when you save — to change those, delete and
+#     recreate the profile via \`ace deployment delete\` + \`ace deployment new\`.
 #
-# ── Read-only identity (do NOT uncomment) ─────────────────────────────────────
+# Profile ID: ${deploymentKey}
+#
+# ── Read-only identity (commented for reference; do NOT uncomment) ────────────
+# (Admin private key is intentionally NOT shown here — see ~/.ace/config.json
+#  if you need it. This file is a temporary copy and minimizing what lands in
+#  it minimizes credential leakage from editor swap files / crash dumps / etc.)
 #  aceAddr          = "${dep.aceAddr}"
 #  adminAddress     = "${dep.adminAddress}"
-#  adminPrivateKey  = "${dep.adminPrivateKey}"
 #  deployedAtTag    = ${dep.deployedAtTag ? `"${dep.deployedAtTag}"` : '<unset>'}
 #  deployedAtCommit = ${dep.deployedAtCommit ? `"${dep.deployedAtCommit}"` : '<unset>'}
 #  deployedAt       = ${dep.deployedAt ? `"${dep.deployedAt}"` : '<unset>'}
 #
-# ── Editable ──────────────────────────────────────────────────────────────────
+# ── Editable fields ───────────────────────────────────────────────────────────
 alias            = ${tomlString(dep.alias)}
 rpcUrl           = "${dep.rpcUrl}"
 network          = ${tomlString(dep.network)}
@@ -58,14 +65,18 @@ function parseEdited(content: string, dep: TrackedDeployment): Partial<TrackedDe
     const FORBIDDEN = ['aceAddr', 'adminAddress', 'adminPrivateKey', 'deployedAtTag', 'deployedAtCommit', 'deployedAt'];
     for (const k of FORBIDDEN) {
         if (k in doc) {
-            throw new Error(`Field "${k}" is read-only and cannot be edited. Delete the line and try again.`);
+            throw new Error(
+                `Field "${k}" is read-only and cannot be edited via this command — those fields ` +
+                `define the deployment's identity. Delete the line (or leave it commented) and re-save. ` +
+                `If you really need to change it, run \`ace deployment delete\` then \`ace deployment new\`.`,
+            );
         }
     }
 
     // Reject any unknown keys (typos, etc.).
     for (const k of Object.keys(doc)) {
         if (!ALLOWED_KEYS.includes(k as AllowedKey)) {
-            throw new Error(`Unknown field "${k}". Allowed: ${ALLOWED_KEYS.join(', ')}.`);
+            throw new Error(`Unknown field "${k}" — typo? Allowed editable fields: ${ALLOWED_KEYS.join(', ')}.`);
         }
     }
 
@@ -74,10 +85,12 @@ function parseEdited(content: string, dep: TrackedDeployment): Partial<TrackedDe
         const v = doc[k];
         if (v === undefined) continue;
         if (typeof v !== 'string') {
-            throw new Error(`Field "${k}" must be a string (got ${typeof v}).`);
+            throw new Error(`Field "${k}" must be a TOML string in quotes (got ${typeof v}).`);
         }
         // Treat empty string as "clear this optional field" (except rpcUrl which is required).
-        if (v === '' && k === 'rpcUrl') throw new Error(`Field "rpcUrl" cannot be empty.`);
+        if (v === '' && k === 'rpcUrl') {
+            throw new Error(`Field "rpcUrl" cannot be empty — every deployment needs an RPC endpoint.`);
+        }
         (upd as Record<string, string | undefined>)[k] = v === '' ? undefined : v;
     }
 
@@ -97,8 +110,9 @@ export async function deploymentEditCommand(opts: { profile?: string; account?: 
     const { deploymentKey, deployment } = resolveDeployment(opts.profile, opts.account);
 
     const warning =
-        '⚠ The editor will display the admin private key and any API keys for this deployment.\n' +
-        '  Do NOT share the temp file or your terminal during the edit.\n';
+        `⚠ The editor will display this deployment's admin private key and API keys in plaintext.\n` +
+        `  Don't share-screen, paste into chat, or commit the file's contents while it's open.\n` +
+        `  (Backed by a 0600 temp file that's deleted when you exit the editor.)\n`;
 
     const changes = await buildFromEditor(
         generateTemplate(deployment, deploymentKey),
@@ -110,14 +124,14 @@ export async function deploymentEditCommand(opts: { profile?: string; account?: 
     const config = loadConfig();
     const dep = config.deployments[deploymentKey];
     if (!dep) {
-        console.error(`Deployment profile "${deploymentKey}" disappeared between resolution and save.`);
+        console.error(`Deployment profile "${deploymentKey}" disappeared between resolution and save — did another \`ace deployment delete\` run in parallel? Aborting.`);
         process.exit(1);
     }
     Object.assign(dep, changes);
     saveConfig(config);
 
     const pretty = Object.entries(changes)
-        .map(([k, v]) => `  ${k}: ${v ?? '(unset)'}`)
+        .map(([k, v]) => `    ${k.padEnd(18)} → ${v ?? '(unset)'}`)
         .join('\n');
     console.log(`✓ Updated deployment profile "${dep.alias ?? deploymentKey}":\n${pretty}`);
 }

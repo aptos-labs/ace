@@ -75,7 +75,7 @@ function proposalDiff(p: aceNetwork.ProposedEpochConfig, state: aceNetwork.State
         lines.push('  Secrets');
         for (const s of state.secrets) {
             const kept = retainSet.has(s.currentSession.toStringLong());
-            lines.push(`    ${kept ? EQ : REM} ${shortAddr(s.currentSession.toStringLong())}  ${D}${s.schemeName()} — keypair id: ${shortAddr(s.keypairId.toStringLong())}${R}${kept ? '' : `  ${E}(deactivating)${R}`}`);
+            lines.push(`    ${kept ? EQ : REM} keypair ${shortAddr(s.keypairId.toStringLong())}  ${D}(${s.schemeName()})${R}${kept ? '' : `  ${E}(deactivating)${R}`}`);
         }
         for (const scheme of p.newSecrets) {
             lines.push(`    ${ADD} new DKG  ${G}${aceNetwork.schemeName(scheme)}${R}`);

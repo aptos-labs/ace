@@ -5,11 +5,12 @@ import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 
 const SCHEME_NAMES: Record<number, string> = {
-    0: 'bls12381_g1',
+    0: 'BLS12-381 G1 / BFIBE-shortpk-otp-hmac (legacy)',
+    1: 'BLS12-381 G2 / BFIBE-shortsig-aead (default)',
 };
 
 export function schemeName(scheme: number): string {
-    return SCHEME_NAMES[scheme] ?? `scheme-${scheme}`;
+    return SCHEME_NAMES[scheme] ?? `unknown scheme ${scheme}`;
 }
 
 /** Mirrors `ace::network::SecretInfo` from `state_view_v0_bcs`. */

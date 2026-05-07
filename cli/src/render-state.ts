@@ -44,6 +44,61 @@ function proposalDesc(p: aceNetwork.ProposedEpochConfig): string {
 }
 
 /**
+ * Lines summarising what would change if the proposal passes, computed as a delta against
+ * current state. Returns nothing for fields that are unchanged so the output stays terse.
+ */
+function proposalChanges(
+    p: aceNetwork.ProposedEpochConfig,
+    state: aceNetwork.State,
+    profiles: Record<string, TrackedNode>,
+    rpcUrl: string,
+    aceAddr: string,
+): string[] {
+    const out: string[] = [];
+
+    // Committee delta — only show if changed.
+    const cur = new Set(state.curNodes.map(n => n.toStringLong()));
+    const nxt = new Set(p.nodes.map(n => n.toStringLong()));
+    const added   = [...nxt].filter(a => !cur.has(a));
+    const removed = [...cur].filter(a => !nxt.has(a));
+    if (added.length > 0 || removed.length > 0) {
+        out.push(`  Committee:`);
+        for (const a of added)   out.push(`    ${G}+ ${addrLabel(a, profiles, rpcUrl, aceAddr)}${R}`);
+        for (const a of removed) out.push(`    ${E}- ${addrLabel(a, profiles, rpcUrl, aceAddr)}${R}`);
+    }
+
+    // Threshold delta — only show if changed.
+    if (p.threshold !== state.curThreshold) {
+        out.push(`  Threshold: ${state.curThreshold} → ${G}${p.threshold}${R}`);
+    }
+
+    // Epoch duration delta — only show if changed.
+    if (p.epochDurationMicros !== state.epochDurationMicros) {
+        const fromS = Number(state.epochDurationMicros / 1_000_000n);
+        const toS   = Number(p.epochDurationMicros / 1_000_000n);
+        out.push(`  Epoch dur: ${fmtSecs(fromS)} → ${G}${fmtSecs(toS)}${R}`);
+    }
+
+    // Secrets delta.
+    const retainSet = new Set(p.secretsToRetain.map(a => a.toStringLong()));
+    const dropped = state.secrets.filter(s => !retainSet.has(s.currentSession.toStringLong()));
+    if (dropped.length > 0) {
+        out.push(`  Drop secrets:`);
+        for (const s of dropped) {
+            out.push(`    ${E}- keypair ${shortAddr(s.keypairId.toStringLong())}  (${s.schemeName()})${R}`);
+        }
+    }
+    if (p.newSecrets.length > 0) {
+        out.push(`  New secrets:`);
+        for (const scheme of p.newSecrets) {
+            out.push(`    ${G}+ fresh DKG  (${aceNetwork.schemeName(scheme)})${R}`);
+        }
+    }
+
+    return out;
+}
+
+/**
  * Render on-chain network state as a string.
  * profiles: loaded config.nodes — used to annotate committee addresses with aliases.
  * deployedVersion: optional Move-package version (read from `0x1::code::PackageRegistry`).
@@ -70,33 +125,53 @@ export function renderNetworkState(
     }
     lines.push('');
 
-    // Keypairs
+    // Keypairs — keypair_id is the permanent identifier apps encrypt against;
+    // current_session is the latest DKG/DKR address for that lineage (changes each reshare).
     if (state.secrets.length > 0) {
         lines.push(`${B}Keypairs${R}  (${state.secrets.length})`);
         for (const s of state.secrets) {
-            lines.push(`  ${s.currentSession.toStringLong()}  ${D}${s.schemeName()} — keypair id: ${s.keypairId.toStringLong()}${R}`);
+            lines.push(`  ${s.keypairId.toStringLong()}  ${D}(${s.schemeName()})${R}`);
+            lines.push(`  ${D}    last DKG/DKR: ${s.currentSession.toStringLong()}${R}`);
         }
         lines.push('');
     }
 
     // Proposals
-    const active = state.activeProposals();
-    if (active.length === 0) {
+    // Iterate over the raw `state.proposals` array (with indices) so we can identify the
+    // proposer. The contract layout: proposals[0..n-1] are per-committee-member slots,
+    // proposals[n] is the admin slot. (See contracts/network/sources/network.move:54.)
+    const adminIdx = state.proposals.length - 1;
+    const activeIdxs = state.proposals
+        .map((p, i) => (p ? i : -1))
+        .filter(i => i >= 0);
+    if (activeIdxs.length === 0) {
         lines.push(`${D}No active proposals.${R}`);
     } else {
-        lines.push(`${B}Active Proposals${R}  (${active.length})`);
-        for (const pv of active) {
+        lines.push(`${B}Active Proposals${R}  (${activeIdxs.length})`);
+        for (const idx of activeIdxs) {
+            const pv = state.proposals[idx]!;
             const sess = pv.votingSession.toStringLong();
+            const proposerLine = idx === adminIdx
+                ? `admin  ${D}(${aceAddr})${R}`
+                : addrLabel(state.curNodes[idx]!.toStringLong(), profiles, rpcUrl, aceAddr);
             lines.push('');
             lines.push(`  Session  : ${C}${sess}${R}`);
+            lines.push(`  Proposer : ${proposerLine}`);
             lines.push(`  Proposal : ${proposalDesc(pv.proposal)}`);
-            for (const n of pv.proposal.nodes) {
-                lines.push(`    ${addrLabel(n.toStringLong(), profiles, rpcUrl, aceAddr)}`);
-            }
+            for (const l of proposalChanges(pv.proposal, state, profiles, rpcUrl, aceAddr)) lines.push(l);
             const passed = pv.votingPassed ? `${G}yes${R}` : 'no';
             lines.push(`  Votes    : ${pv.voteCount()}/${state.curThreshold}  passed: ${passed}`);
+            // Per-voter checkmarks (votes[i] aligned with state.curNodes[i]).
+            // Pad the visible-width portion to "✗ not voted" (11 cols) BEFORE applying
+            // ANSI color codes — otherwise padEnd would count escape bytes as visible chars.
+            for (let i = 0; i < state.curNodes.length; i++) {
+                const voted = pv.votes[i] === true;
+                const visible = (voted ? '✓ voted' : '✗ not voted').padEnd(11);
+                const mark = voted ? `${G}${visible}${R}` : `${D}${visible}${R}`;
+                lines.push(`    ${mark}  ${addrLabel(state.curNodes[i]!.toStringLong(), profiles, rpcUrl, aceAddr)}`);
+            }
             lines.push('');
-            lines.push(`  ${D}→ ${CLI} vote ${sess} [--profile <alias>]${R}`);
+            lines.push(`  ${D}→ ${CLI} proposal review -s ${sess} [--profile <alias>]${R}`);
         }
     }
 

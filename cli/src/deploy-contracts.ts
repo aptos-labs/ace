@@ -131,7 +131,10 @@ export async function publishMovePackage(packageDir: string, privateKeyHex: stri
         '--assume-yes',
         '--skip-fetch-latest-git-deps',
     ];
-    console.log(`  $ aptos ${args.join(' ')}`);
+    // Print the command with the private key redacted; the real value is still passed
+    // to the spawned process via `args`.
+    const redactedArgs = args.map((a, i) => (args[i - 1] === '--private-key' ? '<REDACTED>' : a));
+    console.log(`  $ aptos ${redactedArgs.join(' ')}`);
     await spawnExitZero('aptos', args, 'aptos move publish');
 }
 

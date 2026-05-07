@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Command } from 'commander';
+import { confirm } from '@inquirer/prompts';
 import { runOnboarding } from './onboarding.js';
 import { loadConfig, saveConfig } from './config.js';
 import { formatError } from './format-error.js';
@@ -118,7 +119,17 @@ nodeCmd
             const config = loadConfig();
             const { nodeKey, node } = await runOnboarding();
             config.nodes[nodeKey] = node;
-            if (!config.defaultNode) config.defaultNode = nodeKey;
+            if (!config.defaultNode) {
+                config.defaultNode = nodeKey;
+            } else if (config.defaultNode !== nodeKey) {
+                const currentDefault = config.nodes[config.defaultNode];
+                const currentLabel = currentDefault?.alias ?? config.defaultNode;
+                const setDefault = await confirm({
+                    message: `Set "${node.alias ?? nodeKey}" as the default node? (current default: ${currentLabel})`,
+                    default: false,
+                });
+                if (setDefault) config.defaultNode = nodeKey;
+            }
             saveConfig(config);
             console.log(`\n✓ Node "${node.alias ?? nodeKey}" saved to profile.\n`);
         } catch (e) {

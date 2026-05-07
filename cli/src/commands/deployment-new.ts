@@ -30,7 +30,7 @@ import {
     Ed25519PrivateKey,
     Network,
 } from '@aptos-labs/ts-sdk';
-import { select, input } from '@inquirer/prompts';
+import { select, input, confirm } from '@inquirer/prompts';
 import {
     loadConfig,
     saveConfig,
@@ -367,7 +367,17 @@ export async function deploymentNewCommand(): Promise<void> {
         deployedAt: new Date().toISOString(),
     };
     config.deployments[key] = dep;
-    if (!config.defaultDeployment) config.defaultDeployment = key;
+    if (!config.defaultDeployment) {
+        config.defaultDeployment = key;
+    } else if (config.defaultDeployment !== key) {
+        const currentDefault = config.deployments[config.defaultDeployment];
+        const currentLabel = currentDefault?.alias ?? config.defaultDeployment;
+        const setDefault = await confirm({
+            message: `Set "${dep.alias}" as the default deployment? (current default: ${currentLabel})`,
+            default: false,
+        });
+        if (setDefault) config.defaultDeployment = key;
+    }
     saveConfig(config);
 
     console.log('══════════════════════════════════════════════════════════════════════');

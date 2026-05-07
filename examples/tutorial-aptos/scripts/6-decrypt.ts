@@ -28,7 +28,7 @@ async function main() {
     const bob = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(bobFile.privateKeyHex) });
     const appContractAddr = AccountAddress.fromString(cfg.appContractAddr);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260504;
+    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260506;
 
     async function tryDecrypt(entry: CatalogEntry): Promise<{ ok: boolean; plaintext?: string }> {
         const session = await ACE.AptosBasicFlow.DecryptionSession.create({

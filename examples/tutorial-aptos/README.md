@@ -12,7 +12,7 @@ minimal pay-to-download marketplace. You will:
    isolates each ciphertext to its specific item name.
 
 The whole tutorial uses the public ACE testnet deployment, bundled in the SDK
-as `ACE.knownDeployments.preview20260501`. You only need to visit the faucet
+as `ACE.knownDeployments.preview20260506`. You only need to visit the faucet
 once: a single click funds **Alice** with ~10 APT, and she will send Bob a
 small allowance on-chain when he shows up in step 4.
 

@@ -132,7 +132,7 @@ const aceDeployment = new ACE.AceDeployment({
 For testnet, the SDK ships a registry of known deployments — skip the manual setup:
 
 ```typescript
-const { aceDeployment, keypairId, chainId } = ACE.knownDeployments.preview20260501;
+const { aceDeployment, keypairId, chainId } = ACE.knownDeployments.preview20260506;
 ```
 
 **Encrypt (both flows)**

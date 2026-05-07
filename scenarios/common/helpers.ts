@@ -214,6 +214,19 @@ export async function callView(aptos: Aptos, contractAddr: string, mod: string, 
     });
 }
 
+/**
+ * Aptos returns event types with leading zeros stripped from the address
+ * (e.g. "0xe3...::dkg::SessionCreated" instead of "0x0e3...::dkg::SessionCreated").
+ * Comparing raw strings randomly fails when the contract address happens to start
+ * with a 0x0_ digit (1/16 chance per fresh deploy). Normalize both sides to the
+ * canonical 64-hex-char form before comparing.
+ */
+export function normalizeEventType(t: string): string {
+    const m = t.match(/^(0x[0-9a-fA-F]+)(::.*)$/);
+    if (!m) return t;
+    return `0x${m[1]!.slice(2).padStart(64, '0').toLowerCase()}${m[2]}`;
+}
+
 export class CommittedTxnSuccess {
     readonly transactionHash: string;
     readonly events: any[];
@@ -221,6 +234,12 @@ export class CommittedTxnSuccess {
     constructor(transactionHash: string, events: any[]) {
         this.transactionHash = transactionHash;
         this.events = events;
+    }
+
+    /** Find an event by fully-qualified type, normalizing addresses to handle leading-zero stripping. */
+    findEvent(type: string): any | undefined {
+        const want = normalizeEventType(type);
+        return this.events.find(e => normalizeEventType(String(e?.type ?? '')) === want);
     }
 }
 
@@ -316,16 +335,6 @@ export async function submitTxn(
             // Retry at 500 ms intervals for up to 5 s total.
             const eventsArray = (w: Record<string, unknown>) =>
                 ((w.events as { type?: string }[] | undefined) ?? []);
-            // Address normalization: Aptos returns event types with leading zeros stripped
-            // (e.g. "0xe3...::dkg::SessionCreated" instead of "0x0e3...::dkg::SessionCreated").
-            // Comparing raw strings randomly fails when the contract address happens to start
-            // with a 0x0_ digit (1/16 chance per fresh deploy). Normalize both sides to canonical
-            // 64-hex-char form before comparing.
-            const normalizeEventType = (t: string): string => {
-                const m = t.match(/^(0x[0-9a-fA-F]+)(::.*)$/);
-                if (!m) return t;
-                return `0x${m[1]!.slice(2).padStart(64, '0').toLowerCase()}${m[2]}`;
-            };
             const wantNormalized = awaitEventType ? normalizeEventType(awaitEventType) : undefined;
             const ready = wantNormalized
                 ? (w: Record<string, unknown>) => eventsArray(w).some(e => normalizeEventType(String(e?.type ?? '')) === wantNormalized)

@@ -56,7 +56,7 @@ async function main() {
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
         const aceContract = adminAccount.accountAddress.toStringLong();
-        const sessionAddrStr = committedTxn.events.find(e => e.type === `${aceContract}::dkg::SessionCreated`)?.data.session_addr;
+        const sessionAddrStr = committedTxn.findEvent(`${aceContract}::dkg::SessionCreated`)?.data.session_addr;
         if (!sessionAddrStr) throw 'Failed to get DKG session address.';
         const sessionAddr = AccountAddress.fromString(sessionAddrStr);
 

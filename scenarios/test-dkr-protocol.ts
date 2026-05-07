@@ -67,7 +67,7 @@ async function main() {
         });
         const dkgCommittedTxn = dkgMaybeCommittedTxn.unwrapOrThrow('Failed to get committed DKG transaction.').asSuccessOrThrow();
         const aceContract = adminAccount.accountAddress.toStringLong();
-        const dkgSessionAddrStr = dkgCommittedTxn.events.find(e => e.type === `${aceContract}::dkg::SessionCreated`)?.data.session_addr;
+        const dkgSessionAddrStr = dkgCommittedTxn.findEvent(`${aceContract}::dkg::SessionCreated`)?.data.session_addr;
         if (!dkgSessionAddrStr) throw 'Failed to get DKG session address.';
         const dkgSessionAddr = AccountAddress.fromString(dkgSessionAddrStr);
 
@@ -115,7 +115,7 @@ async function main() {
             ],
         });
         const dkrCommittedTxn = dkrMaybeCommittedTxn.unwrapOrThrow('Failed to get committed DKR transaction.').asSuccessOrThrow();
-        const dkrSessionAddrStr = dkrCommittedTxn.events.find(e => e.type === `${aceContract}::dkr::SessionCreated`)?.data.session_addr;
+        const dkrSessionAddrStr = dkrCommittedTxn.findEvent(`${aceContract}::dkr::SessionCreated`)?.data.session_addr;
         if (!dkrSessionAddrStr) throw 'Failed to get DKR session address.';
         const dkrSessionAddr = AccountAddress.fromString(dkrSessionAddrStr);
 

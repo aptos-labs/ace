@@ -59,12 +59,12 @@ export async function buildFromEditor<T>(
     }
 
     if (result.status !== 0) {
-        console.log('Editor exited with non-zero status — cancelled.');
+        console.log(`Editor exited with status ${result.status} — treating as cancel; no changes saved.`);
         return null;
     }
 
     if (content.trim() === '' || content.trim() === template.trim()) {
-        console.log('No changes made — cancelled.');
+        console.log('No changes made (file is empty or unmodified) — cancelled.');
         return null;
     }
 

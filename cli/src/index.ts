@@ -4,6 +4,7 @@
 import { Command } from 'commander';
 import { runOnboarding } from './onboarding.js';
 import { loadConfig, saveConfig } from './config.js';
+import { formatError } from './format-error.js';
 import { networkStatusCommand } from './commands/network-status.js';
 import { nodeStatusCommand } from './commands/node-status.js';
 import { proposeCommand } from './commands/propose.js';
@@ -263,6 +264,6 @@ program.parse();
 
 function exitOnError(e: unknown): never {
     if ((e as { name?: string })?.name === 'ExitPromptError') process.exit(0);
-    process.stderr.write(`\nError: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(`\nError: ${formatError(e)}\n`);
     process.exit(1);
 }

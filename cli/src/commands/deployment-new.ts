@@ -31,9 +31,6 @@ import {
     Network,
 } from '@aptos-labs/ts-sdk';
 import { select, input } from '@inquirer/prompts';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
 import {
     loadConfig,
     saveConfig,
@@ -79,8 +76,12 @@ function preflightTagAndCleanCheck(): { tag: string; commit: string } {
     const tagsAtHead = git(['tag', '--points-at', 'HEAD']).split('\n').filter(Boolean);
     if (tagsAtHead.length === 0) {
         throw new Error(
-            `HEAD (${commit.slice(0, 12)}) is not a tagged commit — \`deployment new\` requires HEAD = a release tag.\n` +
-            `Tag the commit (e.g. \`git tag v1.2.3\`) and try again.`,
+            `HEAD (${commit.slice(0, 12)}) is not a tagged commit. \`deployment new\` requires the\n` +
+            `current commit to carry a release tag — that's how the deployed contracts stay\n` +
+            `reproducible (anyone can later \`git checkout <tag>\` and rebuild bit-identical Move\n` +
+            `bytecode). Tag the commit and try again, e.g.:\n\n` +
+            `    git tag v1.2.3\n` +
+            `    git push origin v1.2.3\n`,
         );
     }
 
@@ -120,50 +121,54 @@ async function waitForBalance(aptos: Aptos, addr: string, label: string): Promis
         process.stdout.write(`.`);
         await new Promise(r => setTimeout(r, 5000));
     }
-    throw new Error(`Timed out waiting for ${label} ${addr} to be funded.`);
+    throw new Error(`Timed out after 30 min waiting for ${label} ${addr} to be funded. Re-run \`ace deployment new\` once the account has APT.`);
 }
 
 async function faucetFund(faucetUrl: string, addr: string, amountOctas: number = 100_000_000_000): Promise<void> {
     const url = `${faucetUrl}/mint?amount=${amountOctas}&address=${addr}`;
     const resp = await fetch(url, { method: 'POST' });
-    if (!resp.ok) throw new Error(`Faucet error: ${resp.status} ${await resp.text()}`);
+    if (!resp.ok) {
+        const body = await resp.text().catch(() => '<no body>');
+        throw new Error(`Faucet ${faucetUrl} returned HTTP ${resp.status}. Body: ${body}`);
+    }
 }
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 
 async function promptNetwork(): Promise<{ network: typeof NETWORKS[number]['name']; rpcUrl: string; faucet?: string }> {
     const choice = await select({
-        message: 'Target network:',
+        message: 'Which network are you deploying to?',
         choices: NETWORKS.map(n => ({ name: n.name, value: n.name })),
     });
     const def = NETWORKS.find(n => n.name === choice)!;
     if (choice !== 'custom') {
         return { network: choice, rpcUrl: def.rpcUrl!, faucet: def.faucet };
     }
-    const rpcUrl = await input({ message: 'Custom fullnode REST API URL:', validate: v => v.startsWith('http') || 'must be an http(s) URL' });
-    const faucetRaw = await input({ message: 'Faucet URL (optional, leave blank to skip auto-fund):' });
+    const rpcUrl = await input({
+        message: 'Custom fullnode REST API URL (e.g. https://my-aptos-node.example.com/v1):',
+        validate: v => /^https?:\/\//.test(v.trim()) || 'must start with http:// or https://',
+    });
+    const faucetRaw = await input({
+        message: 'Faucet URL (optional — leave blank to fund the admin manually):',
+    });
     return { network: 'custom', rpcUrl: rpcUrl.trim(), faucet: faucetRaw.trim() || undefined };
 }
 
 async function promptAdminKey(): Promise<Account> {
     const mode = await select({
-        message: 'Admin keypair:',
+        message: 'Admin signing key (controls the contract package — keep this safe):',
         choices: [
-            { name: 'Generate a new Ed25519 keypair', value: 'generate' },
-            { name: 'Import an existing private key (hex)', value: 'import' },
+            { name: 'Generate a fresh Ed25519 keypair (recommended for new deployments)', value: 'generate' },
+            { name: 'Import an existing private key (e.g. for re-deploying to a known address)', value: 'import' },
         ],
     });
     if (mode === 'generate') return Account.generate();
     const keyHex = await input({
-        message: 'Admin private key (0x-prefixed 64-char hex):',
-        validate: v => /^0x[0-9a-fA-F]{64}$/.test(v.trim()) || 'must be 0x + 64 hex chars',
+        message: 'Admin private key (0x-prefixed, 64 hex chars):',
+        validate: v => /^0x[0-9a-fA-F]{64}$/.test(v.trim()) || 'must be 0x followed by exactly 64 hex chars',
     });
     const sk = new Ed25519PrivateKey(keyHex.trim());
     return Account.fromPrivateKey({ privateKey: sk });
-}
-
-function readNextReleaseVersion(): string {
-    return readFileSync(join(REPO_ROOT, 'NEXT_RELEASE'), 'utf8').trim();
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -171,11 +176,21 @@ function readNextReleaseVersion(): string {
 export async function deploymentNewCommand(): Promise<void> {
     // 1. Pre-flight.
     const { tag, commit } = preflightTagAndCleanCheck();
-    const version = readNextReleaseVersion();
+    // Version stamped onto every Move.toml is the TAG version, not NEXT_RELEASE.
+    // (NEXT_RELEASE = the *next* planned release — at any tagged commit, NEXT_RELEASE has
+    // already been bumped past the current tag per the release convention.)
+    const version = tag.replace(/^v/, '');
     if (!/^\d+\.\d+\.\d+$/.test(version)) {
-        throw new Error(`<repo>/NEXT_RELEASE contains "${version}" which is not in X.Y.Z form.`);
+        throw new Error(
+            `Tag at HEAD "${tag}" is not a semver release tag (expected vX.Y.Z, e.g. v2.0.1). ` +
+            `Either retag this commit or check out a real release tag and try again.`,
+        );
     }
-    console.log(`Repo state: tag=${tag}  commit=${commit.slice(0, 12)}  version=${version}\n`);
+    console.log(`Repository state:`);
+    console.log(`  tag    : ${tag}`);
+    console.log(`  commit : ${commit.slice(0, 12)}`);
+    console.log(`  version: ${version}  (from the tag — will be stamped into every Move.toml)`);
+    console.log();
 
     // 2. Network.
     const { network, rpcUrl, faucet } = await promptNetwork();
@@ -184,30 +199,74 @@ export async function deploymentNewCommand(): Promise<void> {
     const adminAccount = await promptAdminKey();
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminPrivKeyHex = ed25519PrivateKeyHex(adminAccount);
-    console.log(`\nAdmin address: ${adminAddr}\n`);
+    console.log();
+    console.log(`Admin account address: ${adminAddr}`);
+    console.log(`(The contract package will be published AT this address; it doubles as the deployment's identity.)`);
+    console.log();
 
     // 4. Fund.
     if (network === 'mainnet' || network === 'testnet' || (network === 'custom' && !faucet)) {
-        console.log(`Fund this admin account on ${network} with enough APT to publish 11 packages.`);
-        console.log(`  ${adminAddr}\n`);
+        console.log(`This admin account needs APT to publish all ${ACE_CONTRACT_PACKAGES.length} packages.`);
+        console.log(`Roughly 5 APT is enough on ${network} (each publish ≈ 0.05 APT in gas).`);
+        console.log();
+        console.log(`Send funds to:`);
+        console.log(`  ${adminAddr}`);
+        console.log();
+        console.log(`Polling for balance every 5s (Ctrl-C to abort, 30 min timeout)...`);
         await waitForBalance(makeAptos(rpcUrl, undefined, undefined), adminAddr, 'admin');
-        console.log('  ✓ funded.\n');
+        console.log();
+        console.log('  ✓ Admin balance detected — proceeding.');
+        console.log();
     } else if (faucet) {
-        console.log(`Auto-funding via faucet ${faucet} ...`);
+        console.log(`Auto-funding the admin account via faucet ${faucet} ...`);
         await faucetFund(faucet, adminAddr);
         await waitForBalance(makeAptos(rpcUrl, faucet, undefined), adminAddr, 'admin');
-        console.log('  ✓ funded.\n');
+        console.log();
+        console.log('  ✓ Admin funded.');
+        console.log();
     }
 
-    // 5. Optional API keys.
-    const sharedNodeApiKey = (await input({ message: 'Shared Node API Key (optional, blank to skip):' })).trim() || undefined;
-    const gasStationApiKey = (await input({ message: 'Gas Station API Key (optional, blank to skip):' })).trim() || undefined;
-    if (sharedNodeApiKey) process.env.NODE_API_KEY = sharedNodeApiKey;
-
-    // 6. Deploy contracts.
-    console.log(`\nDeploying ${ACE_CONTRACT_PACKAGES.length} packages at version ${version} ...\n`);
+    // 5. Deploy contracts.
+    // We optionally accept NODE_API_KEY from the caller's environment to skip rate-limit
+    // throttling during the publish step. Geomi inputs (sharedNodeApiKey, gasStationApiKey)
+    // are collected AFTER deploy — those are operator-onboarding concerns and asking for
+    // them up-front is annoying when the user just wants to see the contracts land first.
+    console.log(`Deploying ${ACE_CONTRACT_PACKAGES.length} packages at version ${version} (~2-3 minutes)...`);
+    console.log();
+    if (process.env.NODE_API_KEY) {
+        console.log(`(NODE_API_KEY found in environment — using it as Bearer auth for the publish step's RPC calls.)`);
+        console.log();
+    } else if (network === 'mainnet' || network === 'testnet') {
+        console.log(`(No NODE_API_KEY in environment. Publishes will use unauthenticated RPC — works on ${network}`);
+        console.log(` but slower and rate-limited. To speed up: Ctrl-C now, \`export NODE_API_KEY=aptoslabs_...\`, and re-run.)`);
+        console.log();
+    }
     await deployContracts(adminAccount, rpcUrl, ACE_CONTRACT_PACKAGES, version);
-    console.log('\n  ✓ All contracts deployed.\n');
+    console.log();
+    console.log(`  ✓ All ${ACE_CONTRACT_PACKAGES.length} packages published at version ${version}.`);
+    console.log();
+
+    // 6. Geomi inputs (optional, for operator onboarding).
+    console.log('══════════════════════════════════════════════════════════════════════');
+    console.log('  Optional: Geomi node infrastructure (recommended for testnet/mainnet)');
+    console.log();
+    console.log('  Geomi (https://geomi.dev) provides managed Aptos full nodes and');
+    console.log('  gas stations for committee operators. Both are optional — the network');
+    console.log('  works without them, but operators will need their own RPC and APT.');
+    console.log();
+    console.log('  To set up Geomi-backed infrastructure for this deployment:');
+    console.log('    1. Open https://geomi.dev in another tab and sign in.');
+    console.log(`    2. Create a "Shared Node API Key" for ${network} (operators share`);
+    console.log('       one full-node endpoint via this key).');
+    console.log(`    3. Create a "Gas Station" for ${network} (operator txns get`);
+    console.log('       sponsored — operators do not need to hold APT).');
+    console.log('    4. Paste the keys below.');
+    console.log();
+    console.log('  Press Enter at either prompt to skip.');
+    console.log('══════════════════════════════════════════════════════════════════════');
+    console.log();
+    const sharedNodeApiKey = (await input({ message: 'Shared Node API Key (aptoslabs_…):' })).trim() || undefined;
+    const gasStationApiKey = (await input({ message: 'Gas Station API Key (aptoslabs_…):' })).trim() || undefined;
 
     // 7. Operator onboarding blob.
     const operatorBlob = JSON.stringify(
@@ -216,39 +275,64 @@ export async function deploymentNewCommand(): Promise<void> {
             gasStationApiKey ? { gasStationKey: gasStationApiKey } : {},
         ),
     );
+    console.log();
     console.log('══════════════════════════════════════════════════════════════════════');
-    console.log('  Operator onboarding blob — copy and share with each operator.');
-    console.log('  Each runs `ace node new` and pastes this when prompted:');
-    console.log('');
+    console.log('  Operator onboarding blob');
+    console.log();
+    console.log('  Share the JSON line below with each operator (e.g. via Slack DM, 1Password');
+    console.log('  shared item, or wherever your team treats credentials). Each operator runs');
+    console.log('  `ace node new`, pastes the blob when prompted, and follows the wizard to');
+    console.log('  start their node and register on-chain.');
+    console.log();
     console.log(`  ${operatorBlob}`);
-    console.log('══════════════════════════════════════════════════════════════════════\n');
+    console.log('══════════════════════════════════════════════════════════════════════');
+    console.log();
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
 
-    await ask('Press Enter when all operators have registered their nodes... ');
+    console.log('When operators run `ace node new`, they will print their account address at');
+    console.log('the end. Collect those addresses to assemble the initial committee.');
+    console.log();
+    await ask('Press Enter once all operators have registered and shared their account addresses... ');
+    console.log();
 
     // 8. Initial epoch.
-    const rawAddrs = await ask('Committee addresses (space-separated): ');
+    console.log('Initial committee — paste each operator\'s account address (the long 0x… one).');
+    const rawAddrs = await ask('Committee addresses (space-separated, e.g. "0xabc... 0xdef..."): ');
     const nodeAddresses = rawAddrs.trim().split(/\s+/).filter(Boolean).map(s => AccountAddress.fromString(s));
     if (nodeAddresses.length === 0) { rl.close(); throw new Error('No committee addresses provided.'); }
+    if (nodeAddresses.length < 3) {
+        console.log(`  ⚠ Only ${nodeAddresses.length} address(es) — committee should be ≥ 3 for any meaningful threshold.`);
+    }
+    console.log();
 
-    const rawT = await ask(`Threshold (2 ≤ t ≤ ${nodeAddresses.length}, 2t > ${nodeAddresses.length}): `);
+    console.log(`Threshold — minimum honest workers needed to decrypt. Constraints:`);
+    console.log(`  2 ≤ t ≤ ${nodeAddresses.length}    (at least 2)`);
+    console.log(`  2·t > ${nodeAddresses.length}      (strict majority — Byzantine fault tolerance)`);
+    console.log(`  Common choices for n=${nodeAddresses.length}: t=${Math.floor(nodeAddresses.length / 2) + 1} (smallest valid).`);
+    const rawT = await ask('Threshold: ');
     const threshold = parseInt(rawT.trim(), 10);
     if (isNaN(threshold) || threshold < 2 || threshold > nodeAddresses.length || 2 * threshold <= nodeAddresses.length) {
         rl.close();
-        throw new Error(`Invalid threshold: ${rawT}`);
+        throw new Error(`Invalid threshold "${rawT}" — must be an integer satisfying 2 ≤ t ≤ ${nodeAddresses.length} and 2·t > ${nodeAddresses.length}.`);
     }
+    console.log();
 
-    const rawDur = await ask('Epoch duration in seconds (min 30): ');
+    console.log(`Epoch duration — how often the network auto-rotates secret shares.`);
+    console.log(`  Minimum: 30 seconds (the protocol's hardcoded floor).`);
+    console.log(`  Typical: 3600 (1 hour) for testnet/devnet, 86400 (24 hours) for mainnet.`);
+    console.log(`  Shorter = more rotations = more on-chain gas; longer = secrets stay with the same committee longer.`);
+    const rawDur = await ask('Epoch duration in seconds: ');
     const epochDuration = parseInt(rawDur.trim(), 10);
     if (isNaN(epochDuration) || epochDuration < 30) {
         rl.close();
-        throw new Error(`Invalid epoch duration: ${rawDur}`);
+        throw new Error(`Invalid epoch duration "${rawDur}" — must be an integer ≥ 30.`);
     }
     rl.close();
+    console.log();
 
-    console.log(`\nCalling start_initial_epoch(nodes=${nodeAddresses.length}, threshold=${threshold}, duration=${epochDuration}s) ...`);
+    console.log(`Calling network::start_initial_epoch(nodes=${nodeAddresses.length}, threshold=${threshold}, epoch_duration=${epochDuration}s)...`);
     const aptos = makeAptos(rpcUrl, faucet, sharedNodeApiKey);
     const txn = await aptos.transaction.build.simple({
         sender: adminAccount.accountAddress,
@@ -263,7 +347,8 @@ export async function deploymentNewCommand(): Promise<void> {
     });
     const resp = await aptos.signAndSubmitTransaction({ signer: adminAccount, transaction: txn });
     await aptos.waitForTransaction({ transactionHash: resp.hash, options: { checkSuccess: true } });
-    console.log('  ✓ Epoch 0 live.\n');
+    console.log(`  ✓ Initial epoch (epoch 0) live. Txn: ${resp.hash}`);
+    console.log();
 
     // 9. Persist profile.
     const config = loadConfig();
@@ -286,14 +371,20 @@ export async function deploymentNewCommand(): Promise<void> {
     saveConfig(config);
 
     console.log('══════════════════════════════════════════════════════════════════════');
-    console.log('  Deployment complete!');
-    console.log('');
-    console.log(`  Profile alias    : ${dep.alias}`);
-    console.log(`  Contract address : ${adminAddr}`);
-    console.log(`  Tag / version    : ${tag} / v${version}`);
-    console.log('');
+    console.log('  Deployment complete.');
+    console.log();
+    console.log(`  Profile alias     : ${dep.alias}`);
+    console.log(`  Contract address  : ${adminAddr}`);
+    console.log(`  Tag / version     : ${tag} / v${version}`);
+    console.log(`  Network           : ${network}`);
+    console.log(`  Saved profile     : ~/.ace/config.json (entry "${makeDeploymentKey(rpcUrl, adminAddr)}")`);
+    console.log();
+    console.log('  Admin private key is stored in the profile. Keep ~/.ace/config.json safe — anyone');
+    console.log('  with read access can recover the admin signing key and thus control the contract.');
+    console.log();
     console.log('  Next steps:');
-    console.log('    ace network-status              # see the running network');
+    console.log('    ace network-status -w           # live monitor the running network');
     console.log('    ace deployment ls               # list saved deployment profiles');
+    console.log('    ace deployment update-contracts # republish at a new tag (e.g. after a hotfix)');
     console.log('══════════════════════════════════════════════════════════════════════');
 }

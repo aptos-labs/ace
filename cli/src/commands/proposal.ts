@@ -20,9 +20,12 @@ function generateTemplate(state: aceNetwork.State): string {
         .map(n => `    "${n.toStringLong()}",`)
         .join('\n');
 
+    // Note for editors: the address inside the array is the *currentSession* (must use
+    // this for secrets_to_retain on-chain), but we surface keypair_id and scheme as comments
+    // since keypair_id is what apps recognize and the scheme tells you which t-IBE variant.
     const secretsLines = state.secrets.length > 0
         ? state.secrets
-            .map(s => `    "${s.currentSession.toStringLong()}",  # ${s.schemeName()} — keypair id: ${s.keypairId.toStringLong()}`)
+            .map(s => `    "${s.currentSession.toStringLong()}",  # keypair id ${s.keypairId.toStringLong()}  (${s.schemeName()})`)
             .join('\n')
         : '';
 
@@ -54,8 +57,12 @@ function generateTemplate(state: aceNetwork.State): string {
             ? `secrets_to_retain = [\n${secretsLines}\n]`
             : `secrets_to_retain = []`,
         ``,
-        `# new_secrets: generate a new DKG for each listed scheme code.`,
-        `# Supported schemes: 0 = bls12381_g1`,
+        `# new_secrets: generate a new DKG for each listed group-scheme code.`,
+        `# Supported schemes:`,
+        `#   0 = bls12381_g1   →  legacy t-IBE (BFIBE-shortpk-otp-hmac)`,
+        `#   1 = bls12381_g2   →  default t-IBE (BFIBE-shortsig-aead)`,
+        `# Use 1 unless you have a specific reason to use 0. Example: \`new_secrets = [1]\``,
+        `# generates one fresh master secret over BLS12-381 G2.`,
         `new_secrets = []`,
         ``,
     ].join('\n');

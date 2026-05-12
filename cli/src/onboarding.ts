@@ -61,6 +61,41 @@ export function dockerRpcUrl(rpcUrl: string): string {
                  .replace(/127\.0\.0\.1/g, 'host.docker.internal');
 }
 
+/**
+ * Cloud Run defaults to public-internet egress only. If any chainRpc URL points
+ * at a private IP (RFC1918) or a `*.internal` hostname, the Cloud Run service
+ * needs Direct VPC egress configured to reach it. Detecting this lets us emit
+ * the right --network/--subnet/--vpc-egress flags without making the operator
+ * remember them.
+ */
+export function rpcUrlsNeedVpcEgress(chainRpc?: ChainRpcOverrides): boolean {
+    if (!chainRpc) return false;
+    const urls = [
+        chainRpc.aptosMainnetApi, chainRpc.aptosTestnetApi, chainRpc.aptosLocalnetApi,
+        chainRpc.solanaMainnetBetaRpc, chainRpc.solanaTestnetRpc, chainRpc.solanaDevnetRpc,
+    ].filter((u): u is string => typeof u === 'string' && u.length > 0);
+    return urls.some(isPrivateRpcUrl);
+}
+
+function isPrivateRpcUrl(url: string): boolean {
+    let host: string;
+    try { host = new URL(url).hostname; } catch { return false; }
+    if (host.endsWith('.internal')) return true;
+    // RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+    if (!m) return false;
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+}
+
+/** Default VPC egress config used when private RPC URLs are detected. */
+export const DEFAULT_VPC_NETWORK = 'default';
+export const DEFAULT_VPC_SUBNET = 'default';
+export const DEFAULT_VPC_EGRESS = 'private-ranges-only';
+
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
@@ -68,6 +103,11 @@ export function gcpDeployCmd(
     chainRpc?: ChainRpcOverrides,
 ): string {
     const args = nodeRunArgs(node, rpcUrl, aceAddr, rpcApiKey, gasStationKey, chainRpc);
+    const vpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
+        `  --network=${DEFAULT_VPC_NETWORK}`,
+        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+        `  --vpc-egress=${DEFAULT_VPC_EGRESS}`,
+    ] : [];
     return [
         `gcloud run deploy ${serviceName}`,
         `  --image docker.io/${image}`,
@@ -76,6 +116,7 @@ export function gcpDeployCmd(
         `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --no-cpu-throttling`,
+        ...vpcLines,
         `  --args "${args.join(',')}"`,
     ].join(' \\\n');
 }

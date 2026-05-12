@@ -4,12 +4,22 @@
 import { input } from '@inquirer/prompts';
 import { escSelect } from './esc-select.js';
 
-async function fetchTags(): Promise<string[]> {
+export interface ImageTag {
+    name: string;          // e.g. "2.1.0" or "5d0f5dc"
+    lastUpdated: string;   // ISO timestamp
+}
+
+export async function fetchTagsRaw(pageSize: number = 25): Promise<ImageTag[]> {
     const res = await fetch(
-        'https://hub.docker.com/v2/repositories/aptoslabs/ace-node/tags?page_size=25&ordering=last_updated',
+        `https://hub.docker.com/v2/repositories/aptoslabs/ace-node/tags?page_size=${pageSize}&ordering=last_updated`,
     );
-    const data = await res.json() as { results: { name: string }[] };
-    return data.results.map(r => `aptoslabs/ace-node:${r.name}`);
+    const data = await res.json() as { results: { name: string; last_updated: string }[] };
+    return data.results.map(r => ({ name: r.name, lastUpdated: r.last_updated }));
+}
+
+async function fetchTags(): Promise<string[]> {
+    const tags = await fetchTagsRaw(25);
+    return tags.map(t => `aptoslabs/ace-node:${t.name}`);
 }
 
 /**

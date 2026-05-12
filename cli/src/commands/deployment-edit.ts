@@ -14,6 +14,7 @@ import { parse as parseToml } from 'smol-toml';
 import { loadConfig, saveConfig, type TrackedDeployment } from '../config.js';
 import { resolveDeployment } from '../resolve-profile.js';
 import { buildFromEditor } from '../editor.js';
+import { CLI } from '../cli-name.js';
 
 const ALLOWED_KEYS = ['alias', 'rpcUrl', 'network', 'sharedNodeApiKey', 'gasStationApiKey'] as const;
 type AllowedKey = typeof ALLOWED_KEYS[number];
@@ -26,7 +27,7 @@ function generateTemplate(dep: TrackedDeployment, deploymentKey: string): string
 #   * Identity fields (admin address / private key, contract address, deploy
 #     metadata) are shown commented-out for reference. Uncommenting any of
 #     them will be rejected when you save — to change those, delete and
-#     recreate the profile via \`ace deployment delete\` + \`ace deployment new\`.
+#     recreate the profile via \`${CLI} deployment delete\` + \`${CLI} deployment new\`.
 #
 # Profile ID: ${deploymentKey}
 #
@@ -68,7 +69,7 @@ function parseEdited(content: string, dep: TrackedDeployment): Partial<TrackedDe
             throw new Error(
                 `Field "${k}" is read-only and cannot be edited via this command — those fields ` +
                 `define the deployment's identity. Delete the line (or leave it commented) and re-save. ` +
-                `If you really need to change it, run \`ace deployment delete\` then \`ace deployment new\`.`,
+                `If you really need to change it, run \`${CLI} deployment delete\` then \`${CLI} deployment new\`.`,
             );
         }
     }
@@ -124,7 +125,7 @@ export async function deploymentEditCommand(opts: { profile?: string; account?: 
     const config = loadConfig();
     const dep = config.deployments[deploymentKey];
     if (!dep) {
-        console.error(`Deployment profile "${deploymentKey}" disappeared between resolution and save — did another \`ace deployment delete\` run in parallel? Aborting.`);
+        console.error(`Deployment profile "${deploymentKey}" disappeared between resolution and save — did another \`${CLI} deployment delete\` run in parallel? Aborting.`);
         process.exit(1);
     }
     Object.assign(dep, changes);

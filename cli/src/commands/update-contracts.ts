@@ -24,6 +24,7 @@ import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 
 import { deriveRpcLabel, loadConfig, saveConfig } from '../config.js';
 import { resolveDeployment } from '../resolve-profile.js';
+import { CLI } from '../cli-name.js';
 import { ACE_CONTRACT_PACKAGES, REPO_ROOT, deployContracts } from '../deploy-contracts.js';
 
 /** Return the first vX.Y.Z tag pointing at HEAD, or null if none. */
@@ -86,7 +87,7 @@ export async function updateContractsCommand(opts: {
         throw new Error(
             `Profile inconsistency: stored adminAddress (${deployment.adminAddress}) does ` +
             `not match the address derived from the stored adminPrivateKey (${adminAddr}). ` +
-            `Refusing to republish — fix the profile via \`ace deployment edit\` or recreate it.`,
+            `Refusing to republish — fix the profile via \`${CLI} deployment edit\` or recreate it.`,
         );
     }
 
@@ -124,5 +125,5 @@ export async function updateContractsCommand(opts: {
     console.log();
     console.log(`✓ All ${ACE_CONTRACT_PACKAGES.length} packages republished at version ${version}.`);
     console.log(`  Profile updated: deployedAtTag = v${version}, deployedAt = now.`);
-    console.log(`  Confirm via \`ace network-status\` — the contract version line should reflect v${version}.`);
+    console.log(`  Confirm via \`${CLI} network-status\` — the contract version line should reflect v${version}.`);
 }

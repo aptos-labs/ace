@@ -78,5 +78,5 @@ export function deploymentDefaultCommand(aliasOrKey: string): void {
     const [key, dep] = entry;
     config.defaultDeployment = key;
     saveConfig(config);
-    console.log(`✓ Default deployment profile set to "${dep.alias ?? key}". \`ace deployment …\` commands without --profile/--account will use it.`);
+    console.log(`✓ Default deployment profile set to "${dep.alias ?? key}". \`${CLI} deployment …\` commands without --profile/--account will use it.`);
 }

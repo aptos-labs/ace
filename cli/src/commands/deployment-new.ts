@@ -43,6 +43,7 @@ import {
     deployContracts,
     ed25519PrivateKeyHex,
 } from '../deploy-contracts.js';
+import { CLI } from '../cli-name.js';
 
 const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
     { name: 'mainnet',  rpcUrl: 'https://api.mainnet.aptoslabs.com/v1' },
@@ -121,7 +122,7 @@ async function waitForBalance(aptos: Aptos, addr: string, label: string): Promis
         process.stdout.write(`.`);
         await new Promise(r => setTimeout(r, 5000));
     }
-    throw new Error(`Timed out after 30 min waiting for ${label} ${addr} to be funded. Re-run \`ace deployment new\` once the account has APT.`);
+    throw new Error(`Timed out after 30 min waiting for ${label} ${addr} to be funded. Re-run \`${CLI} deployment new\` once the account has APT.`);
 }
 
 async function faucetFund(faucetUrl: string, addr: string, amountOctas: number = 100_000_000_000): Promise<void> {
@@ -281,7 +282,7 @@ export async function deploymentNewCommand(): Promise<void> {
     console.log();
     console.log('  Share the JSON line below with each operator (e.g. via Slack DM, 1Password');
     console.log('  shared item, or wherever your team treats credentials). Each operator runs');
-    console.log('  `ace node new`, pastes the blob when prompted, and follows the wizard to');
+    console.log(`  \`${CLI} node new\`, pastes the blob when prompted, and follows the wizard to`);
     console.log('  start their node and register on-chain.');
     console.log();
     console.log(`  ${operatorBlob}`);
@@ -291,7 +292,7 @@ export async function deploymentNewCommand(): Promise<void> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
 
-    console.log('When operators run `ace node new`, they will print their account address at');
+    console.log(`When operators run \`${CLI} node new\`, they will print their account address at`);
     console.log('the end. Collect those addresses to assemble the initial committee.');
     console.log();
     await ask('Press Enter once all operators have registered and shared their account addresses... ');
@@ -392,9 +393,11 @@ export async function deploymentNewCommand(): Promise<void> {
     console.log('  Admin private key is stored in the profile. Keep ~/.ace/config.json safe — anyone');
     console.log('  with read access can recover the admin signing key and thus control the contract.');
     console.log();
+    const pad = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
+    const nextW = Math.max(`${CLI} network-status -w`.length, `${CLI} deployment update-contracts`.length) + 2;
     console.log('  Next steps:');
-    console.log('    ace network-status -w           # live monitor the running network');
-    console.log('    ace deployment ls               # list saved deployment profiles');
-    console.log('    ace deployment update-contracts # republish at a new tag (e.g. after a hotfix)');
+    console.log(`    ${pad(`${CLI} network-status -w`, nextW)}# live monitor the running network`);
+    console.log(`    ${pad(`${CLI} deployment ls`, nextW)}# list saved deployment profiles`);
+    console.log(`    ${pad(`${CLI} deployment update-contracts`, nextW)}# republish at a new tag (e.g. after a hotfix)`);
     console.log('══════════════════════════════════════════════════════════════════════');
 }

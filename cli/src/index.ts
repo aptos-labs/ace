@@ -254,6 +254,25 @@ proposalCmd
     });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// `ace image` — Docker Hub registry helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+const imageCmd = program.command('image').description('Inspect available ACE worker images');
+
+imageCmd
+    .command('ls')
+    .description('List recently pushed aptoslabs/ace-node tags on Docker Hub')
+    .option('-n, --limit <count>', 'Number of newest tags to show (max 100)', '25')
+    .action(async (opts: { limit?: string }) => {
+        try {
+            const { imageLsCommand } = await import('./commands/image-ls.js');
+            await imageLsCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+// ──────────────────────────────────────────────────────────────────────────────
 // `ace network-status` — chain-side read; works with either profile type
 // ──────────────────────────────────────────────────────────────────────────────
 

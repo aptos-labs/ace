@@ -4,6 +4,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { ChainRpcOverrides, TrackedNode } from './config.js';
+import { DEFAULT_VPC_EGRESS, DEFAULT_VPC_NETWORK, DEFAULT_VPC_SUBNET, rpcUrlsNeedVpcEgress } from './onboarding.js';
 
 const execAsync = promisify(exec);
 
@@ -26,6 +27,12 @@ interface ParsedArgs {
     port?: string;
     image?: string;
     chainRpc: ChainRpcOverrides;
+    // Cloud Run only. `vpcNetwork`/`vpcSubnet` come from the network-interfaces
+    // annotation; `vpcEgress` from vpc-access-egress annotation. All undefined
+    // for docker/local, and undefined on gcp when egress is the default (public-only).
+    vpcNetwork?: string;
+    vpcSubnet?: string;
+    vpcEgress?: string;
 }
 
 // CLI flag → TrackedNode.chainRpc key. Matches `chainRpcArgs()` in onboarding.ts
@@ -94,6 +101,22 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
     if (!container) throw new Error('No container in service spec');
     const parsed = parseNodeArgs((container.args as string[]) ?? []);
     parsed.image = ((container.image as string) ?? '').replace(/^docker\.io\//, '');
+    // VPC config: stored in template annotations on the running revision.
+    // `network-interfaces` is a JSON array (Direct VPC egress); `vpc-access-connector`
+    // is the legacy connector path. We only emit Direct VPC egress in gcpDeployCmd,
+    // but we read both to surface drift in either direction.
+    const ann = (svc?.spec?.template?.metadata?.annotations ?? {}) as Record<string, string>;
+    const niRaw = ann['run.googleapis.com/network-interfaces'];
+    if (niRaw) {
+        try {
+            const arr = JSON.parse(niRaw) as { network?: string; subnetwork?: string }[];
+            if (arr.length > 0) {
+                parsed.vpcNetwork = arr[0]!.network;
+                parsed.vpcSubnet = arr[0]!.subnetwork;
+            }
+        } catch { /* malformed annotation — ignore */ }
+    }
+    parsed.vpcEgress = ann['run.googleapis.com/vpc-access-egress'];
     return parsed;
 }
 
@@ -133,6 +156,25 @@ export function computeDiff(node: TrackedNode, running: ParsedArgs): DiffRow[] {
         const p = profileRpc[key];
         const r = running.chainRpc[key];
         if (p || r) add(flag, p, r, CHAIN_RPC_SECRET[key] ?? false);
+    }
+
+    // VPC egress (Cloud Run only). gcpDeployCmd auto-emits the standard config
+    // when a chainRpc URL is private. Show rows only when the profile's
+    // derivation OR the running service has any value, so unrelated docker/local
+    // nodes don't get noisy.
+    if (node.platform === 'gcp') {
+        const expectedVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
+        const profileNetwork = expectedVpc ? DEFAULT_VPC_NETWORK : undefined;
+        const profileSubnet  = expectedVpc ? DEFAULT_VPC_SUBNET  : undefined;
+        const profileEgress  = expectedVpc ? DEFAULT_VPC_EGRESS  : undefined;
+        // Cloud Run records `network` and `subnetwork` as resource paths
+        // (`projects/<num>/regions/<r>/subnetworks/<name>`) — normalize to the trailing name for comparison.
+        const lastPathPart = (v: string | undefined) => v?.replace(/^.*\//, '');
+        const runningNetwork = lastPathPart(running.vpcNetwork);
+        const runningSubnet  = lastPathPart(running.vpcSubnet);
+        if (profileNetwork || runningNetwork) add('vpc-network', profileNetwork, runningNetwork);
+        if (profileSubnet  || runningSubnet)  add('vpc-subnet',  profileSubnet,  runningSubnet);
+        if (profileEgress  || running.vpcEgress) add('vpc-egress', profileEgress, running.vpcEgress);
     }
     return rows;
 }

@@ -26,7 +26,7 @@ import { loadConfig, saveConfig, type ChainRpcOverrides, type TrackedNode } from
 import { buildFromEditor } from '../editor.js';
 import { resolveProfile } from '../resolve-profile.js';
 import { CLI } from '../cli-name.js';
-import { gcpDeployCmd, dockerRunCmd, localRunArgs, dockerRpcUrl, writeLogrotateConf, runLogrotate } from '../onboarding.js';
+import { gcpDeployCmd, dockerRunCmd, localRunArgs, dockerRpcUrl, writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress } from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 
@@ -227,6 +227,9 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     const chainRpc = updatedNode.chainRpc;
 
     if (node.platform === 'gcp' && node.gcp) {
+        if (rpcUrlsNeedVpcEgress(chainRpc)) {
+            console.log(`${D}A private RPC URL was detected; the command below adds --network/--subnet/--vpc-egress so Cloud Run can reach it via VPC.${R}`);
+        }
         console.log('Run this command to apply the changes:\n');
         console.log(gcpDeployCmd(
             node.gcp.serviceName, image!, node.gcp.project, node.gcp.region,

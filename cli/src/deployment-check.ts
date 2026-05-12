@@ -3,7 +3,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import type { TrackedNode } from './config.js';
+import type { ChainRpcOverrides, TrackedNode } from './config.js';
 
 const execAsync = promisify(exec);
 
@@ -25,10 +25,31 @@ interface ParsedArgs {
     pkeDk?: string;
     port?: string;
     image?: string;
+    chainRpc: ChainRpcOverrides;
 }
 
+// CLI flag → TrackedNode.chainRpc key. Matches `chainRpcArgs()` in onboarding.ts
+// and the `--*-api/--*-apikey/--*-rpc` flag set declared in worker-components/network-node/src/main.rs.
+const CHAIN_RPC_FLAGS: Record<string, keyof ChainRpcOverrides> = {
+    'aptos-mainnet-api':       'aptosMainnetApi',
+    'aptos-mainnet-apikey':    'aptosMainnetApikey',
+    'aptos-testnet-api':       'aptosTestnetApi',
+    'aptos-testnet-apikey':    'aptosTestnetApikey',
+    'aptos-localnet-api':      'aptosLocalnetApi',
+    'aptos-localnet-apikey':   'aptosLocalnetApikey',
+    'solana-mainnet-beta-rpc': 'solanaMainnetBetaRpc',
+    'solana-testnet-rpc':      'solanaTestnetRpc',
+    'solana-devnet-rpc':       'solanaDevnetRpc',
+};
+
+const CHAIN_RPC_SECRET: Partial<Record<keyof ChainRpcOverrides, boolean>> = {
+    aptosMainnetApikey:  true,
+    aptosTestnetApikey:  true,
+    aptosLocalnetApikey: true,
+};
+
 function parseNodeArgs(args: string[]): ParsedArgs {
-    const p: ParsedArgs = {};
+    const p: ParsedArgs = { chainRpc: {} };
     for (const arg of args) {
         const m = arg.match(/^--([^=]+)=([\s\S]*)$/);
         if (!m) continue;
@@ -41,6 +62,7 @@ function parseNodeArgs(args: string[]): ParsedArgs {
         else if (k === 'account-sk')            p.accountSk = v;
         else if (k === 'pke-dk')                p.pkeDk = v;
         else if (k === 'port')                  p.port = v;
+        else if (k in CHAIN_RPC_FLAGS)          p.chainRpc[CHAIN_RPC_FLAGS[k]!] = v;
     }
     return p;
 }
@@ -103,6 +125,15 @@ export function computeDiff(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     if (node.accountSk || running.accountSk)   add('account-sk', node.accountSk,   running.accountSk, true);
     if (node.pkeDk     || running.pkeDk)       add('pke-dk',    node.pkeDk,         running.pkeDk,     true);
     if (node.image     || running.image)       add('image',     node.image,         running.image);
+
+    // Per-chain RPC overrides. Only emit a row when either side has a value, so
+    // the common "neither override the binary default" case doesn't add noise.
+    const profileRpc = node.chainRpc ?? {};
+    for (const [flag, key] of Object.entries(CHAIN_RPC_FLAGS)) {
+        const p = profileRpc[key];
+        const r = running.chainRpc[key];
+        if (p || r) add(flag, p, r, CHAIN_RPC_SECRET[key] ?? false);
+    }
     return rows;
 }
 

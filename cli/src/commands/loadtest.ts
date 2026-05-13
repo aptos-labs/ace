@@ -40,12 +40,24 @@ const DEFAULT_RPC: Record<string, string> = {
 const MODULE_NAME = 'acl';
 const DOMAIN_BYTES = new TextEncoder().encode('loadtest');
 
-// Path to the loadtest-acl Move package, packaged inside the CLI. Lives under
-// `cli/move/` (NOT `cli/contracts/`) to avoid confusion with the repo-root
-// `contracts/` tree, which holds the ACE protocol Move packages. The CLI is
-// bundled to `cli/dist/index.js`, so `../move/loadtest-acl` resolves correctly
-// in both dev (tsx) and built layouts.
-const LOADTEST_ACL_PACKAGE = path.resolve(__dirname, '..', 'move', 'loadtest-acl');
+// Resolve the loadtest-acl Move package. Lives under `cli/move/` (NOT
+// `cli/contracts/`, which would collide with the repo-root protocol contracts).
+// The `__dirname` differs between dev mode (running from `cli/src/commands/`)
+// and built mode (bundled into `cli/dist/`), so we probe both candidates and
+// pick whichever actually has the package.
+function findLoadtestAclPackage(): string {
+    const candidates = [
+        path.resolve(__dirname, '..', 'move', 'loadtest-acl'),         // dist/index.js → cli/move/...
+        path.resolve(__dirname, '..', '..', 'move', 'loadtest-acl'),   // src/commands/loadtest.ts → cli/move/...
+    ];
+    for (const c of candidates) {
+        if (existsSync(path.join(c, 'Move.toml'))) return c;
+    }
+    throw new Error(
+        `loadtest-acl Move package not found. Tried:\n  ${candidates.join('\n  ')}\n` +
+        `(Expected location: cli/move/loadtest-acl/Move.toml.)`,
+    );
+}
 
 // ── setup ─────────────────────────────────────────────────────────────────────
 
@@ -78,13 +90,8 @@ export async function loadtestSetupCommand(opts: { network?: string; rpcUrl?: st
 
     // 3. Publish the loadtest-acl Move package at the new account.
     console.log(`\nPublishing loadtest-acl contract...`);
-    if (!existsSync(path.join(LOADTEST_ACL_PACKAGE, 'Move.toml'))) {
-        throw new Error(
-            `Loadtest-acl package not found at ${LOADTEST_ACL_PACKAGE}. ` +
-            `The CLI build needs to ship the cli/contracts/ tree alongside dist/index.js.`,
-        );
-    }
-    await publishLoadtestAcl(LOADTEST_ACL_PACKAGE, accountSk, rpcUrl, accountAddr);
+    const packageDir = findLoadtestAclPackage();
+    await publishLoadtestAcl(packageDir, accountSk, rpcUrl, accountAddr);
 
     // 4. Save state.
     const cfg2 = loadConfig();

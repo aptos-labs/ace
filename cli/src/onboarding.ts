@@ -96,6 +96,15 @@ export const DEFAULT_VPC_NETWORK = 'default';
 export const DEFAULT_VPC_SUBNET = 'default';
 export const DEFAULT_VPC_EGRESS = 'private-ranges-only';
 
+/**
+ * Cloud Run's max concurrent in-flight requests per container. Cloud Run's
+ * legacy default of 80 caps a single instance at modest throughput (e.g.,
+ * 80 / 50 ms = 1600 QPS theoretical); 1000 is the documented max and gives
+ * one well-resourced instance plenty of headroom. Operators can override at
+ * deploy time by editing the printed gcloud command.
+ */
+export const DEFAULT_CONTAINER_CONCURRENCY = 1000;
+
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
@@ -116,6 +125,7 @@ export function gcpDeployCmd(
         `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --no-cpu-throttling`,
+        `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
         ...vpcLines,
         `  --args "${args.join(',')}"`,
     ].join(' \\\n');

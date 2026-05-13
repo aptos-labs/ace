@@ -254,6 +254,65 @@ proposalCmd
     });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// `ace loadtest` — operator-facing load testing (account, contract, runner)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const loadtestCmd = program.command('loadtest').description('Constant-rate load testing of ACE workers');
+
+loadtestCmd
+    .command('setup')
+    .description('Generate a test account, wait for faucet funding, deploy the loadtest-acl Move contract. Idempotent per --network.')
+    .option('--network <name>', 'Network name (testnet | mainnet | devnet | localnet)', 'testnet')
+    .option('--rpc-url <url>', 'Override the default RPC URL for this network')
+    .action(async (opts: { network?: string; rpcUrl?: string }) => {
+        try {
+            const { loadtestSetupCommand } = await import('./commands/loadtest.js');
+            await loadtestSetupCommand(opts);
+        } catch (e) { exitOnError(e); }
+    });
+
+loadtestCmd
+    .command('run')
+    .description('Drive a constant-rate QPS ramp at the target worker.')
+    .option('-a, --account <addr>', 'Target a tracked node profile by account address')
+    .option('-e, --endpoint <url>', 'Target an arbitrary worker URL (must be a current committee member)')
+    .option('--network <name>', 'Network name (matches a prior `loadtest setup`)', 'testnet')
+    .option('--ramp <csv>', 'Comma-separated QPS levels (default 20,40,80,160,320,640,1280)')
+    .option('--duration <sec>', 'Seconds per level (default 330 — covers epoch rotation)')
+    .option('--cooldown <sec>', 'Idle seconds between levels (default 60)')
+    .option('--timeout <ms>', 'Per-request hard timeout in ms (default 30000)')
+    .option('--epoch-delay <sec>', 'Seconds to wait after detecting an epoch change before re-minting (default 10)')
+    .option('-o, --output <path>', 'CSV output path (default loadtest-results/results-<run-id>.csv)')
+    .action(async (opts: any) => {
+        try {
+            const { loadtestRunCommand } = await import('./commands/loadtest.js');
+            await loadtestRunCommand(opts);
+        } catch (e) { exitOnError(e); }
+    });
+
+loadtestCmd
+    .command('status')
+    .description('Show saved load-test state (account, contract) per network.')
+    .option('--network <name>', 'Only show one network')
+    .action(async (opts: { network?: string }) => {
+        try {
+            const { loadtestStatusCommand } = await import('./commands/loadtest.js');
+            loadtestStatusCommand(opts);
+        } catch (e) { exitOnError(e); }
+    });
+
+loadtestCmd
+    .command('reset')
+    .description('Delete the saved load-test state for one network (on-chain APT + contract are NOT deleted).')
+    .option('--network <name>', 'Network name', 'testnet')
+    .action(async (opts: { network?: string }) => {
+        try {
+            const { loadtestResetCommand } = await import('./commands/loadtest.js');
+            loadtestResetCommand(opts);
+        } catch (e) { exitOnError(e); }
+    });
+
+// ──────────────────────────────────────────────────────────────────────────────
 // `ace image` — Docker Hub registry helpers
 // ──────────────────────────────────────────────────────────────────────────────
 

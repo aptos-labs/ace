@@ -49,8 +49,7 @@ use std::time::Instant;
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
@@ -68,12 +67,15 @@ use crate::{now_utc_iso, wlog, ChainRpcConfig};
 // ── User-facing handler (POST /) ─────────────────────────────────────────────
 
 /// Shared state for the user-facing request handler. The secrets provider
-/// abstracts over monolith/maintainer (in-process) vs handler (remote-cached).
+/// abstracts over monolith/maintainer (in-process) vs handler (remote-cached);
+/// `pke_dk_bytes` is loaded directly from CLI on both maintainer and handler,
+/// so it never crosses the wire.
 #[derive(Clone)]
 pub struct AppState {
     pub provider: Arc<SecretsProvider>,
     pub chain_rpc: Arc<ChainRpcConfig>,
     pub concurrency: Arc<Semaphore>,
+    pub pke_dk_bytes: Arc<Vec<u8>>,
 }
 
 /// Spawn the user-request server. Runs until the process exits.
@@ -85,11 +87,14 @@ pub async fn run_user_server(port: u16, state: AppState) {
 }
 
 // ── Secrets-server (GET /secrets, maintainer mode) ───────────────────────────
+//
+// No app-level auth: maintainer and handler are assumed to live in the same
+// private network (Cloud Run `ingress=internal` + IAM run.invoker, or a
+// VPC-scoped service).
 
 #[derive(Clone)]
 pub struct SecretsServerState {
     pub local: LocalSecrets,
-    pub auth_token: Option<String>,
 }
 
 pub async fn run_secrets_server(port: u16, state: SecretsServerState) {
@@ -101,18 +106,8 @@ pub async fn run_secrets_server(port: u16, state: SecretsServerState) {
 
 async fn handle_get_secrets(
     State(state): State<SecretsServerState>,
-    headers: HeaderMap,
-) -> Result<Json<SecretsSnapshotWire>, StatusCode> {
-    if let Some(expected) = state.auth_token.as_deref() {
-        let got = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "));
-        if got != Some(expected) {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    }
-    Ok(Json(state.local.snapshot_wire().await))
+) -> Json<SecretsSnapshotWire> {
+    Json(state.local.snapshot_wire().await)
 }
 
 // ── Common serve helper ──────────────────────────────────────────────────────
@@ -294,20 +289,8 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         }
     };
 
-    // Fetch the secrets snapshot. In monolith/maintainer this is a cheap clone of
-    // in-process state; in handler mode this is the singleflight remote cache.
-    let snapshot = match state.provider.snapshot().await {
-        Ok(s) => s,
-        Err(e) => {
-            return Outcome::Rejected {
-                reason: Reason::ServiceUnavailable,
-                detail: Some(format!("secrets fetch failed: {:#}", e)),
-            };
-        }
-    };
-
     let decrypt_start = Instant::now();
-    let req_bytes = match pke_decrypt_bytes(snapshot.pke_dk_bytes.as_ref(), &ct_bytes) {
+    let req_bytes = match pke_decrypt_bytes(state.pke_dk_bytes.as_ref(), &ct_bytes) {
         Ok(b) => b,
         Err(e) => {
             return Outcome::Rejected {
@@ -324,6 +307,18 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             return Outcome::Rejected {
                 reason: Reason::BadRequest,
                 detail: Some(format!("bcs decode RequestForDecryptionKey failed: {}", e)),
+            };
+        }
+    };
+
+    // Fetch the secrets snapshot. In monolith/maintainer this is a cheap clone of
+    // in-process state; in handler mode this is the singleflight remote cache.
+    let snapshot = match state.provider.snapshot().await {
+        Ok(s) => s,
+        Err(e) => {
+            return Outcome::Rejected {
+                reason: Reason::ServiceUnavailable,
+                detail: Some(format!("secrets fetch failed: {:#}", e)),
             };
         }
     };
@@ -413,34 +408,29 @@ fn extract_and_respond(
     identity: &[u8],
     response_enc_key: &EncryptionKey,
 ) -> Outcome {
-    let (scalar_le32, tibe_scheme) = match snapshot.lookup(keypair_id, epoch) {
+    // `NotInCommittee` snapshots map to NotFound for any lookup — there are
+    // no shares to serve, which matches the previous monolith behavior of
+    // returning 503 / NotFound when the node is not in `cur_nodes`.
+    let entry = match snapshot.lookup(keypair_id, epoch) {
         Some(v) => v,
         None => {
+            let detail = match snapshot {
+                crate::secrets::Snapshot::NotInCommittee =>
+                    "this node is not in cur_nodes".to_string(),
+                _ => format!("no share for keypair_id={} epoch={}", keypair_id, epoch),
+            };
             return Outcome::Rejected {
                 reason: Reason::NotFound,
-                detail: Some(format!(
-                    "no share for keypair_id={} epoch={}",
-                    keypair_id, epoch
-                )),
-            };
-        }
-    };
-
-    let eval_point = match snapshot.eval_point {
-        Some(e) => e,
-        None => {
-            return Outcome::Rejected {
-                reason: Reason::ServiceUnavailable,
-                detail: Some("this node is not in cur_nodes".to_string()),
+                detail: Some(detail),
             };
         }
     };
 
     let share_hex = match crate::crypto::partial_extract_idk_share(
-        tibe_scheme,
+        entry.tibe_scheme,
         identity,
-        &scalar_le32,
-        eval_point,
+        &entry.scalar_le32,
+        entry.eval_point,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -471,8 +461,3 @@ fn extract_and_respond(
     }
 }
 
-// `IntoResponse` impl not needed explicitly — `Result<Json<_>, StatusCode>` already implements it.
-#[allow(dead_code)]
-fn _assert_into_response_impl() {
-    fn _f<T: IntoResponse>(_: T) {}
-}

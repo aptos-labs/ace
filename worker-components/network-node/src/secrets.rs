@@ -3,14 +3,17 @@
 
 //! Secrets provider abstraction for the three deployment modes.
 //!
-//! * `Monolith`/`Maintainer` use [`SecretsProvider::Local`], which reads directly
-//!   from the in-process keypair-share map and `cur_nodes` list that the URH /
-//!   state-polling loop populates.
-//! * `Handler` uses [`SecretsProvider::Remote`], which polls a maintainer's
-//!   `/secrets` endpoint and caches the snapshot for 1 second (singleflight via
-//!   an async mutex). Concurrent stale requests collapse onto a single fetch.
+//! * `Monolith` / `Maintainer` use [`SecretsProvider::Local`], reading directly
+//!   from the in-process share map that the URH / state-polling loop populates.
+//! * `Handler` uses [`SecretsProvider::Remote`], which polls a peer
+//!   maintainer's `/secrets` endpoint and caches the snapshot for 1 second
+//!   (singleflight via an async mutex). Concurrent stale requests collapse
+//!   onto a single fetch.
 //!
-//! The on-the-wire payload is JSON: see [`SecretsSnapshotWire`].
+//! The PKE decryption key is **not** carried in the snapshot — both maintainer
+//! and handler receive it via CLI flag. That avoids transmitting a long-lived
+//! identity secret across processes; the snapshot only carries per-epoch
+//! material.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,131 +23,117 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
-/// JSON wire format returned by the maintainer's `GET /secrets` endpoint.
+/// JSON wire format returned by the maintainer's `GET /secrets`. Versioned via
+/// the `schema` tag so future shapes can coexist.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SecretsSnapshotWire {
-    pub schema_version: u32,
-    pub my_addr: String,
-    /// `0x`-prefixed hex of the PKE decryption key bytes.
-    pub pke_dk_hex: String,
-    /// 1-based position of `my_addr` in the current committee, or `None`
-    /// when this node is not in `cur_nodes`. Carried in the snapshot so
-    /// the handler doesn't need its own view of the committee.
-    pub eval_point: Option<u64>,
-    pub epochs: Vec<EpochSecretsWire>,
+#[serde(tag = "schema")]
+pub enum SecretsSnapshotWire {
+    /// This node is currently part of the committee. `shares` covers the
+    /// current epoch plus any retained-buffer entries from the previous epoch.
+    #[serde(rename = "v1-in-committee")]
+    V1InCommittee { shares: Vec<ShareWire> },
+    /// This node is not in the committee right now — there are no shares to
+    /// serve. Handler will reject user requests with 503.
+    #[serde(rename = "v1-not-in-committee")]
+    V1NotInCommittee,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct EpochSecretsWire {
-    pub epoch: u64,
-    pub shares: Vec<ShareWire>,
-}
-
+/// Per-(keypair, epoch) share with its evaluation point baked in.
+///
+/// `eval_point` is captured **at the time the URH task registered the share**,
+/// i.e. it reflects the committee membership of the relevant epoch. That makes
+/// stale-buffer-window entries (previous-epoch shares served during the ~30s
+/// post-rotation grace period) self-contained — the handler doesn't need to
+/// reconstruct what the committee looked like back then.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ShareWire {
     pub keypair_id: String,
+    pub epoch: u64,
+    pub eval_point: u64,
     /// 32-byte BLS scalar (little-endian), `0x`-prefixed hex.
     pub scalar_le32_hex: String,
     pub tibe_scheme: u8,
 }
 
-pub const SCHEMA_VERSION: u32 = 1;
-
-/// Parsed, in-memory form of a snapshot. Both providers return references to
-/// this same shape so the HTTP handler doesn't care where it came from.
+/// Parsed, in-memory form of a snapshot.
 #[derive(Clone, Debug)]
-pub struct Snapshot {
-    pub pke_dk_bytes: Arc<Vec<u8>>,
-    pub eval_point: Option<u64>,
-    /// keypair_id → epoch → (scalar_le32, tibe_scheme).
-    pub by_keypair_epoch: Arc<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>,
+pub enum Snapshot {
+    NotInCommittee,
+    InCommittee {
+        /// `(keypair_id, epoch)` → share entry.
+        entries: Arc<HashMap<(String, u64), ShareEntry>>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShareEntry {
+    pub scalar_le32: [u8; 32],
+    pub tibe_scheme: u8,
+    pub eval_point: u64,
 }
 
 impl Snapshot {
-    pub fn lookup(&self, keypair_id: &str, epoch: u64) -> Option<([u8; 32], u8)> {
-        self.by_keypair_epoch
-            .get(keypair_id)
-            .and_then(|by_epoch| by_epoch.get(&epoch))
-            .copied()
+    pub fn lookup(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
+        match self {
+            Snapshot::NotInCommittee => None,
+            // `HashMap<(String, u64), _>::get` needs an owned key here because
+            // there's no good Borrow impl for `(String, u64)` from `(&str, u64)`.
+            Snapshot::InCommittee { entries } => {
+                entries.get(&(keypair_id.to_string(), epoch)).copied()
+            }
+        }
     }
 }
 
 // ── Local provider (monolith + maintainer) ───────────────────────────────────
 
+/// Live view of the maintainer's in-process state. The HTTP handler clones a
+/// snapshot per request; the map is small (typically <10 entries) so the
+/// clone is cheap.
 #[derive(Clone)]
 pub struct LocalSecrets {
-    pub keypair_shares:
-        Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>>,
-    pub cur_nodes: Arc<RwLock<Vec<String>>>,
-    pub my_addr: String,
-    pub pke_dk_bytes: Arc<Vec<u8>>,
+    pub shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
+    /// Whether this node is currently in `cur_nodes`. Maintained by the
+    /// state-polling loop; observed by the snapshot to decide which wire
+    /// variant to emit.
+    pub in_committee: Arc<RwLock<bool>>,
 }
 
 impl LocalSecrets {
-    /// Build a fresh snapshot from the live in-process state. Cheap — the
-    /// share map is typically <10 entries.
     pub async fn snapshot(&self) -> Snapshot {
-        let eval_point = {
-            let nodes = self.cur_nodes.read().await;
-            nodes
-                .iter()
-                .position(|n| n == &self.my_addr)
-                .map(|i| (i + 1) as u64)
-        };
-        let by_keypair_epoch = {
-            let shares = self.keypair_shares.read().await;
-            Arc::new(shares.clone())
-        };
-        Snapshot {
-            pke_dk_bytes: self.pke_dk_bytes.clone(),
-            eval_point,
-            by_keypair_epoch,
+        if !*self.in_committee.read().await {
+            return Snapshot::NotInCommittee;
         }
+        let entries = Arc::new(self.shares.read().await.clone());
+        Snapshot::InCommittee { entries }
     }
 
-    /// JSON wire snapshot for serving `/secrets`.
     pub async fn snapshot_wire(&self) -> SecretsSnapshotWire {
-        let s = self.snapshot().await;
-        let epochs_acc: HashMap<u64, Vec<ShareWire>> =
-            s.by_keypair_epoch
-                .iter()
-                .flat_map(|(kp_id, by_epoch)| {
-                    by_epoch.iter().map(move |(epoch, (scalar, scheme))| {
-                        (
-                            *epoch,
-                            ShareWire {
-                                keypair_id: kp_id.clone(),
-                                scalar_le32_hex: format!("0x{}", hex::encode(scalar)),
-                                tibe_scheme: *scheme,
-                            },
-                        )
+        match self.snapshot().await {
+            Snapshot::NotInCommittee => SecretsSnapshotWire::V1NotInCommittee,
+            Snapshot::InCommittee { entries } => {
+                let mut shares: Vec<ShareWire> = entries
+                    .iter()
+                    .map(|((kp, epoch), e)| ShareWire {
+                        keypair_id: kp.clone(),
+                        epoch: *epoch,
+                        eval_point: e.eval_point,
+                        scalar_le32_hex: format!("0x{}", hex::encode(e.scalar_le32)),
+                        tibe_scheme: e.tibe_scheme,
                     })
-                })
-                .fold(HashMap::new(), |mut acc, (e, w)| {
-                    acc.entry(e).or_default().push(w);
-                    acc
-                });
-        let mut epochs: Vec<EpochSecretsWire> = epochs_acc
-            .into_iter()
-            .map(|(epoch, shares)| EpochSecretsWire { epoch, shares })
-            .collect();
-        epochs.sort_by_key(|e| e.epoch);
-        SecretsSnapshotWire {
-            schema_version: SCHEMA_VERSION,
-            my_addr: self.my_addr.clone(),
-            pke_dk_hex: format!("0x{}", hex::encode(s.pke_dk_bytes.as_ref())),
-            eval_point: s.eval_point,
-            epochs,
+                    .collect();
+                shares.sort_by_key(|s| (s.epoch, s.keypair_id.clone()));
+                SecretsSnapshotWire::V1InCommittee { shares }
+            }
         }
     }
 }
 
 // ── Remote provider (handler) ────────────────────────────────────────────────
 
-/// Singleflight 1-second TTL cache over `GET {s0_url}`.
+/// Singleflight 1-second TTL cache over `GET {maintainer_url}`.
 pub struct RemoteSecrets {
-    s0_url: String,
-    s0_auth: Option<String>,
+    maintainer_url: String,
     client: reqwest::Client,
     state: RwLock<Option<(Arc<Snapshot>, Instant)>>,
     refresh: Mutex<()>,
@@ -152,14 +141,13 @@ pub struct RemoteSecrets {
 }
 
 impl RemoteSecrets {
-    pub fn new(s0_url: String, s0_auth: Option<String>) -> Self {
+    pub fn new(maintainer_url: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .expect("build reqwest client for RemoteSecrets");
         Self {
-            s0_url,
-            s0_auth,
+            maintainer_url,
             client,
             state: RwLock::new(None),
             refresh: Mutex::new(()),
@@ -167,28 +155,12 @@ impl RemoteSecrets {
         }
     }
 
-    /// Test-only constructor with a custom TTL.
-    #[cfg(test)]
-    pub fn with_ttl(s0_url: String, ttl: Duration) -> Self {
-        let client = reqwest::Client::builder().build().unwrap();
-        Self {
-            s0_url,
-            s0_auth: None,
-            client,
-            state: RwLock::new(None),
-            refresh: Mutex::new(()),
-            ttl,
-        }
-    }
-
     pub async fn snapshot(&self) -> Result<Arc<Snapshot>> {
-        // Fast path: return cached if still fresh.
         if let Some((snap, at)) = self.state.read().await.as_ref() {
             if at.elapsed() < self.ttl {
                 return Ok(snap.clone());
             }
         }
-        // Slow path: acquire refresh mutex, re-check, fetch.
         let _g = self.refresh.lock().await;
         if let Some((snap, at)) = self.state.read().await.as_ref() {
             if at.elapsed() < self.ttl {
@@ -201,56 +173,50 @@ impl RemoteSecrets {
     }
 
     async fn fetch(&self) -> Result<Snapshot> {
-        let mut req = self.client.get(&self.s0_url);
-        if let Some(token) = &self.s0_auth {
-            req = req.bearer_auth(token);
-        }
-        let resp = req
+        let resp = self
+            .client
+            .get(&self.maintainer_url)
             .send()
             .await
-            .with_context(|| format!("GET {} failed", self.s0_url))?;
+            .with_context(|| format!("GET {} failed", self.maintainer_url))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("GET {} returned {}: {}", self.s0_url, status, body));
-        }
-        let wire: SecretsSnapshotWire = resp.json().await.context("decode SecretsSnapshotWire")?;
-        if wire.schema_version != SCHEMA_VERSION {
             return Err(anyhow!(
-                "unexpected schema_version {} (want {})",
-                wire.schema_version,
-                SCHEMA_VERSION
+                "GET {} returned {}: {}",
+                self.maintainer_url, status, body
             ));
         }
-        let pke_dk_bytes = {
-            let raw = wire.pke_dk_hex.trim().trim_start_matches("0x");
-            Arc::new(hex::decode(raw).context("decode pke_dk_hex")?)
-        };
-        let mut by_keypair_epoch: HashMap<String, HashMap<u64, ([u8; 32], u8)>> = HashMap::new();
-        for ep in wire.epochs {
-            for sh in ep.shares {
-                let scalar_bytes = hex::decode(sh.scalar_le32_hex.trim_start_matches("0x"))
-                    .with_context(|| format!("decode scalar for keypair_id={}", sh.keypair_id))?;
-                if scalar_bytes.len() != 32 {
-                    return Err(anyhow!(
-                        "scalar for keypair_id={} has length {} (want 32)",
-                        sh.keypair_id,
-                        scalar_bytes.len()
-                    ));
+        let wire: SecretsSnapshotWire = resp.json().await.context("decode SecretsSnapshotWire")?;
+        match wire {
+            SecretsSnapshotWire::V1NotInCommittee => Ok(Snapshot::NotInCommittee),
+            SecretsSnapshotWire::V1InCommittee { shares } => {
+                let mut entries: HashMap<(String, u64), ShareEntry> = HashMap::new();
+                for sh in shares {
+                    let scalar_bytes = hex::decode(sh.scalar_le32_hex.trim_start_matches("0x"))
+                        .with_context(|| format!("decode scalar for keypair_id={}", sh.keypair_id))?;
+                    if scalar_bytes.len() != 32 {
+                        return Err(anyhow!(
+                            "scalar for keypair_id={} has length {} (want 32)",
+                            sh.keypair_id, scalar_bytes.len()
+                        ));
+                    }
+                    let mut scalar = [0u8; 32];
+                    scalar.copy_from_slice(&scalar_bytes);
+                    entries.insert(
+                        (sh.keypair_id, sh.epoch),
+                        ShareEntry {
+                            scalar_le32: scalar,
+                            tibe_scheme: sh.tibe_scheme,
+                            eval_point: sh.eval_point,
+                        },
+                    );
                 }
-                let mut scalar = [0u8; 32];
-                scalar.copy_from_slice(&scalar_bytes);
-                by_keypair_epoch
-                    .entry(sh.keypair_id)
-                    .or_default()
-                    .insert(ep.epoch, (scalar, sh.tibe_scheme));
+                Ok(Snapshot::InCommittee {
+                    entries: Arc::new(entries),
+                })
             }
         }
-        Ok(Snapshot {
-            pke_dk_bytes,
-            eval_point: wire.eval_point,
-            by_keypair_epoch: Arc::new(by_keypair_epoch),
-        })
     }
 }
 
@@ -275,36 +241,55 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn snapshot_wire_roundtrip() {
-        let mut shares: HashMap<String, HashMap<u64, ([u8; 32], u8)>> = HashMap::new();
-        shares
-            .entry("0xkp".to_string())
-            .or_default()
-            .insert(5, ([0xab; 32], 0));
-        shares
-            .entry("0xkp".to_string())
-            .or_default()
-            .insert(6, ([0xcd; 32], 1));
+    async fn snapshot_wire_in_committee_roundtrip() {
+        let mut shares: HashMap<(String, u64), ShareEntry> = HashMap::new();
+        shares.insert(
+            ("0xkp".to_string(), 5),
+            ShareEntry {
+                scalar_le32: [0xab; 32],
+                tibe_scheme: 0,
+                eval_point: 2,
+            },
+        );
+        shares.insert(
+            ("0xkp".to_string(), 6),
+            ShareEntry {
+                scalar_le32: [0xcd; 32],
+                tibe_scheme: 1,
+                eval_point: 2,
+            },
+        );
 
         let local = LocalSecrets {
-            keypair_shares: Arc::new(RwLock::new(shares)),
-            cur_nodes: Arc::new(RwLock::new(vec!["0xa".into(), "0xme".into(), "0xb".into()])),
-            my_addr: "0xme".into(),
-            pke_dk_bytes: Arc::new(vec![1, 2, 3, 4]),
+            shares: Arc::new(RwLock::new(shares)),
+            in_committee: Arc::new(RwLock::new(true)),
         };
 
         let wire = local.snapshot_wire().await;
-        assert_eq!(wire.schema_version, SCHEMA_VERSION);
-        assert_eq!(wire.eval_point, Some(2));
-        assert_eq!(wire.epochs.len(), 2);
-        // sorted by epoch
-        assert_eq!(wire.epochs[0].epoch, 5);
-        assert_eq!(wire.epochs[1].epoch, 6);
-        assert_eq!(wire.pke_dk_hex, "0x01020304");
-
         let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.contains("v1-in-committee"));
         let parsed: SecretsSnapshotWire = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
-        assert_eq!(parsed.eval_point, Some(2));
+        match parsed {
+            SecretsSnapshotWire::V1InCommittee { shares } => {
+                assert_eq!(shares.len(), 2);
+                assert_eq!(shares[0].epoch, 5);
+                assert_eq!(shares[0].eval_point, 2);
+                assert_eq!(shares[1].epoch, 6);
+            }
+            _ => panic!("expected V1InCommittee"),
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_wire_not_in_committee_roundtrip() {
+        let local = LocalSecrets {
+            shares: Arc::new(RwLock::new(HashMap::new())),
+            in_committee: Arc::new(RwLock::new(false)),
+        };
+        let wire = local.snapshot_wire().await;
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.contains("v1-not-in-committee"));
+        let parsed: SecretsSnapshotWire = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, SecretsSnapshotWire::V1NotInCommittee));
     }
 }

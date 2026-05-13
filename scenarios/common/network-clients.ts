@@ -91,22 +91,24 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
 
 export type NetworkNodeSplitSpawnInput = NetworkNodeSpawnInput & {
     /** TCP port for the maintainer's `GET /secrets` endpoint. Required. */
-    secretsPort: number;
-    /** Optional bearer token guarding the secrets endpoint. */
-    secretsAuthToken?: string;
+    maintainerPort: number;
 };
 
 /**
- * Spawn a maintainer (S0) + handler (S1) pair for one committee member.
+ * Spawn a maintainer + handler pair for one committee member.
  *
  * The maintainer keeps the chain-touching responsibilities (URH share
- * reconstruction, `network::touch`, epoch-change-cur/nxt). The handler owns
- * the public `--port` and serves user decryption requests, pulling secrets
- * from the maintainer's `/secrets` endpoint with a 1-second singleflight cache.
+ * reconstruction, `network::touch`, epoch-change-cur/nxt) and serves
+ * `GET /secrets` on `--port=maintainerPort`. The handler owns the public
+ * `--port` (= `opts.port`) and serves user decryption requests, pulling
+ * secrets from the maintainer's `/secrets` endpoint with a 1-second
+ * singleflight cache.
  *
- * On-chain registration is unchanged — the worker's identity (`account_addr`
- * + PKE pubkey) lives in the maintainer; the endpoint URL registered on-chain
- * should point at the handler.
+ * No application-level auth on `/secrets`: maintainer + handler are assumed
+ * to live in the same private network (Cloud Run `ingress=internal` + IAM
+ * `run.invoker`, or a VPC-scoped service). On-chain registration is
+ * unchanged — `account_addr` + PKE pubkey identify the worker; the endpoint
+ * URL registered on-chain should point at the handler.
  */
 export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
     maintainer: ChildProcess;
@@ -120,37 +122,30 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
         throw new Error('spawnNetworkNodeSplit: opts.port (handler port) is required');
     }
 
-    const maintainerArgs = [
-        'run',
-        '--mode', 'maintainer',
-        '--ace-deployment-api', rpc,
-        '--ace-deployment-addr', opts.aceDeploymentAddr,
-        '--account-addr', accountAddr,
-        '--account-sk', `0x${pkHex}`,
-        '--pke-dk', pkeDkHex,
-        '--secrets-port', String(opts.secretsPort),
-    ];
-    if (opts.secretsAuthToken) {
-        maintainerArgs.push('--secrets-auth-token', opts.secretsAuthToken);
-    }
     const maintainer = spawnWithLog(
         NETWORK_NODE_BINARY,
-        maintainerArgs,
+        [
+            'run',
+            '--mode', 'maintainer',
+            '--ace-deployment-api', rpc,
+            '--ace-deployment-addr', opts.aceDeploymentAddr,
+            '--account-addr', accountAddr,
+            '--account-sk', `0x${pkHex}`,
+            '--pke-dk', pkeDkHex,
+            '--port', String(opts.maintainerPort),
+        ],
         `ace-node-maintainer-${accountAddr}`,
     );
 
-    const handlerArgs = [
-        'run',
-        '--mode', 'handler',
-        '--s0-url', `http://127.0.0.1:${opts.secretsPort}/secrets`,
-        '--port', String(opts.port),
-    ];
-    if (opts.secretsAuthToken) {
-        handlerArgs.push('--s0-auth-token', opts.secretsAuthToken);
-    }
     const handler = spawnWithLog(
         NETWORK_NODE_BINARY,
-        handlerArgs,
+        [
+            'run',
+            '--mode', 'handler',
+            '--maintainer-url', `http://127.0.0.1:${opts.maintainerPort}/secrets`,
+            '--pke-dk', pkeDkHex,
+            '--port', String(opts.port),
+        ],
         `ace-node-handler-${accountAddr}`,
     );
 

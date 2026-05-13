@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock, Semaphore};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
 
-use crate::secrets::{LocalSecrets, RemoteSecrets, SecretsProvider};
+use crate::secrets::{LocalSecrets, RemoteSecrets, SecretsProvider, ShareEntry};
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
 
@@ -164,17 +164,16 @@ pub enum Mode {
         maintainer: MaintainerConfig,
         handler: Option<HandlerLocalConfig>,
     },
-    /// Secret maintenance only; serves `GET /secrets`.
+    /// Secret maintenance only; serves `GET /secrets` on `port`.
     Maintainer {
         maintainer: MaintainerConfig,
-        secrets_port: u16,
-        /// Optional bearer token guarding `/secrets`.
-        secrets_auth_token: Option<String>,
+        port: u16,
     },
     /// Request handling only; pulls secrets from a peer maintainer.
+    /// `pke_dk` is loaded directly from CLI — it never crosses the wire.
     Handler {
-        s0_url: String,
-        s0_auth_token: Option<String>,
+        maintainer_url: String,
+        pke_dk: String,
         port: u16,
         chain_rpc: ChainRpcConfig,
         max_concurrent: Option<usize>,
@@ -189,8 +188,9 @@ pub struct MaintainerConfig {
     pub ace_deployment_addr: String,
     pub account_addr: String,
     pub account_sk_hex: String,
-    /// PKE decryption key (hex). Owned here in monolith/maintainer; handler
-    /// fetches it via `/secrets`.
+    /// PKE decryption key (hex). Held here by maintainer (needed for VSS
+    /// share decryption during DKR/URH); also passed to monolith/handler
+    /// for user-request decryption. Never crosses the `/secrets` wire.
     pub pke_dk: String,
 }
 
@@ -287,28 +287,16 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
         Mode::Monolith { maintainer, handler } => {
             run_with_maintainer(maintainer, handler, None, shutdown_rx).await
         }
-        Mode::Maintainer {
-            maintainer,
-            secrets_port,
-            secrets_auth_token,
-        } => {
-            run_with_maintainer(
-                maintainer,
-                None,
-                Some((secrets_port, secrets_auth_token)),
-                shutdown_rx,
-            )
-            .await
+        Mode::Maintainer { maintainer, port } => {
+            run_with_maintainer(maintainer, None, Some(port), shutdown_rx).await
         }
         Mode::Handler {
-            s0_url,
-            s0_auth_token,
+            maintainer_url,
+            pke_dk,
             port,
             chain_rpc,
             max_concurrent,
-        } => {
-            run_handler(s0_url, s0_auth_token, port, chain_rpc, max_concurrent, shutdown_rx).await
-        }
+        } => run_handler(maintainer_url, pke_dk, port, chain_rpc, max_concurrent, shutdown_rx).await,
     }
 }
 
@@ -317,7 +305,7 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
 async fn run_with_maintainer(
     config: MaintainerConfig,
     handler_local: Option<HandlerLocalConfig>,
-    secrets_server: Option<(u16, Option<String>)>,
+    secrets_server_port: Option<u16>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let rpc = AptosRpc::new_with_gas_key(
@@ -346,19 +334,23 @@ async fn run_with_maintainer(
         account_addr, ace
     );
 
-    let keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>> =
+    // `(keypair_id, epoch) → ShareEntry` — flat map, one lookup per request.
+    // `eval_point` is captured per-entry at URH registration time so stale
+    // buffer-window entries from a previous epoch use the right value even
+    // after committee membership changes.
+    let shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> =
         Arc::new(Mutex::new(Vec::new()));
 
-    let cur_nodes_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+    // Tracked alongside `shares` so the secrets-server can answer
+    // `V1NotInCommittee` correctly when this node leaves `cur_nodes`.
+    let in_committee_shared: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
 
     let local = LocalSecrets {
-        keypair_shares: keypair_shares.clone(),
-        cur_nodes: cur_nodes_shared.clone(),
-        my_addr: account_addr.clone(),
-        pke_dk_bytes: pke_dk_bytes.clone(),
+        shares: shares.clone(),
+        in_committee: in_committee_shared.clone(),
     };
 
     // Optional user-request server (monolith only).
@@ -368,22 +360,20 @@ async fn run_with_maintainer(
             provider: Arc::new(SecretsProvider::Local(local.clone())),
             chain_rpc: Arc::new(h.chain_rpc),
             concurrency: Arc::new(Semaphore::new(max_concurrent)),
+            pke_dk_bytes: pke_dk_bytes.clone(),
         };
         tokio::spawn(http_server::run_user_server(h.port, state));
     }
 
     // Optional secrets server (maintainer mode).
-    if let Some((port, token)) = secrets_server {
-        let state = http_server::SecretsServerState {
-            local: local.clone(),
-            auth_token: token,
-        };
+    if let Some(port) = secrets_server_port {
+        let state = http_server::SecretsServerState { local: local.clone() };
         tokio::spawn(http_server::run_secrets_server(port, state));
     }
 
     // Share cleanup timer.
     {
-        let ks = keypair_shares.clone();
+        let s = shares.clone();
         let eq = expiry_queue.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -398,13 +388,9 @@ async fn run_with_maintainer(
                     done.into_iter().map(|(_, k, e)| (k, e)).collect()
                 };
                 if !expired.is_empty() {
-                    let mut w = ks.write().await;
+                    let mut w = s.write().await;
                     for (keypair_id, epoch) in expired {
-                        if let Some(by_epoch) = w.get_mut(&keypair_id) {
-                            by_epoch.remove(&epoch);
-                            if by_epoch.is_empty() {
-                                w.remove(&keypair_id);
-                            }
+                        if w.remove(&(keypair_id.clone(), epoch)).is_some() {
                             wlog!(
                                 "network-node: [cleanup] evicted keypair_id={} epoch={}",
                                 keypair_id, epoch
@@ -532,8 +518,15 @@ async fn run_with_maintainer(
             }
         }
 
-        *cur_nodes_shared.write().await =
-            state.cur_nodes.iter().map(addr_bytes_to_string).collect();
+        // Capture both the in-committee flag and this node's eval_point (1-based
+        // position) for use by URH tasks below. URH stores eval_point alongside
+        // each share so the handler doesn't have to re-derive committee state.
+        let my_eval_point: Option<u64> = state
+            .cur_nodes
+            .iter()
+            .position(|n| addr_bytes_to_string(n) == account_addr)
+            .map(|i| (i + 1) as u64);
+        *in_committee_shared.write().await = in_cur_nodes;
 
         let active_secrets: HashSet<String> = if in_cur_nodes {
             state.secrets.iter().map(|s| addr_bytes_to_string(&s.current_session)).collect()
@@ -553,9 +546,25 @@ async fn run_with_maintainer(
             let secret = secret_addr.clone();
             let pke_dk = (*pke_dk_bytes).clone();
             let my = account_addr.clone();
-            let shares = keypair_shares.clone();
+            let shares2 = shares.clone();
             let expiry = expiry_queue.clone();
             let epoch = state.epoch;
+            // eval_point at the time this share is being registered — sourced from
+            // the just-observed `cur_nodes`. Stored with the share so future
+            // requests (including stale-buffer-window ones after a committee
+            // change) use the correct value.
+            let eval_point = match my_eval_point {
+                Some(e) => e,
+                None => {
+                    // Should not happen — we only enter this block when
+                    // `in_cur_nodes` is true. Belt-and-suspenders.
+                    wlog!(
+                        "network-node: [urh] {} unexpected: in_cur_nodes but no eval_point",
+                        secret_addr
+                    );
+                    continue;
+                }
+            };
 
             tokio::spawn(async move {
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
@@ -570,15 +579,17 @@ async fn run_with_maintainer(
                                 return;
                             }
                         };
-                        shares
-                            .write()
-                            .await
-                            .entry(keypair_id.clone())
-                            .or_default()
-                            .insert(epoch, (scalar_le32, tibe_scheme));
+                        shares2.write().await.insert(
+                            (keypair_id.clone(), epoch),
+                            ShareEntry {
+                                scalar_le32,
+                                tibe_scheme,
+                                eval_point,
+                            },
+                        );
                         wlog!(
-                            "network-node: [urh] registered keypair_id={} epoch={} tibe_scheme={}",
-                            keypair_id, epoch, tibe_scheme
+                            "network-node: [urh] registered keypair_id={} epoch={} tibe_scheme={} eval_point={}",
+                            keypair_id, epoch, tibe_scheme, eval_point
                         );
                         let _ = rx.await;
                         let deadline = Instant::now() + Duration::from_secs(30);
@@ -616,19 +627,27 @@ async fn run_with_maintainer(
 // ── Handler-only ─────────────────────────────────────────────────────────────
 
 async fn run_handler(
-    s0_url: String,
-    s0_auth_token: Option<String>,
+    maintainer_url: String,
+    pke_dk: String,
     port: u16,
     chain_rpc: ChainRpcConfig,
     max_concurrent: Option<usize>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    wlog!("network-node: starting handler-only (s0_url={})", s0_url);
-    let remote = Arc::new(RemoteSecrets::new(s0_url, s0_auth_token));
+    wlog!(
+        "network-node: starting handler-only (maintainer_url={})",
+        maintainer_url
+    );
+    let pke_dk_bytes: Arc<Vec<u8>> = {
+        let raw = pke_dk.trim().trim_start_matches("0x");
+        Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
+    };
+    let remote = Arc::new(RemoteSecrets::new(maintainer_url));
     let state = http_server::AppState {
         provider: Arc::new(SecretsProvider::Remote(remote)),
         chain_rpc: Arc::new(chain_rpc),
         concurrency: Arc::new(Semaphore::new(resolve_max_concurrent(max_concurrent))),
+        pke_dk_bytes,
     };
     tokio::spawn(http_server::run_user_server(port, state));
     let _ = shutdown_rx.await;

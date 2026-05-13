@@ -68,31 +68,21 @@ struct RunArgs {
     #[arg(long, default_value = "")]
     pke_dk: String,
 
-    // ── User-request server params (monolith + handler) ──────────────────────
-    /// TCP port for the user-request HTTP server (`POST /`). Required in
-    /// monolith + handler modes; ignored in maintainer mode.
+    // ── HTTP-server port (all modes) ─────────────────────────────────────────
+    /// TCP port. In monolith and handler modes serves `POST /` (user requests);
+    /// in maintainer mode serves `GET /secrets` for peer handlers to pull from.
+    /// Optional in monolith mode (omitting it runs chain-touching only, useful
+    /// for DKG-only test setups).
     #[arg(long)]
     port: Option<u16>,
     /// Maximum concurrent in-flight HTTP requests.
     #[arg(long)]
     max_concurrent: Option<usize>,
 
-    // ── Maintainer-only ──────────────────────────────────────────────────────
-    /// TCP port for the secrets HTTP server (`GET /secrets`). Required in
-    /// maintainer mode.
-    #[arg(long)]
-    secrets_port: Option<u16>,
-    /// Optional bearer token guarding `/secrets`.
-    #[arg(long)]
-    secrets_auth_token: Option<String>,
-
     // ── Handler-only ─────────────────────────────────────────────────────────
     /// URL of the peer maintainer's `/secrets` endpoint. Required in handler mode.
     #[arg(long)]
-    s0_url: Option<String>,
-    /// Optional bearer token presented to the peer maintainer.
-    #[arg(long)]
-    s0_auth_token: Option<String>,
+    maintainer_url: Option<String>,
 
     // ── Per-chain Aptos RPC endpoints (used by user-request verification) ────
     #[arg(long, default_value = "https://api.mainnet.aptoslabs.com/v1")]
@@ -183,12 +173,11 @@ async fn main() {
                 },
                 CliMode::Maintainer => network_node::Mode::Maintainer {
                     maintainer: build_maintainer_config(&args),
-                    secrets_port: require("secrets-port", args.secrets_port),
-                    secrets_auth_token: args.secrets_auth_token.clone(),
+                    port: require("port", args.port),
                 },
                 CliMode::Handler => network_node::Mode::Handler {
-                    s0_url: require("s0-url", args.s0_url.clone()),
-                    s0_auth_token: args.s0_auth_token.clone(),
+                    maintainer_url: require("maintainer-url", args.maintainer_url.clone()),
+                    pke_dk: require_str("pke-dk", &args.pke_dk),
                     port: require("port", args.port),
                     chain_rpc: build_chain_rpc(&args),
                     max_concurrent: args.max_concurrent,

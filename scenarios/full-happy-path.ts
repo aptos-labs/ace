@@ -198,7 +198,7 @@ async function main() {
                     aceDeploymentAddr: adminAddr,
                     aceDeploymentApi: LOCALNET_URL,
                     port: WORKER_BASE_PORT + i,
-                    secretsPort: WORKER_BASE_PORT + MAINTAINER_PORT_OFFSET + i,
+                    maintainerPort: WORKER_BASE_PORT + MAINTAINER_PORT_OFFSET + i,
                 });
                 workers.push(maintainer, handler);
             } else {

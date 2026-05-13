@@ -59,7 +59,7 @@ import {
 } from './common/infra';
 import {
     buildRustWorkspace,
-    spawnNetworkNode,
+    spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
 
 const TOTAL_WORKERS = 5;
@@ -78,7 +78,7 @@ function step(n: string | number, msg: string): void {
 }
 
 async function main() {
-    const workers: (ChildProcess | null)[] = Array(TOTAL_WORKERS).fill(null);
+    const workers: ChildProcess[] = [];
     let localnetProc: ChildProcess | null = null;
 
     let exitCode = 0;
@@ -163,13 +163,15 @@ async function main() {
                 continue;
             }
             const pkeDkHex = `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`;
-            workers[i] = spawnNetworkNode({
+            workers.push(...spawnNetworkNodeMaybeSplit({
+                index: i,
+                total: TOTAL_WORKERS,
                 runAs: workerAccounts[i],
                 pkeDkHex,
                 aceDeploymentAddr: adminAddr,
                 aceDeploymentApi: LOCALNET_URL,
-                port: WORKER_BASE_PORT + i,
-            });
+                workerBasePort: WORKER_BASE_PORT,
+            }));
             console.log(`  Worker ${i}: spawned`);
         }
         await sleep(2000);
@@ -304,7 +306,7 @@ async function main() {
     } finally {
         console.log('\nCleaning up worker processes...');
         for (const proc of workers) {
-            if (proc) proc.kill('SIGTERM');
+            proc.kill('SIGTERM');
         }
         if (localnetProc) {
             console.log('Stopping localnet...');

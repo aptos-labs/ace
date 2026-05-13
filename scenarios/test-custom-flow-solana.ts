@@ -40,7 +40,7 @@ import {
     proposeAndApprove,
     serializeNewSecretProposal,
 } from './common/helpers';
-import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNode } from './common/network-clients';
+import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNodeMaybeSplit } from './common/network-clients';
 
 const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'scenarios', 'custom-flow-solana');
 const NUM_WORKERS = 3;
@@ -103,12 +103,14 @@ async function main() {
         killStaleNetworkNodes();
         for (let i = 0; i < NUM_WORKERS; i++) {
             const pkeDkHex = `0x${Buffer.from(encKeypairs[i]!.decryptionKey.toBytes()).toString('hex')}`;
-            nodeProcs.push(spawnNetworkNode({
+            nodeProcs.push(...spawnNetworkNodeMaybeSplit({
+                index: i,
+                total: NUM_WORKERS,
                 runAs: workerAccounts[i]!,
                 pkeDkHex,
                 aceDeploymentAddr: aceContract,
                 aceDeploymentApi: LOCALNET_URL,
-                port: WORKER_BASE_PORT + i,
+                workerBasePort: WORKER_BASE_PORT,
             }));
         }
 

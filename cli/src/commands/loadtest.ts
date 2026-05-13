@@ -180,6 +180,7 @@ export async function loadtestRunCommand(opts: {
     timeout?: string;
     epochDelay?: string;
     output?: string;
+    maxInflight?: string;
 }): Promise<void> {
     const network = opts.network ?? DEFAULT_NETWORK;
     const config = loadConfig();
@@ -250,6 +251,7 @@ export async function loadtestRunCommand(opts: {
             resultsPath,
             stopErrorRate: 0.05,
             stopP99Ms: 10_000,
+            maxInflight: opts.maxInflight ? Number(opts.maxInflight) : undefined,
         });
     } finally {
         minter.stop();

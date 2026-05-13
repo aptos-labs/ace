@@ -283,6 +283,7 @@ loadtestCmd
     .option('--timeout <ms>', 'Per-request hard timeout in ms (default 30000)')
     .option('--epoch-delay <sec>', 'Seconds to wait after detecting an epoch change before re-minting (default 10)')
     .option('-o, --output <path>', 'CSV output path (default loadtest-results/results-<run-id>.csv)')
+    .option('--max-inflight <n>', 'Hard cap on concurrent in-flight requests; further fires are recorded as skipped. Memory guard against unbounded growth when the worker is saturated. Default: max(2*peak_qps, 5000).')
     .action(async (opts: any) => {
         try {
             const { loadtestRunCommand } = await import('./commands/loadtest.js');

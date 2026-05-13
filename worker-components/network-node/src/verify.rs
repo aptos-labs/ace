@@ -27,11 +27,25 @@ use crate::ChainRpcConfig;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
-/// Top-level request body. Outer enum tag picks between the basic and custom flows.
+/// Top-level request body. Outer enum tag picks the flow and wire version.
+///
+/// V2 variants carry an explicit `tibe_scheme: u8` so the handler can serve
+/// shares formatted for the client's actual t-IBE choice, rather than guessing
+/// it from the share's group scheme via a hard-coded 1:1 mapping. V1 variants
+/// stay for backwards compatibility with older clients; the handler falls
+/// back to [`crate::crypto::tibe_scheme_for_group`] for those.
+///
+/// BCS discriminants:
+///   0 = Basic    (V1; legacy, no tibe_scheme field)
+///   1 = Custom   (V1; legacy)
+///   2 = BasicV2  (carries tibe_scheme)
+///   3 = CustomV2 (carries tibe_scheme)
 #[derive(Serialize, Deserialize)]
 pub enum RequestForDecryptionKey {
     Basic(BasicFlowRequest),
     Custom(CustomFlowRequest),
+    BasicV2(BasicFlowRequestV2),
+    CustomV2(CustomFlowRequestV2),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +66,30 @@ pub struct CustomFlowRequest {
     pub label: Vec<u8>,
     pub enc_pk: EncryptionKey,
     pub proof: CustomFlowProof,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BasicFlowRequestV2 {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub contract_id: ContractId,
+    pub domain: Vec<u8>,
+    pub ephemeral_enc_key: EncryptionKey,
+    pub proof: ProofOfPermission,
+    /// Client-asserted t-IBE scheme the share should be formatted for.
+    /// The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme`.
+    pub tibe_scheme: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CustomFlowRequestV2 {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub contract_id: ContractId,
+    pub label: Vec<u8>,
+    pub enc_pk: EncryptionKey,
+    pub proof: CustomFlowProof,
+    pub tibe_scheme: u8,
 }
 
 #[derive(Serialize, Deserialize)]

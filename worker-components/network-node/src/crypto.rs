@@ -54,6 +54,20 @@ pub fn tibe_scheme_for_group(group_scheme: u8) -> Result<u8> {
     }
 }
 
+/// Inverse of [`tibe_scheme_for_group`] in spirit — but **not** an inverse in
+/// general. A group can back multiple t-IBE schemes; this maps a specific
+/// t-IBE scheme to the unique group it is built over. Used by the V2 request
+/// path to validate `request.tibe_scheme` is compatible with the share's
+/// stored `group_scheme`.
+pub fn group_scheme_for_tibe(tibe_scheme: u8) -> Result<u8> {
+    use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
+    match tibe_scheme {
+        SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => Ok(SCHEME_BLS12381G1),
+        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => Ok(SCHEME_BLS12381G2),
+        s => Err(anyhow!("group_scheme_for_tibe: unsupported t-IBE scheme {}", s)),
+    }
+}
+
 /// Compute this worker's IDK share for the given identity and return BCS-encoded
 /// `tibe.IdentityDecryptionKeyShare` bytes (as hex) for the requested t-IBE scheme.
 ///

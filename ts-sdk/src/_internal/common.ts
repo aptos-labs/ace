@@ -434,14 +434,27 @@ export class CustomFlowRequest {
 }
 
 // ── RequestForDecryptionKey (outer enum with scheme byte) ─────────────────────
+//
+// Discriminants must match the worker-side Rust enum order:
+//   0 = Basic    (V1, legacy)
+//   1 = Custom   (V1, legacy)
+//   2 = BasicV2  (carries tibe_scheme so the handler doesn't have to guess)
+//   3 = CustomV2 (carries tibe_scheme)
+//
+// V1 stays for backwards compat with older workers. V2 is the correct shape:
+// a t-IBE scheme is a *property of the ciphertext*, not derivable from the
+// keypair's group alone (multiple t-IBE schemes can sit over the same group).
 
 export class RequestForDecryptionKey {
     static readonly SCHEME_BASIC_FLOW = 0;
     static readonly SCHEME_CUSTOM_FLOW = 1;
+    static readonly SCHEME_BASIC_FLOW_V2 = 2;
+    static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
 
     scheme: number;
     private _basicPayload?: { request: DecryptionRequestPayload; proof: ProofOfPermission };
     private _customPayload?: CustomFlowRequest;
+    private _tibeScheme?: number;
 
     private constructor(scheme: number) { this.scheme = scheme; }
 
@@ -457,13 +470,48 @@ export class RequestForDecryptionKey {
         return r;
     }
 
+    static newBasicFlowV2(
+        request: DecryptionRequestPayload,
+        proof: ProofOfPermission,
+        tibeScheme: number,
+    ): RequestForDecryptionKey {
+        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2);
+        r._basicPayload = { request, proof };
+        r._tibeScheme = tibeScheme;
+        return r;
+    }
+
+    static newCustomFlowV2(
+        customRequest: CustomFlowRequest,
+        tibeScheme: number,
+    ): RequestForDecryptionKey {
+        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2);
+        r._customPayload = customRequest;
+        r._tibeScheme = tibeScheme;
+        return r;
+    }
+
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme === RequestForDecryptionKey.SCHEME_BASIC_FLOW) {
-            this._basicPayload!.request.serialize(serializer);
-            this._basicPayload!.proof.serialize(serializer);
-        } else {
-            this._customPayload!.serialize(serializer);
+        switch (this.scheme) {
+            case RequestForDecryptionKey.SCHEME_BASIC_FLOW:
+                this._basicPayload!.request.serialize(serializer);
+                this._basicPayload!.proof.serialize(serializer);
+                return;
+            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW:
+                this._customPayload!.serialize(serializer);
+                return;
+            case RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2:
+                this._basicPayload!.request.serialize(serializer);
+                this._basicPayload!.proof.serialize(serializer);
+                serializer.serializeU8(this._tibeScheme!);
+                return;
+            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2:
+                this._customPayload!.serialize(serializer);
+                serializer.serializeU8(this._tibeScheme!);
+                return;
+            default:
+                throw new Error(`RequestForDecryptionKey: unknown scheme ${this.scheme}`);
         }
     }
 
@@ -649,7 +697,11 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                 throw `ACE.decryptCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = RequestForDecryptionKey.newBasicFlow(request, proof).toBytes();
+            // The t-IBE scheme is part of the ciphertext (first byte is the
+            // scheme tag); the caller never has to re-supply it.
+            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
+                .unwrapOrThrow('ACE.decryptCore: parse ciphertext for scheme').scheme;
+            const reqBytes = RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -753,7 +805,9 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                 throw `ACE.decryptCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = RequestForDecryptionKey.newCustomFlow(customRequest).toBytes();
+            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
+                .unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext for scheme').scheme;
+            const reqBytes = RequestForDecryptionKey.newCustomFlowV2(customRequest, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();

@@ -11,18 +11,24 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build-rust:
     name: Build Rust workspace
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
       - name: Build
         run: cargo build
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
         with:
           name: rust-binaries
           path: |
@@ -37,48 +43,51 @@ jobs:
   typecheck-scenarios:
     name: Typecheck / Scenarios
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-      - name: Install JS dependencies
-        run: pnpm install
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
       - name: Typecheck
         run: pnpm --filter ace-scenarios typecheck
 
   unit-tests-ts:
     name: Unit tests / TypeScript
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-      - name: Install JS dependencies
-        run: pnpm install
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
       - name: Test
         run: pnpm --filter @aptos-labs/ace-sdk test -- --run
 
   unit-tests-rust:
     name: Unit tests / Rust
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
       - name: Test
         run: cargo test
 
   unit-tests-move:
     name: Unit tests / Move
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - name: Install tools
         run: sudo scripts/install-tools.sh
       - name: Test
@@ -89,21 +98,16 @@ jobs:
     needs: build-rust
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-
-      - name: Install JS dependencies
-        run: pnpm install
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
 
       - name: Download Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
         with:
           name: rust-binaries
           path: target/debug/
@@ -115,7 +119,7 @@ jobs:
         run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
 
       - name: Cache Solana SBF platform tools
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ~/.cache/solana
           key: solana-sbf-tools-${{ runner.os }}
@@ -130,21 +134,16 @@ jobs:
     needs: build-rust
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-
-      - name: Install JS dependencies
-        run: pnpm install
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
 
       - name: Download Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
         with:
           name: rust-binaries
           path: target/debug/
@@ -156,7 +155,7 @@ jobs:
         run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
 
       - name: Cache Solana SBF platform tools
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ~/.cache/solana
           key: solana-sbf-tools-${{ runner.os }}
@@ -189,21 +188,16 @@ jobs:
       fail-fast: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-
-      - name: Install JS dependencies
-        run: pnpm install
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
 
       - name: Download Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
         with:
           name: rust-binaries
           path: target/debug/
@@ -217,4 +211,5 @@ jobs:
       - name: Run ${{ matrix.scenario }}
         env:
           ACE_SKIP_CARGO_BUILD: "1"
-        run: pnpm --filter ace-scenarios ${{ matrix.scenario }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: pnpm --filter ace-scenarios "$SCENARIO"

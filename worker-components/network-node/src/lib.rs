@@ -1,18 +1,28 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Supervisor for one worker: polls `network::State`, **URH** (share reconstruction for
-//! `State.secrets` when in `cur_nodes`), optional **HTTP** server, and
-//! **`network::touch`** only while `State.epoch_change_info` is `Some` (so global `State`
-//! can apply a finished `epoch_change` session).
+//! Supervisor for one worker.
 //!
-//! DKR / DKG / `epoch_change::touch` for the child session are **not** run here; use
-//! `epoch-change-cur` and `epoch-change-nxt` (or equivalent processes) for that.
+//! Three deployment modes:
 //!
-//! URH sub-tasks use a `oneshot::Receiver<()>` shutdown; `stop_tasks` drains the map.
+//! * `Monolith` (default, backwards-compatible): one process does **both** secret
+//!   maintenance (URH share reconstruction, `network::touch`, epoch-change-cur/nxt)
+//!   and user request handling (`POST /` on `port`).
+//! * `Maintainer`: secret maintenance only. Same URH/touch/epoch-change loop as
+//!   monolith, but the HTTP surface is **`GET /secrets`** (current + previous
+//!   epoch shares, with `eval_point` baked in) instead of `POST /`. No
+//!   user-request verification; no chain-RPC config needed.
+//! * `Handler`: user request handling only. No state polling, no URH, no chain
+//!   account or PKE key. Fetches the secrets snapshot from a peer maintainer's
+//!   `/secrets` on demand with a 1-second singleflight cache.
+//!
+//! The split lets the maintainer remain a `min/max=1` singleton (it owns the
+//! on-chain DKR ordering invariant) while handlers scale out horizontally
+//! behind a load balancer.
 
 pub mod crypto;
 mod http_server;
+pub mod secrets;
 pub mod verify;
 
 /// ISO 8601 UTC timestamp with millisecond precision, e.g. `2026-04-30T16:53:26.877Z`.
@@ -21,7 +31,6 @@ pub fn now_utc_iso() -> String {
     let d   = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let sec = d.as_secs();
     let ms  = d.subsec_millis();
-    // civil_from_days: https://howardhinnant.github.io/date_algorithms.html
     let days = sec / 86400;
     let t    = sec % 86400;
     let (h, m, s) = (t / 3600, (t % 3600) / 60, t % 60);
@@ -49,6 +58,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock, Semaphore};
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
+
+use crate::secrets::{LocalSecrets, RemoteSecrets, SecretsProvider};
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
 
@@ -87,10 +98,7 @@ impl ChainRpcConfig {
 
 // ── Memory-based concurrency limit ───────────────────────────────────────────
 
-/// Reads the container's memory limit from cgroup (v2 then v1 fallback).
-/// Returns `None` when running outside a cgroup or when no explicit limit is set.
 fn read_cgroup_memory_limit() -> Option<usize> {
-    // cgroup v2: a plain integer or the string "max" (= unlimited)
     if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
         let s = s.trim();
         if s != "max" {
@@ -98,9 +106,8 @@ fn read_cgroup_memory_limit() -> Option<usize> {
                 return Some(n);
             }
         }
-        return None; // "max" → no limit
+        return None;
     }
-    // cgroup v1: values ≥ 2^62 indicate "no limit"
     if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
         if let Ok(n) = s.trim().parse::<usize>() {
             if n < (1usize << 62) {
@@ -124,20 +131,72 @@ fn derive_max_concurrent(memory_limit: usize) -> usize {
     (memory_limit.saturating_sub(BASELINE) / PER_REQUEST).max(MIN)
 }
 
+fn resolve_max_concurrent(explicit: Option<usize>) -> usize {
+    const DEFAULT_MAX_CONCURRENT: usize = 100;
+    explicit.unwrap_or_else(|| match read_cgroup_memory_limit() {
+        Some(limit) => {
+            let mc = derive_max_concurrent(limit);
+            wlog!(
+                "network-node: cgroup memory limit {:.0} MiB → max_concurrent_requests={}",
+                limit as f64 / (1024.0 * 1024.0),
+                mc,
+            );
+            mc
+        }
+        None => {
+            wlog!(
+                "network-node: no cgroup memory limit detected, \
+                 max_concurrent_requests={DEFAULT_MAX_CONCURRENT} (default)"
+            );
+            DEFAULT_MAX_CONCURRENT
+        }
+    })
+}
+
 // ── Top-level run configuration ───────────────────────────────────────────────
 
-pub struct RunConfig {
+/// Deployment mode. See module-level docs.
+pub enum Mode {
+    /// One process does everything (default; backwards-compatible).
+    Monolith {
+        maintainer: MaintainerConfig,
+        handler: HandlerLocalConfig,
+    },
+    /// Secret maintenance only; serves `GET /secrets`.
+    Maintainer {
+        maintainer: MaintainerConfig,
+        secrets_port: u16,
+        /// Optional bearer token guarding `/secrets`.
+        secrets_auth_token: Option<String>,
+    },
+    /// Request handling only; pulls secrets from a peer maintainer.
+    Handler {
+        s0_url: String,
+        s0_auth_token: Option<String>,
+        port: u16,
+        chain_rpc: ChainRpcConfig,
+        max_concurrent: Option<usize>,
+    },
+}
+
+/// Fields needed for secret maintenance (URH + on-chain DKR/touch).
+pub struct MaintainerConfig {
     pub ace_deployment_api: String,
     pub ace_deployment_apikey: Option<String>,
     pub ace_deployment_gaskey: Option<String>,
     pub ace_deployment_addr: String,
     pub account_addr: String,
     pub account_sk_hex: String,
+    /// PKE decryption key (hex). Owned here in monolith/maintainer; handler
+    /// fetches it via `/secrets`.
     pub pke_dk: String,
-    pub port: Option<u16>,
+}
+
+/// Fields needed for the user-request HTTP server when running in the same
+/// process as the maintainer (monolith only).
+pub struct HandlerLocalConfig {
+    pub port: u16,
     pub chain_rpc: ChainRpcConfig,
-    /// Maximum concurrent in-flight HTTP requests.
-    /// `None` = auto-derive from cgroup memory limit.
     pub max_concurrent: Option<usize>,
 }
 
@@ -213,16 +272,52 @@ async fn fetch_state_view_v0(rpc: &AptosRpc, ace: &str) -> Result<BcsStateViewV0
 
 // ── Task lifecycle helpers ───────────────────────────────────────────────────
 
-/// Drain `tasks`, sending shutdown to each sub-task (ignoring already-closed channels).
 fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
     for (_, tx) in tasks.drain() {
         let _ = tx.send(());
     }
 }
 
-// ── Main loop ────────────────────────────────────────────────────────────────
+// ── Dispatch ─────────────────────────────────────────────────────────────────
 
-pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+    match mode {
+        Mode::Monolith { maintainer, handler } => {
+            run_with_maintainer(maintainer, Some(handler), None, shutdown_rx).await
+        }
+        Mode::Maintainer {
+            maintainer,
+            secrets_port,
+            secrets_auth_token,
+        } => {
+            run_with_maintainer(
+                maintainer,
+                None,
+                Some((secrets_port, secrets_auth_token)),
+                shutdown_rx,
+            )
+            .await
+        }
+        Mode::Handler {
+            s0_url,
+            s0_auth_token,
+            port,
+            chain_rpc,
+            max_concurrent,
+        } => {
+            run_handler(s0_url, s0_auth_token, port, chain_rpc, max_concurrent, shutdown_rx).await
+        }
+    }
+}
+
+// ── Maintainer / monolith ─────────────────────────────────────────────────────
+
+async fn run_with_maintainer(
+    config: MaintainerConfig,
+    handler_local: Option<HandlerLocalConfig>,
+    secrets_server: Option<(u16, Option<String>)>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
     let rpc = AptosRpc::new_with_gas_key(
         config.ace_deployment_api.clone(),
         config.ace_deployment_apikey.clone(),
@@ -233,13 +328,11 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let account_addr = normalize_account_addr(&config.account_addr);
     let ace = normalize_account_addr(&config.ace_deployment_addr);
 
-    // Decode PKE decryption key bytes once.
-    let pke_dk_bytes: Vec<u8> = {
+    let pke_dk_bytes: Arc<Vec<u8>> = {
         let raw = config.pke_dk.trim().trim_start_matches("0x");
-        hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?
+        Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
     };
 
-    // Fields forwarded verbatim to epoch-change-cur / epoch-change-nxt RunConfigs.
     let ec_rpc_url = config.ace_deployment_api.clone();
     let ec_rpc_api_key = config.ace_deployment_apikey.clone();
     let ec_rpc_gas_key = config.ace_deployment_gaskey.clone();
@@ -251,60 +344,47 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         account_addr, ace
     );
 
-    // keypair_shares: keypair_id → epoch → scalar_le32.
-    // Multiple epoch entries coexist during the ~30-second post-transition buffer window
-    // so that clients who fetched the committee just before an epoch change can still be
-    // served by nodes that have since rotated to the new epoch's shares.
     let keypair_shares: Arc<RwLock<HashMap<String, HashMap<u64, ([u8; 32], u8)>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // Scheduled evictions: (deadline, keypair_id, epoch).  URH tasks push here on
-    // shutdown instead of removing immediately; the cleanup timer does the actual removal.
     let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> =
         Arc::new(Mutex::new(Vec::new()));
 
     let cur_nodes_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
 
-    // Spawn HTTP server if a port was configured.
-    if let Some(port) = config.port {
-        const DEFAULT_MAX_CONCURRENT: usize = 100;
-        let max_concurrent = config.max_concurrent.unwrap_or_else(|| {
-            match read_cgroup_memory_limit() {
-                Some(limit) => {
-                    let mc = derive_max_concurrent(limit);
-                    wlog!(
-                        "network-node: cgroup memory limit {:.0} MiB → max_concurrent_requests={}",
-                        limit as f64 / (1024.0 * 1024.0),
-                        mc,
-                    );
-                    mc
-                }
-                None => {
-                    wlog!(
-                        "network-node: no cgroup memory limit detected, \
-                         max_concurrent_requests={DEFAULT_MAX_CONCURRENT} (default)"
-                    );
-                    DEFAULT_MAX_CONCURRENT
-                }
-            }
-        });
-        let concurrency = Arc::new(Semaphore::new(max_concurrent));
+    let local = LocalSecrets {
+        keypair_shares: keypair_shares.clone(),
+        cur_nodes: cur_nodes_shared.clone(),
+        my_addr: account_addr.clone(),
+        pke_dk_bytes: pke_dk_bytes.clone(),
+    };
 
-        let ks = keypair_shares.clone();
-        let cn = cur_nodes_shared.clone();
-        let my = account_addr.clone();
-        let chain_rpc = Arc::new(config.chain_rpc);
-        let dk = pke_dk_bytes.clone();
-        tokio::spawn(http_server::run(port, ks, cn, my, chain_rpc, dk, concurrency));
+    // Optional user-request server (monolith only).
+    if let Some(h) = handler_local {
+        let max_concurrent = resolve_max_concurrent(h.max_concurrent);
+        let state = http_server::AppState {
+            provider: Arc::new(SecretsProvider::Local(local.clone())),
+            chain_rpc: Arc::new(h.chain_rpc),
+            concurrency: Arc::new(Semaphore::new(max_concurrent)),
+        };
+        tokio::spawn(http_server::run_user_server(h.port, state));
     }
 
-    // Spawn the share cleanup timer.  Wakes every 5 seconds and evicts expired entries.
+    // Optional secrets server (maintainer mode).
+    if let Some((port, token)) = secrets_server {
+        let state = http_server::SecretsServerState {
+            local: local.clone(),
+            auth_token: token,
+        };
+        tokio::spawn(http_server::run_secrets_server(port, state));
+    }
+
+    // Share cleanup timer.
     {
         let ks = keypair_shares.clone();
         let eq = expiry_queue.clone();
         tokio::spawn(async move {
-            let mut ticker =
-                tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
             loop {
                 ticker.tick().await;
                 let now = Instant::now();
@@ -335,7 +415,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     }
 
     let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-    // Keyed by epoch_change session address so re-entrant ticks are idempotent.
     let mut epoch_change_cur_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut epoch_change_nxt_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
 
@@ -364,7 +443,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
 
         let in_cur_nodes = state.cur_nodes.iter().any(|n| addr_bytes_to_string(n) == account_addr);
 
-        // Derive touch condition entirely from the view — no extra calls needed.
         let now_micros = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -395,7 +473,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             Some(info) => {
                 let session = addr_bytes_to_string(&info.session_addr);
 
-                // epoch-change-cur: cur_nodes drive DKR-src + touch.
                 if in_cur_nodes {
                     if !epoch_change_cur_tasks.contains_key(&session) {
                         let (tx, rx) = oneshot::channel::<()>();
@@ -421,7 +498,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     stop_tasks(&mut epoch_change_cur_tasks);
                 }
 
-                // epoch-change-nxt: nxt_nodes from the view — no extra RPC call needed.
                 let in_nxt_nodes = info.nxt_nodes.iter().any(|n| addr_bytes_to_string(n) == account_addr);
                 if in_nxt_nodes {
                     if !epoch_change_nxt_tasks.contains_key(&session) {
@@ -454,15 +530,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             }
         }
 
-        // Update cur_nodes for the HTTP server's eval-point lookup.
         *cur_nodes_shared.write().await =
             state.cur_nodes.iter().map(addr_bytes_to_string).collect();
-
-        // ── URH (UserRequestHandler) tasks ─────────────────────────────────
-        // For each session address in state.secrets, maintain a background task that:
-        //   1. Reconstructs this node's Shamir scalar share.
-        //   2. Inserts it into keypair_shares so the HTTP server can serve requests.
-        //   3. Waits for shutdown, then removes it from keypair_shares.
 
         let active_secrets: HashSet<String> = if in_cur_nodes {
             state.secrets.iter().map(|s| addr_bytes_to_string(&s.current_session)).collect()
@@ -480,7 +549,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             let rpc2 = rpc.clone();
             let ace2 = ace.clone();
             let secret = secret_addr.clone();
-            let pke_dk = pke_dk_bytes.clone();
+            let pke_dk = (*pke_dk_bytes).clone();
             let my = account_addr.clone();
             let shares = keypair_shares.clone();
             let expiry = expiry_queue.clone();
@@ -510,8 +579,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             keypair_id, epoch, tibe_scheme
                         );
                         let _ = rx.await;
-                        // Defer removal by 30 s so clients who fetched the committee
-                        // just before an epoch change can still be served.
                         let deadline = Instant::now() + Duration::from_secs(30);
                         expiry.lock().unwrap().push((deadline, keypair_id.clone(), epoch));
                         wlog!(
@@ -542,4 +609,27 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             }
         }
     }
+}
+
+// ── Handler-only ─────────────────────────────────────────────────────────────
+
+async fn run_handler(
+    s0_url: String,
+    s0_auth_token: Option<String>,
+    port: u16,
+    chain_rpc: ChainRpcConfig,
+    max_concurrent: Option<usize>,
+    shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
+    wlog!("network-node: starting handler-only (s0_url={})", s0_url);
+    let remote = Arc::new(RemoteSecrets::new(s0_url, s0_auth_token));
+    let state = http_server::AppState {
+        provider: Arc::new(SecretsProvider::Remote(remote)),
+        chain_rpc: Arc::new(chain_rpc),
+        concurrency: Arc::new(Semaphore::new(resolve_max_concurrent(max_concurrent))),
+    };
+    tokio::spawn(http_server::run_user_server(port, state));
+    let _ = shutdown_rx.await;
+    wlog!("network-node: handler shutdown signal received.");
+    Ok(())
 }

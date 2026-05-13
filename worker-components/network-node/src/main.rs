@@ -174,11 +174,12 @@ async fn main() {
             let mode = match args.mode {
                 CliMode::Monolith => network_node::Mode::Monolith {
                     maintainer: build_maintainer_config(&args),
-                    handler: network_node::HandlerLocalConfig {
-                        port: require("port", args.port),
+                    // No --port → run chain-touching only (matches pre-split behavior).
+                    handler: args.port.map(|p| network_node::HandlerLocalConfig {
+                        port: p,
                         chain_rpc: build_chain_rpc(&args),
                         max_concurrent: args.max_concurrent,
-                    },
+                    }),
                 },
                 CliMode::Maintainer => network_node::Mode::Maintainer {
                     maintainer: build_maintainer_config(&args),

@@ -158,9 +158,11 @@ fn resolve_max_concurrent(explicit: Option<usize>) -> usize {
 /// Deployment mode. See module-level docs.
 pub enum Mode {
     /// One process does everything (default; backwards-compatible).
+    /// `handler` is `None` for chain-touching-only deployments that don't
+    /// serve user requests (e.g. test setups exercising DKG only).
     Monolith {
         maintainer: MaintainerConfig,
-        handler: HandlerLocalConfig,
+        handler: Option<HandlerLocalConfig>,
     },
     /// Secret maintenance only; serves `GET /secrets`.
     Maintainer {
@@ -283,7 +285,7 @@ fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
 pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
     match mode {
         Mode::Monolith { maintainer, handler } => {
-            run_with_maintainer(maintainer, Some(handler), None, shutdown_rx).await
+            run_with_maintainer(maintainer, handler, None, shutdown_rx).await
         }
         Mode::Maintainer {
             maintainer,

@@ -246,7 +246,7 @@ export async function loadtestRunCommand(opts: {
             ramp,
             durationSec: opts.duration ? Number(opts.duration) : 330,
             cooldownSec: opts.cooldown ? Number(opts.cooldown) : 60,
-            timeoutMs: opts.timeout ? Number(opts.timeout) : 30_000,
+            timeoutMs: opts.timeout ? Number(opts.timeout) : 5_000,
             resultsPath,
             stopErrorRate: 0.05,
             stopP99Ms: 10_000,

@@ -280,7 +280,7 @@ loadtestCmd
     .option('--ramp <csv>', 'Comma-separated QPS levels (default 20,40,80,160,320,640,1280)')
     .option('--duration <sec>', 'Seconds per level (default 330 — covers epoch rotation)')
     .option('--cooldown <sec>', 'Idle seconds between levels (default 60)')
-    .option('--timeout <ms>', 'Per-request hard timeout in ms (default 30000)')
+    .option('--timeout <ms>', 'Per-request hard timeout in ms (default 5000 — a request that takes 5s+ is treated as failed; also bounds max in-flight to QPS*timeout so the probe stays within default Node heap)')
     .option('--epoch-delay <sec>', 'Seconds to wait after detecting an epoch change before re-minting (default 10)')
     .option('-o, --output <path>', 'CSV output path (default loadtest-results/results-<run-id>.csv)')
     .action(async (opts: any) => {

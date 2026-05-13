@@ -16,7 +16,7 @@
  *   reset [--network testnet]          delete the saved state for one network.
  */
 
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
@@ -66,37 +66,74 @@ export async function loadtestSetupCommand(opts: { network?: string; rpcUrl?: st
     const rpcUrl = opts.rpcUrl ?? DEFAULT_RPC[network];
     if (!rpcUrl) throw new Error(`No default RPC URL for network "${network}" — pass --rpc-url.`);
 
+    // Pre-flight: bail out before account generation if `aptos` isn't on PATH.
+    // Otherwise we'd generate + faucet-fund a fresh account, then crash on the
+    // publish step — burning a faucet credit (rate-limited to a handful per
+    // day) and orphaning the funds because the in-memory key is lost.
+    if (spawnSync('aptos', ['--version'], { stdio: 'ignore' }).status !== 0) {
+        throw new Error(
+            `\`aptos\` CLI not found on PATH. Install before running setup, e.g.\n` +
+            `  curl -fsSL "https://aptos.dev/scripts/install_cli.py" | python3\n` +
+            `or see https://aptos.dev/tools/aptos-cli/install-cli/`,
+        );
+    }
+
+    const findLoadtestPackageDir = findLoadtestAclPackage();
+
     const config = loadConfig();
-    if (config.loadtest?.[network]) {
-        const s = config.loadtest[network];
+    const existing = config.loadtest?.[network];
+
+    let accountAddr: string;
+    let accountSk: string;
+    const packageDir = findLoadtestPackageDir;
+
+    if (existing && existing.contractAddr) {
         console.log(`Already set up on ${network}:`);
-        printState(s);
+        printState(existing);
         console.log(`\n(To re-setup, run \`${CLI} loadtest reset --network ${network}\` first.)`);
         return;
     }
 
-    console.log(`Setting up loadtest on ${network} (rpc: ${rpcUrl})\n`);
+    if (existing) {
+        // Partial state: account exists and was funded last time, but contract
+        // publish didn't complete. Resume from the publish step.
+        console.log(`Resuming partial setup on ${network} — account ${existing.accountAddr} ` +
+                    `is already funded; finishing the contract publish step.\n`);
+        accountAddr = existing.accountAddr;
+        accountSk = existing.accountSk;
+    } else {
+        console.log(`Setting up loadtest on ${network} (rpc: ${rpcUrl})\n`);
 
-    // 1. Generate a fresh account.
-    const account = Account.generate();
-    const accountAddr = account.accountAddress.toStringLong();
-    const accountSk = '0x' + Buffer.from(
-        (account.privateKey as { toUint8Array(): Uint8Array }).toUint8Array(),
-    ).toString('hex');
-    console.log(`Generated account: ${accountAddr}\n`);
+        // 1. Generate a fresh account.
+        const account = Account.generate();
+        accountAddr = account.accountAddress.toStringLong();
+        accountSk = '0x' + Buffer.from(
+            (account.privateKey as { toUint8Array(): Uint8Array }).toUint8Array(),
+        ).toString('hex');
+        console.log(`Generated account: ${accountAddr}\n`);
 
-    // 2. Wait for the operator to fund it (or auto-mint on devnet/localnet).
-    await ensureAccountFunded(rpcUrl, accountAddr);
+        // 2. Wait for the operator to fund it (or auto-mint on devnet/localnet).
+        await ensureAccountFunded(rpcUrl, accountAddr);
+
+        // 2a. Save partial state IMMEDIATELY after funding. The account + private
+        //     key are now durable, so a publish-step failure doesn't strand the
+        //     funded balance. Re-running `setup` resumes from step 3 below.
+        const cfgFunded = loadConfig();
+        cfgFunded.loadtest = cfgFunded.loadtest ?? {};
+        cfgFunded.loadtest[network] = { network, rpcUrl, accountAddr, accountSk };
+        saveConfig(cfgFunded);
+        console.log(`\nSaved partial state (account + key) to ~/.ace/config.json — ` +
+                    `safe to re-run \`${CLI} loadtest setup --network ${network}\` if anything fails below.\n`);
+    }
 
     // 3. Publish the loadtest-acl Move package at the new account.
-    console.log(`\nPublishing loadtest-acl contract...`);
-    const packageDir = findLoadtestAclPackage();
+    console.log(`Publishing loadtest-acl contract...`);
     await publishLoadtestAcl(packageDir, accountSk, rpcUrl, accountAddr);
 
-    // 4. Save state.
-    const cfg2 = loadConfig();
-    cfg2.loadtest = cfg2.loadtest ?? {};
-    cfg2.loadtest[network] = {
+    // 4. Save complete state.
+    const cfgDone = loadConfig();
+    cfgDone.loadtest = cfgDone.loadtest ?? {};
+    cfgDone.loadtest[network] = {
         network,
         rpcUrl,
         accountAddr,
@@ -104,7 +141,7 @@ export async function loadtestSetupCommand(opts: { network?: string; rpcUrl?: st
         contractAddr: accountAddr,
         deployedAt: new Date().toISOString(),
     };
-    saveConfig(cfg2);
+    saveConfig(cfgDone);
     console.log(`\n✓ Saved load-test state for ${network} to ~/.ace/config.json`);
 }
 
@@ -150,6 +187,12 @@ export async function loadtestRunCommand(opts: {
     if (!state) {
         throw new Error(
             `No load-test state for ${network}. Run \`${CLI} loadtest setup --network ${network}\` first.`,
+        );
+    }
+    if (!state.contractAddr) {
+        throw new Error(
+            `Load-test setup for ${network} is partial — the test account is funded but the ACL ` +
+            `contract isn't published. Re-run \`${CLI} loadtest setup --network ${network}\` to finish.`,
         );
     }
 
@@ -255,8 +298,12 @@ export function loadtestStatusCommand(opts: { network?: string }): void {
 function printState(s: LoadTestState): void {
     console.log(`  RPC URL       : ${s.rpcUrl}`);
     console.log(`  account       : ${s.accountAddr}`);
-    console.log(`  contract      : ${s.contractAddr}`);
-    console.log(`  deployed at   : ${s.deployedAt}`);
+    if (s.contractAddr) {
+        console.log(`  contract      : ${s.contractAddr}`);
+        console.log(`  deployed at   : ${s.deployedAt}`);
+    } else {
+        console.log(`  contract      : (not yet published — setup is partial; re-run \`${CLI} loadtest setup --network ${s.network}\` to finish)`);
+    }
 }
 
 export function loadtestResetCommand(opts: { network?: string }): void {

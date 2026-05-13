@@ -96,18 +96,23 @@ export interface TrackedNode {
  * `ace loadtest run` invocations reuse it.
  */
 export interface LoadTestState {
-    network:      string;       // 'testnet' | 'mainnet' | 'devnet' | 'localnet' | rpcLabel
-    rpcUrl:       string;
-    rpcApiKey?:   string;
-    accountAddr:  string;
-    accountSk:    string;       // 0x-prefixed hex; needed by `aptos move publish`
+    network:       string;       // 'testnet' | 'mainnet' | 'devnet' | 'localnet' | rpcLabel
+    rpcUrl:        string;
+    rpcApiKey?:    string;
+    accountAddr:   string;
+    accountSk:     string;       // 0x-prefixed hex; needed by `aptos move publish`
     /**
      * Address the loadtest-acl Move module is published at. Same as `accountAddr`
      * today — the contract is published from and at the test account. Stored
      * explicitly so a future redesign with a separate admin doesn't migrate.
+     *
+     * Optional: `setup` writes the account-only partial state immediately after
+     * funding (so the funded account's private key is durable) and only fills in
+     * `contractAddr` after `aptos move publish` succeeds. A retried `setup` that
+     * finds an account-only entry resumes from the publish step.
      */
-    contractAddr: string;
-    deployedAt:   string;       // ISO timestamp of last publish
+    contractAddr?: string;
+    deployedAt?:   string;       // ISO timestamp of last publish
 }
 
 export interface Config {

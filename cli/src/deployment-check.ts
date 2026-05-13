@@ -4,7 +4,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { ChainRpcOverrides, TrackedNode } from './config.js';
-import { DEFAULT_VPC_EGRESS, DEFAULT_VPC_NETWORK, DEFAULT_VPC_SUBNET, rpcUrlsNeedVpcEgress } from './onboarding.js';
+import { DEFAULT_CONTAINER_CONCURRENCY, DEFAULT_VPC_EGRESS, DEFAULT_VPC_NETWORK, DEFAULT_VPC_SUBNET, rpcUrlsNeedVpcEgress } from './onboarding.js';
 
 const execAsync = promisify(exec);
 
@@ -33,6 +33,8 @@ interface ParsedArgs {
     vpcNetwork?: string;
     vpcSubnet?: string;
     vpcEgress?: string;
+    /** Cloud Run only. `spec.template.spec.containerConcurrency`. */
+    containerConcurrency?: number;
 }
 
 // CLI flag → TrackedNode.chainRpc key. Matches `chainRpcArgs()` in onboarding.ts
@@ -117,6 +119,8 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
         } catch { /* malformed annotation — ignore */ }
     }
     parsed.vpcEgress = ann['run.googleapis.com/vpc-access-egress'];
+    const cc = svc?.spec?.template?.spec?.containerConcurrency;
+    if (typeof cc === 'number') parsed.containerConcurrency = cc;
     return parsed;
 }
 
@@ -175,6 +179,13 @@ export function computeDiff(node: TrackedNode, running: ParsedArgs): DiffRow[] {
         if (profileNetwork || runningNetwork) add('vpc-network', profileNetwork, runningNetwork);
         if (profileSubnet  || runningSubnet)  add('vpc-subnet',  profileSubnet,  runningSubnet);
         if (profileEgress  || running.vpcEgress) add('vpc-egress', profileEgress, running.vpcEgress);
+
+        // Concurrency: gcpDeployCmd always emits --concurrency=DEFAULT_CONTAINER_CONCURRENCY;
+        // surface drift if the running service has a different value (e.g., legacy 80 default).
+        const runningCC = running.containerConcurrency;
+        if (typeof runningCC === 'number' && runningCC !== DEFAULT_CONTAINER_CONCURRENCY) {
+            add('concurrency', String(DEFAULT_CONTAINER_CONCURRENCY), String(runningCC));
+        }
     }
     return rows;
 }

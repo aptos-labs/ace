@@ -482,20 +482,35 @@ function aptFaucetUrl(rpcUrl: string): string | undefined {
 }
 
 async function getAptBalance(rpcUrl: string, addr: string, apiKey?: string): Promise<bigint> {
+    // Use the unified `0x1::coin::balance` view function rather than reading the
+    // legacy `0x1::coin::CoinStore<AptosCoin>` resource directly. Modern testnet
+    // and mainnet faucets credit APT via the fungible-asset accounting model,
+    // which lives in a separate object — the legacy CoinStore resource may never
+    // be created. The view function transparently sums both models.
     try {
-        const type = encodeURIComponent('0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>');
-        const url   = `${rpcUrl}/accounts/${addr}/resource/${type}`;
-        const headers: HeadersInit = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-        const res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+        const headers: HeadersInit = {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        };
+        const res = await fetch(`${rpcUrl}/view`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                function: '0x1::coin::balance',
+                type_arguments: ['0x1::aptos_coin::AptosCoin'],
+                arguments: [addr],
+            }),
+            signal: AbortSignal.timeout(5000),
+        });
         if (!res.ok) return 0n;
-        const data = await res.json() as { data: { coin: { value: string } } };
-        return BigInt(data.data.coin.value);
+        const data = await res.json() as [string];
+        return BigInt(data[0]);
     } catch {
         return 0n;
     }
 }
 
-async function ensureAccountFunded(
+export async function ensureAccountFunded(
     rpcUrl: string, accountAddr: string, apiKey?: string, gasStationKey?: string,
 ): Promise<void> {
     if (gasStationKey) return;

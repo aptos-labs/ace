@@ -319,8 +319,6 @@ async function main() {
         // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
         step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
-            // Exercise V2 wire (tibeScheme provided) on the PING decrypt;
-            // the PONG decrypt below stays V1 so CI covers both paths.
             const pingSession = await ACE.AptosBasicFlow.DecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
@@ -330,7 +328,6 @@ async function main() {
                 functionName: 'check_permission',
                 domain: pingDomain,
                 ciphertext: pingCiph,
-                tibeScheme: ACE.tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();
             const pingDecResult = await pingSession.decryptWithProof({

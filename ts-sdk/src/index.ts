@@ -19,11 +19,6 @@ export { Result } from "./result";
 // Public Key Encryption
 export * as pke from "./pke";
 
-// t-IBE constants — useful for callers opting into the V2 decryption wire
-// (`DecryptionSession.create({..., tibeScheme})`). Same constants the
-// `encrypt()` function already accepts.
-export * as tibe from "./t-ibe";
-
 // Shared types
 export { AceDeployment } from "./_internal/common";
 

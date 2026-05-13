@@ -21,15 +21,12 @@ export class DecryptionSession {
     ciphertext: Uint8Array;
     ephemeralDecryptionKey: pke.DecryptionKey;
     ephemeralEncryptionKey: pke.EncryptionKey;
-    /** If set, send the V2 wire variant carrying this t-IBE scheme so the
-     *  worker doesn't have to guess. Undefined → V1 wire format. */
-    tibeScheme: number | undefined;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
 
     private constructor({
         aceDeployment, keypairId, knownChainName, programId, domain, ciphertext,
-        ephemeralEncryptionKey, ephemeralDecryptionKey, tibeScheme,
+        ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
         keypairId: AccountAddress,
@@ -39,7 +36,6 @@ export class DecryptionSession {
         ciphertext: Uint8Array,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
-        tibeScheme?: number,
     }) {
         this.aceDeployment = aceDeployment;
         const contractId = ContractID.newSolana({knownChainName, programId});
@@ -47,7 +43,6 @@ export class DecryptionSession {
         this.ciphertext = ciphertext;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
-        this.tibeScheme = tibeScheme;
     }
 
     static async create(params: {
@@ -57,8 +52,6 @@ export class DecryptionSession {
         programId: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
-        /** Opt into V2 wire format (see Aptos basic-flow session for details). */
-        tibeScheme?: number,
     }): Promise<DecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
         return new DecryptionSession({
@@ -90,7 +83,6 @@ export class DecryptionSession {
             proof,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
             ciphertext: this.ciphertext,
-            tibeScheme: this.tibeScheme,
         });
     }
 }

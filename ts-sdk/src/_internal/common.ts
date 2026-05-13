@@ -647,16 +647,13 @@ async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState
     }
 }
 
-export async function decryptCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, ciphertext, tibeScheme}: {
+export async function decryptCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, ciphertext}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
     ephemeralDecryptionKey: pke.DecryptionKey,
     ciphertext: Uint8Array,
-    /** If set, send the V2 wire variant carrying this t-IBE scheme so the
-     *  worker doesn't have to guess. If undefined, fall back to V1 wire. */
-    tibeScheme?: number,
 }): Promise<Result<Uint8Array>> {
     return Result.captureAsync({
         task: async (_extra) => {
@@ -700,9 +697,11 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                 throw `ACE.decryptCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = (tibeScheme === undefined
-                ? RequestForDecryptionKey.newBasicFlow(request, proof)
-                : RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme)).toBytes();
+            // The t-IBE scheme is part of the ciphertext (first byte is the
+            // scheme tag); the caller never has to re-supply it.
+            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
+                .unwrapOrThrow('ACE.decryptCore: parse ciphertext for scheme').scheme;
+            const reqBytes = RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -757,14 +756,12 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
     });
 }
 
-export async function decryptCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, ciphertext, tibeScheme}: {
+export async function decryptCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, ciphertext}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     customRequest: CustomFlowRequest,
     callerDecryptionKey: pke.DecryptionKey,
     ciphertext: Uint8Array,
-    /** If set, send the V2 wire variant carrying this t-IBE scheme. */
-    tibeScheme?: number,
 }): Promise<Result<Uint8Array>> {
     return Result.captureAsync({
         task: async (_extra) => {
@@ -808,9 +805,9 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                 throw `ACE.decryptCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = (tibeScheme === undefined
-                ? RequestForDecryptionKey.newCustomFlow(customRequest)
-                : RequestForDecryptionKey.newCustomFlowV2(customRequest, tibeScheme)).toBytes();
+            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
+                .unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext for scheme').scheme;
+            const reqBytes = RequestForDecryptionKey.newCustomFlowV2(customRequest, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();

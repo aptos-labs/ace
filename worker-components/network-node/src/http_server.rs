@@ -29,6 +29,13 @@
 //!   share_bytes — only on `result=ok`
 //!   keypair     — first 8 hex chars of keypair_id, populated once known
 //!   epoch       — populated once the request is parsed
+//!   decrypt_ms  — time spent PKE-decrypting the inbound request body
+//!   pfn_ms      — time spent in `verify` (sole source of PFN RPC traffic)
+//!   extract_ms  — time spent extracting the share + PKE-encrypting the response
+//!
+//! Together `decrypt_ms + pfn_ms + extract_ms` ≈ `elapsed_ms`; comparing the
+//! three components is the cheapest way to attribute per-request latency
+//! during load tests.
 //!
 //! The keyword `ACE_REQUEST_HANDLING_SUMMARY` is intentionally distinctive so it doesn't
 //! collide with anything else in the log stream. Humio (and similar log aggregators)
@@ -180,6 +187,12 @@ struct RequestContext {
     /// (basic flow: `ephemeral_enc_key`; custom flow: `enc_pk`). Lets the
     /// driver correlate worker log lines with the exact requests it sent.
     enc_pk_hex: Option<String>,
+    /// PKE-decrypt of the inbound request body.
+    decrypt_ms: Option<u64>,
+    /// `verify_basic` / `verify_custom`, which is the only place we hit the PFN.
+    pfn_ms: Option<u64>,
+    /// Share extraction + PKE-encrypt of the response.
+    extract_ms: Option<u64>,
 }
 
 async fn handle_request(
@@ -209,6 +222,15 @@ async fn handle_request(
     }
     if let Some(pk) = ctx.enc_pk_hex.as_deref() {
         log["enc_pk"] = json!(pk);
+    }
+    if let Some(v) = ctx.decrypt_ms {
+        log["decrypt_ms"] = json!(v);
+    }
+    if let Some(v) = ctx.pfn_ms {
+        log["pfn_ms"] = json!(v);
+    }
+    if let Some(v) = ctx.extract_ms {
+        log["extract_ms"] = json!(v);
     }
 
     match outcome {
@@ -257,6 +279,7 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         }
     };
 
+    let decrypt_start = Instant::now();
     let req_bytes = match pke_decrypt_bytes(&state.pke_dk_bytes, &ct_bytes) {
         Ok(b) => b,
         Err(e) => {
@@ -266,6 +289,7 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             };
         }
     };
+    ctx.decrypt_ms = Some(decrypt_start.elapsed().as_millis() as u64);
 
     let request: RequestForDecryptionKey = match bcs::from_bytes(&req_bytes) {
         Ok(r) => r,
@@ -283,14 +307,14 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             ctx.keypair_short = Some(short_hex(&req.keypair_id));
             ctx.epoch = Some(req.epoch);
             ctx.enc_pk_hex = enc_pk_to_hex(&req.ephemeral_enc_key);
-            handle_basic_flow(state, req).await
+            handle_basic_flow(state, req, ctx).await
         }
         RequestForDecryptionKey::Custom(req) => {
             ctx.flow = Some(Flow::Custom);
             ctx.keypair_short = Some(short_hex(&req.keypair_id));
             ctx.epoch = Some(req.epoch);
             ctx.enc_pk_hex = enc_pk_to_hex(&req.enc_pk);
-            handle_custom_flow(state, req).await
+            handle_custom_flow(state, req, ctx).await
         }
     }
 }
@@ -301,8 +325,15 @@ fn enc_pk_to_hex(ek: &EncryptionKey) -> Option<String> {
     bcs::to_bytes(ek).ok().map(hex::encode)
 }
 
-async fn handle_basic_flow(state: &AppState, req: BasicFlowRequest) -> Outcome {
-    if let Err(e) = verify::verify_basic(&req, &state.chain_rpc).await {
+async fn handle_basic_flow(
+    state: &AppState,
+    req: BasicFlowRequest,
+    ctx: &mut RequestContext,
+) -> Outcome {
+    let pfn_start = Instant::now();
+    let verify_result = verify::verify_basic(&req, &state.chain_rpc).await;
+    ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
+    if let Err(e) = verify_result {
         return Outcome::Rejected {
             reason: Reason::Forbidden,
             detail: Some(format!("{:#}", e)),
@@ -310,11 +341,22 @@ async fn handle_basic_flow(state: &AppState, req: BasicFlowRequest) -> Outcome {
     }
     let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.domain);
     let keypair_id = keypair_id_str(&req.keypair_id);
-    extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.ephemeral_enc_key).await
+    let extract_start = Instant::now();
+    let outcome =
+        extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.ephemeral_enc_key).await;
+    ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+    outcome
 }
 
-async fn handle_custom_flow(state: &AppState, req: CustomFlowRequest) -> Outcome {
-    if let Err(e) = verify::verify_custom(&req, &state.chain_rpc).await {
+async fn handle_custom_flow(
+    state: &AppState,
+    req: CustomFlowRequest,
+    ctx: &mut RequestContext,
+) -> Outcome {
+    let pfn_start = Instant::now();
+    let verify_result = verify::verify_custom(&req, &state.chain_rpc).await;
+    ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
+    if let Err(e) = verify_result {
         return Outcome::Rejected {
             reason: Reason::Forbidden,
             detail: Some(format!("{:#}", e)),
@@ -323,7 +365,11 @@ async fn handle_custom_flow(state: &AppState, req: CustomFlowRequest) -> Outcome
     // Custom-flow identity uses `label` in place of `domain`; ContractId is unchanged.
     let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.label);
     let keypair_id = keypair_id_str(&req.keypair_id);
-    extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.enc_pk).await
+    let extract_start = Instant::now();
+    let outcome =
+        extract_and_respond(state, &keypair_id, req.epoch, &identity, &req.enc_pk).await;
+    ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+    outcome
 }
 
 fn keypair_id_str(keypair_id: &[u8; 32]) -> String {

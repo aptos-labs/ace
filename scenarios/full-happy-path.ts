@@ -69,15 +69,8 @@ import {
 import {
     buildRustWorkspace,
     killStaleNetworkNodes,
-    spawnNetworkNode,
-    spawnNetworkNodeSplit,
+    spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
-
-// Worker 2 runs in split (maintainer + handler) mode for coverage: it sits in
-// every committee in this scenario, so both the URH path on the maintainer
-// and the request-serving path on the handler get exercised end-to-end.
-const SPLIT_WORKER_INDEX = 2;
-const MAINTAINER_PORT_OFFSET = 100;
 
 const TOTAL_WORKERS = 5;
 // Three overlapping committees referenced by worker indices (not epoch numbers).
@@ -186,31 +179,21 @@ async function main() {
         await buildRustWorkspace();
 
         // ── Step 6b: Spawn all worker processes ───────────────────────────────
-        step('6b', `Spawn ${TOTAL_WORKERS} network-node processes (ports ${WORKER_BASE_PORT}–${WORKER_BASE_PORT + TOTAL_WORKERS - 1}); worker ${SPLIT_WORKER_INDEX} is split maintainer+handler`);
+        // Front half runs split (maintainer + handler), back half runs monolith.
+        // For TOTAL_WORKERS=5: workers 0,1,2 split; workers 3,4 monolith.
+        step('6b', `Spawn ${TOTAL_WORKERS} workers — front ${Math.ceil(TOTAL_WORKERS / 2)} split (maintainer+handler), rest monolith`);
         killStaleNetworkNodes();
         for (let i = 0; i < TOTAL_WORKERS; i++) {
-            const pkeDkBytes = encKeypairs[i].decryptionKey.toBytes();
-            const pkeDkHex = `0x${Buffer.from(pkeDkBytes).toString('hex')}`;
-            if (i === SPLIT_WORKER_INDEX) {
-                const { maintainer, handler } = spawnNetworkNodeSplit({
-                    runAs: workerAccounts[i],
-                    pkeDkHex,
-                    aceDeploymentAddr: adminAddr,
-                    aceDeploymentApi: LOCALNET_URL,
-                    port: WORKER_BASE_PORT + i,
-                    maintainerPort: WORKER_BASE_PORT + MAINTAINER_PORT_OFFSET + i,
-                });
-                workers.push(maintainer, handler);
-            } else {
-                const proc = spawnNetworkNode({
-                    runAs: workerAccounts[i],
-                    pkeDkHex,
-                    aceDeploymentAddr: adminAddr,
-                    aceDeploymentApi: LOCALNET_URL,
-                    port: WORKER_BASE_PORT + i,
-                });
-                workers.push(proc);
-            }
+            const pkeDkHex = `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`;
+            workers.push(...spawnNetworkNodeMaybeSplit({
+                index: i,
+                total: TOTAL_WORKERS,
+                runAs: workerAccounts[i],
+                pkeDkHex,
+                aceDeploymentAddr: adminAddr,
+                aceDeploymentApi: LOCALNET_URL,
+                workerBasePort: WORKER_BASE_PORT,
+            }));
         }
 
         step('6c', 'Wait for workers to initialize');

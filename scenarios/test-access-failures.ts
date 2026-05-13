@@ -60,7 +60,7 @@ import {
 } from './common/infra';
 import {
     buildRustWorkspace,
-    spawnNetworkNode,
+    spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
 
 const TOTAL_WORKERS = 3;
@@ -159,12 +159,14 @@ async function main() {
         await buildRustWorkspace();
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const pkeDkHex = `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`;
-            workers.push(spawnNetworkNode({
+            workers.push(...spawnNetworkNodeMaybeSplit({
+                index: i,
+                total: TOTAL_WORKERS,
                 runAs: workerAccounts[i],
                 pkeDkHex,
                 aceDeploymentAddr: adminAddr,
                 aceDeploymentApi: LOCALNET_URL,
-                port: WORKER_BASE_PORT + i,
+                workerBasePort: WORKER_BASE_PORT,
             }));
         }
         await sleep(2000);

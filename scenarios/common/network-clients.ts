@@ -152,6 +152,52 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
     return { maintainer, handler };
 }
 
+export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
+    /** Position in the committee (0-based). Used to assign ports + pick mode. */
+    index: number;
+    /** Total number of workers being spawned in this committee. */
+    total: number;
+    /** Base port; handler/monolith uses `workerBasePort + index`. */
+    workerBasePort: number;
+    /** Offset for the maintainer's `/secrets` port in split mode (default 100). */
+    maintainerPortOffset?: number;
+};
+
+/**
+ * Spawn one committee member in either monolith or split mode, chosen by index:
+ * the front `ceil(total/2)` indices run as split (maintainer + handler) and the
+ * rest run as monoliths. Returns the list of processes spawned (length 1 for
+ * monolith, 2 for split). Callers register
+ * `http://localhost:${workerBasePort + index}` as the on-chain endpoint
+ * regardless of mode.
+ *
+ * Exercising both modes in every end-to-end scenario keeps the split-mode
+ * codepaths under continuous CI coverage.
+ */
+export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess[] {
+    const offset = opts.maintainerPortOffset ?? 100;
+    const handlerPort = opts.workerBasePort + opts.index;
+    const isSplit = opts.index < Math.ceil(opts.total / 2);
+    if (isSplit) {
+        const { maintainer, handler } = spawnNetworkNodeSplit({
+            runAs: opts.runAs,
+            pkeDkHex: opts.pkeDkHex,
+            aceDeploymentAddr: opts.aceDeploymentAddr,
+            aceDeploymentApi: opts.aceDeploymentApi,
+            port: handlerPort,
+            maintainerPort: opts.workerBasePort + offset + opts.index,
+        });
+        return [maintainer, handler];
+    }
+    return [spawnNetworkNode({
+        runAs: opts.runAs,
+        pkeDkHex: opts.pkeDkHex,
+        aceDeploymentAddr: opts.aceDeploymentAddr,
+        aceDeploymentApi: opts.aceDeploymentApi,
+        port: handlerPort,
+    })];
+}
+
 function spawnWithLog(bin: string, args: string[], label: string): ChildProcess {
     const logPath = path.join(os.tmpdir(), `${label}.log`);
     const logFd = fs.openSync(logPath, 'w');

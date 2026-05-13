@@ -14,7 +14,7 @@ import {
 
 export async function decrypt({
     ciphertext, label, encPk, encSk, payload,
-    aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName,
+    aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName, tibeScheme,
 }: {
     ciphertext: Uint8Array,
     label: Uint8Array,
@@ -27,6 +27,9 @@ export async function decrypt({
     moduleAddr: AccountAddress,
     moduleName: string,
     functionName: string,
+    /** Opt into V2 wire format. The value should match the t-IBE scheme the
+     *  ciphertext was produced with; the worker validates compatibility. */
+    tibeScheme?: number,
 }): Promise<Uint8Array> {
     const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
         .unwrapOrThrow('AptosCustomFlow.decrypt: parse encPk');
@@ -51,5 +54,6 @@ export async function decrypt({
         customRequest,
         callerDecryptionKey: callerDecSk,
         ciphertext,
+        tibeScheme,
     })).unwrapOrThrow('AptosCustomFlow.decrypt failed');
 }

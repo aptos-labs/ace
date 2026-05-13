@@ -335,23 +335,21 @@ async fn run_with_maintainer(
     );
 
     // `(keypair_id, epoch) → ShareEntry` — flat map, one lookup per request.
-    // `eval_point` is captured per-entry at URH registration time so stale
-    // buffer-window entries from a previous epoch use the right value even
-    // after committee membership changes.
+    // `eval_point` and `group_scheme` are captured per-entry at URH
+    // registration time so stale buffer-window entries from a previous epoch
+    // use the right values even after committee membership changes.
+    //
+    // No separate "am I in the committee" flag: an empty map already means
+    // "nothing to serve" (whether because the node is genuinely not in
+    // `cur_nodes` or because URH hasn't completed yet). The handler returns
+    // NotFound on lookup miss either way.
     let shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> =
         Arc::new(Mutex::new(Vec::new()));
 
-    // Tracked alongside `shares` so the secrets-server can answer
-    // `V1NotInCommittee` correctly when this node leaves `cur_nodes`.
-    let in_committee_shared: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-
-    let local = LocalSecrets {
-        shares: shares.clone(),
-        in_committee: in_committee_shared.clone(),
-    };
+    let local = LocalSecrets { shares: shares.clone() };
 
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
@@ -518,15 +516,14 @@ async fn run_with_maintainer(
             }
         }
 
-        // Capture both the in-committee flag and this node's eval_point (1-based
-        // position) for use by URH tasks below. URH stores eval_point alongside
-        // each share so the handler doesn't have to re-derive committee state.
+        // This node's eval_point (1-based position) at the current epoch.
+        // URH stores it alongside each share so the handler doesn't have to
+        // re-derive committee state.
         let my_eval_point: Option<u64> = state
             .cur_nodes
             .iter()
             .position(|n| addr_bytes_to_string(n) == account_addr)
             .map(|i| (i + 1) as u64);
-        *in_committee_shared.write().await = in_cur_nodes;
 
         let active_secrets: HashSet<String> = if in_cur_nodes {
             state.secrets.iter().map(|s| addr_bytes_to_string(&s.current_session)).collect()
@@ -569,27 +566,21 @@ async fn run_with_maintainer(
             tokio::spawn(async move {
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
                     Ok((scalar_le32, keypair_id, group_scheme)) => {
-                        let tibe_scheme = match crate::crypto::tibe_scheme_for_group(group_scheme) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                wlog!(
-                                    "network-node: [urh] {}: unsupported group scheme {}: {:#}",
-                                    keypair_id, group_scheme, e
-                                );
-                                return;
-                            }
-                        };
+                        // Maintainer stays out of the t-IBE business — store the
+                        // raw group_scheme; handler picks the right t-IBE scheme
+                        // at request time (either from the client-asserted V2
+                        // field or via the V1 fallback mapping).
                         shares2.write().await.insert(
                             (keypair_id.clone(), epoch),
                             ShareEntry {
                                 scalar_le32,
-                                tibe_scheme,
+                                group_scheme,
                                 eval_point,
                             },
                         );
                         wlog!(
-                            "network-node: [urh] registered keypair_id={} epoch={} tibe_scheme={} eval_point={}",
-                            keypair_id, epoch, tibe_scheme, eval_point
+                            "network-node: [urh] registered keypair_id={} epoch={} group_scheme={} eval_point={}",
+                            keypair_id, epoch, group_scheme, eval_point
                         );
                         let _ = rx.await;
                         let deadline = Instant::now() + Duration::from_secs(30);

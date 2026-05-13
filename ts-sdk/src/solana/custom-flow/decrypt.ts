@@ -14,7 +14,7 @@ import {
 
 export async function decrypt({
     ciphertext, label, encPk, encSk, epoch, txn,
-    aceDeployment, keypairId, knownChainName, programId,
+    aceDeployment, keypairId, knownChainName, programId, tibeScheme,
 }: {
     ciphertext: Uint8Array,
     label: Uint8Array,
@@ -26,6 +26,8 @@ export async function decrypt({
     keypairId: AccountAddress,
     knownChainName: string,
     programId: string,
+    /** Opt into V2 wire format. */
+    tibeScheme?: number,
 }): Promise<Uint8Array> {
     const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
         .unwrapOrThrow('SolanaCustomFlow.decrypt: parse encPk');
@@ -50,6 +52,7 @@ export async function decrypt({
         customRequest,
         callerDecryptionKey: callerDecSk,
         ciphertext,
+        tibeScheme,
     })).unwrapOrThrow('SolanaCustomFlow.decrypt failed');
 }
 

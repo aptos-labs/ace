@@ -21,12 +21,15 @@ export class DecryptionSession {
     ciphertext: Uint8Array;
     ephemeralDecryptionKey: pke.DecryptionKey;
     ephemeralEncryptionKey: pke.EncryptionKey;
+    /** If set, send the V2 wire variant so workers don't have to derive
+     *  the t-IBE scheme from the share's group. Defaults to undefined (V1). */
+    tibeScheme: number | undefined;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
 
     private constructor({
         aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName, domain, ciphertext,
-        ephemeralEncryptionKey, ephemeralDecryptionKey,
+        ephemeralEncryptionKey, ephemeralDecryptionKey, tibeScheme,
     }: {
         aceDeployment: AceDeployment,
         keypairId: AccountAddress,
@@ -38,6 +41,7 @@ export class DecryptionSession {
         ciphertext: Uint8Array,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
+        tibeScheme?: number,
     }) {
         this.aceDeployment = aceDeployment;
         if (functionName === undefined) functionName = 'check_permission';
@@ -46,6 +50,7 @@ export class DecryptionSession {
         this.ciphertext = ciphertext;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
+        this.tibeScheme = tibeScheme;
     }
 
     static async create(params: {
@@ -57,6 +62,10 @@ export class DecryptionSession {
         functionName?: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
+        /** Opt into V2 wire format. The value should match the t-IBE scheme
+         *  the ciphertext was produced with; the worker validates it against
+         *  the share's group. If omitted, V1 is sent and the worker guesses. */
+        tibeScheme?: number,
     }): Promise<DecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
         return new DecryptionSession({
@@ -89,6 +98,7 @@ export class DecryptionSession {
             proof,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
             ciphertext: this.ciphertext,
+            tibeScheme: this.tibeScheme,
         });
     }
 }

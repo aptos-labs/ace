@@ -28,12 +28,18 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// JSON wire format returned by the maintainer's `GET /secrets`. The `v` tag
-/// is reserved for future schema evolution; today's only value is `"1"`.
+/// JSON wire format returned by the maintainer's `GET /secrets`.
+///
+/// Modeled as a tagged enum even though there's only one variant today —
+/// it lets us evolve the shape (add fields, change structure, retire old
+/// variants) without breaking handlers on a different release. Cheap
+/// forward-compat insurance, mirrors the `RequestForDecryptionKey` pattern
+/// on the request side.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SecretsSnapshotWire {
-    pub v: String,
-    pub shares: Vec<ShareWire>,
+#[serde(tag = "schema")]
+pub enum SecretsSnapshotWire {
+    #[serde(rename = "v1")]
+    V1 { shares: Vec<ShareWire> },
 }
 
 /// Per-(keypair, epoch) share with its evaluation point and originating group
@@ -55,8 +61,6 @@ pub struct ShareWire {
     pub scalar_le32_hex: String,
     pub group_scheme: u8,
 }
-
-pub const SCHEMA_V: &str = "1";
 
 /// Parsed, in-memory form of a snapshot.
 #[derive(Clone, Debug, Default)]
@@ -108,10 +112,7 @@ impl LocalSecrets {
             })
             .collect();
         shares.sort_by_key(|s| (s.epoch, s.keypair_id.clone()));
-        SecretsSnapshotWire {
-            v: SCHEMA_V.to_string(),
-            shares,
-        }
+        SecretsSnapshotWire::V1 { shares }
     }
 }
 
@@ -183,14 +184,9 @@ impl RemoteSecrets {
             ));
         }
         let wire: SecretsSnapshotWire = resp.json().await.context("decode SecretsSnapshotWire")?;
-        if wire.v != SCHEMA_V {
-            return Err(anyhow!(
-                "unexpected secrets snapshot version {:?} (want {:?})",
-                wire.v, SCHEMA_V
-            ));
-        }
+        let SecretsSnapshotWire::V1 { shares } = wire;
         let mut entries: HashMap<(String, u64), ShareEntry> = HashMap::new();
-        for sh in wire.shares {
+        for sh in shares {
             let scalar_bytes = hex::decode(sh.scalar_le32_hex.trim_start_matches("0x"))
                 .with_context(|| format!("decode scalar for keypair_id={}", sh.keypair_id))?;
             if scalar_bytes.len() != 32 {
@@ -262,13 +258,16 @@ mod tests {
 
         let wire = local.snapshot_wire().await;
         let json = serde_json::to_string(&wire).unwrap();
+        // Ensure the version tag is on the wire — that's the whole point of
+        // the tagged-enum shape.
+        assert!(json.contains("\"schema\":\"v1\""), "json missing schema tag: {json}");
         let parsed: SecretsSnapshotWire = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.v, SCHEMA_V);
-        assert_eq!(parsed.shares.len(), 2);
-        assert_eq!(parsed.shares[0].epoch, 5);
-        assert_eq!(parsed.shares[0].group_scheme, 0);
-        assert_eq!(parsed.shares[1].epoch, 6);
-        assert_eq!(parsed.shares[1].group_scheme, 1);
+        let SecretsSnapshotWire::V1 { shares } = parsed;
+        assert_eq!(shares.len(), 2);
+        assert_eq!(shares[0].epoch, 5);
+        assert_eq!(shares[0].group_scheme, 0);
+        assert_eq!(shares[1].epoch, 6);
+        assert_eq!(shares[1].group_scheme, 1);
     }
 
     #[tokio::test]
@@ -276,8 +275,7 @@ mod tests {
         let local = LocalSecrets {
             shares: Arc::new(RwLock::new(HashMap::new())),
         };
-        let wire = local.snapshot_wire().await;
-        assert_eq!(wire.v, SCHEMA_V);
-        assert!(wire.shares.is_empty());
+        let SecretsSnapshotWire::V1 { shares } = local.snapshot_wire().await;
+        assert!(shares.is_empty());
     }
 }

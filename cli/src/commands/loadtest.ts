@@ -177,6 +177,7 @@ export async function loadtestRunCommand(opts: {
     contract?: string;
     keypair?: string;
     chainId?: string;
+    postUrl?: string;
     ramp?: string;
     duration?: string;
     cooldown?: string;
@@ -237,9 +238,13 @@ export async function loadtestRunCommand(opts: {
     }
 
     const loadtester = loadtesterAccountFromSk(state.accountSk);
+    if (opts.postUrl) {
+        console.log(`Override POST URL: ${opts.postUrl} (committee lookup still via ${targetEndpoint})\n`);
+    }
     const mintCfg: MintConfig = {
         aceDeployment, keypairId, chainId,
         targetEndpoint,
+        postUrl: opts.postUrl,
         loadtester,
         moduleAddr: AccountAddress.fromString(state.contractAddr),
         moduleName: MODULE_NAME,

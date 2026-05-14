@@ -37,7 +37,10 @@ export interface MintConfig {
     aceDeployment: ACE.AceDeployment;
     keypairId: AccountAddress;
     chainId: number;
+    /** On-chain registered endpoint of the target node (used to look up its enc key). */
     targetEndpoint: string;
+    /** Where the probe actually POSTs to. Defaults to targetEndpoint. Override for LB / proxy / VPC tests. */
+    postUrl?: string;
     loadtester: Account;
     moduleAddr: AccountAddress;
     moduleName: string;
@@ -77,17 +80,18 @@ export async function buildOnce(cfg: MintConfig): Promise<Pool> {
         targetEndpoint: cfg.targetEndpoint,
     })).unwrapOrThrow('loadtest mint: build per-node request failed');
 
+    const postUrl = cfg.postUrl ?? cfg.targetEndpoint;
     // Smoke test: POST once, confirm the response parses as a PKE ciphertext.
-    const resp = await fetch(cfg.targetEndpoint, { method: 'POST', body: built.encReqHex });
+    const resp = await fetch(postUrl, { method: 'POST', body: built.encReqHex });
     if (!resp.ok) {
         const body = await resp.text().catch(() => '');
-        throw new Error(`loadtest mint: smoke test POST ${cfg.targetEndpoint} returned HTTP ${resp.status} — ${body.trim().slice(0, 200)}`);
+        throw new Error(`loadtest mint: smoke test POST ${postUrl} returned HTTP ${resp.status} — ${body.trim().slice(0, 200)}`);
     }
     const hexText = (await resp.text()).trim();
     ACE.pke.Ciphertext.fromHex(hexText).unwrapOrThrow('loadtest mint: smoke test response is not a valid PKE ciphertext');
 
     return {
-        endpoint: cfg.targetEndpoint,
+        endpoint: postUrl,
         encReqHex: built.encReqHex,
         epoch: built.epoch,
         mintedAt: new Date().toISOString(),

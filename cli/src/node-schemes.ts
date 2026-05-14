@@ -562,7 +562,7 @@ export function cloudRunUrl(serviceName: string, projectNumber: string, region: 
  * binding (aceAddr + accountAddr), both of which are read-only.
  */
 export function defaultHandlerServiceAccount(identityPrefix: string, project: string): string {
-    return `${identityPrefix}-sa@${project}.iam.gserviceaccount.com`;
+    return `${identityPrefix}-ms-sa@${project}.iam.gserviceaccount.com`;
 }
 
 // Re-exports for downstream consumers.

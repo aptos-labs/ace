@@ -23,7 +23,7 @@ import {
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 import {
-    schemeOf, generateTemplate, parseTemplate, defaultHandlerServiceAccount, defaultNamePrefix,
+    schemeOf, generateTemplate, parseTemplate,
     type TemplateInputs, type ParsedNodeForm,
 } from '../node-schemes.js';
 
@@ -56,7 +56,6 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             maintainerServiceName:  node.gcp?.maintainerServiceName,
             handlerServiceName:     node.gcp?.handlerServiceName,
             handlerMaxInstances:    node.gcp?.handlerMaxInstances,
-            handlerServiceAccount:  node.gcp?.handlerServiceAccount,
             port:                   node.docker?.port ?? node.local?.port,
             containerName:          node.docker?.containerName,
             repoPath:               node.local?.repoPath,
@@ -82,7 +81,6 @@ function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
             maintainerServiceName:  edit.maintainerServiceName,
             handlerServiceName:     edit.handlerServiceName,
             handlerMaxInstances:    edit.handlerMaxInstances,
-            handlerServiceAccount:  edit.handlerServiceAccount ?? node.gcp.handlerServiceAccount,
         };
     }
     if (node.docker) {
@@ -173,8 +171,6 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         }
         console.log('Run this command to apply the changes:\n');
         if (mode === 'microservices') {
-            const sa = updatedNode.gcp.handlerServiceAccount
-                ?? defaultHandlerServiceAccount(defaultNamePrefix(node.aceAddr, node.accountAddr), updatedNode.gcp.project);
             console.log(gcpDeployCmdMicroservices(
                 {
                     project:                updatedNode.gcp.project,
@@ -182,7 +178,6 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                     maintainerServiceName:  updatedNode.gcp.maintainerServiceName!,
                     handlerServiceName:     updatedNode.gcp.handlerServiceName!,
                     handlerMaxInstances:    updatedNode.gcp.handlerMaxInstances!,
-                    handlerServiceAccount:  sa,
                 },
                 image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
             ));

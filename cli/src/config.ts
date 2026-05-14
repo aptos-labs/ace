@@ -45,9 +45,6 @@ export interface GcpConfig {
     handlerServiceName?: string;
     /** Microservices mode — Cloud Run autoscaling cap on the Handler. */
     handlerMaxInstances?: number;
-    /** Microservices mode — service account email used by the Handler to invoke the Maintainer.
-     *  Auto-derived from the project + handler service name if absent. */
-    handlerServiceAccount?: string;
 }
 
 export interface DockerConfig {

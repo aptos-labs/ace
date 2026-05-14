@@ -17,7 +17,6 @@ import { logFilePath, spawnLocalNode } from './local-process.js';
 import { buildFromEditor } from './editor.js';
 import {
     pickScheme, modeOf, platformOf, generateTemplate, parseTemplate, defaultsFor,
-    defaultHandlerServiceAccount, defaultNamePrefix,
     type Scheme, type TemplateInputs,
 } from './node-schemes.js';
 
@@ -151,12 +150,16 @@ export function gcpDeployCmd(
  * is the only correct path. The emitted shell script does that with a
  * `MAINT_URL=$(gcloud …)` substitution, then deploys the Handler.
  *
+ * Auth model: the Maintainer is reachable only via VPC (`--ingress=internal`),
+ * but invocation itself is unauthenticated. The Handler is given Direct VPC
+ * egress so its outbound to the Maintainer's `*.run.app` URL is recognized as
+ * same-project internal and passes the ingress filter. No OIDC tokens are
+ * needed — the worker code does plain HTTP GETs.
+ *
  * Step order:
- *   1. Create the Handler's service account (idempotent).
- *   2. Deploy the Maintainer (internal-only, min=max=1, IAM-only).
- *   3. Capture the Maintainer URL.
- *   4. Deploy the Handler with `--maintainer-url=$MAINT_URL/secrets`.
- *   5. Bind the Handler SA as `run.invoker` on the Maintainer.
+ *   1. Deploy the Maintainer (internal-only, min=max=1, no auth required).
+ *   2. Capture the Maintainer URL.
+ *   3. Deploy the Handler with VPC egress + `--maintainer-url=$MAINT_URL/secrets`.
  */
 export function gcpDeployCmdMicroservices(
     cfg: {
@@ -165,20 +168,25 @@ export function gcpDeployCmdMicroservices(
         maintainerServiceName: string;
         handlerServiceName: string;
         handlerMaxInstances: number;
-        handlerServiceAccount: string;
     },
     image: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
-    const saLocalPart = cfg.handlerServiceAccount.split('@')[0];
-
-    const vpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
+    // Maintainer's VPC needs follow the chain-RPC rule (it only talks to the
+    // chain). Handler ALWAYS needs VPC egress so it can reach the Maintainer's
+    // internal-only *.run.app URL.
+    const maintainerVpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
         `  --network=${DEFAULT_VPC_NETWORK}`,
         `  --subnet=${DEFAULT_VPC_SUBNET}`,
         `  --vpc-egress=${DEFAULT_VPC_EGRESS}`,
     ] : [];
+    const handlerVpcLines = [
+        `  --network=${DEFAULT_VPC_NETWORK}`,
+        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+        `  --vpc-egress=all-traffic`,
+    ];
 
     const maintainerArgs = [
         'run',
@@ -206,14 +214,13 @@ export function gcpDeployCmdMicroservices(
         `  --image docker.io/${image}`,
         `  --project ${cfg.project}`,
         `  --region ${cfg.region}`,
-        `  --service-account ${cfg.handlerServiceAccount}`,
         `  --ingress=internal`,
-        `  --no-allow-unauthenticated`,
+        `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --max-instances 1`,
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
-        ...vpcLines,
+        ...maintainerVpcLines,
         `  --args "${maintainerArgs.join(',')}"`,
     ].join(' \\\n');
 
@@ -222,42 +229,32 @@ export function gcpDeployCmdMicroservices(
         `  --image docker.io/${image}`,
         `  --project ${cfg.project}`,
         `  --region ${cfg.region}`,
-        `  --service-account ${cfg.handlerServiceAccount}`,
         `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --max-instances ${cfg.handlerMaxInstances}`,
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
-        ...vpcLines,
+        ...handlerVpcLines,
         `  --args "${handlerArgsBeforeUrl.join(',')},--maintainer-url=\${MAINT_URL}/secrets,${handlerArgsAfterUrl.join(',')}"`,
     ].join(' \\\n');
 
     return [
         `set -e`,
         ``,
-        `# 1. Create the Handler's service account (idempotent — "already exists" is fine)`,
-        `gcloud iam service-accounts create ${saLocalPart} \\`,
-        `  --project=${cfg.project} \\`,
-        `  --display-name="ACE handler invoker for ${cfg.handlerServiceName}" || true`,
-        ``,
-        `# 2. Deploy the Maintainer (internal-only, pinned at min=max=1)`,
+        `# 1. Deploy the Maintainer (internal-only, pinned at min=max=1).`,
+        `#    Reachable only via VPC; unauthenticated within the VPC.`,
         maintainerDeploy,
         ``,
-        `# 3. Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
+        `# 2. Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
         `#    we can't derive it ahead of time).`,
         `MAINT_URL=$(gcloud run services describe ${cfg.maintainerServiceName} \\`,
         `  --project=${cfg.project} --region=${cfg.region} --format='value(status.url)')`,
         `echo "Maintainer URL: $MAINT_URL"`,
         ``,
-        `# 4. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances})`,
+        `# 3. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances}).`,
+        `#    Direct VPC egress (all-traffic) is required so the Handler's outbound`,
+        `#    to the Maintainer is recognized as same-project internal traffic.`,
         handlerDeploy,
-        ``,
-        `# 5. Allow the Handler SA to invoke the Maintainer's /secrets`,
-        `gcloud run services add-iam-policy-binding ${cfg.maintainerServiceName} \\`,
-        `  --project=${cfg.project} \\`,
-        `  --region=${cfg.region} \\`,
-        `  --member=serviceAccount:${cfg.handlerServiceAccount} \\`,
-        `  --role=roles/run.invoker`,
     ].join('\n');
 }
 
@@ -527,15 +524,12 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         console.log();
         endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
     } else if (scheme === 'gcp-cloudrun-microservices') {
-        const sa = parsed.handlerServiceAccount
-            ?? defaultHandlerServiceAccount(defaultNamePrefix(net.aceAddr, profile.accountAddr), parsed.project!);
         gcpCfg = {
             project:                parsed.project!,
             region:                 parsed.region!,
             maintainerServiceName:  parsed.maintainerServiceName!,
             handlerServiceName:     parsed.handlerServiceName!,
             handlerMaxInstances:    parsed.handlerMaxInstances!,
-            handlerServiceAccount:  sa,
         };
         console.log('\nRun the script below to deploy your node:\n');
         console.log(gcpDeployCmdMicroservices(
@@ -545,7 +539,6 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
                 maintainerServiceName:  parsed.maintainerServiceName!,
                 handlerServiceName:     parsed.handlerServiceName!,
                 handlerMaxInstances:    parsed.handlerMaxInstances!,
-                handlerServiceAccount:  sa,
             },
             image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));

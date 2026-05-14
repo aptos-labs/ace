@@ -132,7 +132,6 @@ export interface ExistingValues {
     maintainerServiceName?:  string;
     handlerServiceName?:     string;
     handlerMaxInstances?:    number;
-    handlerServiceAccount?:  string;
     port?:                   string;
     containerName?:          string;
     repoPath?:               string;
@@ -269,8 +268,8 @@ function generateGcpMicroservices(t: TemplateInputs): string {
 # Deploys a Maintainer + Handler pair. The Maintainer is internal-only and
 # pinned at min=max=1 (it owns the on-chain DKG/DKR coordination, which has
 # to be a singleton). The Handler is public and scales 1..handlerMaxInstances.
-# Saving emits two \`gcloud run deploy\` commands plus one IAM-binding so the
-# Handler's service account can invoke the Maintainer's \`/secrets\`.
+# The Handler reaches the Maintainer over the project's VPC; no IAM tokens
+# are involved. Saving emits two \`gcloud run deploy\` commands.
 #
 # Edit the values below, then save and quit your editor.
 ${HEADER_READONLY_NOTE}
@@ -358,7 +357,6 @@ export interface ParsedNodeForm {
     maintainerServiceName?:  string;
     handlerServiceName?:     string;
     handlerMaxInstances?:    number;
-    handlerServiceAccount?:  string;
     port?:                   string;
     containerName?:          string;
     repoPath?:               string;
@@ -550,19 +548,6 @@ export function defaultsFor(
  */
 export function cloudRunUrl(serviceName: string, projectNumber: string, region: string): string {
     return `https://${serviceName}-${projectNumber}.${region}.run.app`;
-}
-
-/**
- * Auto-derive the Handler's service-account email. GCP IAM caps SA local-parts
- * at 30 chars, so we derive from the short identity prefix (ace-XXXXXX-YYYYYY)
- * rather than from the handler's Cloud Run service name (which already has a
- * long `-ms-req-handler` suffix and would blow the limit).
- *
- * Stable across edits because the identity prefix derives from on-chain
- * binding (aceAddr + accountAddr), both of which are read-only.
- */
-export function defaultHandlerServiceAccount(identityPrefix: string, project: string): string {
-    return `${identityPrefix}-ms-sa@${project}.iam.gserviceaccount.com`;
 }
 
 // Re-exports for downstream consumers.

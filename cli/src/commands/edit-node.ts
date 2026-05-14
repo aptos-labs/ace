@@ -2,205 +2,145 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * `ace node edit` — open the resolved node profile in `$EDITOR` as a TOML template.
+ * `ace node edit` — open the resolved node profile in `$EDITOR` as a TOML form.
  *
- * Editable fields (per-platform):
- *   * `alias` — display name in `node-status`/`network-status`.
- *   * `image` — Docker image (ignored on `local` platform).
- *   * `rpcApiKey` — passed as `--ace-deployment-apikey` to the worker.
- *   * `gasStationKey` — passed as `--ace-deployment-gaskey`.
- *   * `[chainRpc]` — per-chain RPC URLs + API keys for the worker's
- *     proof-of-permission verification path. **The Aptos testnet API key here
- *     is what stops the worker from hitting the 40k-CU/300s anonymous IP
- *     rate limit** under any non-trivial decryption load.
- *
- * Identity / platform-tying fields (account, keys, deployment URL, platform,
- * gcp/docker/local subconfig) are surfaced as comments only — uncommenting
- * them is rejected. To change those, recreate the node profile.
+ * The form's schema is picked from the node's stored `(platform, mode)` pair —
+ * the same four schemes that `ace node new` offers. Identity / deployment-
+ * binding fields (account, keys, deployment URL, platform, mode) are surfaced
+ * as comments only; uncommenting them is rejected. To change those, recreate
+ * the node profile.
  */
 
-import { parse as parseToml } from 'smol-toml';
 import * as path from 'path';
 
-import { loadConfig, saveConfig, type ChainRpcOverrides, type TrackedNode } from '../config.js';
+import { loadConfig, saveConfig, nodeMode, type TrackedNode } from '../config.js';
 import { buildFromEditor } from '../editor.js';
 import { resolveProfile } from '../resolve-profile.js';
-import { CLI } from '../cli-name.js';
-import { gcpDeployCmd, dockerRunCmd, localRunArgs, dockerRpcUrl, writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress } from '../onboarding.js';
+import {
+    gcpDeployCmd, gcpDeployCmdMicroservices, dockerRunCmd, localRunArgs,
+    writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress, fetchProjectNumber,
+} from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
+import {
+    schemeOf, generateTemplate, parseTemplate, defaultHandlerServiceAccount,
+    type TemplateInputs, type ParsedNodeForm,
+} from '../node-schemes.js';
 
 const G = '\x1b[32m', E = '\x1b[31m', D = '\x1b[2m', R = '\x1b[0m';
 
-const TOP_LEVEL_KEYS = ['alias', 'image', 'rpcApiKey', 'gasStationKey'] as const;
-const CHAIN_RPC_KEYS = [
-    'aptosMainnetApi', 'aptosMainnetApikey',
-    'aptosTestnetApi', 'aptosTestnetApikey',
-    'aptosLocalnetApi', 'aptosLocalnetApikey',
-    'solanaMainnetBetaRpc', 'solanaTestnetRpc', 'solanaDevnetRpc',
-] as const;
-type TopKey = typeof TOP_LEVEL_KEYS[number];
-type ChainKey = typeof CHAIN_RPC_KEYS[number];
-
-const FORBIDDEN_TOP = [
-    'rpcUrl', 'nodeRpcUrl', 'aceAddr', 'accountAddr', 'accountSk',
-    'pkeDk', 'pkeEk', 'endpoint', 'platform', 'gcp', 'docker', 'local',
-] as const;
-
-function tomlString(v: string | undefined): string {
-    return v === undefined ? '""' : `"${v}"`;
+/** Convert a TrackedNode into the seed values shown in the template. */
+function templateInputsFromNode(node: TrackedNode): TemplateInputs {
+    return {
+        identity: {
+            accountAddr: node.accountAddr,
+            pkeEk:       node.pkeEk ?? '',
+        },
+        blob: {
+            rpcUrl:        node.rpcUrl,
+            aceAddr:       node.aceAddr,
+            rpcApiKey:     node.rpcApiKey,
+            gasStationKey: node.gasStationKey,
+            nodeRpcUrl:    node.nodeRpcUrl,
+        },
+        defaults: {},
+        existing: {
+            alias:                  node.alias,
+            image:                  node.image,
+            rpcApiKey:              node.rpcApiKey,
+            gasStationKey:          node.gasStationKey,
+            chainRpc:               node.chainRpc,
+            project:                node.gcp?.project,
+            region:                 node.gcp?.region,
+            serviceName:            node.gcp?.serviceName,
+            maintainerServiceName:  node.gcp?.maintainerServiceName,
+            handlerServiceName:     node.gcp?.handlerServiceName,
+            handlerMaxInstances:    node.gcp?.handlerMaxInstances,
+            handlerServiceAccount:  node.gcp?.handlerServiceAccount,
+            port:                   node.docker?.port ?? node.local?.port,
+            containerName:          node.docker?.containerName,
+            repoPath:               node.local?.repoPath,
+            logMaxMb:               node.local?.logMaxMb,
+        },
+    };
 }
 
-function generateTemplate(node: TrackedNode, nodeKey: string): string {
-    const rpc = node.chainRpc ?? {};
-    const imageLine = node.platform === 'local'
-        ? `# image           = (ignored — local builds use the binary at \`<repoPath>/target/release/network-node\`)`
-        : `image            = ${tomlString(node.image)}      # see \`${CLI} image ls\` for available tags`;
-
-    return `# ACE node profile — edit the values below, then save and quit your editor.
-#
-#   * Empty string ("") clears an optional field.
-#   * Lines starting with "#" are comments and ignored.
-#   * Identity / platform fields are shown commented for reference;
-#     uncommenting any of them will be rejected when you save.
-#
-# Profile ID: ${nodeKey}
-#
-# ── Read-only identity / deployment binding (do NOT uncomment) ────────────────
-#  accountAddr   = "${node.accountAddr}"
-#  pkeEk         = "${node.pkeEk ?? ''}"
-#  aceAddr       = "${node.aceAddr}"
-#  rpcUrl        = "${node.rpcUrl}"
-#  platform      = "${node.platform ?? ''}"
-#
-# ── Editable fields ───────────────────────────────────────────────────────────
-alias            = ${tomlString(node.alias)}
-${imageLine}
-rpcApiKey        = ${tomlString(node.rpcApiKey)}      # → --ace-deployment-apikey
-gasStationKey    = ${tomlString(node.gasStationKey)}  # → --ace-deployment-gaskey
-
-# Per-chain RPC endpoints + API keys used by the worker's proof-verification
-# path (\`verify_basic\` / \`verify_custom\` in worker-components/network-node).
-# Empty URL = use the worker binary's compiled-in default endpoint.
-# Empty key = anonymous (subject to public IP rate limits — set the key for
-# the chains you expect non-trivial decrypt traffic on).
-[chainRpc]
-aptosMainnetApi      = ${tomlString(rpc.aptosMainnetApi)}
-aptosMainnetApikey   = ${tomlString(rpc.aptosMainnetApikey)}
-aptosTestnetApi      = ${tomlString(rpc.aptosTestnetApi)}
-aptosTestnetApikey   = ${tomlString(rpc.aptosTestnetApikey)}
-aptosLocalnetApi     = ${tomlString(rpc.aptosLocalnetApi)}
-aptosLocalnetApikey  = ${tomlString(rpc.aptosLocalnetApikey)}
-solanaMainnetBetaRpc = ${tomlString(rpc.solanaMainnetBetaRpc)}
-solanaTestnetRpc     = ${tomlString(rpc.solanaTestnetRpc)}
-solanaDevnetRpc      = ${tomlString(rpc.solanaDevnetRpc)}
-`;
-}
-
-interface ParsedEdit {
-    top: Partial<Pick<TrackedNode, TopKey>>;
-    chainRpc: ChainRpcOverrides;
-}
-
-function parseEdited(content: string, node: TrackedNode): ParsedEdit | null {
-    let doc: Record<string, unknown>;
-    try {
-        doc = parseToml(content) as Record<string, unknown>;
-    } catch (e) {
-        throw new Error(`TOML parse error: ${(e as Error).message}`);
-    }
-
-    for (const k of FORBIDDEN_TOP) {
-        if (k in doc) {
-            throw new Error(
-                `Field "${k}" is read-only — it binds this profile to a specific deployment / platform. ` +
-                `Delete the line (or leave it commented) and re-save. To change it, recreate the profile.`,
-            );
-        }
-    }
-
-    for (const k of Object.keys(doc)) {
-        if (k === 'chainRpc') continue;
-        if (!(TOP_LEVEL_KEYS as readonly string[]).includes(k)) {
-            throw new Error(`Unknown field "${k}" — typo? Allowed: ${TOP_LEVEL_KEYS.join(', ')}, chainRpc.`);
-        }
-    }
-
-    const top: Partial<Pick<TrackedNode, TopKey>> = {};
-    for (const k of TOP_LEVEL_KEYS) {
-        if (k === 'image' && node.platform === 'local') continue;  // image is ignored for local builds
-        const v = doc[k];
-        if (v === undefined) continue;
-        if (typeof v !== 'string') {
-            throw new Error(`Field "${k}" must be a TOML string in quotes (got ${typeof v}).`);
-        }
-        (top as Record<string, string | undefined>)[k] = v === '' ? undefined : v;
-    }
-
-    const chainRpc: ChainRpcOverrides = {};
-    const rpcDoc = doc.chainRpc as Record<string, unknown> | undefined;
-    if (rpcDoc !== undefined) {
-        if (typeof rpcDoc !== 'object' || Array.isArray(rpcDoc)) {
-            throw new Error(`Field "chainRpc" must be a TOML table (use "[chainRpc]" header).`);
-        }
-        for (const k of Object.keys(rpcDoc)) {
-            if (!(CHAIN_RPC_KEYS as readonly string[]).includes(k)) {
-                throw new Error(`Unknown chainRpc key "${k}" — typo? Allowed: ${CHAIN_RPC_KEYS.join(', ')}.`);
-            }
-        }
-        for (const k of CHAIN_RPC_KEYS) {
-            const v = rpcDoc[k];
-            if (v === undefined) continue;
-            if (typeof v !== 'string') {
-                throw new Error(`chainRpc."${k}" must be a TOML string (got ${typeof v}).`);
-            }
-            if (v !== '') (chainRpc as Record<string, string>)[k] = v;
-        }
-    }
-
-    return { top, chainRpc };
-}
-
-function applyEdits(node: TrackedNode, edit: ParsedEdit): TrackedNode {
+function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
     const merged: TrackedNode = { ...node };
-    for (const k of TOP_LEVEL_KEYS) {
-        if (k in edit.top) (merged as unknown as Record<string, unknown>)[k] = edit.top[k];
+    merged.alias         = edit.alias;
+    merged.image         = edit.image ?? merged.image;
+    merged.rpcApiKey     = edit.rpcApiKey;
+    merged.gasStationKey = edit.gasStationKey;
+    merged.chainRpc      = edit.chainRpc;
+
+    if (node.gcp) {
+        merged.gcp = {
+            ...node.gcp,
+            project:                edit.project               ?? node.gcp.project,
+            region:                 edit.region                ?? node.gcp.region,
+            serviceName:            edit.serviceName,
+            maintainerServiceName:  edit.maintainerServiceName,
+            handlerServiceName:     edit.handlerServiceName,
+            handlerMaxInstances:    edit.handlerMaxInstances,
+            handlerServiceAccount:  edit.handlerServiceAccount ?? node.gcp.handlerServiceAccount,
+        };
     }
-    merged.chainRpc = Object.keys(edit.chainRpc).length > 0 ? edit.chainRpc : undefined;
+    if (node.docker) {
+        merged.docker = {
+            containerName: edit.containerName ?? node.docker.containerName,
+            port:          edit.port          ?? node.docker.port,
+        };
+    }
+    if (node.local) {
+        merged.local = {
+            ...node.local,
+            repoPath:  edit.repoPath ?? node.local.repoPath,
+            port:      edit.port     ?? node.local.port,
+            logMaxMb:  edit.logMaxMb ?? node.local.logMaxMb,
+        };
+    }
     return merged;
 }
 
 function diffSummary(before: TrackedNode, after: TrackedNode): string[] {
     const lines: string[] = [];
-    for (const k of TOP_LEVEL_KEYS) {
-        const a = (before as unknown as Record<string, unknown>)[k];
-        const b = (after as unknown as Record<string, unknown>)[k];
-        if (a !== b) lines.push(`    ${k.padEnd(20)} ${a ?? '(unset)'} → ${b ?? '(unset)'}`);
+    const keys: (keyof TrackedNode)[] = ['alias', 'image', 'rpcApiKey', 'gasStationKey'];
+    for (const k of keys) {
+        const a = before[k];
+        const b = after[k];
+        if (a !== b) lines.push(`    ${String(k).padEnd(20)} ${a ?? '(unset)'} → ${b ?? '(unset)'}`);
     }
-    const beforeRpc = before.chainRpc ?? {};
-    const afterRpc  = after.chainRpc ?? {};
-    for (const k of CHAIN_RPC_KEYS) {
-        const a = beforeRpc[k];
-        const b = afterRpc[k];
-        if (a !== b) lines.push(`    chainRpc.${k.padEnd(20)} ${a ?? '(unset)'} → ${b ?? '(unset)'}`);
-    }
+    const aRpc = JSON.stringify(before.chainRpc ?? {});
+    const bRpc = JSON.stringify(after.chainRpc  ?? {});
+    if (aRpc !== bRpc) lines.push(`    chainRpc             changed`);
+    const aGcp = JSON.stringify(before.gcp ?? {});
+    const bGcp = JSON.stringify(after.gcp  ?? {});
+    if (aGcp !== bGcp) lines.push(`    gcp                  changed`);
+    const aDocker = JSON.stringify(before.docker ?? {});
+    const bDocker = JSON.stringify(after.docker  ?? {});
+    if (aDocker !== bDocker) lines.push(`    docker               changed`);
+    const aLocal = JSON.stringify(before.local ?? {});
+    const bLocal = JSON.stringify(after.local  ?? {});
+    if (aLocal !== bLocal) lines.push(`    local                changed`);
     return lines;
 }
 
 export async function editNodeCommand(opts: { profile?: string; account?: string }): Promise<void> {
     const { nodeKey, node } = resolveProfile(opts.profile, opts.account);
     const label = node.alias ?? nodeKey;
+    const scheme = schemeOf(node);
 
-    console.log(`\nEditing node: ${label}\n`);
+    console.log(`\nEditing node: ${label} (scheme: ${scheme})\n`);
 
     const warning =
         `⚠ The editor will display this node's API keys in plaintext.\n` +
         `  Don't share-screen, paste into chat, or commit the file's contents while it's open.\n` +
         `  (Backed by a 0600 temp file that's deleted when you exit the editor.)\n`;
 
+    const inputs = templateInputsFromNode(node);
     const edit = await buildFromEditor(
-        generateTemplate(node, nodeKey),
-        c => parseEdited(c, node),
+        generateTemplate(scheme, inputs),
+        c => parseTemplate(scheme, c),
         { fileTag: 'node-edit', preWarning: warning },
     );
     if (!edit) return;
@@ -225,36 +165,54 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     };
     const { image, rpcApiKey, gasStationKey } = updatedNode;
     const chainRpc = updatedNode.chainRpc;
+    const mode = nodeMode(updatedNode);
 
-    if (node.platform === 'gcp' && node.gcp) {
+    if (node.platform === 'gcp' && updatedNode.gcp) {
         if (rpcUrlsNeedVpcEgress(chainRpc)) {
             console.log(`${D}A private RPC URL was detected; the command below adds --network/--subnet/--vpc-egress so Cloud Run can reach it via VPC.${R}`);
         }
         console.log('Run this command to apply the changes:\n');
-        console.log(gcpDeployCmd(
-            node.gcp.serviceName, image!, node.gcp.project, node.gcp.region,
-            nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-        ));
-    } else if (node.platform === 'docker' && node.docker) {
+        if (mode === 'microservices') {
+            const sa = updatedNode.gcp.handlerServiceAccount
+                ?? defaultHandlerServiceAccount(updatedNode.gcp.handlerServiceName!, updatedNode.gcp.project);
+            const projectNumber = fetchProjectNumber(updatedNode.gcp.project);
+            console.log(gcpDeployCmdMicroservices(
+                {
+                    project:                updatedNode.gcp.project,
+                    region:                 updatedNode.gcp.region,
+                    maintainerServiceName:  updatedNode.gcp.maintainerServiceName!,
+                    handlerServiceName:     updatedNode.gcp.handlerServiceName!,
+                    handlerMaxInstances:    updatedNode.gcp.handlerMaxInstances!,
+                    handlerServiceAccount:  sa,
+                },
+                image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc, projectNumber,
+            ));
+        } else {
+            console.log(gcpDeployCmd(
+                updatedNode.gcp.serviceName!, image!, updatedNode.gcp.project, updatedNode.gcp.region,
+                nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+            ));
+        }
+    } else if (node.platform === 'docker' && updatedNode.docker) {
         console.log('Run this command to apply the changes:\n');
-        console.log(`docker rm -f ${node.docker.containerName} &&`);
+        console.log(`docker rm -f ${updatedNode.docker.containerName} &&`);
         console.log(dockerRunCmd(
-            node.docker.containerName, image!, node.docker.port,
+            updatedNode.docker.containerName, image!, updatedNode.docker.port,
             nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
-    } else if (node.platform === 'local' && node.local) {
-        if (node.local.pid && isLocalNodeAlive(node.local.pid)) {
-            console.log(`Stopping old process (pid=${node.local.pid})...`);
-            killLocalNode(node.local.pid);
+    } else if (node.platform === 'local' && updatedNode.local) {
+        if (updatedNode.local.pid && isLocalNodeAlive(updatedNode.local.pid)) {
+            console.log(`Stopping old process (pid=${updatedNode.local.pid})...`);
+            killLocalNode(updatedNode.local.pid);
             await new Promise(r => setTimeout(r, 500));
         }
-        const binaryPath = path.join(node.local.repoPath, 'target', 'release', 'network-node');
+        const binaryPath = path.join(updatedNode.local.repoPath, 'target', 'release', 'network-node');
         const runArgs = localRunArgs(
-            node.local.port, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+            updatedNode.local.port, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
-        const logFile = node.local.logFile ?? '';
-        if (node.local.logMaxMb && logFile) {
-            runLogrotate(writeLogrotateConf(logFile, node.local.logMaxMb));
+        const logFile = updatedNode.local.logFile ?? '';
+        if (updatedNode.local.logMaxMb && logFile) {
+            runLogrotate(writeLogrotateConf(logFile, updatedNode.local.logMaxMb));
         }
         const pid = spawnLocalNode(binaryPath, runArgs, logFile);
         const config2 = loadConfig();
@@ -264,13 +222,12 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         console.log(`Node restarted in background  pid=${pid}  log=${logFile}`);
         return;
     } else {
-        return; // no deployment platform — nothing to deploy or watch
+        return;
     }
 
-    // For gcp/docker, used Docker, suppress chain warnings, keep silent. Quietly note that we won't auto-detect docker locally.
-    if (node.platform !== 'gcp') return;
+    // GCP monolith: poll for sync. Microservices: skip (two services; revisit).
+    if (node.platform !== 'gcp' || mode !== 'monolith') return;
 
-    // Poll Cloud Run until the live deployment matches the saved profile, or user quits.
     console.log('\nWatching deployment for sync...  [Q to stop]\n');
 
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
@@ -291,7 +248,6 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
 
     while (!stop) {
         const dep = await fetchDeployment(updatedNode);
-
         if (dep instanceof Error) {
             process.stdout.write(`\r\x1b[K  ${E}✗ ${dep.message}${R}`);
         } else if (dep === null) {
@@ -308,12 +264,10 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                 process.stdout.write(`\r\x1b[K  ${D}✗ ${outdated.length} field(s) still outdated: ${fields}${R}`);
             }
         }
-
         const deadline = Date.now() + 2000;
         while (!stop && Date.now() < deadline) {
             await new Promise(r => setTimeout(r, 100));
         }
     }
-
     restore();
 }

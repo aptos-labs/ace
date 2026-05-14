@@ -23,7 +23,7 @@ import {
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
 import {
-    schemeOf, generateTemplate, parseTemplate, defaultHandlerServiceAccount,
+    schemeOf, generateTemplate, parseTemplate, defaultHandlerServiceAccount, defaultNamePrefix,
     type TemplateInputs, type ParsedNodeForm,
 } from '../node-schemes.js';
 
@@ -174,7 +174,7 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         console.log('Run this command to apply the changes:\n');
         if (mode === 'microservices') {
             const sa = updatedNode.gcp.handlerServiceAccount
-                ?? defaultHandlerServiceAccount(updatedNode.gcp.handlerServiceName!, updatedNode.gcp.project);
+                ?? defaultHandlerServiceAccount(defaultNamePrefix(node.aceAddr, node.accountAddr), updatedNode.gcp.project);
             const projectNumber = fetchProjectNumber(updatedNode.gcp.project);
             console.log(gcpDeployCmdMicroservices(
                 {

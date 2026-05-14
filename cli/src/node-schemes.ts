@@ -552,8 +552,17 @@ export function cloudRunUrl(serviceName: string, projectNumber: string, region: 
     return `https://${serviceName}-${projectNumber}.${region}.run.app`;
 }
 
-export function defaultHandlerServiceAccount(handlerServiceName: string, project: string): string {
-    return `${handlerServiceName}-sa@${project}.iam.gserviceaccount.com`;
+/**
+ * Auto-derive the Handler's service-account email. GCP IAM caps SA local-parts
+ * at 30 chars, so we derive from the short identity prefix (ace-XXXXXX-YYYYYY)
+ * rather than from the handler's Cloud Run service name (which already has a
+ * long `-ms-req-handler` suffix and would blow the limit).
+ *
+ * Stable across edits because the identity prefix derives from on-chain
+ * binding (aceAddr + accountAddr), both of which are read-only.
+ */
+export function defaultHandlerServiceAccount(identityPrefix: string, project: string): string {
+    return `${identityPrefix}-sa@${project}.iam.gserviceaccount.com`;
 }
 
 // Re-exports for downstream consumers.

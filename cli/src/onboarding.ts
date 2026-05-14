@@ -17,7 +17,7 @@ import { logFilePath, spawnLocalNode } from './local-process.js';
 import { buildFromEditor } from './editor.js';
 import {
     pickScheme, modeOf, platformOf, generateTemplate, parseTemplate, defaultsFor,
-    defaultHandlerServiceAccount,
+    defaultHandlerServiceAccount, defaultNamePrefix,
     type Scheme, type TemplateInputs,
 } from './node-schemes.js';
 
@@ -532,7 +532,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
     } else if (scheme === 'gcp-cloudrun-microservices') {
         const sa = parsed.handlerServiceAccount
-            ?? defaultHandlerServiceAccount(parsed.handlerServiceName!, parsed.project!);
+            ?? defaultHandlerServiceAccount(defaultNamePrefix(net.aceAddr, profile.accountAddr), parsed.project!);
         gcpCfg = {
             project:                parsed.project!,
             region:                 parsed.region!,

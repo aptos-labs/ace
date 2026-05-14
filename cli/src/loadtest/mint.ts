@@ -4,10 +4,11 @@
 /**
  * Mints the encrypted request body the probe replays. Two responsibilities:
  *
- *   1. `buildOnce()` — drive a real end-to-end decrypt through the SDK and capture
- *      the per-worker POST body (the bytes the probe will replay). Used once at
- *      `loadtest run` startup as a smoke test, and again each time the on-chain
- *      epoch changes.
+ *   1. `buildOnce()` — build the per-worker POST body for ONE target node via
+ *      `session.buildPerNodeRequest` (no committee fanout, no plaintext
+ *      reconstruction). Smoke-tests by POSTing once and confirming the worker
+ *      returns a parseable PKE-ciphertext share. Used at `loadtest run` startup
+ *      and again each time the on-chain epoch changes.
  *
  *   2. `Minter` — a long-running poller that watches the on-chain epoch and
  *      re-mints whenever it advances. Crucially, it *delays* the re-mint by
@@ -43,28 +44,9 @@ export interface MintConfig {
     domain: Uint8Array;
 }
 
-/** Wrap globalThis.fetch to capture the next POST body sent to `targetUrl`. */
-function wrapFetch(targetUrl: string): { capture: () => string | undefined; restore: () => void } {
-    const orig = globalThis.fetch;
-    let captured: string | undefined;
-    globalThis.fetch = (async (input: any, init?: any) => {
-        const url = typeof input === 'string' ? input : input?.url;
-        if (init?.method === 'POST' && url && url.startsWith(targetUrl)) {
-            const body = init.body;
-            if (typeof body === 'string') captured = body;
-        }
-        return orig(input as any, init);
-    }) as typeof fetch;
-    return {
-        capture: () => captured,
-        restore: () => { globalThis.fetch = orig; },
-    };
-}
-
 /**
- * Drive one full encrypt → decrypt cycle through the SDK; capture the POST body
- * sent to `targetEndpoint` and return it alongside the network epoch the request
- * is bound to. Also validates the round-trip (smoke test).
+ * Build the per-node POST body for `targetEndpoint` and smoke-test it with a
+ * single POST. Does NOT contact any other committee member.
  */
 export async function buildOnce(cfg: MintConfig): Promise<Pool> {
     const plaintext = new TextEncoder().encode('loadtest-mint');
@@ -78,43 +60,38 @@ export async function buildOnce(cfg: MintConfig): Promise<Pool> {
         plaintext,
     })).unwrapOrThrow('loadtest mint: encrypt failed');
 
-    const fw = wrapFetch(cfg.targetEndpoint);
-    let networkEpoch = -1;
-    try {
-        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
-            aceDeployment: cfg.aceDeployment,
-            keypairId: cfg.keypairId,
-            chainId: cfg.chainId,
-            moduleAddr: cfg.moduleAddr,
-            moduleName: cfg.moduleName,
-            domain: cfg.domain,
-            ciphertext,
-        });
-        const msg = await session.getRequestToSign();
-        networkEpoch = Number((session as any).networkState!.epoch);
-        const result = await session.decryptWithProof({
-            userAddr: cfg.loadtester.accountAddress,
-            publicKey: cfg.loadtester.publicKey,
-            signature: cfg.loadtester.sign(msg),
-        });
-        result.unwrapOrThrow('loadtest mint: decrypt failed (the target endpoint may not be in the current committee)');
-    } finally {
-        fw.restore();
-    }
+    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+        aceDeployment: cfg.aceDeployment,
+        keypairId: cfg.keypairId,
+        chainId: cfg.chainId,
+        moduleAddr: cfg.moduleAddr,
+        moduleName: cfg.moduleName,
+        domain: cfg.domain,
+        ciphertext,
+    });
+    const msg = await session.getRequestToSign();
+    const built = (await session.buildPerNodeRequest({
+        userAddr: cfg.loadtester.accountAddress,
+        publicKey: cfg.loadtester.publicKey,
+        signature: cfg.loadtester.sign(msg),
+        targetEndpoint: cfg.targetEndpoint,
+    })).unwrapOrThrow('loadtest mint: build per-node request failed');
 
-    const encReqHex = fw.capture();
-    if (!encReqHex) {
-        throw new Error(
-            `loadtest mint: did not see a POST to ${cfg.targetEndpoint}. ` +
-            `Is this endpoint a current committee member?`,
-        );
+    // Smoke test: POST once, confirm the response parses as a PKE ciphertext.
+    const resp = await fetch(cfg.targetEndpoint, { method: 'POST', body: built.encReqHex });
+    if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`loadtest mint: smoke test POST ${cfg.targetEndpoint} returned HTTP ${resp.status} — ${body.trim().slice(0, 200)}`);
     }
+    const hexText = (await resp.text()).trim();
+    ACE.pke.Ciphertext.fromHex(hexText).unwrapOrThrow('loadtest mint: smoke test response is not a valid PKE ciphertext');
+
     return {
         endpoint: cfg.targetEndpoint,
-        encReqHex,
-        epoch: networkEpoch,
+        encReqHex: built.encReqHex,
+        epoch: built.epoch,
         mintedAt: new Date().toISOString(),
-        requestSize: encReqHex.length / 2,
+        requestSize: built.encReqHex.length / 2,
     };
 }
 

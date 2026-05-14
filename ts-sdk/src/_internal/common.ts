@@ -862,6 +862,69 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
     });
 }
 
+/**
+ * Build the per-node request body for ONE worker, without contacting the
+ * other committee members. Returns the hex string a client would POST to
+ * `targetEndpoint`. The caller does the POST itself.
+ *
+ * Looks up the target node's `(endpoint, pke_enc_key)` from `worker_config`
+ * by walking `networkState.curNodes` and matching `endpoint`. Errors if no
+ * current committee member's registered endpoint equals `targetEndpoint`.
+ */
+export async function buildPerNodeRequestCore({
+    aceDeployment, networkState, request, proof, ciphertext, targetEndpoint,
+}: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    request: DecryptionRequestPayload,
+    proof: ProofOfPermission,
+    ciphertext: Uint8Array,
+    targetEndpoint: string,
+}): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+
+            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+                const addrStr = nodeAddr.toStringLong();
+                const [[endpoint], [ekHex]] = await Promise.all([
+                    aptos.view({
+                        payload: {
+                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                    aptos.view({
+                        payload: {
+                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                            typeArguments: [],
+                            functionArguments: [addrStr],
+                        },
+                    }),
+                ]);
+                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+                    .unwrapOrThrow(`ACE.buildPerNodeRequest: parse pke enc key for ${addrStr}`);
+                return { endpoint: endpoint as string, nodeEncKey };
+            }));
+
+            const sdkIdx = nodeInfos.findIndex(n => n.endpoint === targetEndpoint);
+            if (sdkIdx < 0) {
+                throw `ACE.buildPerNodeRequest: targetEndpoint ${targetEndpoint} is not in the current committee. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(', ')}`;
+            }
+            const { nodeEncKey } = nodeInfos[sdkIdx];
+
+            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
+                .unwrapOrThrow('ACE.buildPerNodeRequest: parse ciphertext for scheme').scheme;
+            const reqBytes = RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme).toBytes();
+            const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+            return { encReqHex, epoch: Number(networkState.epoch), sdkIdx };
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
 export function createAptos(rpcUrl?: string): Aptos {
     return new Aptos(new AptosConfig({
         network: Network.CUSTOM,

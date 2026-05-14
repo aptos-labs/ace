@@ -13,6 +13,7 @@ import {
     DecryptionRequestPayload,
     fetchNetworkStateAndBuildRequest,
     decryptCore,
+    buildPerNodeRequestCore,
 } from "../../_internal/common";
 
 export class DecryptionSession {
@@ -89,6 +90,33 @@ export class DecryptionSession {
             proof,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
             ciphertext: this.ciphertext,
+        });
+    }
+
+    /**
+     * Build the per-node POST body for ONE specific worker — does NOT
+     * contact the rest of the committee, does NOT reconstruct the plaintext.
+     *
+     * Useful for load testing (mint one body, replay against the same node)
+     * or for any flow that needs to talk to a single worker. The caller does
+     * the POST itself; verification of the response is the caller's job too.
+     */
+    async buildPerNodeRequest({userAddr, publicKey, signature, fullMessage, targetEndpoint}: {
+        userAddr: AccountAddress,
+        publicKey: PublicKey,
+        signature: Signature,
+        fullMessage?: string,
+        targetEndpoint: string,
+    }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
+        if (fullMessage === undefined) fullMessage = this.request!.toPrettyMessage();
+        const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
+        return buildPerNodeRequestCore({
+            aceDeployment: this.aceDeployment,
+            networkState: this.networkState!,
+            request: this.request!,
+            proof,
+            ciphertext: this.ciphertext,
+            targetEndpoint,
         });
     }
 }

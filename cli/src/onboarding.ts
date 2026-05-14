@@ -141,12 +141,22 @@ export function gcpDeployCmd(
 }
 
 /**
- * Emit the microservices-mode deploy script: SA creation, Maintainer deploy
- * (internal, min=max=1), Handler deploy (public, min=1, max=N) with the
- * Maintainer URL baked in via the deterministic Cloud Run URL pattern, plus
- * an IAM binding so the Handler SA can invoke the Maintainer.
+ * Emit the microservices-mode deploy script.
  *
- * Returns a multi-command bash script.
+ * The script is **ordered**: the Handler's `--maintainer-url` flag needs the
+ * Maintainer's auto-assigned Cloud Run URL, which is NOT derivable from
+ * `<service>-<project_number>` ahead of time (Cloud Run mixes that with a
+ * legacy `<service>-<hash>-<region>.a.run.app` form for some services /
+ * projects). Capturing it post-deploy via `gcloud run services describe`
+ * is the only correct path. The emitted shell script does that with a
+ * `MAINT_URL=$(gcloud …)` substitution, then deploys the Handler.
+ *
+ * Step order:
+ *   1. Create the Handler's service account (idempotent).
+ *   2. Deploy the Maintainer (internal-only, min=max=1, IAM-only).
+ *   3. Capture the Maintainer URL.
+ *   4. Deploy the Handler with `--maintainer-url=$MAINT_URL/secrets`.
+ *   5. Bind the Handler SA as `run.invoker` on the Maintainer.
  */
 export function gcpDeployCmdMicroservices(
     cfg: {
@@ -161,11 +171,7 @@ export function gcpDeployCmdMicroservices(
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
-    projectNumber?: string,
 ): string {
-    const maintainerUrl = projectNumber
-        ? `https://${cfg.maintainerServiceName}-${projectNumber}.${cfg.region}.run.app/secrets`
-        : `https://${cfg.maintainerServiceName}-<PROJECT_NUMBER>.${cfg.region}.run.app/secrets`;
     const saLocalPart = cfg.handlerServiceAccount.split('@')[0];
 
     const vpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
@@ -186,10 +192,10 @@ export function gcpDeployCmdMicroservices(
         `--pke-dk=${node.pkeDk}`,
         `--port=8080`,
     ];
-    const handlerArgs = [
-        'run',
-        '--mode=handler',
-        `--maintainer-url=${maintainerUrl}`,
+    // Handler args use a shell variable for --maintainer-url; the deploy line
+    // below interpolates $MAINT_URL after capture.
+    const handlerArgsBeforeUrl = ['run', '--mode=handler'];
+    const handlerArgsAfterUrl = [
         `--pke-dk=${node.pkeDk}`,
         `--port=8080`,
         ...chainRpcArgs(chainRpc),
@@ -202,9 +208,6 @@ export function gcpDeployCmdMicroservices(
         `  --region ${cfg.region}`,
         `  --service-account ${cfg.handlerServiceAccount}`,
         `  --ingress=internal`,
-        // Require IAM — the binding step grants the Handler SA `run.invoker`,
-        // which is the only thing allowed to call /secrets. Without this flag,
-        // gcloud falls back to an interactive "allow unauthenticated?" prompt.
         `  --no-allow-unauthenticated`,
         `  --min-instances 1`,
         `  --max-instances 1`,
@@ -226,11 +229,13 @@ export function gcpDeployCmdMicroservices(
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
         ...vpcLines,
-        `  --args "${handlerArgs.join(',')}"`,
+        `  --args "${handlerArgsBeforeUrl.join(',')},--maintainer-url=\${MAINT_URL}/secrets,${handlerArgsAfterUrl.join(',')}"`,
     ].join(' \\\n');
 
     return [
-        `# 1. Create the Handler's service account (idempotent — ignore "already exists")`,
+        `set -e`,
+        ``,
+        `# 1. Create the Handler's service account (idempotent — "already exists" is fine)`,
         `gcloud iam service-accounts create ${saLocalPart} \\`,
         `  --project=${cfg.project} \\`,
         `  --display-name="ACE handler invoker for ${cfg.handlerServiceName}" || true`,
@@ -238,35 +243,22 @@ export function gcpDeployCmdMicroservices(
         `# 2. Deploy the Maintainer (internal-only, pinned at min=max=1)`,
         maintainerDeploy,
         ``,
-        `# 3. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances})`,
+        `# 3. Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
+        `#    we can't derive it ahead of time).`,
+        `MAINT_URL=$(gcloud run services describe ${cfg.maintainerServiceName} \\`,
+        `  --project=${cfg.project} --region=${cfg.region} --format='value(status.url)')`,
+        `echo "Maintainer URL: $MAINT_URL"`,
+        ``,
+        `# 4. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances})`,
         handlerDeploy,
         ``,
-        `# 4. Allow the Handler SA to invoke the Maintainer's /secrets`,
+        `# 5. Allow the Handler SA to invoke the Maintainer's /secrets`,
         `gcloud run services add-iam-policy-binding ${cfg.maintainerServiceName} \\`,
         `  --project=${cfg.project} \\`,
         `  --region=${cfg.region} \\`,
         `  --member=serviceAccount:${cfg.handlerServiceAccount} \\`,
         `  --role=roles/run.invoker`,
-        ...(projectNumber ? [] : [
-            ``,
-            `# NOTE: substitute <PROJECT_NUMBER> in the --maintainer-url above with your`,
-            `# project's number — fetch it via:`,
-            `#   gcloud projects describe ${cfg.project} --format='value(projectNumber)'`,
-        ]),
     ].join('\n');
-}
-
-/** Best-effort lookup of a GCP project's numeric ID. */
-export function fetchProjectNumber(projectId: string): string | undefined {
-    try {
-        const out = execSync(
-            `gcloud projects describe ${projectId} --format='value(projectNumber)' 2>/dev/null`,
-            { encoding: 'utf8' },
-        ).trim();
-        return out || undefined;
-    } catch {
-        return undefined;
-    }
 }
 
 export function dockerRunCmd(
@@ -545,8 +537,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
             handlerMaxInstances:    parsed.handlerMaxInstances!,
             handlerServiceAccount:  sa,
         };
-        const projectNumber = fetchProjectNumber(parsed.project!);
-        console.log('\nRun the commands below to deploy your node:\n');
+        console.log('\nRun the script below to deploy your node:\n');
         console.log(gcpDeployCmdMicroservices(
             {
                 project:                parsed.project!,
@@ -556,7 +547,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
                 handlerMaxInstances:    parsed.handlerMaxInstances!,
                 handlerServiceAccount:  sa,
             },
-            image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc, projectNumber,
+            image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         ));
         console.log();
         endpoint = await promptEndpoint("Handler service URL (paste after deploy completes)");

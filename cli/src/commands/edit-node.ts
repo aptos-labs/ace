@@ -18,7 +18,7 @@ import { buildFromEditor } from '../editor.js';
 import { resolveProfile } from '../resolve-profile.js';
 import {
     gcpDeployCmd, gcpDeployCmdMicroservices, dockerRunCmd, localRunArgs,
-    writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress, fetchProjectNumber,
+    writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress,
 } from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
@@ -175,7 +175,6 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         if (mode === 'microservices') {
             const sa = updatedNode.gcp.handlerServiceAccount
                 ?? defaultHandlerServiceAccount(defaultNamePrefix(node.aceAddr, node.accountAddr), updatedNode.gcp.project);
-            const projectNumber = fetchProjectNumber(updatedNode.gcp.project);
             console.log(gcpDeployCmdMicroservices(
                 {
                     project:                updatedNode.gcp.project,
@@ -185,7 +184,7 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                     handlerMaxInstances:    updatedNode.gcp.handlerMaxInstances!,
                     handlerServiceAccount:  sa,
                 },
-                image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc, projectNumber,
+                image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
             ));
         } else {
             console.log(gcpDeployCmd(

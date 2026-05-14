@@ -26,6 +26,13 @@ export interface EditorOptions {
      * before proceeding (use this for `deployment edit` where credentials are visible).
      */
     preWarning?: string;
+    /**
+     * If true, saving an unmodified file is **accepted** (parser runs on the template
+     * as-is). Use this for `node new` where the form ships pre-filled defaults and
+     * "no edits" means "yes, use the defaults". Default: false (the edit/proposal
+     * flow wants unmodified = cancel).
+     */
+    acceptUnmodified?: boolean;
 }
 
 export async function buildFromEditor<T>(
@@ -63,8 +70,12 @@ export async function buildFromEditor<T>(
         return null;
     }
 
-    if (content.trim() === '' || content.trim() === template.trim()) {
-        console.log('No changes made (file is empty or unmodified) — cancelled.');
+    if (content.trim() === '') {
+        console.log('Empty file — cancelled.');
+        return null;
+    }
+    if (content.trim() === template.trim() && !opts.acceptUnmodified) {
+        console.log('No changes made — cancelled.');
         return null;
     }
 

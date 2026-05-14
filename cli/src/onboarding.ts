@@ -505,7 +505,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     const parsed = await buildFromEditor(
         generateTemplate(scheme, t),
         c => parseTemplate(scheme, c),
-        { fileTag: 'node-new' },
+        { fileTag: 'node-new', acceptUnmodified: true },
     );
     if (!parsed) {
         throw new Error('Cancelled (no changes saved).');

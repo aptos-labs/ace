@@ -1,0 +1,27 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+name: Setup Node.js with pnpm and safechain
+description: >
+  Install pnpm, set up Node.js 20 with pnpm cache, install the Aikido Safe
+  Chain (malware proxy for pnpm/npm), and install JS dependencies.  Safe Chain
+  blocks packages newer than 48 hours by default.  Set
+  SAFE_CHAIN_MINIMUM_PACKAGE_AGE_HOURS=0 in the calling job's env to bypass
+  the age gate in an emergency.  Requires actions/checkout to have already run
+  in the calling job before this action is used.
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4
+
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: "20"
+        cache: "pnpm"
+
+    - uses: aptos-labs/actions/aikidosec-safe-chain@main
+
+    - name: Install JS dependencies
+      shell: bash
+      run: pnpm install

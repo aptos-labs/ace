@@ -202,6 +202,10 @@ export function gcpDeployCmdMicroservices(
         `  --region ${cfg.region}`,
         `  --service-account ${cfg.handlerServiceAccount}`,
         `  --ingress=internal`,
+        // Require IAM — the binding step grants the Handler SA `run.invoker`,
+        // which is the only thing allowed to call /secrets. Without this flag,
+        // gcloud falls back to an interactive "allow unauthenticated?" prompt.
+        `  --no-allow-unauthenticated`,
         `  --min-instances 1`,
         `  --max-instances 1`,
         `  --no-cpu-throttling`,

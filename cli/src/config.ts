@@ -10,6 +10,18 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 export type Platform = 'gcp' | 'docker' | 'local';
 
+/**
+ * Deployment mode. Only meaningful for `platform = 'gcp'` today:
+ *   * `monolith`      — one Cloud Run service does everything.
+ *   * `microservices` — Maintainer (internal, min=max=1) + Handler (public,
+ *                       scales) pair, talking to each other via the Handler's
+ *                       service account + Maintainer's `/secrets`.
+ *
+ * `docker` and `local` are always monolith today. Missing field defaults to
+ * `monolith` for backwards compat with v2.2.x-and-earlier tracked nodes.
+ */
+export type Mode = 'monolith' | 'microservices';
+
 export interface ChainRpcOverrides {
     aptosMainnetApi?:      string;
     aptosMainnetApikey?:   string;
@@ -25,7 +37,14 @@ export interface ChainRpcOverrides {
 export interface GcpConfig {
     project: string;
     region: string;
-    serviceName: string;
+    /** Monolith mode: name of the single Cloud Run service. Required iff mode='monolith'. */
+    serviceName?: string;
+    /** Microservices mode — internal-only Maintainer service. Required iff mode='microservices'. */
+    maintainerServiceName?: string;
+    /** Microservices mode — public Handler service. Required iff mode='microservices'. */
+    handlerServiceName?: string;
+    /** Microservices mode — Cloud Run autoscaling cap on the Handler. */
+    handlerMaxInstances?: number;
 }
 
 export interface DockerConfig {
@@ -83,11 +102,18 @@ export interface TrackedNode {
     endpoint?:      string;
     image?:         string;
     platform?:      Platform;
+    /** Deployment mode. Missing = `monolith` for backwards compat with older configs. */
+    mode?:          Mode;
     gcp?:           GcpConfig;
     docker?:        DockerConfig;
     local?:         LocalConfig;
     gasStationKey?: string;
     chainRpc?:      ChainRpcOverrides;
+}
+
+/** Helper: read the mode of a tracked node, defaulting to `monolith`. */
+export function nodeMode(n: Pick<TrackedNode, 'mode'>): Mode {
+    return n.mode ?? 'monolith';
 }
 
 /**

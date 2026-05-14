@@ -18,6 +18,7 @@ import { Account, Aptos, AptosConfig, Ed25519PrivateKey, Network } from '@aptos-
 import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ALICE_FILE, AccountFile, ensureDataDir, log, readJson, waitForEnter, writeJson,
+    TUTORIAL_ACE_DEPLOYMENT,
 } from './common.js';
 
 const REQUIRED_OCTAS = 150_000_000; // 1.5 APT — enough to deploy, list, fund Bob
@@ -54,7 +55,7 @@ async function main() {
 
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(privateKeyHex) });
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const aptos = new Aptos(new AptosConfig({
         network: Network.CUSTOM,
         fullnode: aceDeployment.apiEndpoint,

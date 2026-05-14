@@ -128,8 +128,14 @@ export async function fetchDeployment(node: TrackedNode): Promise<ParsedArgs | E
     try {
         if (node.platform === 'docker' && node.docker)
             return await fetchDockerDeployment(node.docker.containerName);
-        if (node.platform === 'gcp' && node.gcp)
-            return await fetchGcpDeployment(node.gcp.serviceName, node.gcp.project, node.gcp.region);
+        if (node.platform === 'gcp' && node.gcp) {
+            // Microservices: poll the handler (user-facing service). The
+            // maintainer is a separate Cloud Run service; introspecting both
+            // is left for a follow-up. Monolith: `serviceName` is the only one.
+            const svc = node.gcp.serviceName ?? node.gcp.handlerServiceName;
+            if (!svc) return new Error('No Cloud Run service name on this profile');
+            return await fetchGcpDeployment(svc, node.gcp.project, node.gcp.region);
+        }
         if (node.platform === 'local')
             return null; // local processes aren't introspectable; skip diff
         return new Error('No deployment platform configured');

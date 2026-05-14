@@ -19,6 +19,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogEntry, CatalogFile, ConfigFile, AccountFile, ITEMS,
     log, readJson,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
 } from './common.js';
 
 async function main() {
@@ -28,7 +29,9 @@ async function main() {
     const bob = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(bobFile.privateKeyHex) });
     const appContractAddr = AccountAddress.fromString(cfg.appContractAddr);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
+    const chainId       = TUTORIAL_CHAIN_ID;
+    const keypairId     = TUTORIAL_KEYPAIR_ID;
 
     async function tryDecrypt(entry: CatalogEntry): Promise<{ ok: boolean; plaintext?: string }> {
         const session = await ACE.AptosBasicFlow.DecryptionSession.create({

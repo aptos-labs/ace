@@ -18,6 +18,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogFile, ConfigFile, AccountFile, ITEMS,
     log, readJson,
+    TUTORIAL_ACE_DEPLOYMENT,
 } from './common.js';
 
 async function main() {
@@ -26,7 +27,7 @@ async function main() {
     const catalog = readJson<CatalogFile>(CATALOG_FILE);
     const bob = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(bobFile.privateKeyHex) });
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
 
     const target = catalog.items.find(i => i.name === ITEMS[0].name)!;

@@ -170,10 +170,15 @@ export async function logCommand(opts: {
     if (node.platform === 'docker' && node.docker) {
         await logDocker(node.docker.containerName, sinceDate, untilDate, opts.watch);
     } else if (node.platform === 'gcp' && node.gcp) {
-        await logGcp(
-            node.gcp.serviceName, node.gcp.project, node.gcp.region,
-            sinceDate, untilDate, opts.watch,
-        );
+        // Microservices nodes have two Cloud Run services; tail the handler
+        // by default (where user-request traffic lands). If you need the
+        // maintainer's logs, deref by serviceName directly via `gcloud logs read`.
+        const svc = node.gcp.serviceName ?? node.gcp.handlerServiceName;
+        if (!svc) {
+            console.error('No Cloud Run service name found on this profile.');
+            process.exit(1);
+        }
+        await logGcp(svc, node.gcp.project, node.gcp.region, sinceDate, untilDate, opts.watch);
     } else if (node.platform === 'local' && node.local?.logFile) {
         await logLocal(node.local.logFile, sinceDate, untilDate, opts.watch);
     } else {

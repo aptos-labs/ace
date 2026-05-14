@@ -19,6 +19,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, CONTRACT_DIR,
     ensureDataDir, log, readJson, writeJson,
+    TUTORIAL_ACE_DEPLOYMENT,
 } from './common.js';
 
 async function main() {
@@ -28,7 +29,7 @@ async function main() {
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
     const adminAddress = alice.accountAddress.toStringLong();
 
-    const { aceDeployment } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const rpcUrl = aceDeployment.apiEndpoint;
 
     log(`Deploying marketplace with admin = ${adminAddress}`);

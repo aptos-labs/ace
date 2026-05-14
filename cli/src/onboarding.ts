@@ -1,16 +1,24 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { input, select, confirm } from '@inquirer/prompts';
+import { input } from '@inquirer/prompts';
 import { execSync } from 'child_process';
 import { writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import * as path from 'path';
 import { generateProfile } from './new-profile.js';
 import { registerOnChain } from './register.js';
-import { selectImage } from './docker-hub.js';
-import { loadConfig, makeNodeKey, type TrackedNode, type ChainRpcOverrides, type LocalConfig } from './config.js';
+import { fetchTagsRaw } from './docker-hub.js';
+import {
+    loadConfig, makeNodeKey,
+    type TrackedNode, type ChainRpcOverrides, type LocalConfig, type Mode,
+} from './config.js';
 import { logFilePath, spawnLocalNode } from './local-process.js';
+import { buildFromEditor } from './editor.js';
+import {
+    pickScheme, modeOf, platformOf, generateTemplate, parseTemplate, defaultsFor,
+    type Scheme, type TemplateInputs,
+} from './node-schemes.js';
 
 const LOGROTATE_DIR   = path.join(homedir(), '.ace', 'logrotate');
 const LOGROTATE_STATE = path.join(LOGROTATE_DIR, 'logrotate.state');
@@ -129,6 +137,125 @@ export function gcpDeployCmd(
         ...vpcLines,
         `  --args "${args.join(',')}"`,
     ].join(' \\\n');
+}
+
+/**
+ * Emit the microservices-mode deploy script.
+ *
+ * The script is **ordered**: the Handler's `--maintainer-url` flag needs the
+ * Maintainer's auto-assigned Cloud Run URL, which is NOT derivable from
+ * `<service>-<project_number>` ahead of time (Cloud Run mixes that with a
+ * legacy `<service>-<hash>-<region>.a.run.app` form for some services /
+ * projects). Capturing it post-deploy via `gcloud run services describe`
+ * is the only correct path. The emitted shell script does that with a
+ * `MAINT_URL=$(gcloud …)` substitution, then deploys the Handler.
+ *
+ * Auth model: the Maintainer is reachable only via VPC (`--ingress=internal`),
+ * but invocation itself is unauthenticated. The Handler is given Direct VPC
+ * egress so its outbound to the Maintainer's `*.run.app` URL is recognized as
+ * same-project internal and passes the ingress filter. No OIDC tokens are
+ * needed — the worker code does plain HTTP GETs.
+ *
+ * Step order:
+ *   1. Deploy the Maintainer (internal-only, min=max=1, no auth required).
+ *   2. Capture the Maintainer URL.
+ *   3. Deploy the Handler with VPC egress + `--maintainer-url=$MAINT_URL/secrets`.
+ */
+export function gcpDeployCmdMicroservices(
+    cfg: {
+        project: string;
+        region: string;
+        maintainerServiceName: string;
+        handlerServiceName: string;
+        handlerMaxInstances: number;
+    },
+    image: string,
+    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): string {
+    // Maintainer's VPC needs follow the chain-RPC rule (it only talks to the
+    // chain). Handler ALWAYS needs VPC egress so it can reach the Maintainer's
+    // internal-only *.run.app URL.
+    const maintainerVpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
+        `  --network=${DEFAULT_VPC_NETWORK}`,
+        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+        `  --vpc-egress=${DEFAULT_VPC_EGRESS}`,
+    ] : [];
+    const handlerVpcLines = [
+        `  --network=${DEFAULT_VPC_NETWORK}`,
+        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+        `  --vpc-egress=all-traffic`,
+    ];
+
+    const maintainerArgs = [
+        'run',
+        '--mode=maintainer',
+        `--ace-deployment-api=${rpcUrl}`,
+        `--ace-deployment-addr=${aceAddr}`,
+        ...(rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
+        ...(gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
+        `--account-addr=${node.accountAddr}`,
+        `--account-sk=${node.accountSk}`,
+        `--pke-dk=${node.pkeDk}`,
+        `--port=8080`,
+    ];
+    // Handler args use a shell variable for --maintainer-url; the deploy line
+    // below interpolates $MAINT_URL after capture.
+    const handlerArgsBeforeUrl = ['run', '--mode=handler'];
+    const handlerArgsAfterUrl = [
+        `--pke-dk=${node.pkeDk}`,
+        `--port=8080`,
+        ...chainRpcArgs(chainRpc),
+    ];
+
+    const maintainerDeploy = [
+        `gcloud run deploy ${cfg.maintainerServiceName}`,
+        `  --image docker.io/${image}`,
+        `  --project ${cfg.project}`,
+        `  --region ${cfg.region}`,
+        `  --ingress=internal`,
+        `  --allow-unauthenticated`,
+        `  --min-instances 1`,
+        `  --max-instances 1`,
+        `  --no-cpu-throttling`,
+        `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
+        ...maintainerVpcLines,
+        `  --args "${maintainerArgs.join(',')}"`,
+    ].join(' \\\n');
+
+    const handlerDeploy = [
+        `gcloud run deploy ${cfg.handlerServiceName}`,
+        `  --image docker.io/${image}`,
+        `  --project ${cfg.project}`,
+        `  --region ${cfg.region}`,
+        `  --allow-unauthenticated`,
+        `  --min-instances 1`,
+        `  --max-instances ${cfg.handlerMaxInstances}`,
+        `  --no-cpu-throttling`,
+        `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
+        ...handlerVpcLines,
+        `  --args "${handlerArgsBeforeUrl.join(',')},--maintainer-url=\${MAINT_URL}/secrets,${handlerArgsAfterUrl.join(',')}"`,
+    ].join(' \\\n');
+
+    return [
+        `set -e`,
+        ``,
+        `# 1. Deploy the Maintainer (internal-only, pinned at min=max=1).`,
+        `#    Reachable only via VPC; unauthenticated within the VPC.`,
+        maintainerDeploy,
+        ``,
+        `# 2. Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
+        `#    we can't derive it ahead of time).`,
+        `MAINT_URL=$(gcloud run services describe ${cfg.maintainerServiceName} \\`,
+        `  --project=${cfg.project} --region=${cfg.region} --format='value(status.url)')`,
+        `echo "Maintainer URL: $MAINT_URL"`,
+        ``,
+        `# 3. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances}).`,
+        `#    Direct VPC egress (all-traffic) is required so the Handler's outbound`,
+        `#    to the Maintainer is recognized as same-project internal traffic.`,
+        handlerDeploy,
+    ].join('\n');
 }
 
 export function dockerRunCmd(
@@ -310,6 +437,26 @@ async function promptEndpoint(message: string, defaultValue?: string): Promise<s
     }
 }
 
+/** Best-effort lookup of the latest aptoslabs/ace-node tag from Docker Hub. */
+async function latestImageTag(): Promise<string> {
+    try {
+        const tags = await fetchTagsRaw(1);
+        if (tags.length > 0) return `aptoslabs/ace-node:${tags[0]!.name}`;
+    } catch { /* fall through */ }
+    return 'aptoslabs/ace-node:latest';
+}
+
+function suggestPort(existing: Record<string, TrackedNode>): string {
+    const used = new Set<string>();
+    for (const n of Object.values(existing)) {
+        if (n.docker?.port) used.add(n.docker.port);
+        if (n.local?.port)  used.add(n.local.port);
+    }
+    let p = 19000;
+    while (used.has(String(p))) p++;
+    return String(p);
+}
+
 /** Full guided wizard for adding a new node you control. */
 export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedNode }> {
     const existingConfig = loadConfig();
@@ -322,108 +469,101 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
 
     const net: NetworkDetails = await promptNetworkDetails();
 
-    const platform = await select<'gcp' | 'docker' | 'local'>({
-        message: 'Where will you run this node?',
-        choices: [
-            { name: 'Google Cloud Platform (Cloud Run)', value: 'gcp' },
-            { name: 'My own machine (Docker)',            value: 'docker' },
-            { name: 'Local build (from source, requires repo)', value: 'local' },
-        ],
-    });
+    const isLocalnet = /localhost|127\.0\.0\.1/.test(net.rpcUrl);
+    const scheme = await pickScheme({ isLocalnet });
+    if (!scheme) {
+        throw new Error('Cancelled (no scheme picked).');
+    }
+    const mode: Mode = modeOf(scheme);
+    const platform = platformOf(scheme);
 
-    const image = platform !== 'local' ? (await selectImage() ?? 'aptoslabs/ace-node:latest') : undefined;
-    if (platform !== 'local') console.log();
+    const fallbackImage = await latestImageTag();
 
-    let chainRpc: ChainRpcOverrides = {};
-    if (await confirm({ message: 'Configure per-chain RPC overrides?', default: false })) {
-        chainRpc = await promptChainRpcOverrides(undefined, platform === 'docker' ? dockerRpcUrl : undefined);
-    } else {
-        console.log();
+    const t: TemplateInputs = {
+        identity: { accountAddr: profile.accountAddr, pkeEk: profile.pkeEk! },
+        blob: {
+            rpcUrl:        net.rpcUrl,
+            aceAddr:       net.aceAddr,
+            rpcApiKey:     net.rpcApiKey,
+            gasStationKey: net.gasStationKey,
+            nodeRpcUrl:    platform === 'docker' ? dockerRpcUrl(net.rpcUrl) : undefined,
+        },
+        defaults: defaultsFor(scheme, net, profile, fallbackImage, {
+            defaultGcpProject: defaultGcpProject(),
+            defaultRepoPath:   defaultRepoPath(),
+            defaultPort:       suggestPort(existingConfig.nodes),
+        }),
+    };
+
+    const parsed = await buildFromEditor(
+        generateTemplate(scheme, t),
+        c => parseTemplate(scheme, c),
+        { fileTag: 'node-new', acceptUnmodified: true },
+    );
+    if (!parsed) {
+        throw new Error('Cancelled (no changes saved).');
     }
 
-    let endpoint:    string;
-    let nodeRpcUrl:  string | undefined;
-    let gcpCfg:      TrackedNode['gcp'];
-    let dockerCfg:   TrackedNode['docker'];
-    let localCfg:    LocalConfig | undefined;
+    // Effective values used for deploy emission / spawn.
+    const image          = parsed.image;
+    const rpcApiKey      = parsed.rpcApiKey ?? net.rpcApiKey;
+    const gasStationKey  = parsed.gasStationKey ?? net.gasStationKey;
+    const chainRpc       = parsed.chainRpc ?? {};
+    const nodeRpcUrl     = t.blob.nodeRpcUrl;
 
-    if (platform === 'gcp') {
-        const project     = await input({ message: 'GCP project ID', default: defaultGcpProject() });
-        const region      = await input({ message: 'Region', default: 'us-central1' });
-        const contractPrefix = net.aceAddr.replace(/^0x/i, '').slice(0, 6);
-        const accountPrefix  = profile.accountAddr.replace(/^0x/i, '').slice(0, 6);
-        const serviceName = await input({
-            message: 'Service name',
-            default: `ace-${contractPrefix}-${accountPrefix}`,
-            validate: (val) => {
-                if (!/^[a-z]/.test(val)) return 'Must begin with a lowercase letter';
-                if (!/^[a-z][a-z0-9-]*$/.test(val)) return 'Only lowercase letters, digits, and hyphens are allowed';
-                if (val.endsWith('-')) return 'Must not end with a hyphen';
-                if (val.length >= 64) return 'Must be less than 64 characters';
-                return true;
-            },
-        });
-        gcpCfg = { project, region, serviceName };
+    let endpoint:  string;
+    let gcpCfg:    TrackedNode['gcp'];
+    let dockerCfg: TrackedNode['docker'];
+    let localCfg:  LocalConfig | undefined;
 
+    if (scheme === 'gcp-cloudrun-monolith') {
+        gcpCfg = { project: parsed.project!, region: parsed.region!, serviceName: parsed.serviceName! };
         console.log('\nRun this command to deploy your node:\n');
-        console.log(gcpDeployCmd(serviceName, image!, project, region, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
+        console.log(gcpDeployCmd(parsed.serviceName!, image!, parsed.project!, parsed.region!,
+            profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc));
         console.log();
         endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
-    } else if (platform === 'docker') {
-        const usedPorts = new Set(
-            Object.values(existingConfig.nodes).map(n => n.docker?.port).filter(Boolean),
-        );
-        let defaultPort = 19000;
-        while (usedPorts.has(String(defaultPort))) defaultPort++;
-
-        const usedContainerNames = new Set(
-            Object.values(existingConfig.nodes).map(n => n.docker?.containerName).filter(Boolean),
-        );
-        const contractPrefix = net.aceAddr.replace(/^0x/i, '').slice(0, 6);
-        const accountPrefix  = profile.accountAddr.replace(/^0x/i, '').slice(0, 6);
-        const defaultContainerName = (() => {
-            const base = `ace-${contractPrefix}-${accountPrefix}`;
-            if (!usedContainerNames.has(base)) return base;
-            let i = 2;
-            while (usedContainerNames.has(`${base}-${i}`)) i++;
-            return `${base}-${i}`;
-        })();
-
-        const port          = await input({ message: 'Port', default: String(defaultPort) });
-        const containerName = await input({ message: 'Container name', default: defaultContainerName });
-        nodeRpcUrl          = (await input({ message: 'Deployment API URL (as seen by the node)', default: dockerRpcUrl(net.rpcUrl) })).trim();
-        dockerCfg = { containerName, port };
-
-        console.log('\nRun this command to start your node:\n');
-        console.log(dockerRunCmd(containerName, image!, port, profile, nodeRpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc));
+    } else if (scheme === 'gcp-cloudrun-microservices') {
+        gcpCfg = {
+            project:                parsed.project!,
+            region:                 parsed.region!,
+            maintainerServiceName:  parsed.maintainerServiceName!,
+            handlerServiceName:     parsed.handlerServiceName!,
+            handlerMaxInstances:    parsed.handlerMaxInstances!,
+        };
+        console.log('\nRun the script below to deploy your node:\n');
+        console.log(gcpDeployCmdMicroservices(
+            {
+                project:                parsed.project!,
+                region:                 parsed.region!,
+                maintainerServiceName:  parsed.maintainerServiceName!,
+                handlerServiceName:     parsed.handlerServiceName!,
+                handlerMaxInstances:    parsed.handlerMaxInstances!,
+            },
+            image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+        ));
         console.log();
-
-        const isLocalnet = /localhost|127\.0\.0\.1/.test(net.rpcUrl);
-        const defaultEndpoint = isLocalnet ? `http://localhost:${port}` : undefined;
+        endpoint = await promptEndpoint("Handler service URL (paste after deploy completes)");
+    } else if (scheme === 'docker-monolith') {
+        dockerCfg = { containerName: parsed.containerName!, port: parsed.port! };
+        console.log('\nRun this command to start your node:\n');
+        console.log(dockerRunCmd(parsed.containerName!, image!, parsed.port!,
+            profile, nodeRpcUrl!, net.aceAddr, rpcApiKey, gasStationKey, chainRpc));
+        console.log();
+        const defaultEndpoint = isLocalnet ? `http://localhost:${parsed.port}` : undefined;
         endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
     } else {
-        // local build
-        const usedPorts = new Set(
-            Object.values(existingConfig.nodes).map(n => n.local?.port ?? n.docker?.port).filter(Boolean),
-        );
-        let defaultPort = 19000;
-        while (usedPorts.has(String(defaultPort))) defaultPort++;
-
-        const repoPath = (await input({
-            message: 'Path to ACE repo',
-            default: defaultRepoPath(),
-        })).trim();
-        const port = await input({ message: 'Port', default: String(defaultPort) });
-        const logMaxMbStr = await input({ message: 'Max log file size (MB, for logrotate)', default: '50' });
-        const logMaxMb = Math.max(1, parseInt(logMaxMbStr) || 50);
-
+        // local-build-monolith
+        const repoPath = parsed.repoPath!;
+        const port     = parsed.port!;
+        const logMaxMb = parsed.logMaxMb!;
         console.log('\nBuilding node binary (this may take a minute)...\n');
         execSync(localBuildCmd(repoPath), { stdio: 'inherit' });
 
         const nodeKey = makeNodeKey(net.rpcUrl, net.aceAddr, profile.accountAddr);
         const logFile = logFilePath(nodeKey);
         const binaryPath = path.join(repoPath, 'target', 'release', 'network-node');
-        const runArgs = localRunArgs(port, profile, net.rpcUrl, net.aceAddr, net.rpcApiKey, net.gasStationKey, chainRpc);
+        const runArgs = localRunArgs(port, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
         const pid = spawnLocalNode(binaryPath, runArgs, logFile);
         console.log(`\nNode started in background  pid=${pid}  log=${logFile}\n`);
 
@@ -431,11 +571,8 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         runLogrotate(logrotateConf);
 
         localCfg = { repoPath, port, pid, logFile, logMaxMb };
-
         endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
     }
-
-    const alias = (await input({ message: 'Node alias (Enter to skip)', default: '' })).trim() || undefined;
 
     await ensureAccountFunded(net.rpcUrl, profile.accountAddr, net.rpcApiKey, net.gasStationKey);
 
@@ -447,22 +584,23 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
 
     const node: TrackedNode = {
         rpcUrl:      net.rpcUrl,
-        nodeRpcUrl:  nodeRpcUrl !== net.rpcUrl ? nodeRpcUrl : undefined,
+        nodeRpcUrl:  nodeRpcUrl && nodeRpcUrl !== net.rpcUrl ? nodeRpcUrl : undefined,
         aceAddr:     net.aceAddr,
-        rpcApiKey:   net.rpcApiKey,
+        rpcApiKey:   rpcApiKey,
         accountAddr: profile.accountAddr,
         accountSk:   profile.accountSk,
         pkeDk:       profile.pkeDk,
         pkeEk:       profile.pkeEk,
-        alias,
+        alias:       parsed.alias,
         endpoint,
         image,
         platform,
+        mode,
         gcp:          gcpCfg,
         docker:       dockerCfg,
         local:        localCfg,
-        gasStationKey: net.gasStationKey,
-        chainRpc: Object.keys(chainRpc).length > 0 ? chainRpc : undefined,
+        gasStationKey,
+        chainRpc:     Object.keys(chainRpc).length > 0 ? chainRpc : undefined,
     };
 
     const nodeKey = makeNodeKey(net.rpcUrl, net.aceAddr, profile.accountAddr);

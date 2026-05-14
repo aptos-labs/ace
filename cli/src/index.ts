@@ -29,7 +29,10 @@ const deploymentCmd = program.command('deployment').description('Manage ACE depl
 
 deploymentCmd
     .command('new')
-    .description('Deploy ACE contracts to a chosen network and persist an admin profile (requires tagged clean commit)')
+    .description(
+        'Deploy ACE contracts to a chosen network and persist an admin profile (clean tree + ' +
+            'release tag at HEAD; ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK=1 relaxes both — NEXT_RELEASE if untagged)',
+    )
     .action(async () => {
         try {
             await deploymentNewCommand();

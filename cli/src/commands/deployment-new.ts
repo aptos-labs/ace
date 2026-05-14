@@ -5,7 +5,7 @@
  * `ace deployment new` — full deployment wizard.
  *
  * Flow:
- *   1. Pre-flight: HEAD is at a git tag and the working tree is clean. Strict.
+ *   1. Pre-flight: by default, clean tree + release tag at HEAD (strict).
  *   2. Pick a network (mainnet | testnet | devnet | localnet | custom).
  *   3. Generate (or import) the admin keypair.
  *   4. Fund the admin (manual prompt for testnet/mainnet, faucet for dev/local).
@@ -15,13 +15,17 @@
  *   8. Collect committee + threshold + epoch duration; call `network::start_initial_epoch`.
  *   9. Persist the deployment profile to `~/.ace/config.json`.
  *
- * The strict tag-clean precondition is intentional and unconditional — it makes
- * deployments reproducible (you can `git checkout <tag>` at any later date and the
- * Move bytecode is identical to what's on chain). No `--allow-dirty` escape hatch.
+ * The strict preflight (clean tree + release tag at HEAD) keeps deployments
+ * reproducible. For local experiments only, set `ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK=1`:
+ *   • allows a dirty working tree (no warning — opt in knowingly),
+ *   • if HEAD has no release tag, reads `NEXT_RELEASE` for the semver in `Move.toml`
+ *     and sets `deployedAtTag` to `untagged-<sha>` (those steps still warn).
  */
 
 import * as readline from 'readline';
 import { execFileSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import * as path from 'path';
 import {
     Account,
     AccountAddress,
@@ -59,36 +63,84 @@ function git(args: string[]): string {
     return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
 }
 
-function preflightTagAndCleanCheck(): { tag: string; commit: string } {
+/** Local-dev escape hatch: relax clean-tree and missing-tag preflights. */
+function deploymentNewPreflightRelaxed(): boolean {
+    const v = (process.env.ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK ?? '').toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** First X.Y.Z on a non-empty line in repo-root `NEXT_RELEASE`. */
+function readNextReleaseVersion(): string {
+    const p = path.join(REPO_ROOT, 'NEXT_RELEASE');
+    if (!existsSync(p)) {
+        throw new Error(
+            `Missing ${p} — required when HEAD has no release tag and ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK is set.`,
+        );
+    }
+    const lines = readFileSync(p, 'utf8').split(/\r?\n/);
+    const line = lines.map(l => l.replace(/#.*$/, '').trim()).find(l => l.length > 0);
+    if (!line) {
+        throw new Error(`${p} has no version line (expected a line like 2.0.1).`);
+    }
+    const m = line.match(/^(\d+\.\d+\.\d+)/);
+    if (!m) {
+        throw new Error(`${p} must contain semver X.Y.Z at the start of a line; got: ${line}`);
+    }
+    return m[1]!;
+}
+
+function preflightTagAndCleanCheck(): { tag: string; commit: string; version: string } {
     let status: string;
     try {
         status = git(['status', '--porcelain']);
     } catch (e) {
         throw new Error(`\`git status\` failed — is ${REPO_ROOT} a git repository? (${(e as Error).message})`);
     }
-    if (status.length > 0) {
+    if (status.length > 0 && !deploymentNewPreflightRelaxed()) {
         throw new Error(
             `Working tree is not clean — \`deployment new\` requires a clean tree at a tagged commit.\n` +
-            `Uncommitted/untracked changes:\n${status}`,
+            `Uncommitted/untracked changes:\n${status}\n\n` +
+            `Local-only: export ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK=1 to skip this check (and the tag-at-HEAD rule when untagged).`,
         );
     }
 
     const commit = git(['rev-parse', 'HEAD']);
     const tagsAtHead = git(['tag', '--points-at', 'HEAD']).split('\n').filter(Boolean);
-    if (tagsAtHead.length === 0) {
+
+    if (tagsAtHead.length > 0) {
+        // If multiple tags point at HEAD, prefer one that looks like a release version.
+        const releaseTag = tagsAtHead.find(t => /^v?\d+\.\d+\.\d+/.test(t)) ?? tagsAtHead[0]!;
+        const version = releaseTag.replace(/^v/, '');
+        if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            throw new Error(
+                `Tag at HEAD "${releaseTag}" is not a semver release tag (expected vX.Y.Z, e.g. v2.0.1). ` +
+                `Either retag this commit or check out a real release tag and try again.`,
+            );
+        }
+        return { tag: releaseTag, commit, version };
+    }
+
+    if (!deploymentNewPreflightRelaxed()) {
         throw new Error(
             `HEAD (${commit.slice(0, 12)}) is not a tagged commit. \`deployment new\` requires the\n` +
             `current commit to carry a release tag — that's how the deployed contracts stay\n` +
             `reproducible (anyone can later \`git checkout <tag>\` and rebuild bit-identical Move\n` +
             `bytecode). Tag the commit and try again, e.g.:\n\n` +
             `    git tag v1.2.3\n` +
-            `    git push origin v1.2.3\n`,
+            `    git push origin v1.2.3\n\n` +
+            `For local-only testing: export ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK=1\n` +
+            `(allows a dirty tree; if HEAD is untagged, version comes from NEXT_RELEASE; deployedAtTag = untagged-<sha>).`,
         );
     }
 
-    // If multiple tags point at HEAD, prefer one that looks like a release version.
-    const releaseTag = tagsAtHead.find(t => /^v?\d+\.\d+\.\d+/.test(t)) ?? tagsAtHead[0]!;
-    return { tag: releaseTag, commit };
+    const version = readNextReleaseVersion();
+    const tag = `untagged-${commit.slice(0, 12)}`;
+    console.warn(
+        'ACE_DEPLOYMENT_NEW_SKIP_TAG_CHECK: skipping release-tag requirement. ' +
+            `Publishing at NEXT_RELEASE version ${version}; profile deployedAtTag = "${tag}".`,
+    );
+    console.warn('Do not use this for production — create a real release tag for reproducible bytecode.\n');
+    return { tag, commit, version };
 }
 
 // ── Aptos helpers ─────────────────────────────────────────────────────────────
@@ -176,21 +228,14 @@ async function promptAdminKey(): Promise<Account> {
 
 export async function deploymentNewCommand(): Promise<void> {
     // 1. Pre-flight.
-    const { tag, commit } = preflightTagAndCleanCheck();
-    // Version stamped onto every Move.toml is the TAG version, not NEXT_RELEASE.
-    // (NEXT_RELEASE = the *next* planned release — at any tagged commit, NEXT_RELEASE has
-    // already been bumped past the current tag per the release convention.)
-    const version = tag.replace(/^v/, '');
-    if (!/^\d+\.\d+\.\d+$/.test(version)) {
-        throw new Error(
-            `Tag at HEAD "${tag}" is not a semver release tag (expected vX.Y.Z, e.g. v2.0.1). ` +
-            `Either retag this commit or check out a real release tag and try again.`,
-        );
-    }
+    const { tag, commit, version } = preflightTagAndCleanCheck();
+    const versionNote = tag.startsWith('untagged-')
+        ? 'from NEXT_RELEASE — will be stamped into every Move.toml'
+        : 'from the tag — will be stamped into every Move.toml';
     console.log(`Repository state:`);
     console.log(`  tag    : ${tag}`);
     console.log(`  commit : ${commit.slice(0, 12)}`);
-    console.log(`  version: ${version}  (from the tag — will be stamped into every Move.toml)`);
+    console.log(`  version: ${version}  (${versionNote})`);
     console.log();
 
     // 2. Network.

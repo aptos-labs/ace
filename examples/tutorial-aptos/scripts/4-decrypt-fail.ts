@@ -20,6 +20,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ALICE_FILE, AccountFile, BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogFile, ConfigFile, ITEMS,
     ensureDataDir, log, readJson, writeJson,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
 } from './common.js';
 
 const BOB_ALLOWANCE_OCTAS = 20_000_000; // 0.2 APT — covers song-1 price + gas
@@ -38,7 +39,9 @@ async function main() {
     const bobAddress = bob.accountAddress.toStringLong();
     log(`Generated Bob keypair: ${bobAddress}`);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
+    const chainId       = TUTORIAL_CHAIN_ID;
+    const keypairId     = TUTORIAL_KEYPAIR_ID;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
 
     log(`Alice transferring ${BOB_ALLOWANCE_OCTAS / 100_000_000} APT to Bob...`);

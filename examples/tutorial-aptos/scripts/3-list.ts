@@ -18,6 +18,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ALICE_FILE, AccountFile, CATALOG_FILE, CONFIG_FILE, CatalogEntry, ConfigFile, ITEMS,
     ensureDataDir, log, readJson, writeJson,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
 } from './common.js';
 
 async function main() {
@@ -28,7 +29,9 @@ async function main() {
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
     const appContractAddr = AccountAddress.fromString(cfg.appContractAddr);
 
-    const { chainId, aceDeployment, keypairId } = ACE.knownDeployments.preview20260506;
+    const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
+    const chainId       = TUTORIAL_CHAIN_ID;
+    const keypairId     = TUTORIAL_KEYPAIR_ID;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
     const textEncoder = new TextEncoder();
 

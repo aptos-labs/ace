@@ -5,6 +5,28 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as readline from 'readline';
+import * as ACE from '@aptos-labs/ace-sdk';
+
+// ── ACE deployment targeted by this tutorial ──────────────────────────────────
+// Default: the public ACE testnet preview (`preview20260506`). To target a
+// different deployment — e.g. one you bootstrapped yourself — replace the
+// three constants below with literals (see the commented example).
+const _knownDeployment = ACE.knownDeployments.preview20260506;
+export const TUTORIAL_ACE_DEPLOYMENT = _knownDeployment.aceDeployment;
+export const TUTORIAL_CHAIN_ID       = _knownDeployment.chainId;
+export const TUTORIAL_KEYPAIR_ID     = _knownDeployment.keypairId;
+//
+// Example: pointing the tutorial at a self-bootstrapped devnet deployment.
+// Replace the three lines above with:
+//
+//   import { AccountAddress } from '@aptos-labs/ts-sdk';
+//   export const TUTORIAL_ACE_DEPLOYMENT = new ACE.AceDeployment({
+//       apiEndpoint:  'https://api.devnet.aptoslabs.com/v1',
+//       contractAddr: AccountAddress.fromString('0xYOUR_ACE_CONTRACT_ADDR'),
+//   });
+//   export const TUTORIAL_CHAIN_ID   = 140;  // devnet
+//   export const TUTORIAL_KEYPAIR_ID = AccountAddress.fromString('0xYOUR_KEYPAIR_ID');
+// ──────────────────────────────────────────────────────────────────────────────
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

@@ -174,6 +174,9 @@ export async function loadtestRunCommand(opts: {
     account?: string;
     endpoint?: string;
     network?: string;
+    contract?: string;
+    keypair?: string;
+    chainId?: string;
     ramp?: string;
     duration?: string;
     cooldown?: string;
@@ -202,13 +205,36 @@ export async function loadtestRunCommand(opts: {
     console.log(`Network:         ${network}`);
     console.log(`Test account:    ${state.accountAddr}\n`);
 
-    // SDK setup. The keypairId / aceDeployment come from knownDeployments today
-    // (preview20260506 for testnet); a future flag could let operators target
-    // other deployments.
-    const known = ACE.knownDeployments.preview20260506;
-    const aceDeployment = known.aceDeployment;
-    const keypairId = known.keypairId;
-    const chainId = known.chainId;
+    // SDK setup. By default we target ts-sdk knownDeployments.preview20260506;
+    // operators can override with --contract/--keypair/--chain-id (must travel
+    // together — they all describe the same deployment).
+    const customCount = [opts.contract, opts.keypair, opts.chainId].filter(Boolean).length;
+    if (customCount !== 0 && customCount !== 3) {
+        throw new Error(
+            '--contract, --keypair, and --chain-id must be passed together (or all omitted).',
+        );
+    }
+    const rpcUrl = DEFAULT_RPC[network] ?? DEFAULT_RPC[DEFAULT_NETWORK];
+    let aceDeployment: ACE.AceDeployment;
+    let keypairId: AccountAddress;
+    let chainId: number;
+    if (customCount === 3) {
+        aceDeployment = new ACE.AceDeployment({
+            apiEndpoint:  rpcUrl,
+            contractAddr: AccountAddress.fromString(opts.contract!),
+        });
+        keypairId = AccountAddress.fromString(opts.keypair!);
+        chainId   = Number(opts.chainId!);
+        if (!Number.isFinite(chainId) || chainId <= 0) {
+            throw new Error(`--chain-id must be a positive integer, got "${opts.chainId}"`);
+        }
+        console.log(`Custom deployment: contract=${opts.contract} keypair=${opts.keypair} chainId=${chainId}`);
+    } else {
+        const known = ACE.knownDeployments.preview20260506;
+        aceDeployment = known.aceDeployment;
+        keypairId = known.keypairId;
+        chainId = known.chainId;
+    }
 
     const loadtester = loadtesterAccountFromSk(state.accountSk);
     const mintCfg: MintConfig = {

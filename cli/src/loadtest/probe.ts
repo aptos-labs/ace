@@ -17,15 +17,16 @@ import { Agent, setGlobalDispatcher } from 'undici';
 
 import type { Minter, Pool } from './mint.js';
 
-// Replace Node's default undici dispatcher with a 64-connection HTTP/1.1 pool.
+// Replace Node's default undici dispatcher with a 256-connection HTTP/1.1 pool.
 // Node's `fetch` would otherwise multiplex all requests on a single HTTP/2
 // connection per origin, which throttles at the server's MAX_CONCURRENT_STREAMS
 // and Cloud Run's per-connection backend-routing — the driver-side bottleneck
 // we saw in the 5×400 test (server fleet was idle at 14ms mean; drivers saw
-// multi-second p99). 64 sockets × keepalive lets the driver spread requests
+// multi-second p99). 256 sockets × keepalive lets the driver spread requests
 // across many TCP connections so no single connection becomes the choke point.
+// (Sized for ~5k qps per driver at ~30ms RTT, with headroom for tail latency.)
 setGlobalDispatcher(new Agent({
-    connections: 64,
+    connections: 256,
     pipelining: 1,
     keepAliveTimeout: 30_000,
     keepAliveMaxTimeout: 600_000,

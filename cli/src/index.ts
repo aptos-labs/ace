@@ -279,6 +279,7 @@ loadtestCmd
     .description('Drive a constant-rate QPS ramp at the target worker.')
     .option('-a, --account <addr>', 'Target a tracked node profile by account address')
     .option('-e, --endpoint <url>', 'Target an arbitrary worker URL (must be a current committee member)')
+    .option('--post-url <url>', "Override the URL the probe actually POSTs to. The mint still uses --endpoint for committee-member lookup (enc-key + slot), but the probe traffic goes to --post-url. Useful for testing through a global LB / proxy / VPC route.")
     .option('--network <name>', 'Network name (matches a prior `loadtest setup`)', 'testnet')
     .option('--contract <addr>', 'ACE contract address to target (default: ts-sdk knownDeployments.preview20260506). Required together with --keypair and --chain-id.')
     .option('--keypair <addr>', 'ACE keypair ID. Required together with --contract and --chain-id.')

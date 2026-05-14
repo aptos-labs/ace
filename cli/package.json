@@ -23,7 +23,8 @@
     "@inquirer/core": "^11.1.9",
     "@inquirer/prompts": "^7.0.0",
     "commander": "^12.1.0",
-    "smol-toml": "^1.6.1"
+    "smol-toml": "^1.6.1",
+    "undici": "6"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

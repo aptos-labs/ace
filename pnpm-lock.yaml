@@ -31,6 +31,9 @@ importers:
       smol-toml:
         specifier: ^1.6.1
         version: 1.6.1
+      undici:
+        specifier: '6'
+        version: 6.25.0
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -2237,6 +2240,10 @@ packages:
 
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+  undici@6.25.0:
+    resolution: {integrity: sha512-ZgpWDC5gmNiuY9CnLVXEH8rl50xhRCuLNA97fAUnKi8RRuV4E6KG31pDTsLVUKnohJE0I3XDrTeEydAXRw47xg==}
+    engines: {node: '>=18.17'}
 
   utf-8-validate@5.0.10:
     resolution: {integrity: sha512-Z6czzLq4u8fPOyx7TU6X3dvUZVvoJmxSQ+IcrlmagKhilxlhZgxPK6C5Jqbkw1IDUmFTM+cz9QDnnLTwDz/2gQ==}
@@ -4477,6 +4484,8 @@ snapshots:
   underscore@1.13.6: {}
 
   undici-types@6.21.0: {}
+
+  undici@6.25.0: {}
 
   utf-8-validate@5.0.10:
     dependencies:

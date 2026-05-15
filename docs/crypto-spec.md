@@ -63,7 +63,7 @@ Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~
 
 ## 3. Threshold Identity-Based Encryption (`t-ibe::*`)
 
-t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair\_id, contract\_id, label)`, where `label` is the app-specific scoping bytes); decryption requires $t$-of-$n$ workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, label)`, where `label` is the app-specific scoping bytes); decryption requires t-of-n workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
@@ -114,7 +114,7 @@ aead_ct := ChaCha20-Poly1305(key, nonce, AAD=∅).encrypt(plaintext)
 Ciphertext = (c0, aead_ct)                     # 96 + |plaintext| + 16 bytes (excluding wire ULEBs)
 ```
 
-**Decrypt** with $t$-of-$n$ IDK shares:
+**Decrypt** with t-of-n IDK shares:
 ```
 For each share i:
   share_i = (eval_point_i, idk_share_i)  where idk_share_i = s_i · Q_id  ∈ G1
@@ -187,9 +187,9 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 
 ### 4.0.1 Distributed Key Resharing (DKR): origin and modifications
 
-DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(\text{curr\_nodes}, t)$ to a new committee $(\text{new\_nodes}, t')$ without $s$ ever existing in cleartext. ACE's instance lives in `contracts/dkr/sources/dkr.move`.
+DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext (each committee is a set of node addresses; on-chain these are the `current_nodes` / `new_nodes` fields of `dkr::Session`). ACE's instance lives in `contracts/dkr/sources/dkr.move`.
 
-**Construction.** Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $\text{new\_nodes}$. The resharing-dealer challenge (§4.3) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq \text{curr\_nodes}$ is frozen on-chain, and each new node $i \in \text{new\_nodes}$ derives its new share via Lagrange-at-zero over the contributing old indices:
+**Construction.** Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $C_{\text{new}}$. The resharing-dealer challenge (§4.3) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq C_{\text{old}}$ is frozen on-chain, and each new node $i \in C_{\text{new}}$ derives its new share via Lagrange-at-zero over the contributing old indices:
 
 $$S_i := \sum_{j \in H} \lambda_j \cdot z_{j,i}, \qquad z_{j,i} = g_j(i+1), \qquad \lambda_j = \prod_{k \in H, k \neq j} \frac{0 - (k+1)}{(j+1) - (k+1)} \pmod r$$
 
@@ -212,13 +212,13 @@ The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degr
 - $b_{\text{old}} < t$ corrupted nodes in the old committee, **and**
 - $b_{\text{new}} < t'$ corrupted nodes in the new committee.
 
-This is the **dual** of the user-friendly liveness phrasing "$\geq t$ honest old + $\geq t'$ honest new" — note the inequality direction: secrecy needs $b_{\text{old}} \leq t-1$, liveness needs $n - b_{\text{old}} \geq t$ (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
+This is the **dual** of the user-friendly liveness phrasing (which says: at least $t$ honest in the old committee and at least $t'$ honest in the new). Note the inequality direction: secrecy needs $b_{\text{old}} \leq t-1$, liveness needs $n - b_{\text{old}} \geq t$ (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
 
 **Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates one or two nodes. With overlap:
 - A node in the overlap that is corrupted contributes to **both** $b_{\text{old}}$ and $b_{\text{new}}$.
 - The *abstract* secrecy bound is unchanged: still $b_{\text{old}} < t \;\land\; b_{\text{new}} < t'$.
 - The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size $k$, corrupting up to $\min(t-1, t'-1)$ overlap-nodes counts double — a $(t-1)$-bounded attacker on the old side automatically gets $t-1$ corruptions on the new side too if every corruption is an overlap node.
-- In the limit ($\text{old\_nodes} = \text{new\_nodes}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
+- In the limit ($C_{\text{old}} = C_{\text{new}}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
 
 This is the expected behavior for any PSS — the proactive benefit comes from changing the corrupted set, not from the polynomial refresh. The overlap level is a *deployment policy* choice: small overlap maximizes proactive benefit at the cost of operational continuity; large overlap maximizes continuity at the cost of attacker-cost reduction.
 
@@ -308,14 +308,14 @@ return (t0, t1, s_proof, P1)
 
 ### 5.2 Verify
 
-The on-chain verifier reconstructs the same Fiat–Shamir transcript from $(B_0, P_0, B_1, P_1, t_0, t_1)$ and the bound $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$, derives $c$, and checks:
+The on-chain verifier reconstructs the same Fiat–Shamir transcript from $(B_0, P_0, B_1, P_1, t_0, t_1)$ and the bound (`chain_id`, `ace_addr`, `"vss"`), derives $c$, and checks:
 
 $$s_{\text{proof}} \cdot B_0 = t_0 + c \cdot P_0, \qquad s_{\text{proof}} \cdot B_1 = t_1 + c \cdot P_1$$
 
 **Security.** Standard Schnorr-style argument; soundness holds in the algebraic group model under DLog in $G$; HVZK in the ROM. ~128-bit security level on BLS12-381.
 
 **Audit notes.**
-- The $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$ binding prevents cross-chain / cross-deployment proof replay. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
+- The (`chain_id`, `ace_addr`, `"vss"`) binding prevents cross-chain / cross-deployment proof replay. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
 - `from_le_bytes_mod_order` of a SHA-512 digest produces a uniformly-distributed $\mathbb{F}_r$ element with negligible bias ($r > 2^{252}$, hash output is 512 bits).
 
 ---

@@ -82,7 +82,7 @@ These never appear on the wire as part of a request — they live only on the wo
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B enc_base \| 20 \| 32B priv_scalar` | **67 B** |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B sk` | **34 B** |
 
-The leading scheme byte is consumed by `pke_decrypt_bytes` (`vss-common/src/pke.rs`) to dispatch.
+The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/vss-common/src/pke.rs`) to dispatch.
 
 ---
 
@@ -96,15 +96,19 @@ The HTTP request body is the **hex string** of `pke_encrypt(worker_enc_key, BCS(
 
 ```rust
 enum RequestForDecryptionKey {
-    Basic(BasicFlowRequest),    // tag 0
-    Custom(CustomFlowRequest),  // tag 1
+    Basic(BasicFlowRequest),        // tag 0 — V1, legacy
+    Custom(CustomFlowRequest),      // tag 1 — V1, legacy
+    BasicV2(BasicFlowRequestV2),    // tag 2 — adds tibe_scheme
+    CustomV2(CustomFlowRequestV2),  // tag 3 — adds tibe_scheme
 }
 ```
 
-### 2.2 `BasicFlowRequest`
+V2 variants carry an explicit `tibe_scheme: u8` so the handler serves the share formatted for the client's actual t-IBE choice instead of guessing from the share's group via `crypto::tibe_scheme_for_group` (the V1 fallback). The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme` and rejects otherwise. SDK clients on the current release emit V2; V1 is accepted for older clients (`worker-components/network-node/src/http_server.rs:339-385`).
+
+### 2.2 `BasicFlowRequest` / `BasicFlowRequestV2`
 
 ```rust
-struct BasicFlowRequest {
+struct BasicFlowRequest {           // V1, tag 0
     keypair_id:        [u8; 32],
     epoch:             u64,
     contract_id:       ContractId,
@@ -112,18 +116,29 @@ struct BasicFlowRequest {
     ephemeral_enc_key: pke::EncryptionKey,
     proof:             ProofOfPermission,
 }
+
+struct BasicFlowRequestV2 {         // V2, tag 2
+    keypair_id:        [u8; 32],
+    epoch:             u64,
+    contract_id:       ContractId,
+    domain:            Vec<u8>,
+    ephemeral_enc_key: pke::EncryptionKey,
+    proof:             ProofOfPermission,
+    tibe_scheme:       u8,
+}
 ```
 
-Wire layout (after the outer `00` enum tag):
+Wire layout:
 
 ```
-[32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission]
+V1 (after outer `00`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission]
+V2 (after outer `02`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission] [1B tibe_scheme]
 ```
 
-### 2.3 `CustomFlowRequest`
+### 2.3 `CustomFlowRequest` / `CustomFlowRequestV2`
 
 ```rust
-struct CustomFlowRequest {
+struct CustomFlowRequest {          // V1, tag 1
     keypair_id: [u8; 32],
     epoch:      u64,
     contract_id: ContractId,
@@ -131,12 +146,23 @@ struct CustomFlowRequest {
     enc_pk:     pke::EncryptionKey,
     proof:      CustomFlowProof,
 }
+
+struct CustomFlowRequestV2 {        // V2, tag 3
+    keypair_id:  [u8; 32],
+    epoch:       u64,
+    contract_id: ContractId,
+    label:       Vec<u8>,
+    enc_pk:      pke::EncryptionKey,
+    proof:       CustomFlowProof,
+    tibe_scheme: u8,
+}
 ```
 
-Wire layout (after the outer `01` enum tag):
+Wire layout:
 
 ```
-[32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof]
+V1 (after outer `01`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof]
+V2 (after outer `03`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof] [1B tibe_scheme]
 ```
 
 ### 2.4 `ContractId`
@@ -439,7 +465,7 @@ struct EpochChangeView {
 }
 ```
 
-Source of truth: `contracts/network/sources/network.move:120-188` (the producer) and the consumer in `ts-sdk/src/_internal/network.ts`.
+Source of truth: `contracts/network/sources/network.move:120-188` (the producer) and the consumer in `ts-sdk/src/network/index.ts`.
 
 ---
 

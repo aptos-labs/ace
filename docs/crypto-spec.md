@@ -46,12 +46,7 @@ aad    = b""       (empty by default; callers do NOT pass AAD)
 
 **TS implementation** uses [`@hpke/core`](https://www.npmjs.com/package/@hpke/core) for browser+node WebCrypto-backed primitives (`ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`). **Rust implementation** uses [`hpke`](https://docs.rs/hpke/latest/hpke/) crate (`worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:19-23`). **Move implementation** is decoder-only (`contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move`); no on-chain encrypt/decrypt is needed.
 
-**Wire shapes.**
-```
-EncryptionKey: [ULEB128(32) | 32B X25519 public key]                    # 33 bytes
-DecryptionKey: [ULEB128(32) | 32B X25519 private key]                   # 33 bytes
-Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~2 bytes; aead_ct = ct || 16B Poly1305 tag
-```
+**Wire shapes.** Byte layouts for `EncryptionKey`, `DecryptionKey`, and `Ciphertext` (HPKE rows) live in [`wire-formats.md`](./wire-formats.md) §1.1-§1.3.
 
 **Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
 

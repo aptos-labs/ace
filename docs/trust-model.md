@@ -148,9 +148,9 @@ Out of scope for the protocol-level trust model:
 
 | Primitive | Assumption | Used by |
 |-----------|------------|---------|
-| ElGamal-OTP-Ristretto255 | DDH on Ristretto255 + ROM (KDF, HMAC) | PKE scheme 0 *(out of audit scope; see [`crypto-spec.md`](./crypto-spec.md) §2)* |
+| ElGamal-OTP-Ristretto255 | DDH on Ristretto255 + ROM (KDF, HMAC) | PKE scheme 0 *(test-only; see [`crypto-spec.md`](./crypto-spec.md) §2)* |
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | RFC 9180 base-mode security: GapDH on X25519, HKDF-SHA256, ChaCha20-Poly1305 IND-CCA | PKE scheme 1 *(production)* |
-| BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(out of audit scope; see [`crypto-spec.md`](./crypto-spec.md) §3)* |
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`crypto-spec.md`](./crypto-spec.md) §3)* |
 | BFIBE-BLS12381-ShortSig-AEAD | BDH on BLS12-381 + ROM, ChaCha20-Poly1305 IND-CCA | t-IBE scheme 1 *(production)* |
 | Sigma-DLog-Eq | DLog on BLS12-381 + ROM (Fiat–Shamir) | VSS resharing |
 | Feldman PCS | DLog on BLS12-381 (binding) | VSS share verification |

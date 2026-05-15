@@ -26,10 +26,10 @@ The PKE layer is used to encrypt **VSS share messages** (dealer → recipient) a
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
-| ElGamal-OTP-Ristretto255 | `0x00` | **placeholder, out of audit scope** (see below) | `ts-sdk/src/pke/elgamal_otp_ristretto255.ts`, `worker-components/vss-common/src/{pke.rs,crypto.rs}`, `contracts/pke/sources/pke_elgamal_otp_ristretto255.move` |
+| ElGamal-OTP-Ristretto255 | `0x00` | **test-only** (see below) | `ts-sdk/src/pke/elgamal_otp_ristretto255.ts`, `worker-components/vss-common/src/{pke.rs,crypto.rs}`, `contracts/pke/sources/pke_elgamal_otp_ristretto255.move` |
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | `0x01` | **production, default** | `ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`, `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs`, `contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move` |
 
-> **Audit scope.** Only **scheme `0x01`** is in the audit scope. Scheme `0x00` is a v1 placeholder — a hand-rolled ElGamal-in-the-exponent + custom OTP/HMAC DEM construction that has no formal security proof and uses non-standard primitives (notably the 64-byte-block HMAC-SHA3-256 of §6.2). It is the default of nothing today, used by no example, and referenced only by the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments must use scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase; until then, the BCS decoder still recognizes the discriminant — see [`wire-formats.md`](./wire-formats.md) §1.1 / §1.2.
+> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — a hand-rolled ElGamal-in-the-exponent + custom OTP/HMAC DEM construction that has no formal security proof and uses non-standard primitives (notably the 64-byte-block HMAC-SHA3-256 of §6.2). It is the default of nothing today, used by no example, and referenced only by the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments must use scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase; until then, the BCS decoder still recognizes the discriminant — see [`wire-formats.md`](./wire-formats.md) §1.1 / §1.2.
 
 ### 2.1 HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 (scheme `0x01`, default)
 
@@ -67,12 +67,12 @@ t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
-| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **placeholder, out of audit scope** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **test-only** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
 | BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **production, default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs:35` |
 
-> **Audit scope.** Only **scheme `0x01`** is in the audit scope. Scheme `0x00` is a v1 placeholder — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` (§2). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of §3 describes scheme `0x01` only.
+> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` (§2). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of §3 describes scheme `0x01` only.
 
-The runtime choice between schemes is a static dispatch on the underlying DKG basepoint group, in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`: G1 → scheme `0x00` (legacy path), G2 → scheme `0x01` (production).
+The runtime choice between schemes is a static dispatch on the underlying DKG basepoint group, in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`: G1 → scheme `0x00` (test-only), G2 → scheme `0x01` (production).
 
 ### 3.1 BFIBE-BLS12381-ShortSig-AEAD (scheme `0x01`, default)
 

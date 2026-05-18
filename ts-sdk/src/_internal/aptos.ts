@@ -174,67 +174,6 @@ function deserializeSignature(scheme: number, deserializer: Deserializer): Signa
     }
 }
 
-// ── Wire-format helpers ────────────────────────────────────────────────────────
-//
-// The on-the-wire `public_key` / `signature` fields are encoded as
-// `BCS-Vec<u8>` whose contents are the inline BCS of the inner scheme-specific
-// type.  For most schemes the inner type's first byte is a `uleb128` length
-// that happens to look identical to the outer `Vec<u8>` length prefix
-// (Ed25519's `serializeBytes(32-bytes)` is `0x20 || 32 bytes` — an outer
-// `Vec<u8>(32-bytes)` reads the same byte run).  Keyless inner types are
-// structs whose first byte is a uleb of the `iss` string length, which does
-// NOT match the inner BCS's total length, so we must explicitly length-prefix
-// for keyless schemes.
-//
-// To keep the wire backwards-compatible for Ed25519 while making keyless
-// work, we special-case the keyless variants here on both serialize and
-// deserialize paths.
-function isKeylessPkScheme(s: number): boolean {
-    return s === PK_SCHEME_KEYLESS || s === PK_SCHEME_FEDERATED_KEYLESS;
-}
-
-function isKeylessSigScheme(s: number): boolean {
-    return s === SIG_SCHEME_KEYLESS;
-}
-
-function serializePublicKey(outer: Serializer, scheme: number, publicKey: PublicKey): void {
-    if (isKeylessPkScheme(scheme)) {
-        const inner = new Serializer();
-        publicKey.serialize(inner);
-        outer.serializeBytes(inner.toUint8Array());
-    } else {
-        outer.serialize(publicKey);
-    }
-}
-
-function serializeSignature(outer: Serializer, scheme: number, signature: Signature): void {
-    if (isKeylessSigScheme(scheme)) {
-        const inner = new Serializer();
-        signature.serialize(inner);
-        outer.serializeBytes(inner.toUint8Array());
-    } else {
-        outer.serialize(signature);
-    }
-}
-
-function deserializeWirePublicKey(scheme: number, outer: Deserializer): PublicKey {
-    if (isKeylessPkScheme(scheme)) {
-        const innerBytes = outer.deserializeBytes();
-        const inner = new Deserializer(innerBytes);
-        return deserializePublicKey(scheme, inner);
-    }
-    return deserializePublicKey(scheme, outer);
-}
-
-function deserializeWireSignature(scheme: number, outer: Deserializer): Signature {
-    if (isKeylessSigScheme(scheme)) {
-        const innerBytes = outer.deserializeBytes();
-        const inner = new Deserializer(innerBytes);
-        return deserializeSignature(scheme, inner);
-    }
-    return deserializeSignature(scheme, outer);
-}
-
 export class ProofOfPermission {
     userAddr: AccountAddress;
     publicKeyScheme: number;
@@ -256,9 +195,9 @@ export class ProofOfPermission {
         const task = (_extra: Record<string, any>) => {
             const userAddr = deserializer.deserialize(AccountAddress);
             const authenticationScheme = deserializer.deserializeU8();
-            const publicKey = deserializeWirePublicKey(authenticationScheme, deserializer);
+            const publicKey = deserializePublicKey(authenticationScheme, deserializer);
             const signatureScheme = deserializer.deserializeU8();
-            const signature = deserializeWireSignature(signatureScheme, deserializer);
+            const signature = deserializeSignature(signatureScheme, deserializer);
             const fullMessage = deserializer.deserializeStr();
             return new ProofOfPermission({userAddr, publicKey, signature, fullMessage});
         };
@@ -283,9 +222,9 @@ export class ProofOfPermission {
     serialize(serializer: Serializer): void {
         serializer.serialize(this.userAddr);
         serializer.serializeU8(this.publicKeyScheme);
-        serializePublicKey(serializer, this.publicKeyScheme, this.publicKey);
+        serializer.serialize(this.publicKey);
         serializer.serializeU8(this.signatureScheme);
-        serializeSignature(serializer, this.signatureScheme, this.signature);
+        serializer.serialize(this.signature);
         serializer.serializeStr(this.fullMessage);
     }
 

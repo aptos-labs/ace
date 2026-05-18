@@ -118,14 +118,173 @@ pub enum ProofOfPermission {
     Solana(SolanaProofOfPermission),
 }
 
-#[derive(Serialize, Deserialize)]
+/// Proof of permission for a basic-flow Aptos request.
+///
+/// `pk_scheme` / `sig_scheme` already disambiguate which inner type lives in
+/// `public_key` / `signature` on the wire; we use those tags to deserialize
+/// directly into a typed enum, no `Vec<u8>` framing. The custom serde impls
+/// below match the inline encoding the TS SDK writes — see
+/// `ts-sdk/src/_internal/aptos.ts`.
 pub struct AptosProofOfPermission {
     pub user_addr: [u8; 32],
     pub pk_scheme: u8,
-    pub public_key: Vec<u8>,
+    pub public_key: AptosPublicKeyMaterial,
     pub sig_scheme: u8,
-    pub signature: Vec<u8>,
+    pub signature: AptosSignatureMaterial,
     pub full_message: String,
+}
+
+/// Inner public-key payload for [`AptosProofOfPermission`].
+#[derive(Clone, Debug)]
+pub enum AptosPublicKeyMaterial {
+    /// pk_scheme=0. BCS wire is `Vec<u8>(32 bytes)` — the natural BCS of
+    /// `aptos_crypto::Ed25519PublicKey` (whose serde derive emits
+    /// `serialize_bytes(&self.0)`).
+    Ed25519([u8; 32]),
+    /// pk_scheme=4. BCS wire is the inline `KeylessPublicKey` struct
+    /// (`{ iss_val: String, idc: Vec<u8> }`).
+    Keyless(keyless_verify::KeylessPublicKey),
+}
+
+/// Inner signature payload for [`AptosProofOfPermission`].
+#[derive(Clone, Debug)]
+pub enum AptosSignatureMaterial {
+    /// sig_scheme=0. BCS wire is `Vec<u8>(64 bytes)`.
+    Ed25519([u8; 64]),
+    /// sig_scheme=4. BCS wire is the inline `KeylessSignature` struct.
+    Keyless(keyless_verify::KeylessSignature),
+}
+
+// pk_scheme / sig_scheme constants — keep in lockstep with `_internal/aptos.ts`.
+const PK_SCHEME_ED25519_WIRE: u8 = 0;
+const PK_SCHEME_KEYLESS_WIRE: u8 = 4;
+const SIG_SCHEME_ED25519_WIRE: u8 = 0;
+const SIG_SCHEME_KEYLESS_WIRE: u8 = 4;
+
+// `serde_bytes::ByteBuf` is what BCS uses to round-trip a `Vec<u8>` field
+// (length-prefixed). We use it as the on-wire representation for the Ed25519
+// pk / sig arms; the bytes are validated to length below.
+impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{Error as _, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = AptosProofOfPermission;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an AptosProofOfPermission tuple")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let user_addr: [u8; 32] = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing user_addr"))?;
+                let pk_scheme: u8 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing pk_scheme"))?;
+                let public_key = match pk_scheme {
+                    PK_SCHEME_ED25519_WIRE => {
+                        let bytes: serde_bytes::ByteBuf = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing Ed25519 public_key"))?;
+                        let arr: [u8; 32] = bytes.into_vec().try_into().map_err(|v: Vec<u8>| {
+                            A::Error::custom(format!(
+                                "Ed25519 public_key must be 32 bytes, got {}",
+                                v.len()
+                            ))
+                        })?;
+                        AptosPublicKeyMaterial::Ed25519(arr)
+                    }
+                    PK_SCHEME_KEYLESS_WIRE => {
+                        let pk: keyless_verify::KeylessPublicKey = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing Keyless public_key"))?;
+                        AptosPublicKeyMaterial::Keyless(pk)
+                    }
+                    other => {
+                        return Err(A::Error::custom(format!(
+                            "unsupported pk_scheme {}",
+                            other
+                        )))
+                    }
+                };
+                let sig_scheme: u8 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing sig_scheme"))?;
+                let signature = match sig_scheme {
+                    SIG_SCHEME_ED25519_WIRE => {
+                        let bytes: serde_bytes::ByteBuf = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing Ed25519 signature"))?;
+                        let arr: [u8; 64] = bytes.into_vec().try_into().map_err(|v: Vec<u8>| {
+                            A::Error::custom(format!(
+                                "Ed25519 signature must be 64 bytes, got {}",
+                                v.len()
+                            ))
+                        })?;
+                        AptosSignatureMaterial::Ed25519(arr)
+                    }
+                    SIG_SCHEME_KEYLESS_WIRE => {
+                        let sig: keyless_verify::KeylessSignature = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing Keyless signature"))?;
+                        AptosSignatureMaterial::Keyless(sig)
+                    }
+                    other => {
+                        return Err(A::Error::custom(format!(
+                            "unsupported sig_scheme {}",
+                            other
+                        )))
+                    }
+                };
+                let full_message: String = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing full_message"))?;
+                Ok(AptosProofOfPermission {
+                    user_addr,
+                    pk_scheme,
+                    public_key,
+                    sig_scheme,
+                    signature,
+                    full_message,
+                })
+            }
+        }
+
+        // BCS treats a struct as an n-tuple in its serde model; deserialize_tuple
+        // is what `#[derive(Deserialize)]` would lower to here.
+        d.deserialize_tuple(6, V)
+    }
+}
+
+impl serde::Serialize for AptosProofOfPermission {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeTuple;
+        let mut t = s.serialize_tuple(6)?;
+        t.serialize_element(&self.user_addr)?;
+        t.serialize_element(&self.pk_scheme)?;
+        match &self.public_key {
+            AptosPublicKeyMaterial::Ed25519(arr) => {
+                t.serialize_element(serde_bytes::Bytes::new(arr))?
+            }
+            AptosPublicKeyMaterial::Keyless(pk) => t.serialize_element(pk)?,
+        }
+        t.serialize_element(&self.sig_scheme)?;
+        match &self.signature {
+            AptosSignatureMaterial::Ed25519(arr) => {
+                t.serialize_element(serde_bytes::Bytes::new(arr))?
+            }
+            AptosSignatureMaterial::Keyless(sig) => t.serialize_element(sig)?,
+        }
+        t.serialize_element(&self.full_message)?;
+        t.end()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -226,12 +385,6 @@ impl CustomFlowProof {
 
 // ── Aptos verification ────────────────────────────────────────────────────────
 
-// pk_scheme / sig_scheme constants — keep in lockstep with `ts-sdk/src/_internal/aptos.ts`.
-const PK_SCHEME_ED25519: u8 = 0;
-const PK_SCHEME_KEYLESS: u8 = 4;
-const SIG_SCHEME_ED25519: u8 = 0;
-const SIG_SCHEME_KEYLESS: u8 = 4;
-
 async fn verify_aptos(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -239,17 +392,36 @@ async fn verify_aptos(
     ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    match (proof.pk_scheme, proof.sig_scheme) {
-        (PK_SCHEME_ED25519, SIG_SCHEME_ED25519) => {
-            verify_aptos_ed25519(req, contract, proof, ephemeral_ek_bytes, chain_rpc).await
+    match (&proof.public_key, &proof.signature) {
+        (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
+            verify_aptos_ed25519(req, contract, proof, pk_bytes, sig_bytes, ephemeral_ek_bytes, chain_rpc).await
         }
-        (PK_SCHEME_KEYLESS, SIG_SCHEME_KEYLESS) => {
-            verify_aptos_keyless(req, contract, proof, ephemeral_ek_bytes, chain_rpc).await
+        (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
+            verify_aptos_keyless(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
         }
         (pk, sig) => Err(anyhow!(
-            "verify_aptos: unsupported (pk_scheme={}, sig_scheme={}) combination",
-            pk, sig
+            "verify_aptos: pk/sig scheme mismatch ({} pk vs {} sig)",
+            pk.tag_name(),
+            sig.tag_name(),
         )),
+    }
+}
+
+impl AptosPublicKeyMaterial {
+    fn tag_name(&self) -> &'static str {
+        match self {
+            AptosPublicKeyMaterial::Ed25519(_) => "ed25519",
+            AptosPublicKeyMaterial::Keyless(_) => "keyless",
+        }
+    }
+}
+
+impl AptosSignatureMaterial {
+    fn tag_name(&self) -> &'static str {
+        match self {
+            AptosSignatureMaterial::Ed25519(_) => "ed25519",
+            AptosSignatureMaterial::Keyless(_) => "keyless",
+        }
     }
 }
 
@@ -257,28 +429,14 @@ async fn verify_aptos_ed25519(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
     proof: &AptosProofOfPermission,
+    pk_bytes: &[u8; 32],
+    sig_bytes: &[u8; 64],
     ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    if proof.public_key.len() != 32 {
-        return Err(anyhow!(
-            "verify_aptos: Ed25519 pubkey must be 32 bytes, got {}",
-            proof.public_key.len()
-        ));
-    }
-    if proof.signature.len() != 64 {
-        return Err(anyhow!(
-            "verify_aptos: Ed25519 sig must be 64 bytes, got {}",
-            proof.signature.len()
-        ));
-    }
-
-    let pk_arr: [u8; 32] = proof.public_key.as_slice().try_into().unwrap();
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
         .map_err(|e| anyhow!("verify_aptos: invalid Ed25519 pubkey: {}", e))?;
-
-    let sig_arr: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
-    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+    let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
 
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
     verify_aptos_sig(req, contract, proof, ephemeral_ek_bytes, &vk, &sig)?;
@@ -307,16 +465,12 @@ async fn verify_aptos_keyless(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
     proof: &AptosProofOfPermission,
+    pk: &keyless_verify::KeylessPublicKey,
+    sig: &keyless_verify::KeylessSignature,
     ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    // 1. Decode the inline KeylessPublicKey / KeylessSignature out of `proof`.
-    let pk: keyless_verify::KeylessPublicKey = bcs::from_bytes(&proof.public_key)
-        .map_err(|e| anyhow!("verify_aptos_keyless: decode KeylessPublicKey: {}", e))?;
-    let sig: keyless_verify::KeylessSignature = bcs::from_bytes(&proof.signature)
-        .map_err(|e| anyhow!("verify_aptos_keyless: decode KeylessSignature: {}", e))?;
-
-    // 2. Reconstruct the message that the ephemeral key signed and confirm
+    // 1. Reconstruct the message that the ephemeral key signed and confirm
     //    `proof.full_message` covers it (same logic as Ed25519 path's
     //    verify_aptos_sig — pretty-message + AptosConnect hex tolerance).
     let pretty_msg = aptos_decryption_request_message(req, contract, ephemeral_ek_bytes);
@@ -335,9 +489,9 @@ async fn verify_aptos_keyless(
         full_msg.as_bytes().to_vec()
     };
 
-    // 3. Pinned public-input hash for SAMPLE_PROOF (only fixture supported
+    // 2. Pinned public-input hash for SAMPLE_PROOF (only fixture supported
     //    until Poseidon-on-the-fly lands).
-    let pinned = keyless_verify::sample_pinned::pinned_hash_for(&pk).ok_or_else(|| {
+    let pinned = keyless_verify::sample_pinned::pinned_hash_for(pk).ok_or_else(|| {
         anyhow!(
             "verify_aptos_keyless: no pinned public-inputs hash for this KeylessPublicKey \
              (iss={:?}); on-the-fly Poseidon-BN254 computation is not yet implemented",
@@ -345,7 +499,7 @@ async fn verify_aptos_keyless(
         )
     })?;
 
-    // 4. Fetch chain-side inputs concurrently with the on-chain auth-key check.
+    // 3. Fetch chain-side inputs concurrently with the on-chain auth-key check.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let header: keyless_verify::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_aptos_keyless: parse jwt_header_json: {}", e))?;
@@ -353,7 +507,7 @@ async fn verify_aptos_keyless(
         fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
         fetch_keyless_groth16_vk(rpc),
         fetch_keyless_configuration(rpc),
-        check_aptos_auth_key_keyless(proof, &pk, rpc),
+        check_aptos_auth_key_keyless(proof, pk, rpc),
         check_aptos_permission(contract, &req.domain, proof, rpc),
     );
     let jwk = jwk_res?;
@@ -362,15 +516,15 @@ async fn verify_aptos_keyless(
     auth_res?;
     perm_res?;
 
-    // 5. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
+    // 4. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
     let now_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("verify_aptos_keyless: system clock: {}", e))?
         .as_secs();
 
     keyless_verify::verify_keyless(
-        &pk,
-        &sig,
+        pk,
+        sig,
         &msg_bytes,
         &jwk,
         &vk,

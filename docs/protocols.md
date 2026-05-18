@@ -16,7 +16,7 @@ ACE runs four orchestration sub-protocols plus one request/response flow. Each i
 
 - **DKG — Distributed Key Generation.** Each member of the committee runs one VSS as dealer (and is a recipient in all $n$ VSS sessions). The joint master secret $s$ is the sum of the constant terms of the $\geq t$ contributing dealer polynomials; nobody ever holds $s$ in the clear. Each committee member ends up holding a Shamir share of $s$. Outputs: the master public key $\mathsf{mpk}$ on-chain, and one share per committee member off-chain (re-derivable from the on-chain VSS messages by that member).
 
-- **DKR — Distributed Key Resharing.** Hands an existing master secret from an *old committee* $(curr\_nodes, t)$ to a *new committee* $(new\_nodes, t')$ without $s$ ever existing in cleartext. Each old node runs a fresh VSS as dealer, *bound* by a Sigma-DLog-Eq proof to be resharing their actual current share (not a fresh secret). New shares are Lagrange combinations of the contributing old reshares at $x=0$. See [`crypto-spec.md`](./crypto-spec.md) §4.0.1 for the construction and references.
+- **DKR — Distributed Key Resharing.** Hands an existing master secret from an *old committee* $(C_{\text{old}}, t)$ to a *new committee* $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. Each old node runs a fresh VSS as dealer, *bound* by a Sigma-DLog-Eq proof to be resharing their actual current share (not a fresh secret). New shares are Lagrange combinations of the contributing old reshares at $x=0$. See [`crypto-spec.md`](./crypto-spec.md) §4.0.1 for the construction and references.
 
 - **Epoch-change orchestrator.** Runs zero-or-more DKRs (one per master secret being preserved) and zero-or-more DKGs (one per fresh master secret) in parallel, then signals the network module to advance the epoch. Triggered either by a passed proposal (committee change, fresh secret) or automatically when the current epoch's duration expires.
 
@@ -224,7 +224,7 @@ After `STATE__DONE`:
 
 ## 4. DKR — Distributed Key Resharing
 
-`contracts/dkr/sources/dkr.move`. Re-distributes an existing master secret from an old committee `(curr_nodes, t_curr)` to a new committee `(new_nodes, t_new)`, **without** the secret ever existing in cleartext. Each old worker runs one resharing-VSS as dealer, with the resharing challenge bound to their own old share PK.
+`contracts/dkr/sources/dkr.move`. Re-distributes an existing master secret from an old committee `(current_nodes, current_threshold)` to a new committee `(new_nodes, new_threshold)`, **without** the secret ever existing in cleartext. Each old worker runs one resharing-VSS as dealer, with the resharing challenge bound to their own old share PK.
 
 ### 4.1 Session struct (abridged)
 
@@ -435,7 +435,7 @@ Key invariants:
 - `state_bcs() → Vec<u8>`: full `State` BCS.
 - `state_view_v0_bcs() → Vec<u8>`: a richer composed snapshot. For each secret, fetches `(keypair_id, scheme)` via `dkg::keypair_id_and_scheme` or `dkr::keypair_id_and_scheme`. For each proposal, fetches `(votes, threshold)` via `voting::session_votes_and_threshold`. For an in-flight epoch change, includes `(nxt_nodes, nxt_threshold)` via `epoch_change::nxt_nodes_and_threshold`.
 
-This view is the SDK's primary read path (`ts-sdk/src/_internal/network.ts`).
+This view is the SDK's primary read path (`ts-sdk/src/network/index.ts`).
 
 ---
 
@@ -467,11 +467,16 @@ SDK                                    Workers (n in committee, threshold t)
 (3) User signs `pretty(payload)`
     with their Ed25519 account
 
-(4) Build BasicFlowRequest =
+(4) Build BasicFlowRequestV2 =
     { payload-fields ||
       AptosProofOfPermission { userAddr,
         pk_scheme=0, pubkey, sig_scheme=0,
-        sig, fullMessage } }
+        sig, fullMessage } ||
+      tibe_scheme }
+    (V1 BasicFlowRequest — same shape minus
+    `tibe_scheme` — is still accepted from older
+    clients; the worker then derives the scheme
+    via tibe_scheme_for_group(share.group_scheme).)
 
 (5) PKE-encrypt that BCS body to each
     worker's registered enc_key.
@@ -480,7 +485,7 @@ SDK                                    Workers (n in committee, threshold t)
     in parallel to ALL committee workers.
                                        (7) PKE-decrypt with worker's pke_dk
                                        (8) bcs::from_bytes::<RequestForDecryptionKey>
-                                           → BasicFlowRequest
+                                           → BasicFlowRequestV2 (or V1)
                                        (9) verify_basic:
                                            a. verifySig: fullMessage contains
                                               (or hex-contains) pretty(payload),
@@ -492,10 +497,12 @@ SDK                                    Workers (n in committee, threshold t)
                                               {moduleAddr}::{moduleName}::{functionName}
                                               (label, encPk, userAddr) → expects true
                                        (10) Look up cached share for (keypairId, epoch)
-                                            → (scalar_le32, tibe_scheme)
+                                            → (scalar_le32, group_scheme)
+                                            V2: assert t_ibe_scheme_group(tibe_scheme)
+                                                == share.group_scheme
                                        (11) eval_point := my position in cur_nodes + 1
                                        (12) Compute idk_share = scalar · hashToCurve(identity)
-                                            in G2 (scheme 0) or G1 (scheme 1)
+                                            in G2 (group_scheme 0) or G1 (group_scheme 1)
                                        (13) Encrypt response = pke_encrypt(
                                                 ephemeralEncKey, BCS(idk_share))
                                        (14) HTTP 200 hex-encoded ciphertext
@@ -516,7 +523,7 @@ Steps 1-2 and 5-16 are identical. Steps 3-4 and 9 differ:
 
 3'. User builds a Solana txn that calls a known program-id with instruction data containing `build_full_request_bytes(keypair_id, epoch, encKey, label)` (`ace-anchor-kit/src/lib.rs:28-36`). They sign that txn but do NOT submit it to the chain. The ACL program is a no-op happy-path; the txn is structurally valid + recently-blockhash-bound but never lands.
 
-4'. Build BasicFlowRequest with `SolanaProofOfPermission { inner_scheme, txn_bytes }`.
+4'. Build BasicFlowRequestV2 with `SolanaProofOfPermission { inner_scheme, txn_bytes }` plus `tibe_scheme`.
 
 9'. `verify_solana`:
 - Parses the Solana txn (legacy or versioned).
@@ -530,7 +537,7 @@ The Solana ACL program is responsible for asserting access (e.g. that a payment 
 
 Steps 1-2 are identical. Step 3 differs: instead of an Ed25519 signature, the user supplies a `payload: Vec<u8>` that the contract's `check_acl(label, encPk, payload) -> bool` will verify.
 
-The `CustomFlowRequest` carries `CustomFlowProof::Aptos(payload)`. The worker view-calls `check_acl(label, encPk, payload)` on the chain via the configured RPC.
+The `CustomFlowRequestV2` carries `CustomFlowProof::Aptos(payload)` plus `tibe_scheme` (V1 `CustomFlowRequest` is the same minus `tibe_scheme` and is still accepted). The worker view-calls `check_acl(label, encPk, payload)` on the chain via the configured RPC.
 
 A typical use: payload is a Groth16 ZK proof bound to `encPk` so a captured proof cannot be reused with a different ephemeral keypair.
 
@@ -548,4 +555,4 @@ The SDK fans out to all $n$ workers in parallel via `Promise.all` over fetches w
 
 After collection, the SDK filters out failed/null responses and verifies each remaining share against the on-chain share-PK list (pairing check from [`crypto-spec.md`](./crypto-spec.md) §3.1). If $\geq t$ valid shares remain, it Lagrange-reconstructs the IDK and runs t-IBE decrypt. Otherwise it errors and the client may retry (typically with a fresh ephemeral keypair).
 
-A future optimization (not in this version): switch to a $t$-of-$n$ short-circuit (`Promise.any` with quorum) so latency tracks the $t$-th-fastest response instead of the slowest.
+A future optimization (not in this version): switch to a t-of-n short-circuit (`Promise.any` with quorum) so latency tracks the $t$-th-fastest response instead of the slowest.

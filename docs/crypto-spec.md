@@ -26,10 +26,10 @@ The PKE layer is used to encrypt **VSS share messages** (dealer → recipient) a
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
-| ElGamal-OTP-Ristretto255 | `0x00` | **placeholder, out of audit scope** (see below) | `ts-sdk/src/pke/elgamal_otp_ristretto255.ts`, `worker-components/vss-common/src/{pke.rs,crypto.rs}`, `contracts/pke/sources/pke_elgamal_otp_ristretto255.move` |
+| ElGamal-OTP-Ristretto255 | `0x00` | **test-only** (see below) | `ts-sdk/src/pke/elgamal_otp_ristretto255.ts`, `worker-components/vss-common/src/{pke.rs,crypto.rs}`, `contracts/pke/sources/pke_elgamal_otp_ristretto255.move` |
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | `0x01` | **production, default** | `ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`, `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs`, `contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move` |
 
-> **Audit scope.** Only **scheme `0x01`** is in the audit scope. Scheme `0x00` is a v1 placeholder — a hand-rolled ElGamal-in-the-exponent + custom OTP/HMAC DEM construction that has no formal security proof and uses non-standard primitives (notably the 64-byte-block HMAC-SHA3-256 of §6.2). It is the default of nothing today, used by no example, and referenced only by the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments must use scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase; until then, the BCS decoder still recognizes the discriminant — see [`wire-formats.md`](./wire-formats.md) §1.1 / §1.2.
+> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — a hand-rolled ElGamal-in-the-exponent + custom OTP/HMAC DEM construction that has no formal security proof and uses non-standard primitives (notably the 64-byte-block HMAC-SHA3-256 of §6.2). It is the default of nothing today, used by no example, and referenced only by the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments must use scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase; until then, the BCS decoder still recognizes the discriminant — see [`wire-formats.md`](./wire-formats.md) §1.1 / §1.2.
 
 ### 2.1 HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 (scheme `0x01`, default)
 
@@ -46,12 +46,7 @@ aad    = b""       (empty by default; callers do NOT pass AAD)
 
 **TS implementation** uses [`@hpke/core`](https://www.npmjs.com/package/@hpke/core) for browser+node WebCrypto-backed primitives (`ts-sdk/src/pke/hpke_x25519_chacha20poly1305.ts`). **Rust implementation** uses [`hpke`](https://docs.rs/hpke/latest/hpke/) crate (`worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:19-23`). **Move implementation** is decoder-only (`contracts/pke/sources/pke_hpke_x25519_chacha20poly1305.move`); no on-chain encrypt/decrypt is needed.
 
-**Wire shapes.**
-```
-EncryptionKey: [ULEB128(32) | 32B X25519 public key]                    # 33 bytes
-DecryptionKey: [ULEB128(32) | 32B X25519 private key]                   # 33 bytes
-Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~2 bytes; aead_ct = ct || 16B Poly1305 tag
-```
+**Wire shapes.** Byte layouts for `EncryptionKey`, `DecryptionKey`, and `Ciphertext` (HPKE rows) live in [`wire-formats.md`](./wire-formats.md) §1.1-§1.3.
 
 **Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
 
@@ -63,16 +58,16 @@ Ciphertext   : [ULEB128(32) | 32B enc] [ULEB128(L) | L bytes aead_ct]   # 32+L+~
 
 ## 3. Threshold Identity-Based Encryption (`t-ibe::*`)
 
-t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair\_id, contract\_id, label)`, where `label` is the app-specific scoping bytes); decryption requires $t$-of-$n$ workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, label)`, where `label` is the app-specific scoping bytes); decryption requires t-of-n workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$).
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
-| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **placeholder, out of audit scope** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **test-only** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
 | BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **production, default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs:35` |
 
-> **Audit scope.** Only **scheme `0x01`** is in the audit scope. Scheme `0x00` is a v1 placeholder — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` (§2). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of §3 describes scheme `0x01` only.
+> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` (§2). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of §3 describes scheme `0x01` only.
 
-The runtime choice between schemes is a static dispatch on the underlying DKG basepoint group, in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`: G1 → scheme `0x00` (legacy path), G2 → scheme `0x01` (production).
+The runtime choice between schemes is a static dispatch on the underlying DKG basepoint group, in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`: G1 → scheme `0x00` (test-only), G2 → scheme `0x01` (production).
 
 ### 3.1 BFIBE-BLS12381-ShortSig-AEAD (scheme `0x01`, default)
 
@@ -114,7 +109,7 @@ aead_ct := ChaCha20-Poly1305(key, nonce, AAD=∅).encrypt(plaintext)
 Ciphertext = (c0, aead_ct)                     # 96 + |plaintext| + 16 bytes (excluding wire ULEBs)
 ```
 
-**Decrypt** with $t$-of-$n$ IDK shares:
+**Decrypt** with t-of-n IDK shares:
 ```
 For each share i:
   share_i = (eval_point_i, idk_share_i)  where idk_share_i = s_i · Q_id  ∈ G1
@@ -187,9 +182,9 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 
 ### 4.0.1 Distributed Key Resharing (DKR): origin and modifications
 
-DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(\text{curr\_nodes}, t)$ to a new committee $(\text{new\_nodes}, t')$ without $s$ ever existing in cleartext. ACE's instance lives in `contracts/dkr/sources/dkr.move`.
+DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext (each committee is a set of node addresses; on-chain these are the `current_nodes` / `new_nodes` fields of `dkr::Session`). ACE's instance lives in `contracts/dkr/sources/dkr.move`.
 
-**Construction.** Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $\text{new\_nodes}$. The resharing-dealer challenge (§4.3) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq \text{curr\_nodes}$ is frozen on-chain, and each new node $i \in \text{new\_nodes}$ derives its new share via Lagrange-at-zero over the contributing old indices:
+**Construction.** Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $C_{\text{new}}$. The resharing-dealer challenge (§4.3) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq C_{\text{old}}$ is frozen on-chain, and each new node $i \in C_{\text{new}}$ derives its new share via Lagrange-at-zero over the contributing old indices:
 
 $$S_i := \sum_{j \in H} \lambda_j \cdot z_{j,i}, \qquad z_{j,i} = g_j(i+1), \qquad \lambda_j = \prod_{k \in H, k \neq j} \frac{0 - (k+1)}{(j+1) - (k+1)} \pmod r$$
 
@@ -203,7 +198,7 @@ The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degr
 
 **Modifications relative to classical PSS / the blog construction.**
 
-1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this by carrying $s_j \cdot B_{\text{old}}$ (read from the previous DKG/DKR's on-chain share-PK list) into the new VSS as a resharing challenge, and requiring a Sigma-DLog-Eq proof (§5) that the new polynomial's constant term equals the known $s_j$. Soundness reduces to soundness of Sigma-DLog-Eq.
+1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this in two layers. The load-bearing layer is an on-chain check (`vss.move:201`) that the dealer's first Feldman commitment $v_0$ equals the pre-published $s_j \cdot B_{\text{old}}$ — combined with Feldman verification of the polynomial during normal-or-dispute share opening, this forces $f(0) = s_j$ regardless of dealer behavior. On top of that, ACE requires a Sigma-DLog-Eq proof (§5) that the dealer *knows* $s_j$ as a scalar; this gives an early-reject of dealers who don't (which would otherwise fail later via no-ACK → reveal → on-chain Feldman fail) and provides an extractability hook for the simulation-based security argument. A future simplification may drop the Sigma-DLog-Eq proof — the on-chain check + Feldman are sufficient for safety; the proof's main value is reasoning convenience, not concrete attack prevention.
 2. **Agreement on contributing set $H$ = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which $t$ VSS sessions to combine. ACE delegates this to the L1: the on-chain orchestrator deterministically reads each VSS's completion flag and freezes the contributing set the first time $|\{j : \text{vss}_j \text{ done}\}| \geq t$. Every observer reads the same $H$ from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same modification pattern as VSS §4.0 item 3.
 3. **Lagrange coefficients computed on-chain.** Move computes $\{\lambda_j\}_{j \in H}$ once per session; new nodes don't compute their own. Saves cross-committee replay and ensures every party uses the same $\lambda_j$.
 4. **No within-epoch share refresh.** Classical PSS refreshes shares periodically within an epoch to handle a mobile adversary. ACE refreshes only at epoch boundaries (`epoch_duration_micros ≥ 30s`); within an epoch, shares are static.
@@ -212,13 +207,13 @@ The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degr
 - $b_{\text{old}} < t$ corrupted nodes in the old committee, **and**
 - $b_{\text{new}} < t'$ corrupted nodes in the new committee.
 
-This is the **dual** of the user-friendly liveness phrasing "$\geq t$ honest old + $\geq t'$ honest new" — note the inequality direction: secrecy needs $b_{\text{old}} \leq t-1$, liveness needs $n - b_{\text{old}} \geq t$ (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
+This is the **dual** of the user-friendly liveness phrasing (which says: at least $t$ honest in the old committee and at least $t'$ honest in the new). Note the inequality direction: secrecy needs $b_{\text{old}} \leq t-1$, liveness needs $n - b_{\text{old}} \geq t$ (and analogously for new). The two coincide only when the corrupted and the offline-but-honest sets coincide (i.e., a malicious node acts by going silent).
 
 **Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates one or two nodes. With overlap:
 - A node in the overlap that is corrupted contributes to **both** $b_{\text{old}}$ and $b_{\text{new}}$.
 - The *abstract* secrecy bound is unchanged: still $b_{\text{old}} < t \;\land\; b_{\text{new}} < t'$.
 - The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size $k$, corrupting up to $\min(t-1, t'-1)$ overlap-nodes counts double — a $(t-1)$-bounded attacker on the old side automatically gets $t-1$ corruptions on the new side too if every corruption is an overlap node.
-- In the limit ($\text{old\_nodes} = \text{new\_nodes}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
+- In the limit ($C_{\text{old}} = C_{\text{new}}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
 
 This is the expected behavior for any PSS — the proactive benefit comes from changing the corrupted set, not from the polynomial refresh. The overlap level is a *deployment policy* choice: small overlap maximizes proactive benefit at the cost of operational continuity; large overlap maximizes continuity at the cost of attacker-cost reduction.
 
@@ -308,14 +303,14 @@ return (t0, t1, s_proof, P1)
 
 ### 5.2 Verify
 
-The on-chain verifier reconstructs the same Fiat–Shamir transcript from $(B_0, P_0, B_1, P_1, t_0, t_1)$ and the bound $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$, derives $c$, and checks:
+The on-chain verifier reconstructs the same Fiat–Shamir transcript from $(B_0, P_0, B_1, P_1, t_0, t_1)$ and the bound (`chain_id`, `ace_addr`, `"vss"`), derives $c$, and checks:
 
 $$s_{\text{proof}} \cdot B_0 = t_0 + c \cdot P_0, \qquad s_{\text{proof}} \cdot B_1 = t_1 + c \cdot P_1$$
 
 **Security.** Standard Schnorr-style argument; soundness holds in the algebraic group model under DLog in $G$; HVZK in the ROM. ~128-bit security level on BLS12-381.
 
 **Audit notes.**
-- The $(\mathsf{chain\_id}, \mathsf{ace\_addr}, \texttt{"vss"})$ binding prevents cross-chain / cross-deployment proof replay. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
+- The (`chain_id`, `ace_addr`, `"vss"`) binding prevents cross-chain / cross-deployment proof replay. If the contract is ever redeployed at a different address, **prior VSS proofs become unverifiable** — by design.
 - `from_le_bytes_mod_order` of a SHA-512 digest produces a uniformly-distributed $\mathbb{F}_r$ element with negligible bias ($r > 2^{252}$, hash output is 512 bits).
 
 ---

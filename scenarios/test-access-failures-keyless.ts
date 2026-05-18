@@ -239,7 +239,8 @@ function buildBobKeylessAccount(): KeylessAccount {
     const proof = new ZeroKnowledgeSig({
         proof: new ZkProof(groth16Zkp, ZkpVariant.Groth16),
         expHorizonSecs: Number(SAMPLE_EXP_HORIZON_SECS),
-        extraField: `"${SAMPLE_EXTRA_FIELD_KEY}":"Straka"`,
+        // Trailing comma is required — see `SAMPLE_EXTRA_FIELD` comment.
+        extraField: `"${SAMPLE_EXTRA_FIELD_KEY}":"Straka",`,
     });
 
     return KeylessAccount.create({

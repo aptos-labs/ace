@@ -454,13 +454,10 @@ async fn verify_aptos_ed25519(
     Ok(())
 }
 
-/// Keyless verification: BCS-decode the inline `KeylessPublicKey` /
-/// `KeylessSignature` from `proof`, fetch the chain inputs (RSA JWK, Groth16
-/// VK, Configuration), then delegate to [`keyless_verify::verify_keyless`].
-///
-/// The Groth16 public-input hash is supplied via the pinned fixture lookup —
-/// porting Poseidon-BN254 into `keyless-verify` is a follow-up. Until then,
-/// only the SAMPLE_PROOF fixture identity is accepted.
+/// Keyless verification: validate `proof.full_message`, fetch the chain
+/// inputs (RSA JWK, Groth16 VK, Configuration), then delegate to
+/// [`keyless_verify::verify_keyless`]. The Poseidon-BN254 public-input hash
+/// is computed on the fly from `(pk, sig, jwk, cfg)` inside the verifier.
 async fn verify_aptos_keyless(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -489,17 +486,7 @@ async fn verify_aptos_keyless(
         full_msg.as_bytes().to_vec()
     };
 
-    // 2. Pinned public-input hash for SAMPLE_PROOF (only fixture supported
-    //    until Poseidon-on-the-fly lands).
-    let pinned = keyless_verify::sample_pinned::pinned_hash_for(pk).ok_or_else(|| {
-        anyhow!(
-            "verify_aptos_keyless: no pinned public-inputs hash for this KeylessPublicKey \
-             (iss={:?}); on-the-fly Poseidon-BN254 computation is not yet implemented",
-            pk.iss_val
-        )
-    })?;
-
-    // 3. Fetch chain-side inputs concurrently with the on-chain auth-key check.
+    // 2. Fetch chain-side inputs concurrently with the on-chain auth-key check.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let header: keyless_verify::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_aptos_keyless: parse jwt_header_json: {}", e))?;
@@ -516,23 +503,14 @@ async fn verify_aptos_keyless(
     auth_res?;
     perm_res?;
 
-    // 4. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
+    // 3. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
     let now_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("verify_aptos_keyless: system clock: {}", e))?
         .as_secs();
 
-    keyless_verify::verify_keyless(
-        pk,
-        sig,
-        &msg_bytes,
-        &jwk,
-        &vk,
-        &cfg,
-        now_unix_secs,
-        keyless_verify::PublicInputsHashSource::Precomputed(*pinned),
-    )
-    .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))?;
+    keyless_verify::verify_keyless(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+        .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))?;
 
     Ok(())
 }

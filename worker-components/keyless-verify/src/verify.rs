@@ -12,6 +12,8 @@ use crate::{
     errors::VerifyError,
     groth16::{verify_proof, Groth16VerificationKey},
     jwk::RsaJwk,
+    pih::get_public_inputs_hash,
+    poseidon::fr_to_bytes_le,
     types::{
         Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature, JwtHeader,
         KeylessPublicKey, KeylessSignature, ZkProof,
@@ -19,38 +21,24 @@ use crate::{
 };
 use ed25519_dalek::Verifier;
 
-/// How the verifier sources the Groth16 public-input hash for this signature.
-///
-/// `OnTheFly` (Poseidon hash over (`epk`, `idc`, …)) requires Poseidon-BN254
-/// and is intentionally not implemented yet — full impl is a follow-up.
-pub enum PublicInputsHashSource {
-    /// 32-byte little-endian Fr (matches `fr_to_bytes_le`). Used by the
-    /// initial worker integration: the hash is pinned per known SAMPLE_PROOF
-    /// fixture and supplied by the caller.
-    Precomputed([u8; 32]),
-    /// Placeholder for the proper code path. Returns `Unsupported` for now;
-    /// the caller (network-node) will fall back to `Precomputed` when the
-    /// signature matches one of the pinned localnet fixtures.
-    OnTheFly,
-}
-
 /// Verify a keyless ZK signature over `message`.
 ///
 /// Returns `Ok(())` only if every check below passes:
 ///   1. `signature.exp_date_secs > now_unix_secs`
 ///   2. `cert.exp_horizon_secs <= config.max_exp_horizon_secs`
 ///   3. `kid` in JWT header == `jwk.kid`
-///   4. Groth16 verify under `groth16_vk` with the supplied public-inputs hash
+///   4. Groth16 verify under `groth16_vk` with public-input hash computed
+///      on-the-fly from `(pk, signature, jwk, config)` via
+///      [`get_public_inputs_hash`]
 ///   5. Ephemeral signature over `message` under `signature.ephemeral_pubkey`
 pub fn verify_keyless(
-    _pk: &KeylessPublicKey,
+    pk: &KeylessPublicKey,
     signature: &KeylessSignature,
     message: &[u8],
     jwk: &RsaJwk,
     groth16_vk: &Groth16VerificationKey,
     config: &Configuration,
     now_unix_secs: u64,
-    pih_source: PublicInputsHashSource,
 ) -> Result<(), VerifyError> {
     // 1. EPK expiry.
     if signature.exp_date_secs <= now_unix_secs {
@@ -99,16 +87,11 @@ pub fn verify_keyless(
         });
     }
 
-    // 4. Groth16.
-    let pih = match pih_source {
-        PublicInputsHashSource::Precomputed(h) => h,
-        PublicInputsHashSource::OnTheFly => {
-            return Err(VerifyError::Unsupported(
-                "on-the-fly Poseidon public-inputs hash not yet implemented; \
-                 caller must supply a precomputed hash",
-            ))
-        }
-    };
+    // 4. Groth16. Public-input hash computed on-the-fly from
+    //    `(pk, signature, jwk, config)` — bit-identical to what
+    //    `aptos_types::keyless::get_public_inputs_hash` produces.
+    let pih_fr = get_public_inputs_hash(signature, pk, jwk, config)?;
+    let pih = fr_to_bytes_le(&pih_fr);
     let pvk = groth16_vk.to_ark_prepared()?;
     let proof = match &zks.proof {
         ZkProof::Groth16Zkp(p) => p,
@@ -119,7 +102,6 @@ pub fn verify_keyless(
     // the Groth16 proof commits to `jwk_hash` via the public-input hash, so a
     // valid proof under the on-chain VK is already a binding to the JWK. A
     // follow-up will add explicit JWT-sig verification too.)
-    let _ = (jwk,);
 
     // 5. Ephemeral signature over `message` under `ephemeral_pubkey`.
     verify_ephemeral_sig(&signature.ephemeral_pubkey, &signature.ephemeral_signature, message)?;

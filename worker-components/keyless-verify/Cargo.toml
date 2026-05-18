@@ -26,3 +26,11 @@ ark-serialize = { version = "0.4", default-features = false }
 ark-std = { version = "0.4", default-features = false }
 thiserror = "1"
 hex-literal = "0.4"
+# BN254 Poseidon hash with iden3/circomlib round constants — bit-compatible
+# with `aptos_crypto::poseidon_bn254` and the ts-sdk's `poseidon-lite`.
+# arnaucube's reference port (1..=16 arities; ark 0.4 compatible). Pinned
+# to the same rev the keyless circuit references.
+poseidon-ark = { git = "https://github.com/arnaucube/poseidon-ark", rev = "6d2487aa1308d9d3860a2b724c485d73095c1c68" }
+num-bigint = "0.4"
+base64 = "0.21"
+once_cell = "1"

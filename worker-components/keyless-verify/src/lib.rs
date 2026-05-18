@@ -42,12 +42,16 @@
 //! and the production verifier in `aptos_types::keyless`.
 
 pub mod auth_key;
+pub mod circuit;
 pub mod errors;
 pub mod groth16;
 pub mod jwk;
-pub mod sample_pinned;
+pub mod pih;
+pub mod poseidon;
 pub mod types;
 pub mod verify;
+
+pub use pih::get_public_inputs_hash;
 
 pub use auth_key::keyless_account_authentication_key;
 pub use errors::VerifyError;
@@ -57,4 +61,4 @@ pub use types::{
     Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature, Groth16Proof,
     IdCommitment, KeylessPublicKey, KeylessSignature, ZeroKnowledgeSig, ZkProof,
 };
-pub use verify::{verify_keyless, PublicInputsHashSource};
+pub use verify::verify_keyless;

@@ -79,6 +79,12 @@ export const SAMPLE_PROOF_C_HEX =
     'd44ee2772f4b48fdb0dbd8d870d3fb4401cd3a28fbdde535e9c57bac9a263f9c';
 
 // Public-input flavor matching SAMPLE_PROOF: uid_key="sub", no override aud,
-// extra_field present ("family_name":"Straka").
+// extra_field present (`"family_name":"Straka",`).
+//
+// The trailing comma is REQUIRED — SAMPLE_PROOF was generated against
+// `aptos-types`' `SAMPLE_JWT_EXTRA_FIELD`, which renders as
+// `format!("\"{}\":\"Straka\",", key)`. Without it, the worker's Poseidon
+// public-input hash diverges from the one the proof commits to and Groth16
+// verification fails.
 export const SAMPLE_EXTRA_FIELD_KEY = 'family_name';
-export const SAMPLE_EXTRA_FIELD = '"family_name":"Straka"';
+export const SAMPLE_EXTRA_FIELD = '"family_name":"Straka",';

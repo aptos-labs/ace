@@ -1,4 +1,0 @@
-# aptos-runtimes (pulled via aptos-types) uses tokio's unstable Builder::disable_lifo_slot,
-# which requires this cfg flag to be set at the build-system level.
-[build]
-rustflags = ["--cfg", "tokio_unstable"]

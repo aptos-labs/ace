@@ -29,7 +29,15 @@
  *   C. Bob (keyless) + wrong domain        → worker permission-view 403.
  *   D. Bob (keyless) + correct inputs      → success.
  *
- * Steps A, C, and D exercise the keyless verification path end-to-end.
+ * Steps A, C, D, E, F exercise the keyless verification path end-to-end.
+ *
+ * Mauling cases:
+ *   E. Bob (keyless) + bit-flipped ephemeral Ed25519 signature → must fail.
+ *      Exercises the worker's ephemeral-signature verification step.
+ *   F. Bob (keyless) + bit-flipped Groth16 proof.a → must fail.
+ *      Exercises the worker's Groth16 verifier, ensuring the proof field is
+ *      actually checked (not blindly trusted because the rest of the
+ *      KeylessSignature looks correct).
  *
  * Run:
  *   cd scenarios && pnpm test-access-failures-keyless
@@ -38,14 +46,19 @@
 import {
     Account,
     AccountAddress,
-    EphemeralKeyPair,
     Ed25519PrivateKey,
+    Ed25519Signature,
+    EphemeralCertificate,
+    EphemeralCertificateVariant,
+    EphemeralKeyPair,
+    EphemeralSignature,
+    Groth16Zkp,
     KeylessAccount,
+    KeylessSignature,
+    Serializer,
     ZeroKnowledgeSig,
     ZkProof,
     ZkpVariant,
-    Groth16Zkp,
-    Serializer,
 } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { pke } from '@aptos-labs/ace-sdk';
@@ -432,6 +445,99 @@ async function main() {
             assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
             assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
             console.log('  ✓ Bob (keyless) decrypted successfully with correct inputs');
+        }
+
+        // ── Negative E: mauled ephemeral signature ──────────────────────────────
+        // Everything else in the KeylessSignature is valid; only the inner
+        // Ed25519 bytes over the pretty message are bit-flipped. Worker must
+        // reject in its ephemeral-sig verification step.
+        step('E', 'Negative: Bob (keyless) with mauled ephemeral Ed25519 signature → must fail');
+        {
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const goodSig = bob.sign(msg);
+            const innerEd = goodSig.ephemeralSignature.signature as Ed25519Signature;
+            const mauledBytes = new Uint8Array(innerEd.toUint8Array());
+            mauledBytes[0] ^= 0x01;
+            const mauledSig = new KeylessSignature({
+                jwtHeader: goodSig.jwtHeader,
+                ephemeralCertificate: goodSig.ephemeralCertificate,
+                expiryDateSecs: goodSig.expiryDateSecs,
+                ephemeralPublicKey: goodSig.ephemeralPublicKey,
+                ephemeralSignature: new EphemeralSignature(new Ed25519Signature(mauledBytes)),
+            });
+            const result = await session.decryptWithProof({
+                userAddr: bob.accountAddress,
+                publicKey: bob.publicKey,
+                signature: mauledSig,
+            });
+            assert(!result.isOk, `Expected decrypt to fail with mauled ephemeral signature, but it succeeded`);
+            console.log(`  ✓ decrypt with mauled ephemeral signature correctly rejected (${result.errValue})`);
+        }
+
+        // ── Negative F: mauled Groth16 proof ────────────────────────────────────
+        // The ephemeral signature still verifies (it's over msg + ephemeral_pk),
+        // but proof.a is corrupted so Groth16 verification must fail. Catches a
+        // worker bug where the proof field is parsed but never verified.
+        step('F', 'Negative: Bob (keyless) with mauled Groth16 proof.a → must fail');
+        {
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const goodSig = bob.sign(msg);
+
+            // Flip the first byte of proof.a (still 32 bytes; not necessarily a
+            // valid curve point but the worker should fail closed regardless).
+            const firstByte = parseInt(SAMPLE_PROOF_A_HEX.slice(0, 2), 16);
+            const mauledFirstByte = (firstByte ^ 0x01).toString(16).padStart(2, '0');
+            const mauledAHex = mauledFirstByte + SAMPLE_PROOF_A_HEX.slice(2);
+            const mauledProof = new Groth16Zkp({
+                a: mauledAHex,
+                b: SAMPLE_PROOF_B_HEX,
+                c: SAMPLE_PROOF_C_HEX,
+            });
+            const goodZk = goodSig.ephemeralCertificate.signature as ZeroKnowledgeSig;
+            const mauledCert = new EphemeralCertificate(
+                new ZeroKnowledgeSig({
+                    proof: new ZkProof(mauledProof, ZkpVariant.Groth16),
+                    expHorizonSecs: goodZk.expHorizonSecs,
+                    extraField: goodZk.extraField,
+                    overrideAudVal: goodZk.overrideAudVal,
+                    trainingWheelsSignature: goodZk.trainingWheelsSignature,
+                }),
+                EphemeralCertificateVariant.ZkProof,
+            );
+            const mauledSig = new KeylessSignature({
+                jwtHeader: goodSig.jwtHeader,
+                ephemeralCertificate: mauledCert,
+                expiryDateSecs: goodSig.expiryDateSecs,
+                ephemeralPublicKey: goodSig.ephemeralPublicKey,
+                ephemeralSignature: goodSig.ephemeralSignature,
+            });
+            const result = await session.decryptWithProof({
+                userAddr: bob.accountAddress,
+                publicKey: bob.publicKey,
+                signature: mauledSig,
+            });
+            assert(!result.isOk, `Expected decrypt to fail with mauled Groth16 proof, but it succeeded`);
+            console.log(`  ✓ decrypt with mauled Groth16 proof correctly rejected (${result.errValue})`);
         }
 
         console.log('\n✅ All keyless access-control enforcement tests passed!\n');

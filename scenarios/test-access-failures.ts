@@ -15,6 +15,8 @@
  *   C. Decrypt with wrong domain (blob doesn't exist) → must fail
  *      (worker returns 403: check_permission(Bob, wrong-domain) == false)
  *   D. Decrypt by Bob (allowlisted) with correct keypairId and domain → must succeed
+ *   E. Decrypt by Bob with a mauled Ed25519 signature → must fail
+ *      (worker returns 403: Ed25519 verification fails on the pretty-message bytes)
  *
  * Workers enforce all three checks before returning an IBE key share:
  *   1. Ed25519 signature over fullMessage
@@ -29,6 +31,7 @@ import {
     Account,
     AccountAddress,
     Ed25519PrivateKey,
+    Ed25519Signature,
     Serializer,
 } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
@@ -341,6 +344,36 @@ async function main() {
             assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
             assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
             console.log('  ✓ Bob decrypted successfully with correct inputs');
+        }
+
+        // ── Negative E: mauled Ed25519 signature ─────────────────────────────────
+        // Bob is allowlisted and uses the correct keypairId + domain. The only
+        // thing wrong is the signature bytes: we flip a bit. Worker must reject
+        // before reaching the on-chain auth-key / permission checks.
+        step('E', 'Negative: Bob with mauled Ed25519 signature → must fail');
+        {
+            const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+                aceDeployment,
+                keypairId: keypair0Id,
+                chainId: CHAIN_ID,
+                moduleAddr: adminAccountAddress,
+                moduleName: 'access_control',
+                functionName: 'check_permission',
+                domain: correctDomain,
+                ciphertext: pingCiph,
+            });
+            const msg = await session.getRequestToSign();
+            const goodSig = bob.sign(msg);
+            const mauledBytes = new Uint8Array(goodSig.toUint8Array());
+            mauledBytes[0] ^= 0x01; // flip one bit
+            const mauledSig = new Ed25519Signature(mauledBytes);
+            const result = await session.decryptWithProof({
+                userAddr: bob.accountAddress,
+                publicKey: bob.publicKey,
+                signature: mauledSig,
+            });
+            assert(!result.isOk, `Expected decrypt to fail with mauled signature, but it succeeded`);
+            console.log(`  ✓ decrypt with mauled signature correctly rejected (${result.errValue})`);
         }
 
         console.log('\n✅ All access-control enforcement tests passed!\n');

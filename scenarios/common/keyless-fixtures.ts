@@ -67,24 +67,18 @@ export const SAMPLE_EPHEMERAL_SK_HEX =
 
 // ── Groth16 proof ─────────────────────────────────────────────────────────────
 //
-// Reference: SAMPLE_PROOF in aptos-core/types/src/keyless/circuit_testcases.rs
-// Constructed from Groth16 (a ∈ G1, b ∈ G2, c ∈ G1) using bn254_circom encoding.
+// Reference: SAMPLE_PROOF_NO_EXTRA_FIELD in aptos-core/types/src/keyless/
+// circuit_testcases.rs — the variant of the sample Groth16 proof that does
+// NOT reveal an extra JWT claim. We pick this one over `SAMPLE_PROOF` so the
+// scenario doesn't have to ship the exact `"family_name":"Straka",` literal
+// the other variant commits to.
+//
+// Public-input flavor: uid_key="sub", no override aud, no extra_field.
 
 export const SAMPLE_PROOF_A_HEX =
-    '3304cc0defd488d770af0439480ec24c8473b30dbcbfad9fdf99ca62256bd908';
+    'bdfda383c9131ab44dd3d8efe65c59842b28e17467e2d07c4020742407c580a7';
 export const SAMPLE_PROOF_B_HEX =
-    '2f432b9459375ed2032bcb1ff3ccc1dd5d05a752d6956d2bb003f4e3b42d0b24' +
-    '2cf4ab4d3dc8dc700ede17bbfeaddedd42033691e3d85ff8d6621663cb2e779a';
+    'd27b4c0296ec1045dd050894c635095c25ff8d89c8adf5da401b3434639c5605' +
+    '50e3da14e5ec953769aac9d256ddc9b2a8071c021f271f0937fd5be404f2b919';
 export const SAMPLE_PROOF_C_HEX =
-    'd44ee2772f4b48fdb0dbd8d870d3fb4401cd3a28fbdde535e9c57bac9a263f9c';
-
-// Public-input flavor matching SAMPLE_PROOF: uid_key="sub", no override aud,
-// extra_field present (`"family_name":"Straka",`).
-//
-// The trailing comma is REQUIRED — SAMPLE_PROOF was generated against
-// `aptos-types`' `SAMPLE_JWT_EXTRA_FIELD`, which renders as
-// `format!("\"{}\":\"Straka\",", key)`. Without it, the worker's Poseidon
-// public-input hash diverges from the one the proof commits to and Groth16
-// verification fails.
-export const SAMPLE_EXTRA_FIELD_KEY = 'family_name';
-export const SAMPLE_EXTRA_FIELD = '"family_name":"Straka",';
+    '52a25b0b58013a77f8713105d7e0f817468bbdd25d644e9f2a9b3eabd7d4bc17';

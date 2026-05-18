@@ -106,7 +106,6 @@ import {
     SAMPLE_EPK_BLINDER_HEX,
     SAMPLE_EXP_DATE_SECS,
     SAMPLE_EXP_HORIZON_SECS,
-    SAMPLE_EXTRA_FIELD_KEY,
     SAMPLE_ISS,
     SAMPLE_JWT,
     SAMPLE_PEPPER_HEX,
@@ -236,11 +235,11 @@ function buildBobKeylessAccount(): KeylessAccount {
         b: SAMPLE_PROOF_B_HEX,
         c: SAMPLE_PROOF_C_HEX,
     });
+    // SAMPLE_PROOF_NO_EXTRA_FIELD: extraField is intentionally omitted —
+    // the proof was generated without revealing any extra JWT claim.
     const proof = new ZeroKnowledgeSig({
         proof: new ZkProof(groth16Zkp, ZkpVariant.Groth16),
         expHorizonSecs: Number(SAMPLE_EXP_HORIZON_SECS),
-        // Trailing comma is required — see `SAMPLE_EXTRA_FIELD` comment.
-        extraField: `"${SAMPLE_EXTRA_FIELD_KEY}":"Straka",`,
     });
 
     return KeylessAccount.create({

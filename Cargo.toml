@@ -1,6 +1,13 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
+# Forked merlin so the aptos-core git deps (aptos-types → aptos-dkg →
+# merlin::Transcript::new(label: &'static [u8])) build cleanly. The aptos-labs
+# fork relaxes that lifetime bound. Only the fixture-dumper needs this path;
+# nothing in the worker runtime touches merlin.
+[patch.crates-io]
+merlin = { git = "https://github.com/aptos-labs/merlin" }
+
 [workspace]
 resolver = "2"
 members = [
@@ -14,4 +21,6 @@ members = [
     "worker-components/epoch-change-cur",
     "worker-components/epoch-change-nxt",
     "worker-components/network-node",
+    "worker-components/keyless-fixture-dumper",
+    "worker-components/keyless-verify",
 ]

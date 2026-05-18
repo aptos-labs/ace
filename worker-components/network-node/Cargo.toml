@@ -24,6 +24,7 @@ ace-anchor-kit = { path = "../../ace-anchor-kit" }
 vss-common = { path = "../vss-common" }
 epoch-change-cur = { path = "../epoch-change-cur" }
 epoch-change-nxt = { path = "../epoch-change-nxt" }
+keyless-verify = { path = "../keyless-verify" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 bcs = "0.1"

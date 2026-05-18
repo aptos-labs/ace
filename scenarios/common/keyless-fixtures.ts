@@ -49,23 +49,21 @@ export const SAMPLE_EXP_HORIZON_SECS = 999_999_999_999n;
 // Header is well-known:
 //   {"alg":"RS256","typ":"JWT","kid":"test-rsa"}
 // Payload + signature depend on the ephemeral pubkey (via nonce), the issuer's
-// RSA private key, and the IAT — we hardcode the resulting JWT string verbatim
-// so the test does not need an RSA signer at runtime.
-//
-// TODO(keyless-fixtures): populate from the Rust dumper. The placeholder below
-// is intentionally invalid so the test fails loudly until the fixture lands.
-export const SAMPLE_JWT_PLACEHOLDER =
-    'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3QtcnNhIn0.PLACEHOLDER.PLACEHOLDER';
+// RSA private key, and the IAT. We hardcode the resulting JWT string verbatim
+// so the test does not need an RSA signer at runtime — dumped from
+// `cargo run -p keyless-fixture-dumper`.
+export const SAMPLE_JWT =
+    'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3QtcnNhIn0.ewogICAgICAgICAgICAiaXNzIjoidGVzdC5vaWRjLnByb3ZpZGVyIiwKICAgICAgICAgICAgImF6cCI6IjQwNzQwODcxODE5Mi5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsCiAgICAgICAgICAgICJhdWQiOiI0MDc0MDg3MTgxOTIuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20iLAogICAgICAgICAgICAic3ViIjoiMTEzOTkwMzA3MDgyODk5NzE4Nzc1IiwKICAgICAgICAgICAgImhkIjoiYXB0b3NsYWJzLmNvbSIsCiAgICAgICAgICAgICJlbWFpbCI6Im1pY2hhZWxAYXB0b3NsYWJzLmNvbSIsCiAgICAgICAgICAgICJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwKICAgICAgICAgICAgImF0X2hhc2giOiJieElFU3VJNTlJb1piNWFsQ0FTcUJnIiwKICAgICAgICAgICAgIm5hbWUiOiJNaWNoYWVsIFN0cmFrYSIsCiAgICAgICAgICAgICJwaWN0dXJlIjoiaHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvQUNnOG9jSnZZNGtWVUJSdEx4ZTFJcUtXTDVpN3RCREp6RnA5WXVXVlhNendQcGJzPXM5Ni1jIiwKICAgICAgICAgICAgImdpdmVuX25hbWUiOiJNaWNoYWVsIiwKICAgICAgICAgICAgImZhbWlseV9uYW1lIjoiU3RyYWthIiwKICAgICAgICAgICAgImxvY2FsZSI6ImVuIiwKICAgICAgICAgICAgImlhdCI6MTcwMDI1NTk0NCwKICAgICAgICAgICAgIm5vbmNlIjoiMjI4NDQ3MzMzMzQ0MjI1MTgwNDM3OTY4MTY0Mzk2NTMwODE1NDMxMTc3MzY2NzUyNTM5ODExOTQ5Njc5NzU0NTU5NDcwNTM1NjQ5NSIsCiAgICAgICAgICAgICJleHAiOjI3MDAyNTk1NDQKICAgICAgICAgfQ.JqX7sjovF_Nfn9ugmhCVFL-HhsE_2wSx1lz6pFKqWVH82pmUcjy2CWbbkCcIlV0nJ3Gsjw1I4J-cWoG_cNJFANH7o4kKDMK2g6xa2NwU0mG4ZGMrq15-rx80ALdf1VCE5_LbVLQgEWbM44l8k_g1_5fxa3x8cZ8JsNd2OqtnkChd_HoqrQjg-z__Mnv-QPgOJVoBLbddlX9zYiPgOE8DwIgFJM_vLec2P_ywszQ3tNQnxww1bhRgEyfaZdc5NcBRFAYFqwHXi-rbuX72JjzgCed-M5iEPmQS1tbUn7Njkor1kundNbHwSoaK6h-5Sv8HkXrvHJiCKOSZtMAwLk8ncQ';
 
 // ── Ephemeral keypair ─────────────────────────────────────────────────────────
 
 // Ed25519PrivateKey::generate_for_testing() — StdRng seeded with [0u8; 32].
 // The exact 32 SK bytes are not derivable in TS without porting ChaCha20Rng, so
-// we extract once and paste.
+// we extract once and paste — see `keyless-fixture-dumper`.
 //
-// TODO(keyless-fixtures): populate from the Rust dumper.
-export const SAMPLE_EPHEMERAL_SK_HEX_PLACEHOLDER =
-    '00'.repeat(32);
+// The matching EPK is `20fdbac9b10b7587bba7b5bc163bce69e796d71e4ed44c10fcb4488689f7a144`.
+export const SAMPLE_EPHEMERAL_SK_HEX =
+    '76b8e0ada0f13d90405d6ae55386bd28bdd219b8a08ded1aa836efcc8b770dc7';
 
 // ── Groth16 proof ─────────────────────────────────────────────────────────────
 //

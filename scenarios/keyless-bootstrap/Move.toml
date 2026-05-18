@@ -1,0 +1,14 @@
+[package]
+name = "KeylessBootstrap"
+version = "1.0.0"
+authors = []
+
+# No on-chain addresses to declare — this package only contains a Move script
+# that is `aptos move run-script`-executed against a localnet (the root mint
+# key signs as `0xA550C18`, which `aptos_governance::get_signer_testnet_only`
+# accepts as the `core_resources` signer).
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"

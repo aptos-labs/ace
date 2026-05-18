@@ -64,12 +64,21 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import { pke } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
 
+import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { promisify } from 'util';
+
 import {
     ACCESS_CONTROL_CONTRACT_DIR,
     CHAIN_ID,
     LOCALNET_URL,
+    REPO_ROOT,
     WORKER_BASE_PORT,
 } from './common/config';
+
+const execFileAsync = promisify(execFile);
 import {
     assertTxnSuccess,
     assert,
@@ -93,13 +102,13 @@ import {
 } from './common/network-clients';
 import {
     SAMPLE_AUD,
-    SAMPLE_EPHEMERAL_SK_HEX_PLACEHOLDER,
+    SAMPLE_EPHEMERAL_SK_HEX,
     SAMPLE_EPK_BLINDER_HEX,
     SAMPLE_EXP_DATE_SECS,
     SAMPLE_EXP_HORIZON_SECS,
     SAMPLE_EXTRA_FIELD_KEY,
     SAMPLE_ISS,
-    SAMPLE_JWT_PLACEHOLDER,
+    SAMPLE_JWT,
     SAMPLE_PEPPER_HEX,
     SAMPLE_PROOF_A_HEX,
     SAMPLE_PROOF_B_HEX,
@@ -127,18 +136,86 @@ function hexToBytes(hex: string): Uint8Array {
  *      matching aptos-core's insecure_test_jwk.json.
  *   2. A Groth16 verifying key installed in 0x1::keyless_account matching
  *      SAMPLE_PROOF (devnet-groth16-keys @ 02e5675).
+ *   3. `max_exp_horizon_secs` ≥ SAMPLE_EXP_HORIZON_SECS, training-wheels off.
  *
- * Both are installed via governance entries in the keyless framework. On a
- * vanilla `aptos node run-localnet` neither is present, so this helper exists
- * as the bootstrap hook for the worker PR's e2e test. Implementation deferred
- * to the same PR that adds keyless verification to verify.rs.
- *
- * TODO(keyless-bootstrap): wire this up. For now it is a no-op so the scenario
- * can be reviewed end-to-end; the assertions below will fail at the worker
- * dispatch step until both the bootstrap and the worker support land.
+ * Both are framework-signer-only operations. We bounce through
+ * `aptos_governance::get_signer_testnet_only` from the localnet's root mint
+ * account (`0xA550C18`) — its private key is written to
+ * `~/.aptos/testnet/mint.key` by `aptos node run-local-testnet`. The script
+ * itself lives in `scenarios/keyless-bootstrap/`.
  */
 async function setupLocalnetForKeyless(_adminAccount: Account): Promise<void> {
-    console.log('  setupLocalnetForKeyless: NOT YET IMPLEMENTED (see TODO in source)');
+    await runKeylessBootstrapScript();
+}
+
+/**
+ * Runs `aptos move run-script` against `scenarios/keyless-bootstrap/` using
+ * the localnet's `0xA550C18` root key. The script installs the test JWK,
+ * Groth16 VK, and a relaxed `max_exp_horizon_secs`; see
+ * `scenarios/keyless-bootstrap/sources/bootstrap.move` for the full body.
+ */
+/**
+ * Returns the path to the localnet's `mint.key`. The `aptos` CLI resolves
+ * its test-dir from the nearest `.aptos` folder walking from the current
+ * working directory upward (see `get_derived_test_dir` in aptos-core); it
+ * only falls back to `~/.aptos` if none is found. We mirror that resolution
+ * so stale `~/.aptos/testnet/mint.key` files from a different localnet
+ * never get picked up.
+ */
+function resolveLocalnetMintKeyPath(): string {
+    let dir = process.cwd();
+    while (true) {
+        const candidate = path.join(dir, '.aptos', 'testnet', 'mint.key');
+        if (existsSync(candidate)) return candidate;
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    const fallback = path.join(os.homedir(), '.aptos', 'testnet', 'mint.key');
+    if (existsSync(fallback)) return fallback;
+    throw new Error(
+        `Localnet mint key not found (searched cwd→root for .aptos/testnet/mint.key, ` +
+        `and ${fallback}). Did startLocalnet() run?`
+    );
+}
+
+async function runKeylessBootstrapScript(): Promise<void> {
+    const mintKeyPath = resolveLocalnetMintKeyPath();
+    const scriptPath = path.join(
+        REPO_ROOT,
+        'scenarios',
+        'keyless-bootstrap',
+        'sources',
+        'bootstrap.move',
+    );
+
+    console.log('  Running keyless bootstrap script (installs JWK + Groth16 VK + config patch)...');
+    const { stdout, stderr } = await execFileAsync(
+        'aptos',
+        [
+            'move',
+            'run-script',
+            '--script-path',
+            scriptPath,
+            // mint.key is the BCS-encoded `Ed25519PrivateKey` (33 bytes:
+            // uleb128(32) || 32 raw bytes) — use --encoding bcs so the CLI
+            // unwraps the newtype-struct correctly.
+            '--private-key-file',
+            mintKeyPath,
+            '--encoding',
+            'bcs',
+            '--sender-account',
+            '0xA550C18',
+            '--url',
+            LOCALNET_URL,
+            '--assume-yes',
+            '--skip-fetch-latest-git-deps',
+        ],
+        { maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (stdout) process.stdout.write(`  [keyless-bootstrap] ${stdout}`);
+    if (stderr) process.stderr.write(`  [keyless-bootstrap] ${stderr}`);
+    console.log('  Keyless bootstrap script: OK');
 }
 
 /**
@@ -147,7 +224,7 @@ async function setupLocalnetForKeyless(_adminAccount: Account): Promise<void> {
  * proof will not verify.
  */
 function buildBobKeylessAccount(): KeylessAccount {
-    const sk = new Ed25519PrivateKey(hexToBytes(SAMPLE_EPHEMERAL_SK_HEX_PLACEHOLDER));
+    const sk = new Ed25519PrivateKey(hexToBytes(SAMPLE_EPHEMERAL_SK_HEX));
     const ephemeralKeyPair = new EphemeralKeyPair({
         privateKey: sk,
         expiryDateSecs: Number(SAMPLE_EXP_DATE_SECS),
@@ -167,7 +244,7 @@ function buildBobKeylessAccount(): KeylessAccount {
 
     return KeylessAccount.create({
         proof,
-        jwt: SAMPLE_JWT_PLACEHOLDER,
+        jwt: SAMPLE_JWT,
         ephemeralKeyPair,
         pepper: hexToBytes(SAMPLE_PEPPER_HEX),
         uidKey: SAMPLE_UID_KEY,

@@ -226,6 +226,12 @@ impl CustomFlowProof {
 
 // ── Aptos verification ────────────────────────────────────────────────────────
 
+// pk_scheme / sig_scheme constants — keep in lockstep with `ts-sdk/src/_internal/aptos.ts`.
+const PK_SCHEME_ED25519: u8 = 0;
+const PK_SCHEME_KEYLESS: u8 = 4;
+const SIG_SCHEME_ED25519: u8 = 0;
+const SIG_SCHEME_KEYLESS: u8 = 4;
+
 async fn verify_aptos(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -233,13 +239,27 @@ async fn verify_aptos(
     ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    // Only legacy Ed25519 (pk_scheme=0, sig_scheme=0) is currently supported.
-    if proof.pk_scheme != 0 {
-        return Err(anyhow!("verify_aptos: unsupported public key scheme {}", proof.pk_scheme));
+    match (proof.pk_scheme, proof.sig_scheme) {
+        (PK_SCHEME_ED25519, SIG_SCHEME_ED25519) => {
+            verify_aptos_ed25519(req, contract, proof, ephemeral_ek_bytes, chain_rpc).await
+        }
+        (PK_SCHEME_KEYLESS, SIG_SCHEME_KEYLESS) => {
+            verify_aptos_keyless(req, contract, proof, ephemeral_ek_bytes, chain_rpc).await
+        }
+        (pk, sig) => Err(anyhow!(
+            "verify_aptos: unsupported (pk_scheme={}, sig_scheme={}) combination",
+            pk, sig
+        )),
     }
-    if proof.sig_scheme != 0 {
-        return Err(anyhow!("verify_aptos: unsupported signature scheme {}", proof.sig_scheme));
-    }
+}
+
+async fn verify_aptos_ed25519(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    ephemeral_ek_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
     if proof.public_key.len() != 32 {
         return Err(anyhow!(
             "verify_aptos: Ed25519 pubkey must be 32 bytes, got {}",
@@ -267,11 +287,98 @@ async fn verify_aptos(
 
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
-        check_aptos_auth_key(proof, &vk, rpc),
+        check_aptos_auth_key_ed25519(proof, &vk, rpc),
         check_aptos_permission(contract, &req.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;
+
+    Ok(())
+}
+
+/// Keyless verification: BCS-decode the inline `KeylessPublicKey` /
+/// `KeylessSignature` from `proof`, fetch the chain inputs (RSA JWK, Groth16
+/// VK, Configuration), then delegate to [`keyless_verify::verify_keyless`].
+///
+/// The Groth16 public-input hash is supplied via the pinned fixture lookup —
+/// porting Poseidon-BN254 into `keyless-verify` is a follow-up. Until then,
+/// only the SAMPLE_PROOF fixture identity is accepted.
+async fn verify_aptos_keyless(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    ephemeral_ek_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    // 1. Decode the inline KeylessPublicKey / KeylessSignature out of `proof`.
+    let pk: keyless_verify::KeylessPublicKey = bcs::from_bytes(&proof.public_key)
+        .map_err(|e| anyhow!("verify_aptos_keyless: decode KeylessPublicKey: {}", e))?;
+    let sig: keyless_verify::KeylessSignature = bcs::from_bytes(&proof.signature)
+        .map_err(|e| anyhow!("verify_aptos_keyless: decode KeylessSignature: {}", e))?;
+
+    // 2. Reconstruct the message that the ephemeral key signed and confirm
+    //    `proof.full_message` covers it (same logic as Ed25519 path's
+    //    verify_aptos_sig — pretty-message + AptosConnect hex tolerance).
+    let pretty_msg = aptos_decryption_request_message(req, contract, ephemeral_ek_bytes);
+    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    let full_msg = &proof.full_message;
+    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+        return Err(anyhow!(
+            "verify_aptos_keyless: fullMessage does not contain expected decryption request content"
+        ));
+    }
+    let msg_bytes: Vec<u8> = if is_valid_hex(full_msg) {
+        let stripped = full_msg.strip_prefix("0x").unwrap_or(full_msg.as_str());
+        hex::decode(stripped)
+            .map_err(|e| anyhow!("verify_aptos_keyless: hex decode fullMessage: {}", e))?
+    } else {
+        full_msg.as_bytes().to_vec()
+    };
+
+    // 3. Pinned public-input hash for SAMPLE_PROOF (only fixture supported
+    //    until Poseidon-on-the-fly lands).
+    let pinned = keyless_verify::sample_pinned::pinned_hash_for(&pk).ok_or_else(|| {
+        anyhow!(
+            "verify_aptos_keyless: no pinned public-inputs hash for this KeylessPublicKey \
+             (iss={:?}); on-the-fly Poseidon-BN254 computation is not yet implemented",
+            pk.iss_val
+        )
+    })?;
+
+    // 4. Fetch chain-side inputs concurrently with the on-chain auth-key check.
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let header: keyless_verify::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
+        .map_err(|e| anyhow!("verify_aptos_keyless: parse jwt_header_json: {}", e))?;
+    let (jwk_res, vk_res, cfg_res, auth_res, perm_res) = tokio::join!(
+        fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
+        fetch_keyless_groth16_vk(rpc),
+        fetch_keyless_configuration(rpc),
+        check_aptos_auth_key_keyless(proof, &pk, rpc),
+        check_aptos_permission(contract, &req.domain, proof, rpc),
+    );
+    let jwk = jwk_res?;
+    let vk = vk_res?;
+    let cfg = cfg_res?;
+    auth_res?;
+    perm_res?;
+
+    // 5. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("verify_aptos_keyless: system clock: {}", e))?
+        .as_secs();
+
+    keyless_verify::verify_keyless(
+        &pk,
+        &sig,
+        &msg_bytes,
+        &jwk,
+        &vk,
+        &cfg,
+        now_unix_secs,
+        keyless_verify::PublicInputsHashSource::Precomputed(*pinned),
+    )
+    .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))?;
 
     Ok(())
 }
@@ -321,7 +428,7 @@ fn verify_aptos_sig(
 ///
 /// Verifies that the Ed25519 public key's authentication key (SHA3-256(pk||0x00))
 /// matches the on-chain `authentication_key` for `userAddr`.
-async fn check_aptos_auth_key(
+async fn check_aptos_auth_key_ed25519(
     proof: &AptosProofOfPermission,
     vk: &ed25519_dalek::VerifyingKey,
     rpc: &vss_common::AptosRpc,
@@ -344,6 +451,196 @@ async fn check_aptos_auth_key(
     }
 
     Ok(())
+}
+
+/// Same as `check_aptos_auth_key_ed25519` but the auth-key is derived from a
+/// `KeylessPublicKey` instead of an Ed25519 verifying key.
+async fn check_aptos_auth_key_keyless(
+    proof: &AptosProofOfPermission,
+    pk: &keyless_verify::KeylessPublicKey,
+    rpc: &vss_common::AptosRpc,
+) -> Result<()> {
+    let computed = keyless_verify::keyless_account_authentication_key(pk);
+
+    let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
+    let account = rpc
+        .get_account(&user_addr_str)
+        .await
+        .map_err(|e| anyhow!("checkAuthKey: get_account {}: {}", user_addr_str, e))?;
+
+    let onchain = hex::decode(account.authentication_key.trim_start_matches("0x"))
+        .map_err(|e| anyhow!("checkAuthKey: parse onchain auth key: {}", e))?;
+
+    if onchain.as_slice() != computed.as_ref() {
+        return Err(anyhow!("checkAuthKey: keyless auth key mismatch for {}", user_addr_str));
+    }
+
+    Ok(())
+}
+
+/// Fetches the `RSA_JWK` for `(iss, kid)` from the on-chain
+/// `0x1::jwks::PatchedJWKs` resource and returns it as a
+/// `keyless_verify::jwk::RsaJwk`.
+async fn fetch_system_rsa_jwk(
+    rpc: &vss_common::AptosRpc,
+    iss: &str,
+    kid: &str,
+) -> Result<keyless_verify::RsaJwk> {
+    // PatchedJWKs.jwks.entries[i] = { issuer: vec<u8>, version: u64, jwks: vec<JWK> }
+    // JWK is a Move enum (`Any` wrapper). We just need to surface the RSA fields.
+    let resource = rpc
+        .get_account_resource(
+            &format!("0x{:0>64}", "1"),
+            "0x1::jwks::PatchedJWKs",
+        )
+        .await
+        .map_err(|e| anyhow!("fetch_system_rsa_jwk: PatchedJWKs read: {}", e))?;
+    let entries = resource
+        .pointer("/jwks/entries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: PatchedJWKs missing entries array"))?;
+
+    // `issuer` is published as a hex-encoded `vector<u8>` over the REST API.
+    let iss_hex = format!("0x{}", hex::encode(iss.as_bytes()));
+    for entry in entries {
+        let issuer = entry.get("issuer").and_then(|v| v.as_str()).unwrap_or("");
+        if issuer != iss_hex {
+            continue;
+        }
+        let jwks = entry
+            .pointer("/jwks")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: entry missing jwks array"))?;
+        for jwk in jwks {
+            // Each JWK is `{ variant: { type_name, data } }` (Any). The RSA
+            // variant's data BCS-decodes as { kid, kty, alg, e, n }.
+            let type_name = jwk
+                .pointer("/variant/type_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if type_name != "0x1::jwks::RSA_JWK" {
+                continue;
+            }
+            let data_hex = jwk
+                .pointer("/variant/data")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: missing variant.data"))?;
+            let data_bytes = hex::decode(data_hex.trim_start_matches("0x"))
+                .map_err(|e| anyhow!("fetch_system_rsa_jwk: decode variant.data: {}", e))?;
+            let rsa: keyless_verify::RsaJwk = bcs::from_bytes(&data_bytes)
+                .map_err(|e| anyhow!("fetch_system_rsa_jwk: BCS decode RSA_JWK: {}", e))?;
+            if rsa.kid == kid {
+                return Ok(rsa);
+            }
+        }
+    }
+    Err(anyhow!(
+        "fetch_system_rsa_jwk: no JWK found for iss={:?} kid={:?}",
+        iss, kid
+    ))
+}
+
+/// Fetches `0x1::keyless_account::Groth16VerificationKey` and BCS-decodes it.
+async fn fetch_keyless_groth16_vk(
+    rpc: &vss_common::AptosRpc,
+) -> Result<keyless_verify::Groth16VerificationKey> {
+    let resource = rpc
+        .get_account_resource(
+            &format!("0x{:0>64}", "1"),
+            "0x1::keyless_account::Groth16VerificationKey",
+        )
+        .await
+        .map_err(|e| anyhow!("fetch_keyless_groth16_vk: resource read: {}", e))?;
+    let alpha_g1 = vec_u8_from_hex_field(&resource, "alpha_g1")?;
+    let beta_g2 = vec_u8_from_hex_field(&resource, "beta_g2")?;
+    let gamma_g2 = vec_u8_from_hex_field(&resource, "gamma_g2")?;
+    let delta_g2 = vec_u8_from_hex_field(&resource, "delta_g2")?;
+    let gamma_abc_g1 = resource
+        .get("gamma_abc_g1")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("fetch_keyless_groth16_vk: missing gamma_abc_g1 array"))?
+        .iter()
+        .map(|v| {
+            let s = v.as_str().ok_or_else(|| anyhow!("gamma_abc_g1 entry not string"))?;
+            hex::decode(s.trim_start_matches("0x")).map_err(|e| anyhow!("decode: {}", e))
+        })
+        .collect::<Result<Vec<Vec<u8>>>>()?;
+    Ok(keyless_verify::Groth16VerificationKey {
+        alpha_g1,
+        beta_g2,
+        gamma_g2,
+        delta_g2,
+        gamma_abc_g1,
+    })
+}
+
+/// Fetches `0x1::keyless_account::Configuration` and BCS-decodes it.
+async fn fetch_keyless_configuration(
+    rpc: &vss_common::AptosRpc,
+) -> Result<keyless_verify::types::Configuration> {
+    let resource = rpc
+        .get_account_resource(
+            &format!("0x{:0>64}", "1"),
+            "0x1::keyless_account::Configuration",
+        )
+        .await
+        .map_err(|e| anyhow!("fetch_keyless_configuration: resource read: {}", e))?;
+    let override_aud_vals = resource
+        .get("override_aud_vals")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("Configuration: missing override_aud_vals"))?
+        .iter()
+        .map(|v| v.as_str().map(|s| s.to_string()).ok_or_else(|| anyhow!("non-string aud")))
+        .collect::<Result<Vec<String>>>()?;
+    let max_signatures_per_txn = u_from_str(&resource, "max_signatures_per_txn")? as u16;
+    let max_exp_horizon_secs = u_from_str(&resource, "max_exp_horizon_secs")?;
+    let training_wheels_pubkey = match resource.pointer("/training_wheels_pubkey/vec") {
+        Some(v) => v
+            .as_array()
+            .and_then(|arr| arr.first())
+            .map(|s| {
+                s.as_str()
+                    .ok_or_else(|| anyhow!("training_wheels_pubkey not string"))
+                    .and_then(|h| hex::decode(h.trim_start_matches("0x")).map_err(|e| anyhow!("{}", e)))
+            })
+            .transpose()?,
+        None => None,
+    };
+    let max_commited_epk_bytes = u_from_str(&resource, "max_commited_epk_bytes")? as u16;
+    let max_iss_val_bytes = u_from_str(&resource, "max_iss_val_bytes")? as u16;
+    let max_extra_field_bytes = u_from_str(&resource, "max_extra_field_bytes")? as u16;
+    let max_jwt_header_b64_bytes = u_from_str(&resource, "max_jwt_header_b64_bytes")? as u32;
+    Ok(keyless_verify::types::Configuration {
+        override_aud_vals,
+        max_signatures_per_txn,
+        max_exp_horizon_secs,
+        training_wheels_pubkey,
+        max_commited_epk_bytes,
+        max_iss_val_bytes,
+        max_extra_field_bytes,
+        max_jwt_header_b64_bytes,
+    })
+}
+
+fn vec_u8_from_hex_field(v: &Value, field: &str) -> Result<Vec<u8>> {
+    let s = v
+        .get(field)
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow!("missing {} field", field))?;
+    hex::decode(s.trim_start_matches("0x")).map_err(|e| anyhow!("decode {}: {}", field, e))
+}
+
+fn u_from_str(v: &Value, field: &str) -> Result<u64> {
+    let f = v
+        .get(field)
+        .ok_or_else(|| anyhow!("Configuration: missing {}", field))?;
+    if let Some(n) = f.as_u64() {
+        return Ok(n);
+    }
+    let s = f
+        .as_str()
+        .ok_or_else(|| anyhow!("Configuration.{} not int/string", field))?;
+    s.parse::<u64>().map_err(|e| anyhow!("parse {} ({:?}): {}", field, s, e))
 }
 
 /// Mirrors `checkPermission` in `ts-sdk/src/ace-ex/aptos.ts`.

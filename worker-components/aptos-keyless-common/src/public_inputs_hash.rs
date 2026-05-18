@@ -205,11 +205,10 @@ impl IdCommitment {
 mod tests {
     //! Validation tests against the aptos-core fixture bundle.
     //!
-    //! The expected values are taken from `aptos_types::keyless::circuit_testcases::SAMPLE_*`
+    //! Expected values come from `aptos_types::keyless::circuit_testcases::SAMPLE_*`
     //! piped through `aptos_types::keyless::{get_public_inputs_hash,
-    //! IdCommitment::new_from_preimage}` — same outputs the
-    //! `keyless-fixture-dumper` produced in the original PR. If these tests
-    //! pass, our pure-Rust port is bit-compatible with aptos-types.
+    //! IdCommitment::new_from_preimage}`. If these tests pass, our pure-Rust
+    //! port is bit-compatible with aptos-types.
 
     use super::*;
     use crate::types::{

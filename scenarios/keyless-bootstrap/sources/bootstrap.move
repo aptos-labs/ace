@@ -8,8 +8,11 @@
 //     comes from `aptos-core/types/src/jwks/rsa/insecure_test_jwk.json`
 //     (matches `SAMPLE_JWK`).
 //   * Groth16 verifying key — the devnet test VK that `SAMPLE_PROOF` was
-//     generated against. Compressed-byte values dumped by
-//     `cargo run -p keyless-fixture-dumper`.
+//     generated against. Compressed-byte values were extracted from
+//     `aptos_types::keyless::circuit_constants::prepared_vk_for_testing()`
+//     via `Groth16VerificationKey::from(&pvk)` (each field is the
+//     ark-serialize compressed point bytes). See the top-of-file
+//     regeneration notes in `scenarios/common/keyless-fixtures.ts`.
 //   * Configuration knobs lifted to fit `SAMPLE_EXP_HORIZON_SECS`
 //     (~31,710 years) and training-wheels signature disabled.
 //
@@ -42,7 +45,8 @@ script {
         jwks::set_patches(&fx, patches);
 
         // 2. Install Groth16 VK matching SAMPLE_PROOF (devnet-groth16-keys @ 02e5675).
-        //    Dumped via `cargo run -p keyless-fixture-dumper`.
+        //    Compressed-byte values from aptos-core's
+        //    `prepared_vk_for_testing()` — see top-of-file regeneration notes.
         let vk = keyless_account::new_groth16_verification_key(
             x"e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d",
             x"abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036789",

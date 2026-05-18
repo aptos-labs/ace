@@ -141,17 +141,17 @@ function hexToBytes(hex: string): Uint8Array {
  * `aptos_governance::get_signer_testnet_only` from the localnet's root mint
  * account (`0xA550C18`) — its private key is written to
  * `~/.aptos/testnet/mint.key` by `aptos node run-local-testnet`. The script
- * itself lives in `scenarios/keyless-bootstrap/`.
+ * itself is `scenarios/keyless-bootstrap.move`.
  */
 async function setupLocalnetForKeyless(_adminAccount: Account): Promise<void> {
     await runKeylessBootstrapScript();
 }
 
 /**
- * Runs `aptos move run-script` against `scenarios/keyless-bootstrap/` using
- * the localnet's `0xA550C18` root key. The script installs the test JWK,
- * Groth16 VK, and a relaxed `max_exp_horizon_secs`; see
- * `scenarios/keyless-bootstrap/sources/bootstrap.move` for the full body.
+ * Runs `aptos move run-script` against `scenarios/keyless-bootstrap.move`
+ * using the localnet's `0xA550C18` root key. The script installs the test
+ * JWK, Groth16 VK, and a relaxed `max_exp_horizon_secs`; see the file for
+ * the full body.
  */
 /**
  * Returns the path to the localnet's `mint.key`. The `aptos` CLI resolves
@@ -180,13 +180,7 @@ function resolveLocalnetMintKeyPath(): string {
 
 async function runKeylessBootstrapScript(): Promise<void> {
     const mintKeyPath = resolveLocalnetMintKeyPath();
-    const scriptPath = path.join(
-        REPO_ROOT,
-        'scenarios',
-        'keyless-bootstrap',
-        'sources',
-        'bootstrap.move',
-    );
+    const scriptPath = path.join(REPO_ROOT, 'scenarios', 'keyless-bootstrap.move');
 
     console.log('  Running keyless bootstrap script (installs JWK + Groth16 VK + config patch)...');
     const { stdout, stderr } = await execFileAsync(

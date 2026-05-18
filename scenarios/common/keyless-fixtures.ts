@@ -25,7 +25,7 @@
  *                                                                          → SAMPLE_EPHEMERAL_SK_HEX
  *        `Groth16VerificationKey::from(prepared_vk_for_testing())` field-by-field
  *                                                                          → VK bytes (paste into
- *                                                                            scenarios/keyless-bootstrap/sources/bootstrap.move)
+ *                                                                            scenarios/keyless-bootstrap.move)
  *        `aptos_types::keyless::circuit_testcases::SAMPLE_PROOF_NO_EXTRA_FIELD`
  *           a / b / c hex                                                   → SAMPLE_PROOF_{A,B,C}_HEX
  *   2. Paste each into the constants below + the bootstrap script.

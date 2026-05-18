@@ -12,7 +12,7 @@ use crate::{
     errors::VerifyError,
     groth16::{verify_proof, Groth16VerificationKey},
     jwk::RsaJwk,
-    pih::get_public_inputs_hash,
+    public_inputs_hash::get_public_inputs_hash,
     poseidon::fr_to_bytes_le,
     types::{
         Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature, JwtHeader,
@@ -31,7 +31,7 @@ use ed25519_dalek::Verifier;
 ///      on-the-fly from `(pk, signature, jwk, config)` via
 ///      [`get_public_inputs_hash`]
 ///   5. Ephemeral signature over `message` under `signature.ephemeral_pubkey`
-pub fn verify_keyless(
+pub fn verify_signature(
     pk: &KeylessPublicKey,
     signature: &KeylessSignature,
     message: &[u8],
@@ -90,13 +90,13 @@ pub fn verify_keyless(
     // 4. Groth16. Public-input hash computed on-the-fly from
     //    `(pk, signature, jwk, config)` — bit-identical to what
     //    `aptos_types::keyless::get_public_inputs_hash` produces.
-    let pih_fr = get_public_inputs_hash(signature, pk, jwk, config)?;
-    let pih = fr_to_bytes_le(&pih_fr);
+    let public_inputs_hash = get_public_inputs_hash(signature, pk, jwk, config)?;
+    let public_inputs_hash_le = fr_to_bytes_le(&public_inputs_hash);
     let pvk = groth16_vk.to_ark_prepared()?;
     let proof = match &zks.proof {
         ZkProof::Groth16Zkp(p) => p,
     };
-    verify_proof(proof, &pih, &pvk)?;
+    verify_proof(proof, &public_inputs_hash_le, &pvk)?;
 
     // (JWT signature verification under `jwk` is deliberately not run here:
     // the Groth16 proof commits to `jwk_hash` via the public-input hash, so a

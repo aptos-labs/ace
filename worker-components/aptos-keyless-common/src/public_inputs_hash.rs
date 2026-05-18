@@ -320,9 +320,9 @@ mod tests {
             },
         };
 
-        let pih = get_public_inputs_hash(&sig, &pk, &sample_jwk(), &sample_config()).unwrap();
+        let public_inputs_hash = get_public_inputs_hash(&sig, &pk, &sample_jwk(), &sample_config()).unwrap();
         assert_eq!(
-            crate::poseidon::fr_to_bytes_le(&pih),
+            crate::poseidon::fr_to_bytes_le(&public_inputs_hash),
             hex!("f35c81dd7960104f5bdbc26def36c247544b7ebc21500890e77afa046742ac23"),
         );
     }

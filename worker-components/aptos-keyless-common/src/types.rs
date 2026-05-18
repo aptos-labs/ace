@@ -159,7 +159,7 @@ pub struct ZeroKnowledgeSig {
 pub enum EphemeralCertificate {
     ZeroKnowledgeSig(ZeroKnowledgeSig),
     /// Present in the BCS layout for compatibility; treated as unsupported by
-    /// [`crate::verify_keyless`].
+    /// [`crate::verify_signature`].
     OpenIdSig(serde_bytes::ByteBuf),
 }
 

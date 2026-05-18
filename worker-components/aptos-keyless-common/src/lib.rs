@@ -12,7 +12,7 @@
 //!
 //! ## Public surface
 //!
-//! - [`verify_keyless`] — the single entry point. Verifies a `KeylessSignature`
+//! - [`verify_signature`] — the single entry point. Verifies a `KeylessSignature`
 //!   over `message` under `pk`, using on-chain inputs the caller fetches
 //!   (the RSA JWK, the Groth16 verifying key, the keyless `Configuration`).
 //! - [`KeylessPublicKey::account_authentication_key`] — the 32-byte auth key
@@ -38,7 +38,7 @@
 //!   * Override-aud handling.
 //!   * Full Poseidon-BN254 public-input hash computation.
 //!
-//! Cross-reference: `aptos_keyless_verify::verify_keyless` in aptos-core,
+//! Cross-reference: `aptos_keyless_verify::verify_signature` in aptos-core,
 //! and the production verifier in `aptos_types::keyless`.
 
 pub mod auth_key;
@@ -46,12 +46,12 @@ pub mod circuit;
 pub mod errors;
 pub mod groth16;
 pub mod jwk;
-pub mod pih;
+pub mod public_inputs_hash;
 pub mod poseidon;
 pub mod types;
 pub mod verify;
 
-pub use pih::get_public_inputs_hash;
+pub use public_inputs_hash::get_public_inputs_hash;
 
 pub use auth_key::keyless_account_authentication_key;
 pub use errors::VerifyError;
@@ -61,4 +61,4 @@ pub use types::{
     Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature, Groth16Proof,
     IdCommitment, KeylessPublicKey, KeylessSignature, ZeroKnowledgeSig, ZkProof,
 };
-pub use verify::verify_keyless;
+pub use verify::verify_signature;

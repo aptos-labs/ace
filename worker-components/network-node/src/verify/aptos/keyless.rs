@@ -7,7 +7,7 @@
 //! chain-side inputs needed for verification (the RSA JWK at
 //! `0x1::jwks::PatchedJWKs`, the Groth16 VK at
 //! `0x1::keyless_account::Groth16VerificationKey`, and the keyless
-//! `Configuration`), then delegates to [`keyless_verify::verify_keyless`].
+//! `Configuration`), then delegates to [`aptos_keyless_common::verify_signature`].
 //! The Poseidon-BN254 public-input hash is computed on-the-fly inside that
 //! call from `(pk, sig, jwk, cfg)`.
 
@@ -22,8 +22,8 @@ pub(super) async fn verify(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
     proof: &AptosProofOfPermission,
-    pk: &keyless_verify::KeylessPublicKey,
-    sig: &keyless_verify::KeylessSignature,
+    pk: &aptos_keyless_common::KeylessPublicKey,
+    sig: &aptos_keyless_common::KeylessSignature,
     ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
@@ -48,7 +48,7 @@ pub(super) async fn verify(
 
     // 2. Fetch chain-side inputs concurrently with the on-chain auth-key check.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
-    let header: keyless_verify::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
+    let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_aptos_keyless: parse jwt_header_json: {}", e))?;
     let (jwk_res, vk_res, cfg_res, auth_res, perm_res) = tokio::join!(
         fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
@@ -63,13 +63,13 @@ pub(super) async fn verify(
     auth_res?;
     perm_res?;
 
-    // 3. Wall-clock now. EPK expiry check inside verify_keyless is `exp_date_secs > now`.
+    // 3. Wall-clock now. EPK expiry check inside verify_signature is `exp_date_secs > now`.
     let now_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("verify_aptos_keyless: system clock: {}", e))?
         .as_secs();
 
-    keyless_verify::verify_keyless(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+    aptos_keyless_common::verify_signature(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
         .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))?;
 
     Ok(())
@@ -79,10 +79,10 @@ pub(super) async fn verify(
 /// `userAddr` must equal `SHA3-256(0x03 || BCS(KeylessPublicKey) || 0x02)`.
 async fn check_auth_key(
     proof: &AptosProofOfPermission,
-    pk: &keyless_verify::KeylessPublicKey,
+    pk: &aptos_keyless_common::KeylessPublicKey,
     rpc: &vss_common::AptosRpc,
 ) -> Result<()> {
-    let computed = keyless_verify::keyless_account_authentication_key(pk);
+    let computed = aptos_keyless_common::keyless_account_authentication_key(pk);
 
     let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
     let account = rpc
@@ -106,7 +106,7 @@ async fn fetch_system_rsa_jwk(
     rpc: &vss_common::AptosRpc,
     iss: &str,
     kid: &str,
-) -> Result<keyless_verify::RsaJwk> {
+) -> Result<aptos_keyless_common::RsaJwk> {
     // PatchedJWKs.jwks.entries[i] = { issuer: vec<u8>, version: u64, jwks: vec<JWK> }
     // JWK is a Move enum (`Any` wrapper). We just need to surface the RSA fields.
     let resource = rpc
@@ -145,7 +145,7 @@ async fn fetch_system_rsa_jwk(
                 .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: missing variant.data"))?;
             let data_bytes = hex::decode(data_hex.trim_start_matches("0x"))
                 .map_err(|e| anyhow!("fetch_system_rsa_jwk: decode variant.data: {}", e))?;
-            let rsa: keyless_verify::RsaJwk = bcs::from_bytes(&data_bytes)
+            let rsa: aptos_keyless_common::RsaJwk = bcs::from_bytes(&data_bytes)
                 .map_err(|e| anyhow!("fetch_system_rsa_jwk: BCS decode RSA_JWK: {}", e))?;
             if rsa.kid == kid {
                 return Ok(rsa);
@@ -161,7 +161,7 @@ async fn fetch_system_rsa_jwk(
 /// Fetches `0x1::keyless_account::Groth16VerificationKey` and BCS-decodes it.
 async fn fetch_groth16_vk(
     rpc: &vss_common::AptosRpc,
-) -> Result<keyless_verify::Groth16VerificationKey> {
+) -> Result<aptos_keyless_common::Groth16VerificationKey> {
     let resource = rpc
         .get_account_resource(
             &format!("0x{:0>64}", "1"),
@@ -183,7 +183,7 @@ async fn fetch_groth16_vk(
             hex::decode(s.trim_start_matches("0x")).map_err(|e| anyhow!("decode: {}", e))
         })
         .collect::<Result<Vec<Vec<u8>>>>()?;
-    Ok(keyless_verify::Groth16VerificationKey {
+    Ok(aptos_keyless_common::Groth16VerificationKey {
         alpha_g1,
         beta_g2,
         gamma_g2,
@@ -195,7 +195,7 @@ async fn fetch_groth16_vk(
 /// Fetches `0x1::keyless_account::Configuration` and BCS-decodes it.
 async fn fetch_configuration(
     rpc: &vss_common::AptosRpc,
-) -> Result<keyless_verify::types::Configuration> {
+) -> Result<aptos_keyless_common::types::Configuration> {
     let resource = rpc
         .get_account_resource(
             &format!("0x{:0>64}", "1"),
@@ -228,7 +228,7 @@ async fn fetch_configuration(
     let max_iss_val_bytes = u_from_str(&resource, "max_iss_val_bytes")? as u16;
     let max_extra_field_bytes = u_from_str(&resource, "max_extra_field_bytes")? as u16;
     let max_jwt_header_b64_bytes = u_from_str(&resource, "max_jwt_header_b64_bytes")? as u32;
-    Ok(keyless_verify::types::Configuration {
+    Ok(aptos_keyless_common::types::Configuration {
         override_aud_vals,
         max_signatures_per_txn,
         max_exp_horizon_secs,

@@ -3,11 +3,20 @@
 
 //! Legacy Ed25519 proof-of-permission path for an `AptosProofOfPermission`.
 //!
-//! Mirrors `verifySig` + `checkAuthKey` in `ts-sdk/src/ace-ex/aptos.ts`:
-//! `fullMessage` must contain the pretty-printed decryption request, the
-//! ephemeral Ed25519 signature must verify under the supplied pubkey, the
-//! pubkey's auth-key must match the on-chain `authentication_key` for
-//! `userAddr`, and the permission view must return `true`.
+//! Checks, in order:
+//!   1. `fullMessage` contains the pretty-printed
+//!      [`DecryptionRequestPayload`][1] (or its hex encoding — AptosConnect
+//!      wallets embed `hex(UTF-8(pretty_msg))` rather than the raw string).
+//!   2. The Ed25519 signature over `fullMessage` verifies under the
+//!      supplied public key.
+//!   3. The pubkey's auth-key (`SHA3-256(pubkey || 0x00)`,
+//!      [`Scheme::Ed25519`][2] preimage) matches the on-chain
+//!      `authentication_key` for `userAddr`.
+//!   4. The permission view returns `true` (handled by the shared
+//!      `super::check_permission`).
+//!
+//! [1]: https://github.com/aptos-labs/ace/blob/main/ts-sdk/src/_internal/common.ts
+//! [2]: https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526
 
 use anyhow::{anyhow, Result};
 
@@ -44,11 +53,10 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// Mirrors `verifySig` in `ts-sdk/src/ace-ex/aptos.ts`.
-///
 /// Checks that `fullMessage` contains the decryption request's pretty-printed
-/// representation (or its hex encoding, to handle AptosConnect wallets), then
-/// verifies the Ed25519 signature.
+/// representation (or its hex encoding, to handle AptosConnect wallets which
+/// sign the hex of the UTF-8 bytes rather than the raw string), then verifies
+/// the Ed25519 signature over the (possibly hex-decoded) message bytes.
 fn verify_sig(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -86,11 +94,11 @@ fn verify_sig(
     Ok(())
 }
 
-/// Mirrors `checkAuthKey` in `ts-sdk/src/ace-ex/aptos.ts`.
-///
 /// Verifies that the Ed25519 public key's authentication key
-/// `SHA3-256(pubkey || 0x00)` matches the on-chain `authentication_key` for
-/// `userAddr`.
+/// `SHA3-256(pubkey || 0x00)` (`Scheme::Ed25519 = 0` preimage) matches the
+/// on-chain `authentication_key` for `userAddr`.
+///
+/// Reference: [`AuthenticationKey::ed25519`](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1001-L1003).
 async fn check_auth_key(
     proof: &AptosProofOfPermission,
     vk: &ed25519_dalek::VerifyingKey,

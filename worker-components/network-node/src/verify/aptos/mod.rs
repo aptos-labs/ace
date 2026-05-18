@@ -57,7 +57,7 @@ pub enum AptosPublicKeyMaterial {
     Ed25519([u8; 32]),
     /// pk_scheme=4. BCS wire is the inline `KeylessPublicKey` struct
     /// (`{ iss_val: String, idc: Vec<u8> }`).
-    Keyless(keyless_verify::KeylessPublicKey),
+    Keyless(aptos_keyless_common::KeylessPublicKey),
 }
 
 /// Inner signature payload for [`AptosProofOfPermission`].
@@ -66,7 +66,7 @@ pub enum AptosSignatureMaterial {
     /// sig_scheme=0. BCS wire is `Vec<u8>(64 bytes)`.
     Ed25519([u8; 64]),
     /// sig_scheme=4. BCS wire is the inline `KeylessSignature` struct.
-    Keyless(keyless_verify::KeylessSignature),
+    Keyless(aptos_keyless_common::KeylessSignature),
 }
 
 impl AptosPublicKeyMaterial {
@@ -131,7 +131,7 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                         AptosPublicKeyMaterial::Ed25519(arr)
                     }
                     PK_SCHEME_KEYLESS_WIRE => {
-                        let pk: keyless_verify::KeylessPublicKey = seq
+                        let pk: aptos_keyless_common::KeylessPublicKey = seq
                             .next_element()?
                             .ok_or_else(|| A::Error::custom("missing Keyless public_key"))?;
                         AptosPublicKeyMaterial::Keyless(pk)
@@ -160,7 +160,7 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                         AptosSignatureMaterial::Ed25519(arr)
                     }
                     SIG_SCHEME_KEYLESS_WIRE => {
-                        let sig: keyless_verify::KeylessSignature = seq
+                        let sig: aptos_keyless_common::KeylessSignature = seq
                             .next_element()?
                             .ok_or_else(|| A::Error::custom("missing Keyless signature"))?;
                         AptosSignatureMaterial::Keyless(sig)
@@ -290,19 +290,18 @@ pub(super) fn pretty_message(
 
 /// True if `s` is a valid hex string (optional `0x` prefix, all hex digits).
 ///
-/// Mirrors `Hex.isValid()` in the Aptos TS SDK — we use it to decide whether
-/// `proof.full_message` is a raw hex blob (the AptosConnect wallet path) or a
-/// plain UTF-8 string.
+/// Matches the `Hex.isValid()` semantics in the Aptos TS SDK — we use it to
+/// decide whether `proof.full_message` is a raw hex blob (the AptosConnect
+/// wallet path) or a plain UTF-8 string.
 pub(super) fn is_valid_hex(s: &str) -> bool {
     let hex = s.strip_prefix("0x").unwrap_or(s);
     hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Mirrors `checkPermission` in `ts-sdk/src/ace-ex/aptos.ts`.
-///
 /// Calls the on-chain view function
 /// `{moduleAddr}::{moduleName}::{functionName}(userAddr, domain)` and expects
-/// `true` to be returned.
+/// `true` to be returned. The view function name comes from the request's
+/// `AptosContractId` — typically the dapp's `check_permission` ACL view.
 pub(super) async fn check_permission(
     contract: &AptosContractId,
     domain: &[u8],

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "keyless-verify"
+name = "aptos-keyless-common"
 version = "0.1.0"
 edition = "2021"
 description = "Off-chain verification of Aptos keyless signatures (BCS wire-format compatible with aptos-types::keyless)."

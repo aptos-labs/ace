@@ -90,8 +90,8 @@ pub fn verify_proof(
     let c = G1Affine::deserialize_compressed(&proof.c.0[..])
         .map_err(|e| VerifyError::Groth16(format!("proof.c decompress: {}", e)))?;
     let ark_proof = Proof { a, b, c };
-    let pih = Fr::from_le_bytes_mod_order(public_inputs_hash);
-    let ok = Groth16::<Bn254>::verify_proof(pvk, &ark_proof, &[pih])
+    let public_inputs_hash_fr = Fr::from_le_bytes_mod_order(public_inputs_hash);
+    let ok = Groth16::<Bn254>::verify_proof(pvk, &ark_proof, &[public_inputs_hash_fr])
         .map_err(|e| VerifyError::Groth16(format!("verify_proof: {}", e)))?;
     if !ok {
         return Err(VerifyError::Groth16("pairing check failed".into()));

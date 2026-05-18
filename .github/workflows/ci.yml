@@ -181,6 +181,7 @@ jobs:
           - test-network-protocol-shortpk
           - full-happy-path
           - test-access-failures
+          - test-access-failures-keyless
           - test-fault-tolerance
           - test-auto-epoch-change
           - large-committee

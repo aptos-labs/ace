@@ -4,7 +4,7 @@
 //! Minimal RSA JWK representation.
 //!
 //! Mirrors `aptos_types::jwks::rsa::RSA_JWK` on the BCS wire — used here as
-//! the input to [`crate::verify_keyless`] for the kid-match check. JWT
+//! the input to [`crate::verify_signature`] for the kid-match check. JWT
 //! signature verification under this JWK is *not yet* implemented (TODO).
 
 use serde::{Deserialize, Serialize};

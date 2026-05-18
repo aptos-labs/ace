@@ -10,15 +10,25 @@
 //!
 //! where the inner BCS encoding is `uleb128(3) ++ BCS(KeylessPublicKey)` — `3`
 //! is the BCS variant tag of `AnyPublicKey::Keyless`, `0x02` is `Scheme::SingleKey`.
+//!
+//! Reference (aptos-core @ rev 8ec3fb76):
+//!   - [`AuthenticationKey::any_key`](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1010-L1013)
+//!   - [`AuthenticationKey::from_preimage`](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L971-L974)
+//!   - [`Scheme::SingleKey = 2`](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526)
+//!   - [`AnyPublicKey::Keyless` variant order](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1454-L1473)
 
 use crate::types::KeylessPublicKey;
 use sha3::{Digest, Sha3_256};
 
 /// BCS variant tag of `AnyPublicKey::Keyless` in `aptos_types::transaction::authenticator`.
-/// Order is `Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3, ...`.
+/// Order: `Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3, …` — see
+/// [the enum definition][permalink] in aptos-core.
+///
+/// [permalink]: https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1454-L1473
 const ANY_PUBLIC_KEY_VARIANT_KEYLESS: u8 = 3;
 
-/// `Scheme::SingleKey` byte; used as the final suffix in single-key auth-key derivation.
+/// `Scheme::SingleKey`; final suffix byte in single-key auth-key derivation.
+/// [permalink](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526).
 const SCHEME_SINGLE_KEY: u8 = 2;
 
 /// Computes the 32-byte authentication key on chain for an account whose

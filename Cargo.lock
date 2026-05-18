@@ -114,6 +114,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "aptos-keyless-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff",
+ "ark-groth16",
+ "ark-serialize",
+ "ark-std",
+ "base64 0.21.7",
+ "bcs",
+ "ed25519-dalek",
+ "hex",
+ "hex-literal",
+ "num-bigint",
+ "once_cell",
+ "poseidon-ark",
+ "serde",
+ "serde-big-array",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "sha3",
+ "thiserror",
+]
+
+[[package]]
 name = "ark-bls12-381"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1337,34 +1365,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyless-verify"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ark-bn254",
- "ark-ec",
- "ark-ff",
- "ark-groth16",
- "ark-serialize",
- "ark-std",
- "base64 0.21.7",
- "bcs",
- "ed25519-dalek",
- "hex",
- "hex-literal",
- "num-bigint",
- "once_cell",
- "poseidon-ark",
- "serde",
- "serde-big-array",
- "serde_bytes",
- "serde_json",
- "sha2",
- "sha3",
- "thiserror",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1446,6 +1446,7 @@ version = "0.1.0"
 dependencies = [
  "ace-anchor-kit",
  "anyhow",
+ "aptos-keyless-common",
  "ark-bls12-381",
  "ark-ec",
  "ark-ff",
@@ -1458,7 +1459,6 @@ dependencies = [
  "epoch-change-cur",
  "epoch-change-nxt",
  "hex",
- "keyless-verify",
  "reqwest",
  "serde",
  "serde_bytes",

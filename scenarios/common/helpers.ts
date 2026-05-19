@@ -22,6 +22,19 @@ import { ADMIN_PLACEHOLDER_FOR_MOVE_TOML, LOCALNET_URL, FAUCET_URL, REPO_ROOT } 
 
 export function log(msg: string): void { console.log(`[${new Date().toISOString()}] ${msg}`); }
 
+/** Standard scenario shutdown: SIGTERM every worker process and the localnet
+ *  process, with a log line each. Safe to call from a `finally` block — no-ops
+ *  if either side never started. Every access-failure-style scenario ends
+ *  this way; keep them DRY. */
+export function cleanupScenario(workers: ChildProcess[], localnetProc: ChildProcess | null): void {
+    console.log('\nCleaning up worker processes...');
+    for (const proc of workers) proc.kill('SIGTERM');
+    if (localnetProc) {
+        console.log('Stopping localnet...');
+        localnetProc.kill('SIGTERM');
+    }
+}
+
 export function assert(condition: boolean, msg: string) {
     if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }

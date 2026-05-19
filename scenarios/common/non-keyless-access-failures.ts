@@ -152,15 +152,3 @@ export async function decryptWithMauledSignature(
     console.log(`  ✓ decrypt with mauled signature correctly rejected (${result.errValue})`);
 }
 
-/** Convenience runner — invokes A → E in order, threading the per-variant
- *  `mauler` into Step E. */
-export async function runNonKeylessAccessFailureSteps(
-    ctx: NonKeylessAccessFailureContext,
-    mauler: SignatureMauler,
-): Promise<void> {
-    await decryptWithBadKeypairID(ctx);
-    await decryptAsNonAllowlistedUser(ctx);
-    await decryptWithWrongDomain(ctx);
-    await decryptWithCorrectInputs(ctx);
-    await decryptWithMauledSignature(ctx, mauler);
-}

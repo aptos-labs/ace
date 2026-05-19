@@ -41,7 +41,14 @@ import {
     encryptForAccessControl,
     registerAllowlistBlob,
 } from './common/access-control-app';
-import { runAccessFailureStepsAtoF } from './common/access-failures-steps';
+import {
+    stepA_WrongKeypair,
+    stepB_NonAllowlistedCharlie,
+    stepC_WrongDomain,
+    stepD_HappyPath,
+    stepE_MauledEpkSig,
+    stepF_MauledGroth16Proof,
+} from './common/access-failures-steps';
 import { setupAceOnLocalnet } from './common/ace-network';
 import { CHAIN_ID } from './common/config';
 import { cleanupScenario, createAptos, fundAccount } from './common/helpers';
@@ -78,13 +85,19 @@ async function main(): Promise<void> {
         const correctDomain = domainForBlob(actors.alice, 'ping-blob');
         const wrongDomain = domainForBlob(actors.alice, 'other-blob');
         const pingCiph = await encryptForAccessControl(ace.aceDeployment, ace.adminAccountAddress, keypair0Id, correctDomain, new TextEncoder().encode('PING'));
-        await runAccessFailureStepsAtoF({
+        const ctx = {
             aceDeployment: ace.aceDeployment, chainId: CHAIN_ID,
             moduleAddr: ace.adminAccountAddress, moduleName: 'access_control',
             functionName: 'check_permission',
             keypair0Id, keypair1Id, correctDomain, wrongDomain, pingCiph,
             bob, bobLabel: 'keyless', charlie: actors.charlie,
-        });
+        };
+        await stepA_WrongKeypair(ctx);
+        await stepB_NonAllowlistedCharlie(ctx);
+        await stepC_WrongDomain(ctx);
+        await stepD_HappyPath(ctx);
+        await stepE_MauledEpkSig(ctx);
+        await stepF_MauledGroth16Proof(ctx);
         console.log('\n✅ All keyless access-control enforcement tests passed!\n');
     } catch (err) {
         console.error('\n❌ Test failed:', err);

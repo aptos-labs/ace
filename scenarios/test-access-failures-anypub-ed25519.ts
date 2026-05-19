@@ -39,7 +39,11 @@ import { setupAceOnLocalnet } from './common/ace-network';
 import { cleanupScenario, fundAccount } from './common/helpers';
 import {
     NonKeylessAccessFailureContext,
-    runNonKeylessAccessFailureSteps,
+    decryptAsNonAllowlistedUser,
+    decryptWithBadKeypairID,
+    decryptWithCorrectInputs,
+    decryptWithMauledSignature,
+    decryptWithWrongDomain,
 } from './common/non-keyless-access-failures';
 
 const TOTAL_WORKERS = 3;
@@ -86,7 +90,11 @@ async function main(): Promise<void> {
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
             pingCiph, bob, bobLabel: 'SingleKey/Ed25519', charlie: actors.charlie,
         };
-        await runNonKeylessAccessFailureSteps(ctx, mauleAnySignatureEd25519);
+        await decryptWithBadKeypairID(ctx);
+        await decryptAsNonAllowlistedUser(ctx);
+        await decryptWithWrongDomain(ctx);
+        await decryptWithCorrectInputs(ctx);
+        await decryptWithMauledSignature(ctx, mauleAnySignatureEd25519);
         console.log('\n✅ All AnyPublicKey<Ed25519> access-control enforcement tests passed!\n');
     } catch (err) {
         console.error('\n❌ Test failed:', err);

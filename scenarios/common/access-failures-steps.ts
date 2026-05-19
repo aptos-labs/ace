@@ -224,12 +224,3 @@ export async function stepF_MauledGroth16Proof(ctx: AccessFailureContext): Promi
     console.log(`  ✓ decrypt with mauled Groth16 proof correctly rejected (${result.errValue})`);
 }
 
-/** Convenience runner — invokes A → F in order. */
-export async function runAccessFailureStepsAtoF(ctx: AccessFailureContext): Promise<void> {
-    await stepA_WrongKeypair(ctx);
-    await stepB_NonAllowlistedCharlie(ctx);
-    await stepC_WrongDomain(ctx);
-    await stepD_HappyPath(ctx);
-    await stepE_MauledEpkSig(ctx);
-    await stepF_MauledGroth16Proof(ctx);
-}

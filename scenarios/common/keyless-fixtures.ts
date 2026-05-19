@@ -97,3 +97,20 @@ export const SAMPLE_PROOF_B_HEX =
     '50e3da14e5ec953769aac9d256ddc9b2a8071c021f271f0937fd5be404f2b919';
 export const SAMPLE_PROOF_C_HEX =
     '52a25b0b58013a77f8713105d7e0f817468bbdd25d644e9f2a9b3eabd7d4bc17';
+
+// ── RSA JWK fields (Base64url-encoded as in JWK spec) ─────────────────────────
+//
+// Match `aptos-core/types/src/jwks/rsa/insecure_test_jwk.json`. Used by the
+// keyless-bootstrap script (which embeds them as Move byte-string literals)
+// and by the federated-keyless scenario (which passes the SAME strings to
+// `0x1::jwks::update_federated_jwk_set` over the regular Aptos REST API).
+export const SAMPLE_JWK_KID = 'test-rsa';
+export const SAMPLE_JWK_ALG = 'RS256';
+export const SAMPLE_JWK_E = 'AQAB';
+export const SAMPLE_JWK_N =
+    '6S7asUuzq5Q_3U9rbs-PkDVIdjgmtgWreG5qWPsC9xXZKiMV1AiV9LXyqQsAYpCqEDM3' +
+    'XbfmZqGb48yLhb_XqZaKgSYaC_h2DjM7lgrIQAp9902Rr8fUmLN2ivr5tnLxUUOnMOc2' +
+    'SQtr9dgzTONYW5Zu3PwyvAWk5D6ueIUhLtYzpcB-etoNdL3Ir2746KIy_VUsDwAM7dhr' +
+    'qSK8U2xFCGlau4ikOTtvzDownAMHMrfE7q1B6WZQDAQlBmxRQsyKln5DIsKv6xauNsHR' +
+    'gBAKctUxZG8M4QJIx3S6Aughd3RZC4Ca5Ae9fd8L8mlNYBCrQhOZ7dS0f4at4arlLcaj' +
+    'tw';

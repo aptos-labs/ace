@@ -14,7 +14,10 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-use super::{check_permission, is_valid_hex, pretty_message, AptosContractId, AptosProofOfPermission};
+use super::{
+    check_permission, find_rsa_jwk_in_jwks_resource, is_valid_hex, pretty_message,
+    AptosContractId, AptosProofOfPermission,
+};
 use crate::ChainRpcConfig;
 use super::super::BasicFlowRequest;
 
@@ -102,7 +105,11 @@ async fn check_auth_key(
 
 /// Fetches the `RSA_JWK` for `(iss, kid)` from the on-chain
 /// `0x1::jwks::PatchedJWKs` resource.
-async fn fetch_system_rsa_jwk(
+///
+/// Errors with "no JWK found" if the system list does not carry an entry for
+/// `(iss, kid)`. The federated-keyless path catches that miss and retries
+/// against `FederatedJWKs` at the dapp's `jwk_addr`.
+pub(super) async fn fetch_system_rsa_jwk(
     rpc: &vss_common::AptosRpc,
     iss: &str,
     kid: &str,
@@ -113,53 +120,16 @@ async fn fetch_system_rsa_jwk(
         .get_account_resource(&format!("0x{:0>64}", "1"), "0x1::jwks::PatchedJWKs")
         .await
         .map_err(|e| anyhow!("fetch_system_rsa_jwk: PatchedJWKs read: {}", e))?;
-    let entries = resource
-        .pointer("/jwks/entries")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: PatchedJWKs missing entries array"))?;
-
-    // `issuer` is published as a hex-encoded `vector<u8>` over the REST API.
-    let iss_hex = format!("0x{}", hex::encode(iss.as_bytes()));
-    for entry in entries {
-        let issuer = entry.get("issuer").and_then(|v| v.as_str()).unwrap_or("");
-        if issuer != iss_hex {
-            continue;
-        }
-        let jwks = entry
-            .pointer("/jwks")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: entry missing jwks array"))?;
-        for jwk in jwks {
-            // Each JWK is `{ variant: { type_name, data } }` (Any). The RSA
-            // variant's data BCS-decodes as { kid, kty, alg, e, n }.
-            let type_name = jwk
-                .pointer("/variant/type_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if type_name != "0x1::jwks::RSA_JWK" {
-                continue;
-            }
-            let data_hex = jwk
-                .pointer("/variant/data")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("fetch_system_rsa_jwk: missing variant.data"))?;
-            let data_bytes = hex::decode(data_hex.trim_start_matches("0x"))
-                .map_err(|e| anyhow!("fetch_system_rsa_jwk: decode variant.data: {}", e))?;
-            let rsa: aptos_keyless_common::RsaJwk = bcs::from_bytes(&data_bytes)
-                .map_err(|e| anyhow!("fetch_system_rsa_jwk: BCS decode RSA_JWK: {}", e))?;
-            if rsa.kid == kid {
-                return Ok(rsa);
-            }
-        }
-    }
-    Err(anyhow!(
-        "fetch_system_rsa_jwk: no JWK found for iss={:?} kid={:?}",
-        iss, kid
-    ))
+    find_rsa_jwk_in_jwks_resource(&resource, iss, kid)?.ok_or_else(|| {
+        anyhow!(
+            "fetch_system_rsa_jwk: no JWK found for iss={:?} kid={:?}",
+            iss, kid
+        )
+    })
 }
 
 /// Fetches `0x1::keyless_account::Groth16VerificationKey` and BCS-decodes it.
-async fn fetch_groth16_vk(
+pub(super) async fn fetch_groth16_vk(
     rpc: &vss_common::AptosRpc,
 ) -> Result<aptos_keyless_common::Groth16VerificationKey> {
     let resource = rpc
@@ -193,7 +163,7 @@ async fn fetch_groth16_vk(
 }
 
 /// Fetches `0x1::keyless_account::Configuration` and BCS-decodes it.
-async fn fetch_configuration(
+pub(super) async fn fetch_configuration(
     rpc: &vss_common::AptosRpc,
 ) -> Result<aptos_keyless_common::types::Configuration> {
     let resource = rpc

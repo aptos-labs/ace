@@ -27,6 +27,14 @@ pub struct KeylessPublicKey {
     pub idc: IdCommitment,
 }
 
+/// BCS-compatible with `aptos_types::keyless::FederatedKeylessPublicKey`. Field
+/// order matters: `jwk_addr` first, then the inner `KeylessPublicKey`.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct FederatedKeylessPublicKey {
+    pub jwk_addr: [u8; 32],
+    pub pk: KeylessPublicKey,
+}
+
 // ── Ephemeral key / signature ────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

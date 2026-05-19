@@ -3,9 +3,10 @@
 
 //! Aptos-side proof-of-permission verification.
 //!
-//! Owns the wire types and helpers shared between the two scheme paths:
+//! Owns the wire types and helpers shared between the scheme paths:
 //!   - [`ed25519`] — legacy Ed25519 sig over the pretty message
 //!   - [`keyless`] — ZK keyless signature
+//!   - [`federated_keyless`] — ZK keyless signature with dapp-managed JWKs
 //!
 //! The dispatcher [`verify_aptos`] matches on the typed [`AptosPublicKeyMaterial`] /
 //! [`AptosSignatureMaterial`] enum payload (decoded by [`AptosProofOfPermission`]'s
@@ -13,6 +14,7 @@
 //! sub-module.
 
 pub mod ed25519;
+pub mod federated_keyless;
 pub mod keyless;
 
 use anyhow::{anyhow, Result};
@@ -58,6 +60,10 @@ pub enum AptosPublicKeyMaterial {
     /// pk_scheme=4. BCS wire is the inline `KeylessPublicKey` struct
     /// (`{ iss_val: String, idc: Vec<u8> }`).
     Keyless(aptos_keyless_common::KeylessPublicKey),
+    /// pk_scheme=5. BCS wire is the inline `FederatedKeylessPublicKey` struct
+    /// (`{ jwk_addr: [u8;32], pk: KeylessPublicKey }`). The signature carried
+    /// alongside is still a `KeylessSignature` (sig_scheme=4).
+    FederatedKeyless(aptos_keyless_common::FederatedKeylessPublicKey),
 }
 
 /// Inner signature payload for [`AptosProofOfPermission`].
@@ -74,6 +80,7 @@ impl AptosPublicKeyMaterial {
         match self {
             AptosPublicKeyMaterial::Ed25519(_) => "ed25519",
             AptosPublicKeyMaterial::Keyless(_) => "keyless",
+            AptosPublicKeyMaterial::FederatedKeyless(_) => "federated_keyless",
         }
     }
 }
@@ -90,6 +97,7 @@ impl AptosSignatureMaterial {
 // pk_scheme / sig_scheme constants — keep in lockstep with `_internal/aptos.ts`.
 const PK_SCHEME_ED25519_WIRE: u8 = 0;
 const PK_SCHEME_KEYLESS_WIRE: u8 = 4;
+const PK_SCHEME_FEDERATED_KEYLESS_WIRE: u8 = 5;
 const SIG_SCHEME_ED25519_WIRE: u8 = 0;
 const SIG_SCHEME_KEYLESS_WIRE: u8 = 4;
 
@@ -135,6 +143,14 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                             .next_element()?
                             .ok_or_else(|| A::Error::custom("missing Keyless public_key"))?;
                         AptosPublicKeyMaterial::Keyless(pk)
+                    }
+                    PK_SCHEME_FEDERATED_KEYLESS_WIRE => {
+                        let fpk: aptos_keyless_common::FederatedKeylessPublicKey = seq
+                            .next_element()?
+                            .ok_or_else(|| {
+                                A::Error::custom("missing FederatedKeyless public_key")
+                            })?;
+                        AptosPublicKeyMaterial::FederatedKeyless(fpk)
                     }
                     other => {
                         return Err(A::Error::custom(format!(
@@ -206,6 +222,7 @@ impl serde::Serialize for AptosProofOfPermission {
                 t.serialize_element(serde_bytes::Bytes::new(arr))?
             }
             AptosPublicKeyMaterial::Keyless(pk) => t.serialize_element(pk)?,
+            AptosPublicKeyMaterial::FederatedKeyless(fpk) => t.serialize_element(fpk)?,
         }
         t.serialize_element(&self.sig_scheme)?;
         match &self.signature {
@@ -243,6 +260,21 @@ pub(super) async fn verify_aptos(
         }
         (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
             keyless::verify(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
+        }
+        (
+            AptosPublicKeyMaterial::FederatedKeyless(fpk),
+            AptosSignatureMaterial::Keyless(sig),
+        ) => {
+            federated_keyless::verify(
+                req,
+                contract,
+                proof,
+                fpk,
+                sig,
+                ephemeral_ek_bytes,
+                chain_rpc,
+            )
+            .await
         }
         (pk, sig) => Err(anyhow!(
             "verify_aptos: pk/sig scheme mismatch ({} pk vs {} sig)",
@@ -330,6 +362,65 @@ pub(super) async fn check_permission(
     }
 
     Ok(())
+}
+
+/// Walks the `{ jwks: { entries: [...] } }` body of a `PatchedJWKs` or
+/// `FederatedJWKs` resource and returns the RSA JWK matching `(iss, kid)`, if
+/// present. Both resource types share this internal shape (see
+/// `0x1::jwks::PatchedJWKs` / `0x1::jwks::FederatedJWKs` in aptos-core), so the
+/// inner walk is shared between the system and federated keyless paths.
+///
+/// Returns `Ok(None)` when the resource is well-formed but contains no matching
+/// JWK (a "miss" that the federated path treats as a signal to try the fallback
+/// account); returns `Err(_)` only for structural problems with the JSON.
+pub(super) fn find_rsa_jwk_in_jwks_resource(
+    resource: &serde_json::Value,
+    iss: &str,
+    kid: &str,
+) -> Result<Option<aptos_keyless_common::RsaJwk>> {
+    let entries = resource
+        .pointer("/jwks/entries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("find_rsa_jwk_in_jwks_resource: missing entries array"))?;
+
+    // `issuer` is published as a hex-encoded `vector<u8>` over the REST API.
+    let iss_hex = format!("0x{}", hex::encode(iss.as_bytes()));
+    for entry in entries {
+        let issuer = entry.get("issuer").and_then(|v| v.as_str()).unwrap_or("");
+        if issuer != iss_hex {
+            continue;
+        }
+        let jwks = entry
+            .pointer("/jwks")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow!("find_rsa_jwk_in_jwks_resource: entry missing jwks array"))?;
+        for jwk in jwks {
+            // Each JWK is `{ variant: { type_name, data } }` (Any). The RSA
+            // variant's data BCS-decodes as { kid, kty, alg, e, n }.
+            let type_name = jwk
+                .pointer("/variant/type_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if type_name != "0x1::jwks::RSA_JWK" {
+                continue;
+            }
+            let data_hex = jwk
+                .pointer("/variant/data")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow!("find_rsa_jwk_in_jwks_resource: missing variant.data")
+                })?;
+            let data_bytes = hex::decode(data_hex.trim_start_matches("0x"))
+                .map_err(|e| anyhow!("find_rsa_jwk_in_jwks_resource: decode variant.data: {}", e))?;
+            let rsa: aptos_keyless_common::RsaJwk = bcs::from_bytes(&data_bytes).map_err(|e| {
+                anyhow!("find_rsa_jwk_in_jwks_resource: BCS decode RSA_JWK: {}", e)
+            })?;
+            if rsa.kid == kid {
+                return Ok(Some(rsa));
+            }
+        }
+    }
+    Ok(None)
 }
 
 // ── Custom-flow verification ──────────────────────────────────────────────────

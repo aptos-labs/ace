@@ -22,10 +22,10 @@
  * ```
  *
  * Real wallets call `navigator.credentials.get(...)`; this test holds a P-256
- * private key directly via [`WebAuthnSigner`] (in `common/webauthn-signer.ts`)
- * and synthesises the same three byte buffers a browser would return,
- * including a DER-encoded signature so the SDK's DER→raw decoding path is
- * exercised end-to-end.
+ * private key directly and uses `buildAssertion` (from `common/webauthn-signer.ts`)
+ * to synthesise the same three byte buffers a browser would return, including
+ * a DER-encoded signature so the SDK's DER→raw decoding path is exercised
+ * end-to-end.
  *
  * Coverage:
  *   A. Bob + keypair-1 against keypair-0 ciphertext → fail (TIBE decrypt fails).
@@ -49,7 +49,7 @@ import {
 import { setupAceOnLocalnet } from './common/ace-network';
 import { CHAIN_ID } from './common/config';
 import { assert, cleanupScenario, fundAccount } from './common/helpers';
-import { WebAuthnAssertion, WebAuthnSigner } from './common/webauthn-signer';
+import { WebAuthnAccount, buildAssertion, newWebAuthnAccount } from './common/webauthn-signer';
 
 const TOTAL_WORKERS = 3;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
@@ -66,7 +66,7 @@ interface Ctx {
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
     pingCiph: Uint8Array;
-    bob: WebAuthnSigner;
+    bob: WebAuthnAccount;
     charlie: Account;
 }
 
@@ -90,26 +90,16 @@ async function makeSession(
     });
 }
 
-/** Drive the 3-line WebAuthn dev flow: ask the SDK for the challenge, hand
- *  it to the signer (browser stand-in), submit the assertion. */
-async function runWebAuthnDecrypt(
-    ctx: Ctx,
-    session: ACE.AptosBasicFlow.DecryptionSession,
-    build: (challenge: Uint8Array) => WebAuthnAssertion,
-): ReturnType<ACE.AptosBasicFlow.DecryptionSession['decryptWithWebAuthnAssertion']> {
+async function stepA_WrongKeypair(ctx: Ctx): Promise<void> {
+    step('A', `Negative: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) decrypt with WRONG keypair (real DKG'd keypair-1, but PING was encrypted under keypair-0) → must fail`);
+    const session = await makeSession(ctx, { keypairId: ctx.keypair1Id });
     const challenge = await session.getRequestToSignForWebAuthn();
-    const assertion = build(challenge);
-    return session.decryptWithWebAuthnAssertion({
+    const assertion = buildAssertion(challenge, ctx.bob.privateKey);
+    const result = await session.decryptWithWebAuthnAssertion({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.publicKey,
         ...assertion,
     });
-}
-
-async function stepA_WrongKeypair(ctx: Ctx): Promise<void> {
-    step('A', `Negative: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) decrypt with WRONG keypair (real DKG'd keypair-1, but PING was encrypted under keypair-0) → must fail`);
-    const session = await makeSession(ctx, { keypairId: ctx.keypair1Id });
-    const result = await runWebAuthnDecrypt(ctx, session, (c) => ctx.bob.buildAssertion(c));
     assert(!result.isOk, `Expected decrypt to fail when using keypair-1 against keypair-0 ciphertext, but it succeeded`);
     console.log(`  ✓ decrypt with wrong keypair correctly rejected (${result.errValue})`);
 }
@@ -130,7 +120,13 @@ async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
 async function stepC_WrongDomain(ctx: Ctx): Promise<void> {
     step('C', `Negative: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) decrypt with wrong domain → must fail (403)`);
     const session = await makeSession(ctx, { domain: ctx.wrongDomain });
-    const result = await runWebAuthnDecrypt(ctx, session, (c) => ctx.bob.buildAssertion(c));
+    const challenge = await session.getRequestToSignForWebAuthn();
+    const assertion = buildAssertion(challenge, ctx.bob.privateKey);
+    const result = await session.decryptWithWebAuthnAssertion({
+        userAddr: ctx.bob.accountAddress,
+        publicKey: ctx.bob.publicKey,
+        ...assertion,
+    });
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
 }
@@ -138,7 +134,13 @@ async function stepC_WrongDomain(ctx: Ctx): Promise<void> {
 async function stepD_HappyPath(ctx: Ctx): Promise<void> {
     step('D', `Positive: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>, allowlisted) decrypts with correct inputs → must succeed`);
     const session = await makeSession(ctx);
-    const result = await runWebAuthnDecrypt(ctx, session, (c) => ctx.bob.buildAssertion(c));
+    const challenge = await session.getRequestToSignForWebAuthn();
+    const assertion = buildAssertion(challenge, ctx.bob.privateKey);
+    const result = await session.decryptWithWebAuthnAssertion({
+        userAddr: ctx.bob.accountAddress,
+        publicKey: ctx.bob.publicKey,
+        ...assertion,
+    });
     assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
     assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
     console.log(`  ✓ Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) decrypted successfully`);
@@ -147,14 +149,28 @@ async function stepD_HappyPath(ctx: Ctx): Promise<void> {
 async function stepE_MauledSignature(ctx: Ctx): Promise<void> {
     step('E', `Negative: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) with mauled P-256 r||s → must fail`);
     const session = await makeSession(ctx);
-    const result = await runWebAuthnDecrypt(ctx, session, (c) => ctx.bob.buildAssertionWithMauledSignature(c));
+    const challenge = await session.getRequestToSignForWebAuthn();
+    const assertion = buildAssertion(challenge, ctx.bob.privateKey);
+    // Maul the LSB of `s` (last byte of the DER signature) — always lands
+    // inside `1..curve_order` so DER parsing + low-s normalisation succeed,
+    // but cryptographically breaks the signature so the worker's P-256
+    // verify fails. Flipping the first byte of `r` would occasionally land
+    // out of range and fail DER validation client-side instead.
+    const mauledSignature = new Uint8Array(assertion.signature);
+    mauledSignature[mauledSignature.length - 1] ^= 0x01;
+    const result = await session.decryptWithWebAuthnAssertion({
+        userAddr: ctx.bob.accountAddress,
+        publicKey: ctx.bob.publicKey,
+        authenticatorData: assertion.authenticatorData,
+        clientDataJSON: assertion.clientDataJSON,
+        signature: mauledSignature,
+    });
     assert(!result.isOk, `Expected decrypt to fail with mauled signature, but it succeeded`);
     console.log(`  ✓ decrypt with mauled WebAuthn signature correctly rejected (${result.errValue})`);
 }
 
-async function buildAndFundBob(): Promise<WebAuthnSigner> {
-    const seed = new Uint8Array(32).map((_, i) => i + BOB_KEY_SEED);
-    const bob = new WebAuthnSigner(seed);
+async function buildAndFundBob(): Promise<WebAuthnAccount> {
+    const bob = newWebAuthnAccount(new Uint8Array(32).map((_, i) => i + BOB_KEY_SEED));
     await fundAccount(bob.accountAddress);
     return bob;
 }

@@ -2,23 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Test-only WebAuthn (passkeys) signer. Real wallet flows go through
- * `navigator.credentials.get()` and the hardware authenticator; in tests we
- * hold the P-256 private key directly and synthesize the same three byte
- * buffers (`authenticatorData`, `clientDataJSON`, `signature`) a browser
- * would hand back.
+ * Test-only WebAuthn (passkeys) helpers. Real wallet flows go through
+ * `navigator.credentials.get()` and the hardware authenticator; in tests
+ * we hold the P-256 private key directly and synthesise the same three
+ * byte buffers (`authenticatorData`, `clientDataJSON`, `signature`) a
+ * browser would hand back, with the signature DER-encoded so the SDK's
+ * `decryptWithWebAuthnAssertion` exercises its DER→raw decoding path
+ * end-to-end.
  *
- * Pairs with [`DecryptionSession.getRequestToSignForWebAuthn`] /
- * [`DecryptionSession.decryptWithWebAuthnAssertion`] — the SDK builds the
- * 32-byte challenge for us; this signer just wraps it into a
- * `clientDataJSON` and signs over `authenticatorData || SHA-256(clientDataJSON)`
- * with P-256, returning a **DER-encoded** signature (the wire shape browsers
- * emit) so the SDK's DER→raw decoding path is exercised end-to-end.
- *
- * The auth-key for the resulting account is the standard SingleKey
- * derivation `SHA3-256( BCS(AnyPublicKey::Secp256r1Ecdsa(pk)) || 0x02 )` —
- * `AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(pk) })`
- * produces it.
+ * The account's auth-key is the standard SingleKey derivation
+ * `SHA3-256( BCS(AnyPublicKey::Secp256r1Ecdsa(pk)) || 0x02 )` — computed
+ * via `AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(pk) })`.
  */
 
 import {
@@ -46,66 +40,49 @@ export interface WebAuthnAssertion {
     signature: Uint8Array;
 }
 
-export class WebAuthnSigner {
-    private readonly privateKey: Uint8Array;
-    public readonly publicKey: Secp256r1PublicKey;
-    /** SingleKey auth-key derived from `AnyPublicKey(publicKey)`. */
-    public readonly accountAddress: AccountAddress;
+/** Mirror of what `navigator.credentials.create()` would register on a real
+ *  device: the P-256 private key (kept in the authenticator hardware) plus
+ *  the public key + auth-key the relying party stores against the user. */
+export interface WebAuthnAccount {
+    privateKey: Uint8Array;
+    publicKey: Secp256r1PublicKey;
+    accountAddress: AccountAddress;
+}
 
-    constructor(seed: Uint8Array) {
-        if (seed.length !== 32) throw new Error('WebAuthnSigner seed must be 32 bytes');
-        this.privateKey = seed;
-        this.publicKey = new Secp256r1PrivateKey(seed).publicKey();
-        const authKey = AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(this.publicKey) });
-        this.accountAddress = AccountAddress.from(authKey.toUint8Array());
-    }
+export function newWebAuthnAccount(seed: Uint8Array): WebAuthnAccount {
+    if (seed.length !== 32) throw new Error('WebAuthn seed must be 32 bytes');
+    const publicKey = new Secp256r1PrivateKey(seed).publicKey();
+    const authKey = AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(publicKey) });
+    return {
+        privateKey: seed,
+        publicKey,
+        accountAddress: AccountAddress.from(authKey.toUint8Array()),
+    };
+}
 
-    /** Synthesize an assertion over the given 32-byte challenge — i.e. the
-     *  value the SDK's `getRequestToSignForWebAuthn()` returned. */
-    buildAssertion(challenge: Uint8Array): WebAuthnAssertion {
-        const { authData, clientDataJSON, ecdsaPreimage } = this.envelope(challenge);
-        const sig = p256.sign(ecdsaPreimage, this.privateKey, { prehash: true, lowS: true });
-        return {
-            authenticatorData: authData,
-            clientDataJSON,
-            signature: sig.toDERRawBytes(),
-        };
-    }
-
-    /** Step-E mauler — produce a valid-shape assertion but with the last byte
-     *  of the DER signature twiddled. The last byte is the least-significant
-     *  byte of `s`; flipping it always lands inside `1..curve_order` (so DER
-     *  parsing + low-s normalisation succeed) but cryptographically breaks
-     *  the signature so the worker's P-256 verify fails. Flipping the first
-     *  byte of `r` instead would occasionally produce an out-of-range integer
-     *  that fails DER validation client-side. */
-    buildAssertionWithMauledSignature(challenge: Uint8Array): WebAuthnAssertion {
-        const a = this.buildAssertion(challenge);
-        const mauled = new Uint8Array(a.signature);
-        mauled[mauled.length - 1] ^= 0x01;
-        return { ...a, signature: mauled };
-    }
-
-    private envelope(challenge: Uint8Array): {
-        authData: Uint8Array;
-        clientDataJSON: Uint8Array;
-        ecdsaPreimage: Uint8Array;
-    } {
-        const clientDataJSON = new TextEncoder().encode(JSON.stringify({
-            type: 'webauthn.get',
-            challenge: base64UrlEncode(challenge),
-            origin: RP_ORIGIN,
-        }));
-        // authData = rpIdHash(32) || flags=0x01(UP) || signCount=0u32(BE).
-        const authData = new Uint8Array(32 + 1 + 4);
-        authData.set(RP_ID_HASH, 0);
-        authData[32] = 0x01;
-        const cdjHash = sha256(clientDataJSON);
-        const ecdsaPreimage = new Uint8Array(authData.length + cdjHash.length);
-        ecdsaPreimage.set(authData, 0);
-        ecdsaPreimage.set(cdjHash, authData.length);
-        return { authData, clientDataJSON, ecdsaPreimage };
-    }
+/** Synthesise an assertion over the given 32-byte challenge — i.e. the
+ *  value the SDK's `getRequestToSignForWebAuthn()` returned. Mirrors what
+ *  `navigator.credentials.get(...)` would hand back. */
+export function buildAssertion(challenge: Uint8Array, privateKey: Uint8Array): WebAuthnAssertion {
+    const clientDataJSON = new TextEncoder().encode(JSON.stringify({
+        type: 'webauthn.get',
+        challenge: base64UrlEncode(challenge),
+        origin: RP_ORIGIN,
+    }));
+    // authData = rpIdHash(32) || flags=0x01(UP) || signCount=0u32(BE).
+    const authenticatorData = new Uint8Array(32 + 1 + 4);
+    authenticatorData.set(RP_ID_HASH, 0);
+    authenticatorData[32] = 0x01;
+    // P-256 ECDSA signs over `authenticatorData || SHA-256(clientDataJSON)`
+    // with SHA-256 prehash applied internally (noble curves `prehash:true`).
+    const preimage = new Uint8Array(authenticatorData.length + 32);
+    preimage.set(authenticatorData, 0);
+    preimage.set(sha256(clientDataJSON), authenticatorData.length);
+    return {
+        authenticatorData,
+        clientDataJSON,
+        signature: p256.sign(preimage, privateKey, { prehash: true, lowS: true }).toDERRawBytes(),
+    };
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

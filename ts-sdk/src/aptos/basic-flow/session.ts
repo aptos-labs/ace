@@ -169,22 +169,15 @@ export class DecryptionSession {
         clientDataJSON: Uint8Array,
         signature: Uint8Array,
     }): Promise<Result<Uint8Array>> {
-        // Catch malformed DER / out-of-range r||s before they bubble up as
-        // exceptions — the rest of the basic-flow `decrypt*` surface returns
-        // Result for every failure mode and never throws.
-        let proof: ProofOfPermission;
-        try {
-            proof = this.buildWebAuthnProof({
-                userAddr, publicKey, authenticatorData, clientDataJSON, signature,
-            });
-        } catch (e) {
-            return Result.Err({ error: `decryptWithWebAuthnAssertion: ${(e as Error).message ?? e}` });
-        }
+        const proofResult = this.buildWebAuthnProof({
+            userAddr, publicKey, authenticatorData, clientDataJSON, signature,
+        });
+        if (!proofResult.isOk) return Result.Err({ error: proofResult.errValue });
         return decryptCore({
             aceDeployment: this.aceDeployment,
             networkState: this.networkState!,
             request: this.request!,
-            proof,
+            proof: proofResult.okValue!,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
             ciphertext: this.ciphertext,
         });
@@ -198,26 +191,32 @@ export class DecryptionSession {
         authenticatorData: Uint8Array,
         clientDataJSON: Uint8Array,
         signature: Uint8Array,
-    }): ProofOfPermission {
-        // 1. DER-decode the browser-returned ECDSA signature, low-s
-        //    normalise (the worker rejects high-s as malleable), and emit
-        //    the raw 64-byte r||s the WebAuthnSignature wire shape expects.
-        const sigRs = derEcdsaToRawLowS(signature);
-
-        // 2. fullMessage = hex(authenticatorData || SHA-256(clientDataJSON))
-        //    — the bytes the P-256 ECDSA actually digests.
-        const cdjHash = sha256(clientDataJSON);
-        const preimage = new Uint8Array(authenticatorData.length + cdjHash.length);
-        preimage.set(authenticatorData, 0);
-        preimage.set(cdjHash, authenticatorData.length);
-        const fullMessage = bytesToHex(preimage);
-
-        // 3. Wrap into AnyPublicKey<Secp256r1Ecdsa> + AnySignature<WebAuthn>.
-        const anyPk = new AnyPublicKey(publicKey);
-        const webAuthnSig = new WebAuthnSignature(sigRs, authenticatorData, clientDataJSON);
-        const anySig = new AnySignature(webAuthnSig);
-        return ProofOfPermission.createAptos({
-            userAddr, publicKey: anyPk, signature: anySig, fullMessage,
+    }): Result<ProofOfPermission> {
+        // DER-decode the browser-returned ECDSA signature, low-s normalise
+        // (the worker rejects high-s as malleable), and emit the raw 64-byte
+        // r||s the WebAuthnSignature wire shape expects. Wrapped in
+        // Result.capture so a malformed DER / out-of-range r||s surfaces as
+        // Result.Err rather than a thrown exception — matches the never-
+        // throws contract of every other `decrypt*` method on the session.
+        return Result.capture({
+            task: () => {
+                const sigRs = derEcdsaToRawLowS(signature);
+                // fullMessage = hex(authenticatorData || SHA-256(clientDataJSON))
+                // — the bytes the P-256 ECDSA actually digests.
+                const cdjHash = sha256(clientDataJSON);
+                const preimage = new Uint8Array(authenticatorData.length + cdjHash.length);
+                preimage.set(authenticatorData, 0);
+                preimage.set(cdjHash, authenticatorData.length);
+                const fullMessage = bytesToHex(preimage);
+                // Wrap into AnyPublicKey<Secp256r1Ecdsa> + AnySignature<WebAuthn>.
+                const anyPk = new AnyPublicKey(publicKey);
+                const webAuthnSig = new WebAuthnSignature(sigRs, authenticatorData, clientDataJSON);
+                const anySig = new AnySignature(webAuthnSig);
+                return ProofOfPermission.createAptos({
+                    userAddr, publicKey: anyPk, signature: anySig, fullMessage,
+                });
+            },
+            recordsExecutionTimeMs: false,
         });
     }
 

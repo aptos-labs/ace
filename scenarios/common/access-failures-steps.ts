@@ -19,8 +19,12 @@ import {
     EphemeralCertificate,
     EphemeralCertificateVariant,
     EphemeralSignature,
+    FederatedKeylessPublicKey,
     Groth16Zkp,
+    KeylessPublicKey,
     KeylessSignature,
+    PublicKey,
+    Signature,
     ZeroKnowledgeSig,
     ZkProof,
     ZkpVariant,
@@ -58,6 +62,31 @@ export interface AccessFailureContext {
     bobLabel: string;
     /** A regular Ed25519 account that is NOT on the allowlist. Step B only. */
     charlie: Account;
+    /** Optional transform applied to Bob's `publicKey` before the proof is
+     *  constructed. Defaults to identity (bare-keyless wire, `pk_scheme=4`).
+     *  The `AnyPublicKey<Keyless>` scenario sets this to
+     *  `(pk) => new AnyPublicKey(pk)` to flip the wire to `pk_scheme=1` with
+     *  inner variant tag `3`. Only applied to Bob — Charlie (Step B) is
+     *  always sent on the bare-Ed25519 wire. */
+    wrapBobPublicKey?: (pk: KeylessPublicKey | FederatedKeylessPublicKey) => PublicKey;
+    /** Optional transform applied to Bob's signature. Same rationale as
+     *  [`wrapBobPublicKey`] but for the signature side; the AnyPublicKey
+     *  scenario passes `(sig) => new AnySignature(sig)`. The mauled sigs in
+     *  Steps E/F are produced in the bare shape first, then wrapped, so the
+     *  mauling helpers don't need to know about the outer envelope. */
+    wrapBobSignature?: (sig: KeylessSignature) => Signature;
+}
+
+/** Returns the wrap callbacks with identity defaults — keeps the per-step
+ *  bodies free of `?? identity` clutter. */
+function bobWrappers(ctx: AccessFailureContext): {
+    wrapPk: (pk: KeylessPublicKey | FederatedKeylessPublicKey) => PublicKey;
+    wrapSig: (sig: KeylessSignature) => Signature;
+} {
+    return {
+        wrapPk: ctx.wrapBobPublicKey ?? ((pk) => pk),
+        wrapSig: ctx.wrapBobSignature ?? ((sig) => sig),
+    };
 }
 
 function step(n: string, msg: string): void {
@@ -94,12 +123,13 @@ async function makeSession(
  */
 export async function stepA_WrongKeypair(ctx: AccessFailureContext): Promise<void> {
     step('A', `Negative: Bob (${ctx.bobLabel}) decrypt with WRONG keypair (real DKG'd keypair-1, but PING was encrypted under keypair-0) → must fail`);
+    const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx, { keypairId: ctx.keypair1Id });
     const msg = await session.getRequestToSign();
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
-        publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        publicKey: wrapPk(ctx.bob.publicKey),
+        signature: wrapSig(ctx.bob.sign(msg)),
     });
     assert(!result.isOk, `Expected decrypt to fail when using keypair-1 against keypair-0 ciphertext, but it succeeded`);
     console.log(`  ✓ decrypt with wrong keypair (keypair-1 vs keypair-0 ciphertext) correctly rejected (${result.errValue})`);
@@ -125,12 +155,13 @@ export async function stepB_NonAllowlistedCharlie(ctx: AccessFailureContext): Pr
  *  match Alice's ping-blob; permission view returns false. */
 export async function stepC_WrongDomain(ctx: AccessFailureContext): Promise<void> {
     step('C', `Negative: Bob (${ctx.bobLabel}) decrypt with wrong domain → must fail (403)`);
+    const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx, { domain: ctx.wrongDomain });
     const msg = await session.getRequestToSign();
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
-        publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        publicKey: wrapPk(ctx.bob.publicKey),
+        signature: wrapSig(ctx.bob.sign(msg)),
     });
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
@@ -139,12 +170,13 @@ export async function stepC_WrongDomain(ctx: AccessFailureContext): Promise<void
 /** Step D — positive control. Everything correct; expect plaintext "PING". */
 export async function stepD_HappyPath(ctx: AccessFailureContext): Promise<void> {
     step('D', `Positive: Bob (${ctx.bobLabel}, allowlisted) decrypts with correct inputs → must succeed`);
+    const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
-        publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        publicKey: wrapPk(ctx.bob.publicKey),
+        signature: wrapSig(ctx.bob.sign(msg)),
     });
     assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
     assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -156,6 +188,7 @@ export async function stepD_HappyPath(ctx: AccessFailureContext): Promise<void> 
  *  must reject in its ephemeral-sig verification step. */
 export async function stepE_MauledEpkSig(ctx: AccessFailureContext): Promise<void> {
     step('E', `Negative: Bob (${ctx.bobLabel}) with mauled ephemeral Ed25519 signature → must fail`);
+    const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
     const goodSig = ctx.bob.sign(msg);
@@ -171,8 +204,8 @@ export async function stepE_MauledEpkSig(ctx: AccessFailureContext): Promise<voi
     });
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
-        publicKey: ctx.bob.publicKey,
-        signature: mauledSig,
+        publicKey: wrapPk(ctx.bob.publicKey),
+        signature: wrapSig(mauledSig),
     });
     assert(!result.isOk, `Expected decrypt to fail with mauled ephemeral signature, but it succeeded`);
     console.log(`  ✓ decrypt with mauled ephemeral signature correctly rejected (${result.errValue})`);
@@ -183,6 +216,7 @@ export async function stepE_MauledEpkSig(ctx: AccessFailureContext): Promise<voi
  *  bug where the proof field is parsed but never verified. */
 export async function stepF_MauledGroth16Proof(ctx: AccessFailureContext): Promise<void> {
     step('F', `Negative: Bob (${ctx.bobLabel}) with mauled Groth16 proof.a → must fail`);
+    const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
     const goodSig = ctx.bob.sign(msg);
@@ -217,8 +251,8 @@ export async function stepF_MauledGroth16Proof(ctx: AccessFailureContext): Promi
     });
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
-        publicKey: ctx.bob.publicKey,
-        signature: mauledSig,
+        publicKey: wrapPk(ctx.bob.publicKey),
+        signature: wrapSig(mauledSig),
     });
     assert(!result.isOk, `Expected decrypt to fail with mauled Groth16 proof, but it succeeded`);
     console.log(`  ✓ decrypt with mauled Groth16 proof correctly rejected (${result.errValue})`);

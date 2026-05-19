@@ -14,4 +14,5 @@ members = [
     "worker-components/epoch-change-cur",
     "worker-components/epoch-change-nxt",
     "worker-components/network-node",
+    "worker-components/aptos-keyless-common",
 ]

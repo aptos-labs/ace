@@ -379,6 +379,32 @@ impl AptosRpc {
         Ok(resp.json::<AccountInfo>().await?)
     }
 
+    /// Fetches a typed resource (e.g. `"0x1::jwks::PatchedJWKs"`) from `addr`
+    /// and returns its `.data` payload as raw JSON. Errors when the resource
+    /// is absent or the HTTP request fails.
+    pub async fn get_account_resource(
+        &self,
+        addr: &str,
+        resource_type: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/accounts/{}/resource/{}",
+            self.base_url.trim_end_matches('/'),
+            addr.trim(),
+            resource_type,
+        );
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await?;
+            return Err(anyhow!(
+                "get_account_resource {} on {} failed: {}",
+                resource_type, addr, body
+            ));
+        }
+        let v: Value = resp.json().await?;
+        Ok(v.get("data").cloned().unwrap_or(v))
+    }
+
     pub async fn submit_txn(
         &self,
         signing_key: &ed25519_dalek::SigningKey,

@@ -4,136 +4,107 @@
 /**
  * Test-only WebAuthn (passkeys) signer. Real wallet flows go through
  * `navigator.credentials.get()` and the hardware authenticator; in tests we
- * hold the P-256 private key directly and synthesize a syntactically valid
- * `WebAuthnAssertion` ourselves.
+ * hold the P-256 private key directly and synthesize the same three byte
+ * buffers (`authenticatorData`, `clientDataJSON`, `signature`) a browser
+ * would hand back.
  *
- * The wire spec produced here matches the worker's verifier at
- * `worker-components/network-node/src/verify/aptos/any/secp256r1.rs`:
- *
- *   challenge   = SHA3-256( SHA3-256(b"ACE::DecryptionRequestPayload")
- *                          || BCS(DecryptionRequestPayload) )
- *   clientData  = JSON.stringify({ type:"webauthn.get",
- *                                  challenge: base64url(challenge),
- *                                  origin: "https://ace.test" })
- *   authData    = rpIdHash(32) || flags=0x01 || signCount=0u32(big-endian)
- *   ecdsaInput  = authData || SHA-256(clientData)
- *   signature   = P-256 ECDSA over ecdsaInput, low-s normalized, raw r||s (64B)
- *   fullMessage = hex(ecdsaInput)
+ * Pairs with [`DecryptionSession.getRequestToSignForWebAuthn`] /
+ * [`DecryptionSession.decryptWithWebAuthnAssertion`] — the SDK builds the
+ * 32-byte challenge for us; this signer just wraps it into a
+ * `clientDataJSON` and signs over `authenticatorData || SHA-256(clientDataJSON)`
+ * with P-256, returning a **DER-encoded** signature (the wire shape browsers
+ * emit) so the SDK's DER→raw decoding path is exercised end-to-end.
  *
  * The auth-key for the resulting account is the standard SingleKey
  * derivation `SHA3-256( BCS(AnyPublicKey::Secp256r1Ecdsa(pk)) || 0x02 )` —
- * `AuthenticationKey.fromPublicKey({ publicKey: anyPk })` produces it.
+ * `AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(pk) })`
+ * produces it.
  */
 
 import {
     AccountAddress,
     AnyPublicKey,
-    AnySignature,
     AuthenticationKey,
     Secp256r1PrivateKey,
-    WebAuthnSignature,
+    Secp256r1PublicKey,
 } from '@aptos-labs/ts-sdk';
 import { p256 } from '@noble/curves/p256';
 import { sha256 } from '@noble/hashes/sha256';
-import { sha3_256 } from '@noble/hashes/sha3';
-import { bytesToHex } from '@noble/hashes/utils';
 
-const PAYLOAD_DST = new TextEncoder().encode('ACE::DecryptionRequestPayload');
 /** Stable rpIdHash for tests. The worker does not validate it — only the
  *  `challenge` field of `clientDataJSON` is checked — so its value is
  *  arbitrary, but keeping it constant makes traces reproducible. */
 const RP_ID_HASH = sha256(new TextEncoder().encode('ace.test'));
 const RP_ORIGIN = 'https://ace.test';
 
-export interface ProofInputs {
-    publicKey: AnyPublicKey;
-    signature: AnySignature;
-    fullMessage: string;
+/** Mirror of what a browser hands back from `navigator.credentials.get()`. */
+export interface WebAuthnAssertion {
+    authenticatorData: Uint8Array;
+    clientDataJSON: Uint8Array;
+    /** DER-encoded P-256 ECDSA signature, as emitted by browsers. The SDK
+     *  decodes it to raw `r || s` (low-s normalised) on submit. */
+    signature: Uint8Array;
 }
 
 export class WebAuthnSigner {
     private readonly privateKey: Uint8Array;
-    /** Cached AnyPublicKey wrapping a Secp256r1PublicKey. */
-    public readonly publicKey: AnyPublicKey;
-    /** SingleKey auth-key derived from `publicKey`. */
+    public readonly publicKey: Secp256r1PublicKey;
+    /** SingleKey auth-key derived from `AnyPublicKey(publicKey)`. */
     public readonly accountAddress: AccountAddress;
 
     constructor(seed: Uint8Array) {
         if (seed.length !== 32) throw new Error('WebAuthnSigner seed must be 32 bytes');
         this.privateKey = seed;
-        const sk = new Secp256r1PrivateKey(seed);
-        this.publicKey = new AnyPublicKey(sk.publicKey());
-        const authKey = AuthenticationKey.fromPublicKey({ publicKey: this.publicKey });
+        this.publicKey = new Secp256r1PrivateKey(seed).publicKey();
+        const authKey = AuthenticationKey.fromPublicKey({ publicKey: new AnyPublicKey(this.publicKey) });
         this.accountAddress = AccountAddress.from(authKey.toUint8Array());
     }
 
-    /** Build a WebAuthn assertion over `requestBcsBytes` (= BCS of the
-     *  `DecryptionRequestPayload`) and return the (publicKey, signature,
-     *  fullMessage) triple to feed straight into `session.decryptWithProof`. */
-    signRequest(requestBcsBytes: Uint8Array): ProofInputs {
-        const { authData, clientDataJSON, ecdsaPreimage } = this.buildAssertionBody(requestBcsBytes);
+    /** Synthesize an assertion over the given 32-byte challenge — i.e. the
+     *  value the SDK's `getRequestToSignForWebAuthn()` returned. */
+    buildAssertion(challenge: Uint8Array): WebAuthnAssertion {
+        const { authData, clientDataJSON, ecdsaPreimage } = this.envelope(challenge);
         const sig = p256.sign(ecdsaPreimage, this.privateKey, { prehash: true, lowS: true });
-        return this.wrap(sig.toCompactRawBytes(), authData, clientDataJSON, ecdsaPreimage);
+        return {
+            authenticatorData: authData,
+            clientDataJSON,
+            signature: sig.toDERRawBytes(),
+        };
     }
 
     /** Step-E mauler — produce a valid-shape assertion but with the first
-     *  byte of `r` flipped, so P-256 verify fails inside the worker before any
-     *  on-chain check is hit. */
-    signRequestWithMauledSignature(requestBcsBytes: Uint8Array): ProofInputs {
-        const { authData, clientDataJSON, ecdsaPreimage } = this.buildAssertionBody(requestBcsBytes);
-        const sig = p256.sign(ecdsaPreimage, this.privateKey, { prehash: true, lowS: true });
-        const mauledRs = sig.toCompactRawBytes();
-        mauledRs[0] ^= 0x01;
-        return this.wrap(mauledRs, authData, clientDataJSON, ecdsaPreimage);
+     *  byte of the DER signature's `r` integer twiddled, so P-256 verify
+     *  fails inside the worker before any on-chain check is hit. */
+    buildAssertionWithMauledSignature(challenge: Uint8Array): WebAuthnAssertion {
+        const a = this.buildAssertion(challenge);
+        const mauled = new Uint8Array(a.signature);
+        // DER ECDSA layout: 0x30 || total_len || 0x02 || r_len || r... || 0x02 || s_len || s...
+        // Flip the first byte of `r` (index 4 — past the 0x30, total_len, 0x02,
+        // and r_len bytes). That re-parses cleanly but verifies false.
+        mauled[4] ^= 0x01;
+        return { ...a, signature: mauled };
     }
 
-    private buildAssertionBody(requestBcsBytes: Uint8Array): {
+    private envelope(challenge: Uint8Array): {
         authData: Uint8Array;
         clientDataJSON: Uint8Array;
         ecdsaPreimage: Uint8Array;
     } {
-        // 1. challenge = SHA3-256(seed || BCS(payload)).
-        const seed = sha3_256(PAYLOAD_DST);
-        const preimage = concat(seed, requestBcsBytes);
-        const challenge = sha3_256(preimage);
-
-        // 2. clientDataJSON — WebAuthn requires `challenge` base64url-encoded.
         const clientDataJSON = new TextEncoder().encode(JSON.stringify({
             type: 'webauthn.get',
             challenge: base64UrlEncode(challenge),
             origin: RP_ORIGIN,
         }));
-
-        // 3. authData = rpIdHash(32) || flags=0x01 || signCount=0u32(BE).
+        // authData = rpIdHash(32) || flags=0x01(UP) || signCount=0u32(BE).
         const authData = new Uint8Array(32 + 1 + 4);
         authData.set(RP_ID_HASH, 0);
         authData[32] = 0x01;
-
-        // 4. ECDSA preimage.
-        const ecdsaPreimage = concat(authData, sha256(clientDataJSON));
+        const cdjHash = sha256(clientDataJSON);
+        const ecdsaPreimage = new Uint8Array(authData.length + cdjHash.length);
+        ecdsaPreimage.set(authData, 0);
+        ecdsaPreimage.set(cdjHash, authData.length);
         return { authData, clientDataJSON, ecdsaPreimage };
     }
-
-    private wrap(
-        rs: Uint8Array,
-        authData: Uint8Array,
-        clientDataJSON: Uint8Array,
-        ecdsaPreimage: Uint8Array,
-    ): ProofInputs {
-        const webAuthnSig = new WebAuthnSignature(rs, authData, clientDataJSON);
-        return {
-            publicKey: this.publicKey,
-            signature: new AnySignature(webAuthnSig),
-            fullMessage: bytesToHex(ecdsaPreimage),
-        };
-    }
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-    const out = new Uint8Array(a.length + b.length);
-    out.set(a, 0);
-    out.set(b, a.length);
-    return out;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

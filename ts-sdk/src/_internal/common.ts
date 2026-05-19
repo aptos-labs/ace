@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
+import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
@@ -340,6 +341,31 @@ export class DecryptionRequestPayload {
     toPrettyMessage(indent: number = 0): string {
         const pad = '  '.repeat(indent);
         return `${pad}ACE Decryption Request\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}epoch: ${this.epoch}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}\n${pad}ephemeralEncKey: ${this.ephemeralEncKey.toHex()}`;
+    }
+
+    /**
+     * Returns the 32-byte WebAuthn challenge bytes for this payload:
+     *
+     *   `SHA3-256( SHA3-256(b"ACE::DecryptionRequestPayload") || BCS(payload) )`
+     *
+     * Mirrors aptos-core's `CryptoHasher` pattern (`SHA3-256(b"APTOS::" || TypeName)`
+     * seed, then `SHA3-256(seed || BCS(value))` for the final digest) — see
+     * `aptos-crypto/src/hash.rs::prefixed_hash`. The worker-side verifier
+     * (`worker-components/network-node/src/verify/aptos/any/secp256r1.rs`)
+     * recomputes the same value to bind `clientDataJSON.challenge` to the
+     * application-layer request.
+     *
+     * A wallet base64url-encodes the result and passes it as the `challenge`
+     * field to `navigator.credentials.get(...)`. Only used by the
+     * `AnyPublicKey<Secp256r1Ecdsa>+AnySignature<WebAuthn>` (passkeys) path.
+     */
+    toWebAuthnChallenge(): Uint8Array {
+        const seed = sha3_256(new TextEncoder().encode("ACE::DecryptionRequestPayload"));
+        const body = this.toBytes();
+        const preimage = new Uint8Array(seed.length + body.length);
+        preimage.set(seed, 0);
+        preimage.set(body, seed.length);
+        return sha3_256(preimage);
     }
 }
 

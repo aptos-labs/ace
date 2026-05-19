@@ -40,18 +40,11 @@ import {
     domainForBlob,
     encryptForAccessControl,
     registerAllowlistBlob,
-    setupBaseAceActors,
 } from './common/access-control-app';
 import { runAccessFailureStepsAtoF } from './common/access-failures-steps';
-import { deployAndBringUpAceNetwork, runDkg } from './common/ace-network';
+import { setupAceOnLocalnet } from './common/ace-network';
 import { CHAIN_ID } from './common/config';
-import {
-    cleanupScenario,
-    createAptos,
-    fundAccount,
-    sleep,
-    startLocalnet,
-} from './common/helpers';
+import { cleanupScenario, createAptos, fundAccount } from './common/helpers';
 import { buildBobKeylessAccount, runKeylessFrameworkBootstrap } from './common/keyless';
 import { SAMPLE_AUD, SAMPLE_ISS } from './common/keyless-fixtures';
 
@@ -71,26 +64,15 @@ async function main(): Promise<void> {
     let localnetProc: ChildProcess | null = null;
     let exitCode = 0;
     try {
-        localnetProc = await startLocalnet();
-        await runKeylessFrameworkBootstrap();
-        const actors = await setupBaseAceActors();
+        const setup = await setupAceOnLocalnet({
+            totalWorkers: TOTAL_WORKERS, epoch0WorkerIndices: EPOCH0_WORKER_INDICES,
+            epoch0Threshold: EPOCH0_THRESHOLD, fundAccount, numKeypairs: 2,
+            beforeAceSetup: runKeylessFrameworkBootstrap,
+        });
+        localnetProc = setup.localnetProc;
+        workers = setup.ace.workers;
+        const { actors, ace, keypairIds: [keypair0Id, keypair1Id] } = setup;
         const bob = await buildAndFundBob();
-        const ace = await deployAndBringUpAceNetwork({
-            adminAccount: actors.admin, totalWorkers: TOTAL_WORKERS,
-            epoch0WorkerIndices: EPOCH0_WORKER_INDICES, epoch0Threshold: EPOCH0_THRESHOLD,
-            fundAccount,
-        });
-        workers = ace.workers;
-        const approvers = ace.epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD);
-        const keypair0Id = await runDkg({
-            approvers, adminAddr: actors.adminAddr, adminAccountAddress: ace.adminAccountAddress,
-            expectedSecretsCountAfter: 1, label: 'keypair-0',
-        });
-        const keypair1Id = await runDkg({
-            approvers, adminAddr: actors.adminAddr, adminAccountAddress: ace.adminAccountAddress,
-            expectedSecretsCountAfter: 2, label: 'keypair-1',
-        });
-        await sleep(10000);
         await deployAndInitAccessControl(actors.admin, actors.adminAddr, actors.adminKeyHex);
         await registerAllowlistBlob(createAptos(), actors.alice, bob.accountAddress, actors.adminAddr, 'ping-blob');
         const correctDomain = domainForBlob(actors.alice, 'ping-blob');

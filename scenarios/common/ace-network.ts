@@ -18,12 +18,15 @@ import { ChildProcess } from 'child_process';
 
 import { LOCALNET_URL, WORKER_BASE_PORT } from './config';
 import {
+    BaseAceActors,
     assertTxnSuccess,
     deployContracts,
     getNetworkState,
     proposeAndApprove,
     serializeNewSecretProposal,
+    setupBaseAceActors,
     sleep,
+    startLocalnet,
     submitTxn,
     waitFor,
 } from './helpers';
@@ -181,6 +184,78 @@ export async function setupAceNetworkAndWorkers(
  * `serializeNewSecretProposal(scheme)`). Pass `1` for the default in the
  * access-failure scenarios.
  */
+export interface SetupAceOnLocalnetOpts {
+    totalWorkers: number;
+    epoch0WorkerIndices: number[];
+    epoch0Threshold: number;
+    /** Per-worker funding callback. Use the scenario's `fundAccount` so the
+     *  faucet config (network/url) is consistent with the rest of the test. */
+    fundAccount: (address: AccountAddress) => Promise<void>;
+    /** How many DKGs to run after the initial epoch starts. 1 for scenarios
+     *  whose Step A uses a nonexistent keypair; 2 for keyless/federated-
+     *  keyless whose Step A uses a real-but-wrong keypair (keypair-1 against
+     *  keypair-0 ciphertext). */
+    numKeypairs: number;
+    /** Optional hook to run *after* `startLocalnet()` but *before* any ACE
+     *  setup. The keyless scenarios use this to invoke their framework
+     *  bootstrap (clear JWKs / install Groth16 VK / patch Configuration),
+     *  which must precede contract deploys. */
+    beforeAceSetup?: () => Promise<void>;
+    /** Optional post-DKG settle delay in ms. Defaults to 10 000 — the same
+     *  cushion the access-failure scenarios used before this helper existed,
+     *  so workers can stabilise on the new shares before decrypt traffic. */
+    postDkgSettleMs?: number;
+}
+
+export interface SetupAceOnLocalnetResult {
+    localnetProc: ChildProcess;
+    actors: BaseAceActors;
+    ace: AceNetworkState;
+    /** One entry per DKG, in order. Length matches `opts.numKeypairs`. */
+    keypairIds: AccountAddress[];
+}
+
+/**
+ * One-call front-door for every access-failure-style scenario: starts a fresh
+ * localnet, runs the optional `beforeAceSetup` hook, funds [`BaseAceActors`],
+ * deploys ACE contracts + brings up the worker network + starts epoch 0
+ * (via [`deployAndBringUpAceNetwork`]), and runs `opts.numKeypairs` DKGs to
+ * completion. Returns the localnet handle, the funded actors, the ACE network
+ * state (workers, epoch-0 accounts, `aceDeployment`), and the DKG'd keypair
+ * IDs in order.
+ *
+ * Caller is responsible for `cleanupScenario(result.ace.workers,
+ * result.localnetProc)` in their `finally` block.
+ */
+export async function setupAceOnLocalnet(
+    opts: SetupAceOnLocalnetOpts,
+): Promise<SetupAceOnLocalnetResult> {
+    const localnetProc = await startLocalnet();
+    if (opts.beforeAceSetup) await opts.beforeAceSetup();
+    const actors = await setupBaseAceActors();
+    const ace = await deployAndBringUpAceNetwork({
+        adminAccount: actors.admin,
+        totalWorkers: opts.totalWorkers,
+        epoch0WorkerIndices: opts.epoch0WorkerIndices,
+        epoch0Threshold: opts.epoch0Threshold,
+        fundAccount: opts.fundAccount,
+    });
+    const approvers = ace.epoch0WorkerAccounts.slice(0, opts.epoch0Threshold);
+    const keypairIds: AccountAddress[] = [];
+    for (let i = 0; i < opts.numKeypairs; i++) {
+        const id = await runDkg({
+            approvers,
+            adminAddr: actors.adminAddr,
+            adminAccountAddress: ace.adminAccountAddress,
+            expectedSecretsCountAfter: i + 1,
+            label: `keypair-${i}`,
+        });
+        keypairIds.push(id);
+    }
+    await sleep(opts.postDkgSettleMs ?? 10_000);
+    return { localnetProc, actors, ace, keypairIds };
+}
+
 export async function runDkg(opts: {
     approvers: Account[];
     adminAddr: string;

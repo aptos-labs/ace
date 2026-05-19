@@ -8,57 +8,12 @@
  * a thin wrapper around `ACE.AptosBasicFlow.encrypt` for the PING fixture.
  */
 
-import { Account, AccountAddress, Aptos, Ed25519PrivateKey, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, Serializer } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 import { ACCESS_CONTROL_CONTRACT_DIR, CHAIN_ID } from './config';
-import { assert, assertTxnSuccess, createAptos, fundAccount, submitTxn } from './helpers';
+import { BaseAceActors, assert, assertTxnSuccess, createAptos, submitTxn } from './helpers';
 import { deployContract } from './infra';
-
-/** Fixed key material used by every access-failure scenario. Matches what
- *  `test-access-failures.ts` / `test-access-failures-keyless.ts` /
- *  `test-access-failures-federated-keyless.ts` independently hard-coded
- *  before this helper existed (admin = 0x111…1, alice seed 100, charlie
- *  seed 50). Keeping the seeds here lets new scenarios reuse them without
- *  drift; Bob's identity is *not* covered here because it varies per
- *  scenario (KeylessAccount vs SingleKeyAccount vs bare Ed25519). */
-const ADMIN_PRIVATE_KEY_HEX = '0x1111111111111111111111111111111111111111111111111111111111111111';
-const ALICE_KEY_SEED = 100;
-const CHARLIE_KEY_SEED = 50;
-
-function ed25519KeyFromSeed(seed: number): Ed25519PrivateKey {
-    return new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + seed)));
-}
-
-/** The Bob-less base actors every access-failure scenario funds: the dapp
- *  admin (also publishes contracts), Alice (data owner / blob registrar),
- *  Charlie (non-allowlisted reader, used in Step B). */
-export interface BaseAceActors {
-    admin: Account;
-    /** Admin's long-form `0x…` address — used to qualify Move function calls
-     *  like `${adminAddr}::access_control::initialize`. */
-    adminAddr: string;
-    /** Admin's private-key hex — needed for the contract-publish CLI. */
-    adminKeyHex: string;
-    alice: Account;
-    /** NOT on any allowlist. */
-    charlie: Account;
-}
-
-/** Builds and funds [`BaseAceActors`] using the canonical fixture seeds. */
-export async function setupBaseAceActors(): Promise<BaseAceActors> {
-    const admin = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(ADMIN_PRIVATE_KEY_HEX) });
-    const adminAddr = admin.accountAddress.toStringLong();
-    const adminKeyHex = Buffer.from(admin.privateKey.toUint8Array()).toString('hex');
-    const alice = Account.fromPrivateKey({ privateKey: ed25519KeyFromSeed(ALICE_KEY_SEED) });
-    const charlie = Account.fromPrivateKey({ privateKey: ed25519KeyFromSeed(CHARLIE_KEY_SEED) });
-    await Promise.all([
-        fundAccount(admin.accountAddress),
-        fundAccount(alice.accountAddress),
-        fundAccount(charlie.accountAddress),
-    ]);
-    return { admin, adminAddr, adminKeyHex, alice, charlie };
-}
 
 /** Deploys the `access_control` Move package at `adminAddr` and calls its
  *  `initialize` entry function. Caller is responsible for funding `admin`

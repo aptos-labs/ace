@@ -36,10 +36,9 @@ import { ChildProcess } from 'child_process';
 import {
     domainForBlob,
     setupAccessControlAppAndEncryptPing,
-    setupBaseAceActors,
 } from './common/access-control-app';
-import { deployAndBringUpAceNetwork, runDkg } from './common/ace-network';
-import { cleanupScenario, fundAccount, sleep, startLocalnet } from './common/helpers';
+import { setupAceOnLocalnet } from './common/ace-network';
+import { cleanupScenario, fundAccount } from './common/helpers';
 import {
     NonKeylessAccessFailureContext,
     runNonKeylessAccessFailureSteps,
@@ -71,21 +70,14 @@ async function main(): Promise<void> {
     let localnetProc: ChildProcess | null = null;
     let exitCode = 0;
     try {
-        localnetProc = await startLocalnet();
-        const actors = await setupBaseAceActors();
+        const setup = await setupAceOnLocalnet({
+            totalWorkers: TOTAL_WORKERS, epoch0WorkerIndices: EPOCH0_WORKER_INDICES,
+            epoch0Threshold: EPOCH0_THRESHOLD, fundAccount, numKeypairs: 1,
+        });
+        localnetProc = setup.localnetProc;
+        workers = setup.ace.workers;
+        const { actors, ace, keypairIds: [keypair0Id] } = setup;
         const bob = await buildAndFundBob();
-        const ace = await deployAndBringUpAceNetwork({
-            adminAccount: actors.admin, totalWorkers: TOTAL_WORKERS,
-            epoch0WorkerIndices: EPOCH0_WORKER_INDICES, epoch0Threshold: EPOCH0_THRESHOLD,
-            fundAccount,
-        });
-        workers = ace.workers;
-        const keypair0Id = await runDkg({
-            approvers: ace.epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD),
-            adminAddr: actors.adminAddr, adminAccountAddress: ace.adminAccountAddress,
-            expectedSecretsCountAfter: 1,
-        });
-        await sleep(10000);
         const { correctDomain, pingCiph } = await setupAccessControlAppAndEncryptPing(
             actors, bob.accountAddress, ace.aceDeployment, ace.adminAccountAddress, keypair0Id,
         );

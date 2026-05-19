@@ -16,14 +16,16 @@
 //! (`Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3,
 //! FederatedKeyless=4`) — see [the aptos-core enum][permalink].
 //!
-//! Variants ship one at a time; this PR lands `Ed25519` only. The other four
-//! variants are present in the enum (so wire-format parsing covers all the
-//! tags aptos-core emits) but the dispatch returns a "not yet supported"
-//! error until their PRs land.
+//! Variants ship one at a time; this build supports `Ed25519` and
+//! `Secp256k1Ecdsa`. The remaining variants (`Secp256r1Ecdsa`/WebAuthn,
+//! `Keyless`, `FederatedKeyless`) are present in the enum (so wire-format
+//! parsing covers all the tags aptos-core emits) but the dispatch returns a
+//! "not yet supported" error until their PRs land.
 //!
 //! [permalink]: https://github.com/aptos-labs/aptos-core/blob/f8ad6eab698cfb638e56fa8afd92a48642efad12/types/src/transaction/authenticator.rs#L1452-L1473
 
 pub mod ed25519;
+pub mod secp256k1;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -165,8 +167,20 @@ pub(super) async fn verify(
             )
             .await
         }
-        (AnyPublicKeyInner::Secp256k1Ecdsa(_), AnySignatureInner::Secp256k1Ecdsa(_))
-        | (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_))
+        (AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes), AnySignatureInner::Secp256k1Ecdsa(sig_bytes)) => {
+            secp256k1::verify(
+                req,
+                contract,
+                proof,
+                any_pk,
+                pk_bytes,
+                sig_bytes,
+                ephemeral_ek_bytes,
+                chain_rpc,
+            )
+            .await
+        }
+        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_))
         | (AnyPublicKeyInner::Keyless(_), AnySignatureInner::Keyless(_))
         | (AnyPublicKeyInner::FederatedKeyless(_), AnySignatureInner::Keyless(_)) => Err(anyhow!(
             "verify_aptos_any: {} pk / {} sig is a valid pairing but not yet supported in this build",
@@ -249,6 +263,27 @@ mod tests {
         expect.update([0u8, 0x20u8]);
         expect.update([0u8; 32]);
         expect.update([2u8]);
+        let expect_out: [u8; 32] = expect.finalize().into();
+        assert_eq!(from_any, expect_out);
+    }
+
+    /// Sanity: `AnyPublicKey::Secp256k1Ecdsa(65-byte uncompressed SEC1 pk)`
+    /// should hash a known 67-byte preimage — variant tag `0x01`, ULEB128(65)
+    /// = `0x41`, 65 raw pubkey bytes — followed by SingleKey suffix `0x02`.
+    /// This locks in that our variant tag matches aptos-core's
+    /// `AnyPublicKey::Secp256k1Ecdsa = 1`.
+    #[test]
+    fn any_secp256k1_auth_key_preimage() {
+        use sha3::{Digest, Sha3_256};
+
+        let mut pk = vec![0u8; 65];
+        pk[0] = 0x04; // SEC1 uncompressed prefix; rest left as zero (shape-only test).
+        let from_any = authentication_key(&AnyPublicKeyInner::Secp256k1Ecdsa(pk.clone()));
+
+        let mut expect = Sha3_256::new();
+        expect.update([0x01u8, 0x41u8]); // variant tag 1 || ULEB128(65)
+        expect.update(&pk);
+        expect.update([0x02u8]); // Scheme::SingleKey
         let expect_out: [u8; 32] = expect.finalize().into();
         assert_eq!(from_any, expect_out);
     }

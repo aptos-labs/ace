@@ -19,6 +19,7 @@ import { ChildProcess } from 'child_process';
 import { LOCALNET_URL, WORKER_BASE_PORT } from './config';
 import {
     assertTxnSuccess,
+    deployContracts,
     getNetworkState,
     proposeAndApprove,
     serializeNewSecretProposal,
@@ -27,6 +28,15 @@ import {
     waitFor,
 } from './helpers';
 import { buildRustWorkspace, spawnNetworkNodeMaybeSplit } from './network-clients';
+
+/** The ACE Move packages, in dependency order. Used by
+ *  [`deployAndBringUpAceNetwork`] and any scenario that wants to deploy the
+ *  full set; mirrors what every access-failure scenario has historically
+ *  duplicated inline. */
+export const ACE_CONTRACTS: readonly string[] = [
+    'pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq',
+    'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
+];
 
 export interface AceNetworkOptions {
     adminAccount: Account;
@@ -60,6 +70,18 @@ export interface AceNetworkState {
  * Assumes ACE contracts (`pke`, `worker_config`, …, `network`) are already
  * deployed at `adminAccount.accountAddress`.
  */
+/**
+ * Deploys [`ACE_CONTRACTS`] at `adminAccount.accountAddress` and then runs the
+ * standard worker bring-up (delegates to [`setupAceNetworkAndWorkers`]). Most
+ * access-failure scenarios want exactly this composition.
+ */
+export async function deployAndBringUpAceNetwork(
+    opts: AceNetworkOptions,
+): Promise<AceNetworkState> {
+    await deployContracts(opts.adminAccount, [...ACE_CONTRACTS]);
+    return setupAceNetworkAndWorkers(opts);
+}
+
 export async function setupAceNetworkAndWorkers(
     opts: AceNetworkOptions,
 ): Promise<AceNetworkState> {

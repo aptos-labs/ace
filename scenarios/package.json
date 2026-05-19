@@ -19,6 +19,7 @@
     "test-access-failures-federated-keyless": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-federated-keyless.ts",
     "test-access-failures-anypub-ed25519": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-ed25519.ts",
     "test-access-failures-anypub-secp256k1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-secp256k1.ts",
+    "test-access-failures-anypub-secp256r1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-secp256r1.ts",
     "test-access-failures-anypub-keyless": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-keyless.ts",
     "test-access-failures-anypub-federated-keyless": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-federated-keyless.ts",
     "test-fault-tolerance": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-fault-tolerance.ts",
@@ -34,6 +35,8 @@
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",
     "@aptos-labs/ts-sdk": "^5.1.1",
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1",
     "tsx": "^4.6.0"
   },
   "devDependencies": {

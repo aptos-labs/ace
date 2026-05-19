@@ -1,0 +1,195 @@
+// Copyright (c) Aptos Labs
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * ACE-network bring-up helpers shared by access-failure scenarios. Splits the
+ * scaffolding (fund worker accounts → register PKE / endpoints → start_initial_epoch
+ * → spawn worker processes) from the test-specific bits (which Bob signs,
+ * which keypair is used, etc.).
+ *
+ * `runDkg` is the per-secret DKG primitive — call once per keypair you want
+ * available. Returns the new keypair's ID once the network state observes it.
+ */
+
+import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
+import * as ACE from '@aptos-labs/ace-sdk';
+import { pke } from '@aptos-labs/ace-sdk';
+import { ChildProcess } from 'child_process';
+
+import { LOCALNET_URL, WORKER_BASE_PORT } from './config';
+import {
+    assertTxnSuccess,
+    getNetworkState,
+    proposeAndApprove,
+    serializeNewSecretProposal,
+    sleep,
+    submitTxn,
+    waitFor,
+} from './helpers';
+import { buildRustWorkspace, spawnNetworkNodeMaybeSplit } from './network-clients';
+
+export interface AceNetworkOptions {
+    adminAccount: Account;
+    /** Total worker accounts to mint. Indices 0..totalWorkers-1. */
+    totalWorkers: number;
+    /** Indices of the workers in the initial committee (subset of 0..totalWorkers-1). */
+    epoch0WorkerIndices: number[];
+    /** Threshold for the initial committee. */
+    epoch0Threshold: number;
+    /** Per-worker funding callback. Use the scenario's `fundAccount` so the
+     *  faucet config (network/url) is consistent. */
+    fundAccount: (address: AccountAddress) => Promise<void>;
+}
+
+export interface AceNetworkState {
+    workerAccounts: Account[];
+    encKeypairs: Awaited<ReturnType<typeof pke.keygen>>[];
+    workers: ChildProcess[];
+    epoch0WorkerAccounts: Account[];
+    aceDeployment: ACE.AceDeployment;
+    adminAccountAddress: AccountAddress;
+}
+
+/**
+ * Funds `totalWorkers` deterministic worker accounts, registers their PKE
+ * encryption keys + endpoints, calls `network::start_initial_epoch` with the
+ * configured committee + threshold, builds the rust workspace, and spawns one
+ * worker process per index (split into maintainer + handler subprocesses per
+ * `spawnNetworkNodeMaybeSplit`).
+ *
+ * Assumes ACE contracts (`pke`, `worker_config`, …, `network`) are already
+ * deployed at `adminAccount.accountAddress`.
+ */
+export async function setupAceNetworkAndWorkers(
+    opts: AceNetworkOptions,
+): Promise<AceNetworkState> {
+    const { adminAccount, totalWorkers, epoch0WorkerIndices, epoch0Threshold } = opts;
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    const adminAccountAddress = adminAccount.accountAddress;
+
+    // ── Fund deterministic worker accounts ──────────────────────────────────
+    const workerAccounts: Account[] = [];
+    for (let i = 0; i < totalWorkers; i++) {
+        const { Ed25519PrivateKey } = await import('@aptos-labs/ts-sdk');
+        const key = new Ed25519PrivateKey(
+            Buffer.from(new Uint8Array(32).map((_, j) => j + 10 + i)),
+        );
+        const acc = Account.fromPrivateKey({ privateKey: key });
+        await opts.fundAccount(acc.accountAddress);
+        workerAccounts.push(acc);
+    }
+
+    // ── Register PKE enc keys + endpoints ───────────────────────────────────
+    const encKeypairs = await Promise.all(
+        Array.from({ length: totalWorkers }, () => pke.keygen()),
+    );
+    for (let i = 0; i < totalWorkers; i++) {
+        const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
+        assertTxnSuccess(
+            await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${adminAddr}::worker_config::register_pke_enc_key`,
+                args: [Array.from(encKeypairs[i]!.encryptionKey.toBytes())],
+            }),
+            `register_pke_enc_key worker ${i}`,
+        );
+        assertTxnSuccess(
+            await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${adminAddr}::worker_config::register_endpoint`,
+                args: [endpoint],
+            }),
+            `register_endpoint worker ${i}`,
+        );
+    }
+
+    // ── Kick off the initial epoch ──────────────────────────────────────────
+    const epoch0Addrs = epoch0WorkerIndices.map(
+        (i) => workerAccounts[i]!.accountAddress.toStringLong(),
+    );
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${adminAddr}::network::start_initial_epoch`,
+            args: [epoch0Addrs, epoch0Threshold, 600],
+        }),
+        'network::start_initial_epoch',
+    );
+
+    // ── Build + spawn worker processes ──────────────────────────────────────
+    await buildRustWorkspace();
+    const workers: ChildProcess[] = [];
+    for (let i = 0; i < totalWorkers; i++) {
+        const pkeDkHex = `0x${Buffer.from(encKeypairs[i]!.decryptionKey.toBytes()).toString('hex')}`;
+        workers.push(...spawnNetworkNodeMaybeSplit({
+            index: i,
+            total: totalWorkers,
+            runAs: workerAccounts[i]!,
+            pkeDkHex,
+            aceDeploymentAddr: adminAddr,
+            aceDeploymentApi: LOCALNET_URL,
+            workerBasePort: WORKER_BASE_PORT,
+        }));
+    }
+    await sleep(2000);
+
+    const aceDeployment = new ACE.AceDeployment({
+        apiEndpoint: LOCALNET_URL,
+        contractAddr: adminAccountAddress,
+    });
+
+    return {
+        workerAccounts,
+        encKeypairs,
+        workers,
+        epoch0WorkerAccounts: epoch0WorkerIndices.map((i) => workerAccounts[i]!),
+        aceDeployment,
+        adminAccountAddress,
+    };
+}
+
+/**
+ * Proposes and threshold-approves a new-secret proposal, then waits for the
+ * resulting keypair to appear in the network state. Returns the new keypair's
+ * ID. Caller is responsible for ordering: each `runDkg` call must complete
+ * (the secret appears) before the next is proposed, or the network state
+ * `secrets` count will be ambiguous.
+ *
+ * `scheme` is the PKE/keypair scheme code (matches
+ * `serializeNewSecretProposal(scheme)`). Pass `1` for the default in the
+ * access-failure scenarios.
+ */
+export async function runDkg(opts: {
+    approvers: Account[];
+    adminAddr: string;
+    adminAccountAddress: AccountAddress;
+    expectedSecretsCountAfter: number;
+    scheme?: number;
+    timeoutMs?: number;
+    label?: string;
+}): Promise<AccountAddress> {
+    const { approvers, adminAddr, adminAccountAddress } = opts;
+    const scheme = opts.scheme ?? 1;
+    const timeoutMs = opts.timeoutMs ?? 90_000;
+    const label = opts.label ?? `keypair-${opts.expectedSecretsCountAfter - 1}`;
+
+    await proposeAndApprove(
+        approvers[0]!,
+        approvers,
+        adminAddr,
+        serializeNewSecretProposal(scheme),
+    );
+    await waitFor(
+        `${label} DKG done`,
+        async () => {
+            const stateResult = await getNetworkState(adminAccountAddress);
+            if (!stateResult.isOk) return false;
+            return stateResult.okValue!.secrets.length >= opts.expectedSecretsCountAfter;
+        },
+        timeoutMs,
+    );
+    const state = (await getNetworkState(adminAccountAddress))
+        .unwrapOrThrow(`state read failed after ${label} DKG`);
+    const keypair = state.secrets[opts.expectedSecretsCountAfter - 1]!.keypairId;
+    return keypair;
+}

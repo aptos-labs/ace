@@ -80,19 +80,10 @@ mod tests {
         assert_eq!(ak, keyless_account_authentication_key(&pk));
     }
 
-    #[test]
-    fn federated_auth_key_differs_from_keyless() {
-        let pk = KeylessPublicKey {
-            iss_val: "test.oidc.provider".to_string(),
-            idc: IdCommitment(vec![0u8; IdCommitment::NUM_BYTES]),
-        };
-        let fpk = FederatedKeylessPublicKey { jwk_addr: [0u8; 32], pk: pk.clone() };
-        let ak = keyless_account_authentication_key(&pk);
-        let fak = federated_keyless_account_authentication_key(&fpk);
-        assert_eq!(fak.len(), 32);
-        assert_eq!(fak, federated_keyless_account_authentication_key(&fpk));
-        // The federated derivation must differ — different variant byte and
-        // an extra 32-byte `jwk_addr` prefix in the BCS body.
-        assert_ne!(ak, fak);
-    }
+    // Correctness of `federated_keyless_account_authentication_key` is
+    // exercised end-to-end by `test-access-failures-federated-keyless.ts`
+    // Step D: the worker recomputes the auth-key from the wire
+    // `FederatedKeylessPublicKey` and matches it against the on-chain
+    // `authentication_key`. Any drift in the variant byte, scheme byte, or
+    // BCS field order fails Step D.
 }

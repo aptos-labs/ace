@@ -72,16 +72,17 @@ export class WebAuthnSigner {
         };
     }
 
-    /** Step-E mauler — produce a valid-shape assertion but with the first
-     *  byte of the DER signature's `r` integer twiddled, so P-256 verify
-     *  fails inside the worker before any on-chain check is hit. */
+    /** Step-E mauler — produce a valid-shape assertion but with the last byte
+     *  of the DER signature twiddled. The last byte is the least-significant
+     *  byte of `s`; flipping it always lands inside `1..curve_order` (so DER
+     *  parsing + low-s normalisation succeed) but cryptographically breaks
+     *  the signature so the worker's P-256 verify fails. Flipping the first
+     *  byte of `r` instead would occasionally produce an out-of-range integer
+     *  that fails DER validation client-side. */
     buildAssertionWithMauledSignature(challenge: Uint8Array): WebAuthnAssertion {
         const a = this.buildAssertion(challenge);
         const mauled = new Uint8Array(a.signature);
-        // DER ECDSA layout: 0x30 || total_len || 0x02 || r_len || r... || 0x02 || s_len || s...
-        // Flip the first byte of `r` (index 4 — past the 0x30, total_len, 0x02,
-        // and r_len bytes). That re-parses cleanly but verifies false.
-        mauled[4] ^= 0x01;
+        mauled[mauled.length - 1] ^= 0x01;
         return { ...a, signature: mauled };
     }
 

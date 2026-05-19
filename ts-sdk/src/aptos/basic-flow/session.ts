@@ -169,9 +169,17 @@ export class DecryptionSession {
         clientDataJSON: Uint8Array,
         signature: Uint8Array,
     }): Promise<Result<Uint8Array>> {
-        const proof = this.buildWebAuthnProof({
-            userAddr, publicKey, authenticatorData, clientDataJSON, signature,
-        });
+        // Catch malformed DER / out-of-range r||s before they bubble up as
+        // exceptions — the rest of the basic-flow `decrypt*` surface returns
+        // Result for every failure mode and never throws.
+        let proof: ProofOfPermission;
+        try {
+            proof = this.buildWebAuthnProof({
+                userAddr, publicKey, authenticatorData, clientDataJSON, signature,
+            });
+        } catch (e) {
+            return Result.Err({ error: `decryptWithWebAuthnAssertion: ${(e as Error).message ?? e}` });
+        }
         return decryptCore({
             aceDeployment: this.aceDeployment,
             networkState: this.networkState!,

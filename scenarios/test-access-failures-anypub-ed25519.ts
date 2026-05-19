@@ -2,34 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Unhappy-path test: decrypt failure cases with a legacy bare-Ed25519 Bob
- * (`pk_scheme=0`, auth-key = `SHA3-256(pk || 0x00)`).
+ * Unhappy-path test for the modern `AnyPublicKey<Ed25519>` (SingleKey) account.
  *
- * Sibling of `test-access-failures-anypub-ed25519.ts` (SingleKey wrapping
- * the same Ed25519 key). All scaffolding (base-actor funding, ACE network
- * bring-up, DKG, access-control app setup + PING encryption, the 5
- * unhappy-path step bodies, scenario cleanup) lives in `scenarios/common/`.
- * The only variant-specific bits here are: Bob is a plain `Account` (so
- * `bob.publicKey` is `Ed25519PublicKey` and the worker dispatches on
- * `pk_scheme=0`), and the Step-E mauler operates on a raw
- * `Ed25519Signature` (no `AnySignature` envelope).
+ * Sibling of `test-access-failures.ts` (bare-Ed25519, `pk_scheme=0`). Bob
+ * here is a `SingleKeyAccount` wrapping the same Ed25519 key material; his
+ * on-chain auth-key derives via
+ *   `SHA3-256( BCS(AnyPublicKey::Ed25519(pk)) || 0x02 )`
+ * (≠ legacy `SHA3-256(pk || 0x00)`), so the worker dispatches on
+ * `pk_scheme=1` / `sig_scheme=1` (the new `Any` wire path).
  *
- * Test cases:
- *   A. Decrypt with a nonexistent keypair ID                → fail (404).
- *   B. Decrypt by Charlie (not on allowlist)                → fail (403).
- *   C. Decrypt with wrong domain (blob doesn't exist)       → fail (403).
- *   D. Decrypt by Bob (allowlisted) with correct inputs     → succeed.
- *   E. Decrypt by Bob with a mauled Ed25519 signature       → fail.
+ * All scaffolding (base-actor funding, ACE network bring-up, DKG,
+ * access-control app setup + PING encryption, the 5 unhappy-path step
+ * bodies, scenario cleanup) lives in `scenarios/common/`. The only
+ * variant-specific code here is constructing Bob as a `SingleKeyAccount`
+ * and the Step-E mauler [`mauleAnySignatureEd25519`].
  *
  * Run:
- *   cd scenarios && pnpm test-access-failures
+ *   cd scenarios && pnpm test-access-failures-anypub-ed25519
  */
 
 import {
     Account,
+    AnySignature,
     Ed25519PrivateKey,
     Ed25519Signature,
     Signature,
+    SingleKeyAccount,
 } from '@aptos-labs/ts-sdk';
 import { ChildProcess } from 'child_process';
 
@@ -53,18 +51,19 @@ const EPOCH0_WORKER_INDICES = [0, 1, 2];
 const EPOCH0_THRESHOLD = 2;
 const BOB_KEY_SEED = 200;
 
-/** Step-E mauler for this variant: flip a bit in the raw 64-byte Ed25519
- *  signature. No envelope (legacy `pk_scheme=0` doesn't wrap the sig). */
-function mauleBareEd25519Signature(signer: Account, msg: string): Signature {
-    const good = signer.sign(msg) as Ed25519Signature;
-    const mauledBytes = new Uint8Array(good.toUint8Array());
+/** Step-E mauler for this variant: peel the inner `Ed25519Signature` out of
+ *  the `AnySignature` envelope, flip a bit, re-wrap. */
+function mauleAnySignatureEd25519(signer: Account, msg: string): Signature {
+    const goodAny = signer.sign(msg) as AnySignature;
+    const innerEd25519 = goodAny.signature as Ed25519Signature;
+    const mauledBytes = new Uint8Array(innerEd25519.toUint8Array());
     mauledBytes[0] ^= 0x01;
-    return new Ed25519Signature(mauledBytes);
+    return new AnySignature(new Ed25519Signature(mauledBytes));
 }
 
-async function buildAndFundBob(): Promise<Account> {
+async function buildAndFundBob(): Promise<SingleKeyAccount> {
     const bobKey = new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + BOB_KEY_SEED)));
-    const bob = Account.fromPrivateKey({ privateKey: bobKey });
+    const bob = new SingleKeyAccount({ privateKey: bobKey });
     await fundAccount(bob.accountAddress);
     return bob;
 }
@@ -89,14 +88,14 @@ async function main(): Promise<void> {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
             moduleName: 'access_control', functionName: 'check_permission',
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
-            pingCiph, bob, bobLabel: 'Ed25519', charlie: actors.charlie,
+            pingCiph, bob, bobLabel: 'SingleKey/Ed25519', charlie: actors.charlie,
         };
         await decryptWithBadKeypairID(ctx);
         await decryptAsNonAllowlistedUser(ctx);
         await decryptWithWrongDomain(ctx);
         await decryptWithCorrectInputs(ctx);
-        await decryptWithMauledSignature(ctx, mauleBareEd25519Signature);
-        console.log('\n✅ All access-control enforcement tests passed!\n');
+        await decryptWithMauledSignature(ctx, mauleAnySignatureEd25519);
+        console.log('\n✅ All AnyPublicKey<Ed25519> access-control enforcement tests passed!\n');
     } catch (err) {
         console.error('\n❌ Test failed:', err);
         exitCode = 1;

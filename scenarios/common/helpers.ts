@@ -3,7 +3,7 @@
 
 import * as ace from '@aptos-labs/ace-sdk';
 import { Result } from '@aptos-labs/ace-sdk';
-import { Account, AccountAddress, Aptos, AptosConfig, Network, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network, Serializer } from '@aptos-labs/ts-sdk';
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import {
@@ -21,6 +21,62 @@ import * as path from 'path';
 import { ADMIN_PLACEHOLDER_FOR_MOVE_TOML, LOCALNET_URL, FAUCET_URL, REPO_ROOT } from './config';
 
 export function log(msg: string): void { console.log(`[${new Date().toISOString()}] ${msg}`); }
+
+/** Standard scenario shutdown: SIGTERM every worker process and the localnet
+ *  process, with a log line each. Safe to call from a `finally` block — no-ops
+ *  if either side never started. Every access-failure-style scenario ends
+ *  this way; keep them DRY. */
+export function cleanupScenario(workers: ChildProcess[], localnetProc: ChildProcess | null): void {
+    console.log('\nCleaning up worker processes...');
+    for (const proc of workers) proc.kill('SIGTERM');
+    if (localnetProc) {
+        console.log('Stopping localnet...');
+        localnetProc.kill('SIGTERM');
+    }
+}
+
+/** Fixed key material used by every access-failure scenario. Matches what
+ *  `test-access-failures.ts` / `test-access-failures-keyless.ts` /
+ *  `test-access-failures-federated-keyless.ts` independently hard-coded
+ *  before [`setupBaseAceActors`] existed (admin = 0x111…1, alice seed 100,
+ *  charlie seed 50). Bob is *not* covered here because his identity varies
+ *  per scenario (KeylessAccount vs SingleKeyAccount vs bare Ed25519). */
+const ADMIN_PRIVATE_KEY_HEX = '0x1111111111111111111111111111111111111111111111111111111111111111';
+const ALICE_KEY_SEED = 100;
+const CHARLIE_KEY_SEED = 50;
+
+function ed25519KeyFromSeed(seed: number): Ed25519PrivateKey {
+    return new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + seed)));
+}
+
+/** The Bob-less base actors every access-failure scenario funds: the dapp
+ *  admin (also publishes contracts), Alice (data owner / blob registrar),
+ *  Charlie (non-allowlisted reader, used in Step B). */
+export interface BaseAceActors {
+    admin: Account;
+    /** Admin's long-form `0x…` address — qualifies Move function calls. */
+    adminAddr: string;
+    /** Admin's private-key hex — needed for the contract-publish CLI. */
+    adminKeyHex: string;
+    alice: Account;
+    /** NOT on any allowlist. */
+    charlie: Account;
+}
+
+/** Builds and funds [`BaseAceActors`] using the canonical fixture seeds. */
+export async function setupBaseAceActors(): Promise<BaseAceActors> {
+    const admin = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(ADMIN_PRIVATE_KEY_HEX) });
+    const adminAddr = admin.accountAddress.toStringLong();
+    const adminKeyHex = Buffer.from(admin.privateKey.toUint8Array()).toString('hex');
+    const alice = Account.fromPrivateKey({ privateKey: ed25519KeyFromSeed(ALICE_KEY_SEED) });
+    const charlie = Account.fromPrivateKey({ privateKey: ed25519KeyFromSeed(CHARLIE_KEY_SEED) });
+    await Promise.all([
+        fundAccount(admin.accountAddress),
+        fundAccount(alice.accountAddress),
+        fundAccount(charlie.accountAddress),
+    ]);
+    return { admin, adminAddr, adminKeyHex, alice, charlie };
+}
 
 export function assert(condition: boolean, msg: string) {
     if (!condition) throw new Error(`Assertion failed: ${msg}`);

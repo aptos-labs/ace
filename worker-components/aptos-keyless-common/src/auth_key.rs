@@ -79,11 +79,4 @@ mod tests {
         // Determinism: same input, same output.
         assert_eq!(ak, keyless_account_authentication_key(&pk));
     }
-
-    // Correctness of `federated_keyless_account_authentication_key` is
-    // exercised end-to-end by `test-access-failures-federated-keyless.ts`
-    // Step D: the worker recomputes the auth-key from the wire
-    // `FederatedKeylessPublicKey` and matches it against the on-chain
-    // `authentication_key`. Any drift in the variant byte, scheme byte, or
-    // BCS field order fails Step D.
 }

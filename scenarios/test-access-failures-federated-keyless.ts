@@ -20,9 +20,12 @@
  *
  * Setup phasing:
  *   - Chain init (framework bootstrap) runs immediately after localnet is up.
- *   - Two DKGs run during ACE setup. Alice encrypts with keypair-0; Step A
- *     decrypts using keypair-1 (keypair-1 really exists, shares exist, proof
- *     verifies — the decrypt math just fails because the secrets are unrelated).
+ *   - `setupAceNetwork` is a single phase covering everything needed to have
+ *     a functioning ACE network: account funding, ACE-contract deploy, worker
+ *     bring-up, and the two DKGs that produce keypair-0 + keypair-1.
+ *   - Alice encrypts with keypair-0; Step A decrypts using keypair-1
+ *     (keypair-1 really exists, shares exist, proof verifies — the decrypt
+ *     math just fails because the secrets are unrelated).
  *   - The dapp-side federated JWK is published only when Bob's identity is
  *     about to be used (alongside the access_control app setup).
  *
@@ -74,7 +77,7 @@ const TOTAL_WORKERS = 3;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
 const EPOCH0_THRESHOLD = 2;
 
-interface Accounts {
+interface AceAccounts {
     admin: Account;
     adminAddr: string;
     adminKeyHex: string;
@@ -82,7 +85,11 @@ interface Accounts {
     charlie: Account;
 }
 
-interface KeypairIds {
+/** Everything an "up and running ACE network" produces: the dapp/user
+ *  accounts, the worker bring-up state, and the DKG'd keypair IDs. */
+interface AceNetwork {
+    accounts: AceAccounts;
+    ace: AceNetworkState;
     keypair0Id: AccountAddress;
     keypair1Id: AccountAddress;
 }
@@ -103,9 +110,9 @@ async function setupChain(): Promise<ChildProcess> {
     return localnetProc;
 }
 
-/** Phase 2 — fund the four named identities (Bob's address comes later, once
- *  his FederatedKeylessPublicKey is built). */
-async function setupAccounts(): Promise<Accounts> {
+/** Fund the four named identities except Bob (Bob's address derives from his
+ *  FederatedKeylessPublicKey, which isn't built until `buildAndFundBob`). */
+async function initAceAccounts(): Promise<AceAccounts> {
     step(2, 'Fund admin, Alice, Charlie (Bob funded later, after his identity is built)');
     const adminKey = new Ed25519PrivateKey('0x1111111111111111111111111111111111111111111111111111111111111111');
     const admin = Account.fromPrivateKey({ privateKey: adminKey });
@@ -128,8 +135,9 @@ async function setupAccounts(): Promise<Accounts> {
     return { admin, adminAddr, adminKeyHex, alice, charlie };
 }
 
-/** Phase 3 — deploy ACE contracts then bring up workers + initial epoch. */
-async function setupAceNetwork(admin: Account): Promise<AceNetworkState> {
+/** Deploy ACE contracts, fund workers, register their PKE keys + endpoints,
+ *  start initial epoch, build the workspace, spawn workers. */
+async function deployAndStartAce(admin: Account): Promise<AceNetworkState> {
     step(3, 'Deploy ACE network contracts');
     await deployContracts(admin, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
     console.log('  Contracts deployed');
@@ -144,20 +152,21 @@ async function setupAceNetwork(admin: Account): Promise<AceNetworkState> {
     });
 }
 
-/** Phase 4 — run two DKGs so both keypair-0 and keypair-1 exist on chain.
+/** Run two DKGs back-to-back so both keypair-0 and keypair-1 exist on chain.
  *  Step A's "decrypt with wrong keypair" test relies on keypair-1 being real. */
-async function setupKeypairs(adminAddr: string, admin: Account, ace: AceNetworkState): Promise<KeypairIds> {
+async function runInitialDkgs(accounts: AceAccounts, ace: AceNetworkState): Promise<{ keypair0Id: AccountAddress; keypair1Id: AccountAddress }> {
     const approvers = ace.epoch0WorkerAccounts.slice(0, EPOCH0_THRESHOLD);
+    const adminAccountAddress = accounts.admin.accountAddress;
     step(5, 'Admin proposes keypair-0; workers 0,1 approve');
     const keypair0Id = await runDkg({
-        approvers, adminAddr, adminAccountAddress: admin.accountAddress,
+        approvers, adminAddr: accounts.adminAddr, adminAccountAddress,
         expectedSecretsCountAfter: 1, label: 'keypair-0',
     });
     console.log(`  Keypair-0 ID: ${keypair0Id.toStringLong()}`);
 
     step(6, 'Admin proposes keypair-1 (for Step A wrong-keypair test); workers 0,1 approve');
     const keypair1Id = await runDkg({
-        approvers, adminAddr, adminAccountAddress: admin.accountAddress,
+        approvers, adminAddr: accounts.adminAddr, adminAccountAddress,
         expectedSecretsCountAfter: 2, label: 'keypair-1',
     });
     console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
@@ -166,7 +175,16 @@ async function setupKeypairs(adminAddr: string, admin: Account, ace: AceNetworkS
     return { keypair0Id, keypair1Id };
 }
 
-/** Phase 5 — build Bob from the sample fixtures. His address derives from his
+/** Phase 2 — everything that brings the ACE network into a usable state:
+ *  funded accounts, deployed contracts, running workers, two DKGs done. */
+async function setupAceNetwork(): Promise<AceNetwork> {
+    const accounts = await initAceAccounts();
+    const ace = await deployAndStartAce(accounts.admin);
+    const { keypair0Id, keypair1Id } = await runInitialDkgs(accounts, ace);
+    return { accounts, ace, keypair0Id, keypair1Id };
+}
+
+/** Phase 3 — build Bob from the sample fixtures. His address derives from his
  *  FederatedKeylessPublicKey (= `jwk_addr || KeylessPublicKey`); we fund it
  *  before the access-control register-blob txn references it. */
 async function buildAndFundBob(admin: Account): Promise<FederatedKeylessAccount> {
@@ -203,9 +221,9 @@ async function registerPingBlobAllowlist(aptos: Aptos, alice: Account, bob: Acco
     console.log('  ping-blob registered (owner=Alice, allowlist=[Bob-federated-keyless])');
 }
 
-/** Phase 6 — app setup. Deploy + init the dapp contract, publish the federated
+/** Phase 4 — app setup. Deploy + init the dapp contract, publish the federated
  *  JWK at jwk_addr, then register the allowlist blob on Bob's behalf. */
-async function setupApp(args: { aptos: Aptos; accounts: Accounts; bob: Account }): Promise<void> {
+async function setupApp(args: { aptos: Aptos; accounts: AceAccounts; bob: Account }): Promise<void> {
     const { aptos, accounts, bob } = args;
     step(8, 'Deploy and initialize access_control (dapp)');
     await deployContract(ACCESS_CONTROL_CONTRACT_DIR, accounts.adminAddr, accounts.adminKeyHex);
@@ -224,13 +242,15 @@ async function setupApp(args: { aptos: Aptos; accounts: Accounts; bob: Account }
     await registerPingBlobAllowlist(aptos, accounts.alice, bob, accounts.adminAddr);
 }
 
-/** Phase 7 — Alice encrypts "PING" with keypair-0 under the correct domain.
- *  This is the ciphertext the A–F steps attempt to decrypt under varied
- *  inputs. */
-async function encryptPing(ace: AceNetworkState, keypair0Id: AccountAddress, alice: Account): Promise<{ pingCiph: Uint8Array; correctDomain: Uint8Array; wrongDomain: Uint8Array }> {
+/** Domain bytes for a `@alice/<name>` blob path. Caller picks the name; the
+ *  test uses 'ping-blob' (Step D) and 'other-blob' (Step C, wrong-domain). */
+function domainFor(alice: Account, name: string): Uint8Array {
+    return new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/${name}`);
+}
+
+/** Phase 5 — Alice encrypts "PING" with keypair-0 under the given domain. */
+async function encryptPing(ace: AceNetworkState, keypair0Id: AccountAddress, domain: Uint8Array): Promise<Uint8Array> {
     step(11, 'Alice encrypts "PING" with keypair-0, domain=@alice/ping-blob');
-    const correctDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
-    const wrongDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/other-blob`);
     const result = await ACE.AptosBasicFlow.encrypt({
         aceDeployment: ace.aceDeployment,
         keypairId: keypair0Id,
@@ -238,12 +258,12 @@ async function encryptPing(ace: AceNetworkState, keypair0Id: AccountAddress, ali
         moduleAddr: ace.adminAccountAddress,
         moduleName: 'access_control',
         functionName: 'check_permission',
-        domain: correctDomain,
+        domain,
         plaintext: new TextEncoder().encode('PING'),
     });
     assert(result.isOk, `encrypt PING failed: ${result.errValue}`);
     console.log('  Encrypted PING');
-    return { pingCiph: result.okValue!, correctDomain, wrongDomain };
+    return result.okValue!;
 }
 
 /** Tear down workers + localnet. Always runs from `main`'s finally clause. */
@@ -263,20 +283,27 @@ async function main(): Promise<void> {
     try {
         const aptos = createAptos();
         localnetProc = await setupChain();
-        const accounts = await setupAccounts();
-        const ace = await setupAceNetwork(accounts.admin);
-        workers = ace.workers;
-        const keypairs = await setupKeypairs(accounts.adminAddr, accounts.admin, ace);
-        const bob = await buildAndFundBob(accounts.admin);
-        await setupApp({ aptos, accounts, bob });
-        const { pingCiph, correctDomain, wrongDomain } = await encryptPing(ace, keypairs.keypair0Id, accounts.alice);
+        const net = await setupAceNetwork();
+        workers = net.ace.workers;
+        const bob = await buildAndFundBob(net.accounts.admin);
+        await setupApp({ aptos, accounts: net.accounts, bob });
+        const correctDomain = domainFor(net.accounts.alice, 'ping-blob');
+        const wrongDomain = domainFor(net.accounts.alice, 'other-blob');
+        const pingCiph = await encryptPing(net.ace, net.keypair0Id, correctDomain);
         await runAccessFailureStepsAtoF({
-            aceDeployment: ace.aceDeployment, chainId: CHAIN_ID,
-            moduleAddr: ace.adminAccountAddress,
-            moduleName: 'access_control', functionName: 'check_permission',
-            keypair0Id: keypairs.keypair0Id, keypair1Id: keypairs.keypair1Id,
-            correctDomain, wrongDomain, pingCiph,
-            bob, bobLabel: 'federated keyless', charlie: accounts.charlie,
+            aceDeployment: net.ace.aceDeployment,
+            chainId: CHAIN_ID,
+            moduleAddr: net.ace.adminAccountAddress,
+            moduleName: 'access_control',
+            functionName: 'check_permission',
+            keypair0Id: net.keypair0Id,
+            keypair1Id: net.keypair1Id,
+            correctDomain,
+            wrongDomain,
+            pingCiph,
+            bob,
+            bobLabel: 'federated keyless',
+            charlie: net.accounts.charlie,
         });
         console.log('\n✅ All federated-keyless access-control enforcement tests passed!\n');
     } catch (err) {

@@ -53,12 +53,13 @@ pub mod verify;
 
 pub use public_inputs_hash::get_public_inputs_hash;
 
-pub use auth_key::keyless_account_authentication_key;
+pub use auth_key::{federated_keyless_account_authentication_key, keyless_account_authentication_key};
 pub use errors::VerifyError;
 pub use groth16::Groth16VerificationKey;
 pub use jwk::RsaJwk;
 pub use types::{
-    Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature, Groth16Proof,
-    IdCommitment, KeylessPublicKey, KeylessSignature, ZeroKnowledgeSig, ZkProof,
+    Configuration, EphemeralCertificate, EphemeralPublicKey, EphemeralSignature,
+    FederatedKeylessPublicKey, Groth16Proof, IdCommitment, KeylessPublicKey, KeylessSignature,
+    ZeroKnowledgeSig, ZkProof,
 };
 pub use verify::verify_signature;

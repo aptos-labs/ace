@@ -182,6 +182,7 @@ jobs:
           - full-happy-path
           - test-access-failures
           - test-access-failures-keyless
+          - test-access-failures-federated-keyless
           - test-fault-tolerance
           - test-auto-epoch-change
           - large-committee

@@ -17,15 +17,16 @@
 //!   - [`Scheme::SingleKey = 2`](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526)
 //!   - [`AnyPublicKey::Keyless` variant order](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1454-L1473)
 
-use crate::types::KeylessPublicKey;
+use crate::types::{FederatedKeylessPublicKey, KeylessPublicKey};
 use sha3::{Digest, Sha3_256};
 
 /// BCS variant tag of `AnyPublicKey::Keyless` in `aptos_types::transaction::authenticator`.
-/// Order: `Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3, …` — see
-/// [the enum definition][permalink] in aptos-core.
+/// Order: `Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3, FederatedKeyless=4, …`
+/// — see [the enum definition][permalink] in aptos-core.
 ///
 /// [permalink]: https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L1454-L1473
 const ANY_PUBLIC_KEY_VARIANT_KEYLESS: u8 = 3;
+const ANY_PUBLIC_KEY_VARIANT_FEDERATED_KEYLESS: u8 = 4;
 
 /// `Scheme::SingleKey`; final suffix byte in single-key auth-key derivation.
 /// [permalink](https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526).
@@ -43,6 +44,21 @@ pub fn keyless_account_authentication_key(pk: &KeylessPublicKey) -> [u8; 32] {
     let mut hasher = Sha3_256::new();
     hasher.update([ANY_PUBLIC_KEY_VARIANT_KEYLESS]);
     hasher.update(&pk_bytes);
+    hasher.update([SCHEME_SINGLE_KEY]);
+    hasher.finalize().into()
+}
+
+/// Computes the 32-byte authentication key on chain for an account whose
+/// public key is `AnyPublicKey::FederatedKeyless(fpk)` wrapped as a `SingleKey`
+/// authenticator.
+///
+///   `auth_key = SHA3-256( 0x04 || BCS(FederatedKeylessPublicKey) || 0x02 )`
+pub fn federated_keyless_account_authentication_key(fpk: &FederatedKeylessPublicKey) -> [u8; 32] {
+    let fpk_bytes = bcs::to_bytes(fpk).expect("BCS encode FederatedKeylessPublicKey");
+
+    let mut hasher = Sha3_256::new();
+    hasher.update([ANY_PUBLIC_KEY_VARIANT_FEDERATED_KEYLESS]);
+    hasher.update(&fpk_bytes);
     hasher.update([SCHEME_SINGLE_KEY]);
     hasher.finalize().into()
 }

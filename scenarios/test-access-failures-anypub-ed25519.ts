@@ -285,7 +285,7 @@ async function attemptDecrypt(ctx: TestCtx, keypairId: AccountAddress, domain: U
     });
 }
 
-async function runStepA(ctx: TestCtx): Promise<void> {
+async function decryptWithBadKeypairID(ctx: TestCtx): Promise<void> {
     step('A', 'Negative: decrypt with nonexistent keypair ID → must fail (404)');
     const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
     const result = await attemptDecrypt(ctx, fakeKeypairId, ctx.correctDomain, ctx.bob);
@@ -293,21 +293,21 @@ async function runStepA(ctx: TestCtx): Promise<void> {
     console.log(`  ✓ decrypt with nonexistent keypairId correctly rejected (${result.errValue})`);
 }
 
-async function runStepB(ctx: TestCtx): Promise<void> {
+async function decryptAsNonAllowlistedUser(ctx: TestCtx): Promise<void> {
     step('B', 'Negative: decrypt by Charlie (not allowlisted) → must fail (403)');
     const result = await attemptDecrypt(ctx, ctx.keypair0Id, ctx.correctDomain, ctx.charlie);
     assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
     console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
 }
 
-async function runStepC(ctx: TestCtx): Promise<void> {
+async function decryptWithWrongDomain(ctx: TestCtx): Promise<void> {
     step('C', 'Negative: decrypt with wrong domain (unregistered blob) → must fail (403)');
     const result = await attemptDecrypt(ctx, ctx.keypair0Id, ctx.wrongDomain, ctx.bob);
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
 }
 
-async function runStepD(ctx: TestCtx): Promise<void> {
+async function decryptWithCorrectInputs(ctx: TestCtx): Promise<void> {
     step('D', 'Positive: Bob (SingleKey, allowlisted) decrypts with correct inputs → must succeed');
     const result = await attemptDecrypt(ctx, ctx.keypair0Id, ctx.correctDomain, ctx.bob);
     assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
@@ -315,7 +315,7 @@ async function runStepD(ctx: TestCtx): Promise<void> {
     console.log('  ✓ Bob (SingleKey/Ed25519) decrypted successfully');
 }
 
-async function runStepE(ctx: TestCtx): Promise<void> {
+async function decryptWithMauledSignature(ctx: TestCtx): Promise<void> {
     step('E', 'Negative: Bob with mauled inner Ed25519 signature → must fail');
     const session = await ACE.AptosBasicFlow.DecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
@@ -396,11 +396,11 @@ async function main(): Promise<void> {
         const ace = await bringUpAceNetwork(accounts);
         workers = ace.workers;
         const ctx = await setupApp(ace, accounts);
-        await runStepA(ctx);
-        await runStepB(ctx);
-        await runStepC(ctx);
-        await runStepD(ctx);
-        await runStepE(ctx);
+        await decryptWithBadKeypairID(ctx);
+        await decryptAsNonAllowlistedUser(ctx);
+        await decryptWithWrongDomain(ctx);
+        await decryptWithCorrectInputs(ctx);
+        await decryptWithMauledSignature(ctx);
         console.log('\n✅ All AnyPublicKey<Ed25519> access-control enforcement tests passed!\n');
     } catch (err) {
         console.error('\n❌ Test failed:', err);

@@ -17,14 +17,15 @@
 //! FederatedKeyless=4`) — see [the aptos-core enum][permalink].
 //!
 //! Variants ship one at a time; this build supports `Ed25519`, `Secp256k1Ecdsa`,
-//! and `Keyless`. The remaining variants (`Secp256r1Ecdsa`/WebAuthn,
-//! `FederatedKeyless`) are present in the enum (so wire-format parsing covers
-//! all the tags aptos-core emits) but the dispatch returns a "not yet
-//! supported" error until their PRs land.
+//! `Keyless`, and `FederatedKeyless`. The remaining variant
+//! (`Secp256r1Ecdsa`/WebAuthn) is present in the enum (so wire-format parsing
+//! covers all the tags aptos-core emits) but the dispatch returns a "not yet
+//! supported" error until its PR lands.
 //!
 //! [permalink]: https://github.com/aptos-labs/aptos-core/blob/f8ad6eab698cfb638e56fa8afd92a48642efad12/types/src/transaction/authenticator.rs#L1452-L1473
 
 pub mod ed25519;
+pub mod federated_keyless;
 pub mod keyless;
 pub mod secp256k1;
 
@@ -184,8 +185,19 @@ pub(super) async fn verify(
         (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
             keyless::verify(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
         }
-        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_))
-        | (AnyPublicKeyInner::FederatedKeyless(_), AnySignatureInner::Keyless(_)) => Err(anyhow!(
+        (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
+            federated_keyless::verify(
+                req,
+                contract,
+                proof,
+                fpk,
+                sig,
+                ephemeral_ek_bytes,
+                chain_rpc,
+            )
+            .await
+        }
+        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_)) => Err(anyhow!(
             "verify_aptos_any: {} pk / {} sig is a valid pairing but not yet supported in this build",
             any_pk.tag_name(),
             any_sig.tag_name(),

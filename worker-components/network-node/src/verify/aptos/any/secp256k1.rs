@@ -20,6 +20,19 @@
 //! Auth-key derivation is the shared SingleKey one — `SHA3-256( BCS(
 //! AnyPublicKey::Secp256k1Ecdsa(pk) ) || 0x02 )` — handled by
 //! [`super::authentication_key`].
+//!
+//! Layered as:
+//!   - [`verify_signature_only`] — pure signature crypto over pre-parsed
+//!     `&VerifyingKey` / `&Signature`. Binds `proof.full_message` to the
+//!     request via [`super::super::super::DecryptionRequestPayload::to_pretty_message`].
+//!     No on-chain calls.
+//!   - [`verify`] — single-key wrapper: SEC1 + low-s parse, then
+//!     `verify_signature_only` fast-fail, then `tokio::join!` over auth-key
+//!     + dapp ACL.
+//!
+//! The MultiKey path calls [`verify_signature_only`] per signing position
+//! and applies its own MultiKey-level auth-key + ACL checks once at the
+//! wrapper level.
 
 use anyhow::{anyhow, Result};
 use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
@@ -62,8 +75,8 @@ pub(super) async fn verify(
         ));
     }
 
-    // Cheap synchronous check first — fail fast before hitting RPC.
-    verify_sig(req, proof, &vk, &sig)?;
+    // Cheap signature check first — fail fast before hitting RPC.
+    verify_signature_only(req, proof, &vk, &sig).await?;
 
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
@@ -75,10 +88,26 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// Mirrors [`super::ed25519::verify_sig`] but pre-hashes the message with
-/// SHA3-256 before ECDSA verification (matching aptos-core's
+/// Secp256k1 ECDSA signature check for one signing position. Rebuilds the
+/// expected pretty message from the request payload, confirms
+/// `proof.full_message` is bound to it (with AptosConnect-style hex
+/// tolerance), then ECDSA-verifies `sig` under `vk` over the SHA3-256
+/// digest of the (possibly hex-decoded) message bytes (matching aptos-core's
 /// `secp256k1_ecdsa::bytes_to_message`).
-fn verify_sig(
+///
+/// Takes already-parsed `&VerifyingKey` / `&Signature` (with low-s already
+/// checked) so the caller can hoist length-check + SEC1 decode + low-s
+/// rejection out of the hot path. Both the single-key wrapper [`verify`]
+/// and the upcoming MultiKey dispatcher parse at their own level and pass
+/// parsed primitives in.
+///
+/// `async` for shape uniformity with the keyless/federated-keyless paths
+/// (which fetch chain-side inputs); this variant does no RPC.
+///
+/// **Not** included: SingleKey auth-key check or dapp ACL check. The
+/// single-key wrapper adds both around this; the MultiKey path applies
+/// its own equivalents once across all positions.
+pub(super) async fn verify_signature_only(
     req: &BasicFlowRequest,
     proof: &AptosProofOfPermission,
     vk: &VerifyingKey,
@@ -104,8 +133,7 @@ fn verify_sig(
 
     let prehash: [u8; 32] = Sha3_256::digest(&msg_bytes).into();
     vk.verify_prehash(&prehash, sig)
-        .map_err(|e| anyhow!("verify_aptos_any_secp256k1: ECDSA verification failed: {}", e))?;
-    Ok(())
+        .map_err(|e| anyhow!("verify_aptos_any_secp256k1: ECDSA verification failed: {}", e))
 }
 
 /// Checks that the on-chain `authentication_key` for `userAddr` equals

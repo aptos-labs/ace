@@ -583,23 +583,31 @@ export class RequestForDecryptionKey {
     static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
 
     scheme: number;
-    private _basicReq?: BasicFlowRequest;
-    private _basicReqV2?: BasicFlowRequestV2;
-    private _customReq?: CustomFlowRequest;
-    private _customReqV2?: CustomFlowRequestV2;
+    /** The scheme-specific request body. `scheme` discriminates which class
+     *  instance lives here; all four envelope types share a `serialize(s)`
+     *  method so the outer enum just delegates polymorphically. */
+    private inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2;
 
-    private constructor(scheme: number) { this.scheme = scheme; }
+    private constructor(
+        scheme: number,
+        inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2,
+    ) {
+        this.scheme = scheme;
+        this.inner = inner;
+    }
 
     static newBasicFlow(request: DecryptionRequestPayload, proof: ProofOfPermission): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW);
-        r._basicReq = new BasicFlowRequest({ request, proof });
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_BASIC_FLOW,
+            new BasicFlowRequest({ request, proof }),
+        );
     }
 
     static newCustomFlow(customRequest: CustomFlowRequest): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW);
-        r._customReq = customRequest;
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW,
+            customRequest,
+        );
     }
 
     static newBasicFlowV2(
@@ -607,42 +615,29 @@ export class RequestForDecryptionKey {
         proof: ProofOfPermission,
         tibeScheme: number,
     ): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2);
-        r._basicReqV2 = new BasicFlowRequestV2({ request, proof, tibeScheme });
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2,
+            new BasicFlowRequestV2({ request, proof, tibeScheme }),
+        );
     }
 
     static newCustomFlowV2(
         customRequest: CustomFlowRequest,
         tibeScheme: number,
     ): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2);
-        r._customReqV2 = new CustomFlowRequestV2({
-            payload: customRequest.payload,
-            proof: customRequest.proof,
-            tibeScheme,
-        });
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2,
+            new CustomFlowRequestV2({
+                payload: customRequest.payload,
+                proof: customRequest.proof,
+                tibeScheme,
+            }),
+        );
     }
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        switch (this.scheme) {
-            case RequestForDecryptionKey.SCHEME_BASIC_FLOW:
-                this._basicReq!.serialize(serializer);
-                return;
-            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW:
-                this._customReq!.serialize(serializer);
-                return;
-            case RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2:
-                this._basicReqV2!.serialize(serializer);
-                return;
-            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2:
-                this._customReqV2!.serialize(serializer);
-                return;
-            default:
-                throw new Error(`RequestForDecryptionKey: unknown scheme ${this.scheme}`);
-        }
+        this.inner.serialize(serializer);
     }
 
     toBytes(): Uint8Array {

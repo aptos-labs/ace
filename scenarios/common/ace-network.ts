@@ -52,6 +52,12 @@ export interface AceNetworkOptions {
     /** Per-worker funding callback. Use the scenario's `fundAccount` so the
      *  faucet config (network/url) is consistent. */
     fundAccount: (address: AccountAddress) => Promise<void>;
+    /** `resharing_interval_secs` arg to `network::start_initial_epoch`. Must
+     *  be >= 30 (Move-side `MIN_RESHARING_INTERVAL_SECS`). Defaults to 600
+     *  (10 minutes) — long enough that auto-rotation doesn't fire during
+     *  normal access-failure tests. Set lower (e.g., 30) for scenarios that
+     *  intentionally drive auto-rotations. */
+    reshareIntervalSecs?: number;
 }
 
 export interface AceNetworkState {
@@ -89,6 +95,7 @@ export async function setupAceNetworkAndWorkers(
     opts: AceNetworkOptions,
 ): Promise<AceNetworkState> {
     const { adminAccount, totalWorkers, epoch0WorkerIndices, epoch0Threshold } = opts;
+    const reshareIntervalSecs = opts.reshareIntervalSecs ?? 600;
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminAccountAddress = adminAccount.accountAddress;
 
@@ -136,7 +143,7 @@ export async function setupAceNetworkAndWorkers(
         await submitTxn({
             signer: adminAccount,
             entryFunction: `${adminAddr}::network::start_initial_epoch`,
-            args: [epoch0Addrs, epoch0Threshold, 600],
+            args: [epoch0Addrs, epoch0Threshold, reshareIntervalSecs],
         }),
         'network::start_initial_epoch',
     );
@@ -205,6 +212,10 @@ export interface SetupAceOnLocalnetOpts {
      *  cushion the access-failure scenarios used before this helper existed,
      *  so workers can stabilise on the new shares before decrypt traffic. */
     postDkgSettleMs?: number;
+    /** Forwarded to [`AceNetworkOptions.reshareIntervalSecs`]. Defaults to
+     *  600 (no auto-rotation during normal tests). Set to 30 to drive
+     *  auto-rotation in a buffer/epoch-transition test. */
+    reshareIntervalSecs?: number;
 }
 
 export interface SetupAceOnLocalnetResult {
@@ -239,6 +250,7 @@ export async function setupAceOnLocalnet(
         epoch0WorkerIndices: opts.epoch0WorkerIndices,
         epoch0Threshold: opts.epoch0Threshold,
         fundAccount: opts.fundAccount,
+        reshareIntervalSecs: opts.reshareIntervalSecs,
     });
     const approvers = ace.epoch0WorkerAccounts.slice(0, opts.epoch0Threshold);
     const keypairIds: AccountAddress[] = [];

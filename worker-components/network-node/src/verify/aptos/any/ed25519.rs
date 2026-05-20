@@ -39,15 +39,18 @@ pub(super) async fn verify(
     sig_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    // Cheap signature check first — fail fast before hitting RPC. Awaiting an
+    // all-synchronous async fn is essentially free; the `.await` here doesn't
+    // yield to the runtime, it just unwraps the immediately-ready future.
+    verify_signature_only(req, proof, pk_bytes, sig_bytes).await?;
+
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
-    let (sig_res, auth_res, perm_res) = tokio::join!(
-        verify_signature_only(req, proof, pk_bytes, sig_bytes),
+    let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, any_pk, rpc),
         check_permission(contract, &req.payload.domain, proof, rpc),
     );
-    sig_res?;
-    auth_res?;
-    perm_res?;
+    auth_result?;
+    perm_result?;
     Ok(())
 }
 

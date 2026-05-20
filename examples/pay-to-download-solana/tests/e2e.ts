@@ -383,8 +383,11 @@ describe("access-control failures (worker-side rejection)", () => {
   let alice: Keypair;
   let bob: Keypair;
   let aliceAptosAddrBytes: Uint8Array;
-  let fullBlobNameBytes: Buffer;
-  let greenBox: Uint8Array;
+  // `domain` is the ACE SDK term (passed to `SolanaBasicFlow.encrypt({domain})`).
+  // For pay-to-download specifically, the bytes encode `"0x" + owner_aptos_addr
+  // + "/" + blob_name` so the on-chain program can recover the blob identity.
+  let domain: Buffer;
+  let ciphertext: Uint8Array;
   let aceDeployment: ACE.AceDeployment;
   let keypairId: AccountAddress;
   let knownChainName: string;
@@ -401,7 +404,7 @@ describe("access-control failures (worker-side rejection)", () => {
     aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
     await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
     ({ aceDeployment, keypairId, knownChainName } = loadAceLocalnetConfig(connection));
-    ({ greenBox, fullBlobNameBytes } = await aliceEncryptAndRegisterBlob({
+    ({ ciphertext, domain } = await aliceEncryptAndRegisterBlob({
       alice, aliceAptosAddrBytes, fileName: FILE_NAME,
       aceDeployment, keypairId, knownChainName,
       accessControlProgramId: accessControlProgram.programId,
@@ -429,8 +432,8 @@ describe("access-control failures (worker-side rejection)", () => {
       keypairId: args.sessionKeypairId ?? keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: args.sessionDomain ?? fullBlobNameBytes,
-      ciphertext: greenBox,
+      domain: args.sessionDomain ?? domain,
+      ciphertext,
     });
     const fullRequestBytes = await session.getRequestToSign();
     const txn = await accessControlProgram.methods
@@ -462,18 +465,19 @@ describe("access-control failures (worker-side rejection)", () => {
 
   it("step C: rejects decrypt with wrong domain (wrong blob name in session)", async function () {
     this.timeout(60_000);
-    // GreenBox was encrypted under `fullBlobNameBytes`. A session that
-    // claims a different blob name produces a request whose `domain` field
-    // (and therefore embedded `full_request_bytes`) reference the wrong
-    // blob. The chain's `assert_access` derives the expected PDA from those
-    // bytes and finds it doesn't match the supplied `blob_metadata` account.
-    const wrongBlobName = Buffer.concat([
+    // Ciphertext was encrypted under the registered blob's `domain` bytes
+    // (which encode `0x<owner>/<blob_name>` for pay-to-download). A session
+    // that claims a different blob name builds a request whose embedded
+    // `full_request_bytes` reference the wrong blob; the chain's
+    // `assert_access` derives the expected PDA from those bytes and finds
+    // it doesn't match the supplied `blob_metadata` account.
+    const wrongDomain = Buffer.concat([
       Buffer.from("0x"),
       Buffer.from(aliceAptosAddrBytes),
       Buffer.from("/"),
       Buffer.from("other-blob"),
     ]);
-    const { session, txnBytes } = await buildBobAccessTxn({ sessionDomain: wrongBlobName });
+    const { session, txnBytes } = await buildBobAccessTxn({ sessionDomain: wrongDomain });
     const result = await session.decryptWithProof({ txn: txnBytes });
     expect(result.isOk).to.equal(
       false,
@@ -726,10 +730,11 @@ function loadAceLocalnetConfig(connection: Connection): {
   };
 }
 
-/** Alice encrypts a fixed plaintext under (keypairId, fullBlobName) via
- *  ACE, then registers the resulting GreenBox on-chain with a small price.
- *  Returns the GreenBox bytes + the fullBlobName bytes so callers can build
- *  matching decryption sessions. */
+/** Alice encrypts a fixed plaintext under (keypairId, domain) via ACE,
+ *  then registers the resulting ciphertext on-chain with a small price.
+ *  Returns the ciphertext + the ACE-SDK `domain` bytes (for pay-to-download
+ *  these bytes encode `0x<owner_aptos_addr>/<file_name>`) so callers can
+ *  build matching decryption sessions. */
 async function aliceEncryptAndRegisterBlob(args: {
   alice: Keypair;
   aliceAptosAddrBytes: Uint8Array;
@@ -740,31 +745,31 @@ async function aliceEncryptAndRegisterBlob(args: {
   accessControlProgramId: PublicKey;
   program: Program<AccessControl>;
   connection: Connection;
-}): Promise<{ greenBox: Uint8Array; fullBlobNameBytes: Buffer }> {
+}): Promise<{ ciphertext: Uint8Array; domain: Buffer }> {
   const plaintext = hexToBytes(
     "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
   );
-  const fullBlobNameBytes = Buffer.concat([
+  const domain = Buffer.concat([
     Buffer.from("0x"), Buffer.from(args.aliceAptosAddrBytes),
     Buffer.from("/"), Buffer.from(args.fileName),
   ]);
-  const greenBox = (await ACE.SolanaBasicFlow.encrypt({
+  const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
     aceDeployment: args.aceDeployment,
     keypairId: args.keypairId,
     knownChainName: args.knownChainName,
     programId: args.accessControlProgramId.toBase58(),
-    domain: fullBlobNameBytes,
+    domain,
     plaintext,
   })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
   const txn = await args.program.methods
     .registerBlob(
       Array.from(args.aliceAptosAddrBytes), args.fileName, 2,
-      Buffer.from(greenBox), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+      Buffer.from(ciphertext), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
     )
     .accounts({ owner: args.alice.publicKey })
     .signers([args.alice]).rpc();
   await confirmTransaction(args.connection, txn);
-  return { greenBox, fullBlobNameBytes };
+  return { ciphertext, domain };
 }
 
 /** Bob calls `purchase` on `access_control` (transfers SOL to Alice +

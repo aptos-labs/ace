@@ -121,37 +121,47 @@ async function main() {
             args: [workerAccounts.map(w => w.accountAddress), 2, 3600],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        log('Admin: propose new_secret; workers 0,1 approve...');
+        // Two DKG'd secrets: the happy-path test encrypts under keypair[0];
+        // the failures suite (step A) sends a request claiming keypair[1] —
+        // a real, on-chain-known secret, but not the one the ciphertext was
+        // encrypted under — to exercise the worker's keypair_id check rather
+        // than the SDK's pre-flight `fetchCurrentSessionPks` throw.
+        log('Admin: propose 2 new_secret entries; workers 0,1 approve each...');
         const newSecretApprovers = workerAccounts.slice(0, 2);
-        await proposeAndApprove(
-            newSecretApprovers[0]!,
-            newSecretApprovers,
-            aceContract,
-            serializeNewSecretProposal(1),
-        );
+        for (let i = 0; i < 2; i++) {
+            await proposeAndApprove(
+                newSecretApprovers[0]!,
+                newSecretApprovers,
+                aceContract,
+                serializeNewSecretProposal(1),
+            );
+        }
 
-        log('Waiting for DKG epoch change to complete...');
+        log('Waiting for both DKG epoch changes to complete...');
         const deadline = Date.now() + 300_000;
         let networkState: ace.network.State | undefined;
         while (Date.now() < deadline) {
             const maybe = await getNetworkState(adminAccount.accountAddress);
             if (maybe.isOk) {
                 networkState = maybe.okValue!;
-                if (networkState.epochChangeInfo === null && networkState.secrets.length >= 1) break;
+                if (networkState.epochChangeInfo === null && networkState.secrets.length >= 2) break;
             }
             await sleep(5_000);
         }
-        if (!networkState || networkState.secrets.length < 1) {
+        if (!networkState || networkState.secrets.length < 2) {
             throw 'DKG did not complete within 5 minutes.';
         }
-        log(`DKG complete. keypairId=${networkState.secrets[0]!.keypairId.toStringLong()}`);
+        log(`DKG complete. keypairIds=[${networkState.secrets[0]!.keypairId.toStringLong()}, ${networkState.secrets[1]!.keypairId.toStringLong()}]`);
 
         // ── Write config for the Solana test ─────────────────────────────────
+        // `keypairId` stays as the primary (used by the happy-path test);
+        // `keypairId2` is the mismatching one for the failures suite.
         const CONFIG_PATH = '/tmp/ace-localnet-config.json';
         writeFileSync(CONFIG_PATH, JSON.stringify({
             apiEndpoint: LOCALNET_URL,
             contractAddr: aceContract,
             keypairId: networkState.secrets[0]!.keypairId.toStringLong(),
+            keypairId2: networkState.secrets[1]!.keypairId.toStringLong(),
         }, null, 2));
         log(`Config written to ${CONFIG_PATH}`);
 

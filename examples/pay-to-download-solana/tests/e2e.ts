@@ -390,6 +390,11 @@ describe("access-control failures (worker-side rejection)", () => {
   let ciphertext: Uint8Array;
   let aceDeployment: ACE.AceDeployment;
   let keypairId: AccountAddress;
+  // A second, real, on-chain-known keypair_id used by step A as the
+  // "mismatching" identifier — exercises the worker's keypair_id check
+  // rather than the SDK's pre-flight `fetchCurrentSessionPks` throw.
+  // Populated by `test-solana-example.ts` (writes both into the config).
+  let mismatchingKeypairId: AccountAddress;
   let knownChainName: string;
 
   // Distinct from the happy-path file name so the two suites' PDAs don't
@@ -403,7 +408,7 @@ describe("access-control failures (worker-side rejection)", () => {
     bob = Keypair.generate();
     aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
     await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
-    ({ aceDeployment, keypairId, knownChainName } = loadAceLocalnetConfig(connection));
+    ({ aceDeployment, keypairId, mismatchingKeypairId, knownChainName } = loadAceLocalnetConfig(connection));
     ({ ciphertext, domain } = await aliceEncryptAndRegisterBlob({
       alice, aliceAptosAddrBytes, fileName: FILE_NAME,
       aceDeployment, keypairId, knownChainName,
@@ -451,14 +456,18 @@ describe("access-control failures (worker-side rejection)", () => {
     return { session, txnBytes: txn.serialize() };
   }
 
-  it("step A: rejects decrypt with nonexistent keypair_id", async function () {
+  it("step A: rejects decrypt under a real but mismatching keypair_id", async function () {
     this.timeout(60_000);
-    const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
-    const { session, txnBytes } = await buildBobAccessTxn({ sessionKeypairId: fakeKeypairId });
+    // `mismatchingKeypairId` is a real, DKG'd on-chain secret — just not
+    // the one the ciphertext was encrypted under. This drives the request
+    // past the SDK's pre-flight network-state check and into the actual
+    // share-aggregation / TIBE-decrypt path; the resulting IDK is for the
+    // wrong identity, so decrypt fails on the integrity check.
+    const { session, txnBytes } = await buildBobAccessTxn({ sessionKeypairId: mismatchingKeypairId });
     const result = await session.decryptWithProof({ txn: txnBytes });
     expect(result.isOk).to.equal(
       false,
-      `Expected decrypt to fail with nonexistent keypair_id, but it succeeded`,
+      `Expected decrypt to fail under a mismatching keypair_id, but it succeeded`,
     );
     console.log(`  ✓ rejected (${result.errValue})`);
   });
@@ -695,37 +704,41 @@ function solanaAddrToAptosAddr(solanaAddr: PublicKey): AccountAddress {
   return AccountAddress.from(addressBytes);
 }
 
-/** Load ACE-localnet config (aceDeployment + keypairId + knownChainName) from
- *  env vars (ACE_CONTRACT + KEYPAIR_ID, used by `run-local-network-forever`)
- *  or fall back to /tmp/ace-localnet-config.json written by
- *  `scenarios/test-solana-example.ts`. Mirrors the loader pattern in the
- *  happy-path test inside this file. */
+/** Load ACE-localnet config (aceDeployment + the two DKG'd keypair_ids +
+ *  knownChainName) from env vars (ACE_CONTRACT + KEYPAIR_ID + KEYPAIR_ID_2,
+ *  used by `run-local-network-forever`) or fall back to
+ *  /tmp/ace-localnet-config.json written by `scenarios/test-solana-example.ts`.
+ *  Both keypair_ids exist; the happy-path test uses the first, the failures
+ *  suite's step A uses the second as a real-but-mismatching identifier. */
 function loadAceLocalnetConfig(connection: Connection): {
   aceDeployment: ACE.AceDeployment;
   keypairId: AccountAddress;
+  mismatchingKeypairId: AccountAddress;
   knownChainName: string;
 } {
   const isLocalnet = connection.rpcEndpoint.includes('localhost') ||
     connection.rpcEndpoint.includes('127.0.0.1');
   const knownChainName = isLocalnet ? "localnet" : "testnet";
-  if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
+  if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID && process.env.KEYPAIR_ID_2) {
     return {
       aceDeployment: new ACE.AceDeployment({
         apiEndpoint: "http://localhost:8080/v1",
         contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
       }),
       keypairId: AccountAddress.fromString(process.env.KEYPAIR_ID),
+      mismatchingKeypairId: AccountAddress.fromString(process.env.KEYPAIR_ID_2),
       knownChainName,
     };
   }
   const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-    { apiEndpoint: string; contractAddr: string; keypairId: string };
+    { apiEndpoint: string; contractAddr: string; keypairId: string; keypairId2: string };
   return {
     aceDeployment: new ACE.AceDeployment({
       apiEndpoint: cfg.apiEndpoint,
       contractAddr: AccountAddress.fromString(cfg.contractAddr),
     }),
     keypairId: AccountAddress.fromString(cfg.keypairId),
+    mismatchingKeypairId: AccountAddress.fromString(cfg.keypairId2),
     knownChainName,
   };
 }

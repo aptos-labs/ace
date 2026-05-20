@@ -82,8 +82,8 @@ pub(super) async fn verify(
         ));
     }
 
-    // 2. Cheap synchronous checks first — fail fast before any RPC.
-    verify_webauthn(req, proof, assertion, &vk, &sig)?;
+    // 2. Cheap signature check first — fail fast before any RPC.
+    verify_signature_only(req, proof, &vk, &sig, assertion).await?;
 
     // 3. Chain-side checks: SingleKey auth-key match + dapp ACL.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
@@ -96,14 +96,29 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// Helper that pulls all the WebAuthn-specific checks into one place:
-/// challenge binding, `fullMessage` binding, and the ECDSA verify itself.
-fn verify_webauthn(
+/// WebAuthn assertion verification for one signing position. Pulls all the
+/// WebAuthn-specific checks into one place: challenge binding (against
+/// `req.payload.to_webauthn_challenge()`), `fullMessage` binding (against
+/// `hex(authenticator_data || SHA-256(clientDataJSON))`), and the P-256
+/// ECDSA verify over `SHA-256(authenticator_data || SHA-256(clientDataJSON))`.
+///
+/// Takes already-parsed `&VerifyingKey` / `&Signature` (with low-s already
+/// rejected) so the caller can hoist the SEC1 + low-s parse out of the hot
+/// path. The MultiKey path currently rejects WebAuthn positions (Phase 1);
+/// the parsed-types shape keeps the per-variant verify_signature_only API
+/// uniform for the eventual Phase 2 WebAuthn-in-MultiKey support.
+///
+/// `async` for shape uniformity with the keyless/federated-keyless paths
+/// (which fetch chain-side inputs); this variant does no RPC.
+///
+/// **Not** included: SingleKey auth-key check or dapp ACL check. The
+/// single-key wrapper [`verify`] adds both around this.
+pub(super) async fn verify_signature_only(
     req: &BasicFlowRequest,
     proof: &AptosProofOfPermission,
-    assertion: &WebAuthnAssertion,
     vk: &VerifyingKey,
     sig: &Signature,
+    assertion: &WebAuthnAssertion,
 ) -> Result<()> {
     // Step 1 — recompute the expected challenge from req.
     let expected_challenge = req.payload.to_webauthn_challenge()?;

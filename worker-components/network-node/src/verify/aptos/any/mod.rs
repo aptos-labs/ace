@@ -176,6 +176,79 @@ pub(super) async fn verify(
     }
 }
 
+/// Per-position signature verification for one MultiKey signer slot.
+///
+/// Pattern-matches the (pk_variant, sig_variant) pair and dispatches to
+/// the appropriate `verify_signature_only` — the cryptographic check only.
+/// Auth-key derivation and dapp-ACL view are deliberately **omitted** here:
+/// in the MultiKey flow they happen once at the wrapper level
+/// ([`super::multi_key::verify`]) rather than per position.
+///
+/// **Phase 1**: WebAuthn positions (`AnyPublicKey::Secp256r1Ecdsa` paired
+/// with `AnySignature::WebAuthn`) are explicitly rejected. The TS-SDK's
+/// `MultiKeyAccount.sign(message)` API has no path to coordinate a
+/// passkey ceremony against the ACE-derived challenge, so mixed MultiKey
+/// + WebAuthn isn't a real flow yet. Phase 2 will add that producer
+/// wiring and re-enable this arm.
+pub(super) async fn verify_position(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    any_pk: &AnyPublicKeyInner,
+    any_sig: &AnySignatureInner,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    match (any_pk, any_sig) {
+        (AnyPublicKeyInner::Ed25519(pk_bytes), AnySignatureInner::Ed25519(sig_bytes)) => {
+            let pk_arr: [u8; 32] = pk_bytes.as_slice().try_into().map_err(|_| {
+                anyhow!("multi_key: Ed25519 pk must be 32 bytes, got {}", pk_bytes.len())
+            })?;
+            let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
+                anyhow!("multi_key: Ed25519 sig must be 64 bytes, got {}", sig_bytes.len())
+            })?;
+            let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
+                .map_err(|e| anyhow!("multi_key: invalid Ed25519 pubkey: {}", e))?;
+            let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+            ed25519::verify_signature_only(req, proof, &vk, &sig).await
+        }
+        (AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes), AnySignatureInner::Secp256k1Ecdsa(sig_bytes)) => {
+            if sig_bytes.len() != 64 {
+                return Err(anyhow!(
+                    "multi_key: Secp256k1 sig must be 64 bytes, got {}",
+                    sig_bytes.len()
+                ));
+            }
+            let vk = k256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
+                .map_err(|e| anyhow!("multi_key: invalid Secp256k1 pubkey: {}", e))?;
+            let sig = k256::ecdsa::Signature::from_slice(sig_bytes)
+                .map_err(|e| anyhow!("multi_key: invalid Secp256k1 signature: {}", e))?;
+            if sig.normalize_s().is_some() {
+                return Err(anyhow!(
+                    "multi_key: Secp256k1 signature has high s (malleable); only low-s normalized accepted"
+                ));
+            }
+            secp256k1::verify_signature_only(req, proof, &vk, &sig).await
+        }
+        (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
+            super::keyless::verify_signature_only(req, contract, proof, pk, sig, chain_rpc).await
+        }
+        (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
+            super::federated_keyless::verify_signature_only(req, contract, proof, fpk, sig, chain_rpc).await
+        }
+        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_)) => {
+            Err(anyhow!(
+                "multi_key: WebAuthn position (AnyPublicKey::Secp256r1Ecdsa + AnySignature::WebAuthn) \
+                 is not yet supported (Phase 2)"
+            ))
+        }
+        (pk, sig) => Err(anyhow!(
+            "multi_key: invalid pk/sig pairing at signing position ({} pk vs {} sig)",
+            pk.tag_name(),
+            sig.tag_name(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

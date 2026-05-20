@@ -38,6 +38,38 @@ pub(super) async fn verify(
     sig: &aptos_keyless_common::KeylessSignature,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let (sig_res, auth_res, perm_res) = tokio::join!(
+        verify_signature_only(req, contract, proof, fpk, sig, chain_rpc),
+        check_auth_key(proof, fpk, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
+    );
+    sig_res?;
+    auth_res?;
+    perm_res?;
+    Ok(())
+}
+
+/// Federated-keyless signature verification only: pretty-message binding
+/// + concurrent fetch of JWK (system PatchedJWKs first, federated
+/// FederatedJWKs at `fpk.jwk_addr` on miss) + Groth16 VK + Configuration
+/// + `aptos_keyless_common::verify_signature`.
+///
+/// Takes `contract` only to resolve chain-id → RPC client for fetches;
+/// it is **not** used to drive any contract-level check (auth-key / ACL
+/// are the caller's responsibility).
+///
+/// **Not** included: SingleKey auth-key check or dapp ACL check. The
+/// single-key wrapper [`verify`] adds both around this; the MultiKey
+/// path applies its own equivalents once across all positions.
+pub(super) async fn verify_signature_only(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
+    sig: &aptos_keyless_common::KeylessSignature,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
     // 1. Same pretty-message + AptosConnect hex tolerance as the regular path.
     let pretty_msg = req.payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
@@ -56,27 +88,23 @@ pub(super) async fn verify(
         full_msg.as_bytes().to_vec()
     };
 
-    // 2. Fetch chain-side inputs concurrently. Groth16 VK + Configuration come
-    //    from 0x1 (shared with regular keyless). For the JWK we try the system
-    //    list first; the federated fallback at `fpk.jwk_addr` is only consulted
-    //    if the system list does not carry `(iss, kid)`.
+    // 2. Fetch chain-side inputs in parallel. The single-key wrapper
+    //    `verify` runs this concurrently with check_auth_key + check_permission,
+    //    so net parallelism matches the pre-refactor 5-way fan-out (plus the
+    //    sys+federated JWK pair already overlapped inside the fallback fn).
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let header: aptos_keyless_common::types::JwtHeader =
         serde_json::from_str(&sig.jwt_header_json).map_err(|e| {
             anyhow!("verify_aptos_federated_keyless: parse jwt_header_json: {}", e)
         })?;
-    let (jwk_res, vk_res, cfg_res, auth_res, perm_res) = tokio::join!(
+    let (jwk_res, vk_res, cfg_res) = tokio::join!(
         fetch_jwk_with_federated_fallback(rpc, fpk, &header.kid),
         fetch_groth16_vk(rpc),
         fetch_configuration(rpc),
-        check_auth_key(proof, fpk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;
     let cfg = cfg_res?;
-    auth_res?;
-    perm_res?;
 
     // 3. Wall-clock now. EPK expiry check inside verify_signature is `exp_date_secs > now`.
     let now_unix_secs = std::time::SystemTime::now()
@@ -87,9 +115,7 @@ pub(super) async fn verify(
     // The Groth16 + EPK signature checks run against the inner `KeylessPublicKey`;
     // the `jwk_addr` only influences JWK lookup and auth-key derivation.
     aptos_keyless_common::verify_signature(&fpk.pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
-        .map_err(|e| anyhow!("verify_aptos_federated_keyless: {}", e))?;
-
-    Ok(())
+        .map_err(|e| anyhow!("verify_aptos_federated_keyless: {}", e))
 }
 
 /// Matches the on-chain VM behaviour: try `0x1::jwks::PatchedJWKs` first; on

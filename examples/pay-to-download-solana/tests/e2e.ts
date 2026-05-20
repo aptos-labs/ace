@@ -99,33 +99,12 @@ describe("access-control", () => {
     const redKeyHex = "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a";
     const redKey = hexToBytes(redKeyHex);
 
-    // Detect network for knownChainName (used in ContractID)
-    const isLocalnet = connection.rpcEndpoint.includes('localhost') || connection.rpcEndpoint.includes('127.0.0.1');
-    const knownChainName = isLocalnet ? "localnet" : "testnet";
-
-    // Read ACE global network config written by `pnpm run-local-network-forever`.
-    // Env vars ACE_CONTRACT + KEYPAIR_ID override the config file.
-    let apiEndpoint: string;
-    let contractAddr: string;
-    let keypairId: AccountAddress;
-    if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
-      apiEndpoint = "http://localhost:8080/v1";
-      contractAddr = process.env.ACE_CONTRACT;
-      keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
-    } else {
-      const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-        { apiEndpoint: string; contractAddr: string; keypairId: string };
-      apiEndpoint = cfg.apiEndpoint;
-      contractAddr = cfg.contractAddr;
-      keypairId = AccountAddress.fromString(cfg.keypairId);
-    }
-    console.log(`ACE contract: ${contractAddr}`);
+    // Load ACE config (aceDeployment, keypair_ids, knownChainName) via the
+    // shared loader — same one the failures suite uses below.
+    const { aceDeployment, keypairIds, knownChainName } = loadAceLocalnetConfig(connection);
+    const keypairId = keypairIds[0]!;
+    console.log(`ACE contract: ${aceDeployment.contractAddr.toStringLong()}`);
     console.log(`Keypair ID:   ${keypairId.toString()}`);
-
-    const aceDeployment = new ACE.AceDeployment({
-      apiEndpoint,
-      contractAddr: AccountAddress.fromString(contractAddr),
-    });
     
     // ========================================================================
     // Step 3: Alice Encrypts RedKey → GreenBox
@@ -389,11 +368,12 @@ describe("access-control failures (worker-side rejection)", () => {
   let domain: Buffer;
   let ciphertext: Uint8Array;
   let aceDeployment: ACE.AceDeployment;
+  // Two DKG'd keypair_ids — both real and on-chain-known. This suite uses
+  // [0] for encryption / happy-path verification and [1] as the
+  // "mismatching" identifier in step A (drives the worker's keypair_id
+  // check rather than the SDK's pre-flight `fetchCurrentSessionPks` throw).
+  // Populated by `test-solana-example.ts` (writes the list into the config).
   let keypairId: AccountAddress;
-  // A second, real, on-chain-known keypair_id used by step A as the
-  // "mismatching" identifier — exercises the worker's keypair_id check
-  // rather than the SDK's pre-flight `fetchCurrentSessionPks` throw.
-  // Populated by `test-solana-example.ts` (writes both into the config).
   let mismatchingKeypairId: AccountAddress;
   let knownChainName: string;
 
@@ -408,7 +388,9 @@ describe("access-control failures (worker-side rejection)", () => {
     bob = Keypair.generate();
     aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
     await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
-    ({ aceDeployment, keypairId, mismatchingKeypairId, knownChainName } = loadAceLocalnetConfig(connection));
+    let keypairIds: AccountAddress[];
+    ({ aceDeployment, keypairIds, knownChainName } = loadAceLocalnetConfig(connection));
+    [keypairId, mismatchingKeypairId] = keypairIds;
     ({ ciphertext, domain } = await aliceEncryptAndRegisterBlob({
       alice, aliceAptosAddrBytes, fileName: FILE_NAME,
       aceDeployment, keypairId, knownChainName,
@@ -704,41 +686,44 @@ function solanaAddrToAptosAddr(solanaAddr: PublicKey): AccountAddress {
   return AccountAddress.from(addressBytes);
 }
 
-/** Load ACE-localnet config (aceDeployment + the two DKG'd keypair_ids +
- *  knownChainName) from env vars (ACE_CONTRACT + KEYPAIR_ID + KEYPAIR_ID_2,
- *  used by `run-local-network-forever`) or fall back to
- *  /tmp/ace-localnet-config.json written by `scenarios/test-solana-example.ts`.
- *  Both keypair_ids exist; the happy-path test uses the first, the failures
- *  suite's step A uses the second as a real-but-mismatching identifier. */
+/** Load ACE-localnet config (aceDeployment + the list of DKG'd keypair_ids +
+ *  knownChainName). Sources, in order:
+ *    - env vars: ACE_CONTRACT + KEYPAIR_IDS (comma-separated) OR KEYPAIR_ID
+ *      (singular; legacy single-keypair callers like
+ *      `run-local-network-forever`).
+ *    - /tmp/ace-localnet-config.json written by either `test-solana-example.ts`
+ *      (writes `keypairIds: string[]`, two entries) or
+ *      `run-local-network-forever.ts` (writes `keypairId: string`, one).
+ *  Returns a `keypairIds: AccountAddress[]` list; callers index per their own
+ *  convention (happy-path uses [0]; failures step A uses [1]). */
 function loadAceLocalnetConfig(connection: Connection): {
   aceDeployment: ACE.AceDeployment;
-  keypairId: AccountAddress;
-  mismatchingKeypairId: AccountAddress;
+  keypairIds: AccountAddress[];
   knownChainName: string;
 } {
   const isLocalnet = connection.rpcEndpoint.includes('localhost') ||
     connection.rpcEndpoint.includes('127.0.0.1');
   const knownChainName = isLocalnet ? "localnet" : "testnet";
-  if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID && process.env.KEYPAIR_ID_2) {
+  if (process.env.ACE_CONTRACT && (process.env.KEYPAIR_IDS || process.env.KEYPAIR_ID)) {
+    const raw = process.env.KEYPAIR_IDS ?? process.env.KEYPAIR_ID!;
     return {
       aceDeployment: new ACE.AceDeployment({
         apiEndpoint: "http://localhost:8080/v1",
         contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
       }),
-      keypairId: AccountAddress.fromString(process.env.KEYPAIR_ID),
-      mismatchingKeypairId: AccountAddress.fromString(process.env.KEYPAIR_ID_2),
+      keypairIds: raw.split(',').map(s => AccountAddress.fromString(s.trim())),
       knownChainName,
     };
   }
   const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-    { apiEndpoint: string; contractAddr: string; keypairId: string; keypairId2: string };
+    Partial<{ apiEndpoint: string; contractAddr: string; keypairIds: string[]; keypairId: string }>;
+  const idStrings = cfg.keypairIds ?? (cfg.keypairId ? [cfg.keypairId] : []);
   return {
     aceDeployment: new ACE.AceDeployment({
-      apiEndpoint: cfg.apiEndpoint,
-      contractAddr: AccountAddress.fromString(cfg.contractAddr),
+      apiEndpoint: cfg.apiEndpoint!,
+      contractAddr: AccountAddress.fromString(cfg.contractAddr!),
     }),
-    keypairId: AccountAddress.fromString(cfg.keypairId),
-    mismatchingKeypairId: AccountAddress.fromString(cfg.keypairId2),
+    keypairIds: idStrings.map(s => AccountAddress.fromString(s)),
     knownChainName,
   };
 }

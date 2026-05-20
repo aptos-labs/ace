@@ -2,18 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Shelby Access Control - Solana End-to-End Test
- * 
- * This test demonstrates the complete pay-to-access content flow:
- * 
- * 1. Alice (content owner) encrypts a symmetric key (RedKey) using ACE
- * 2. Alice registers the encrypted key (GreenBox) on-chain with a price
- * 3. Bob (consumer) tries to decrypt without payment (fails)
- * 4. Bob purchases access by paying Alice
- * 5. Bob creates a proof-of-permission by signing a transaction
- * 6. Bob requests decryption key shares from workers (they verify access on-chain)
- * 7. Bob decrypts the GreenBox to recover the RedKey
- * 
+ * Pay-to-Download Solana — end-to-end test.
+ *
+ * Demonstrates ACE direct-encryption + Solana on-chain access control:
+ *
+ *  1. Alice (content owner) encrypts a content payload directly with ACE.
+ *  2. Alice registers the ciphertext on-chain with a price.
+ *  3. Bob (consumer) tries to decrypt without payment → fails.
+ *  4. Bob purchases access by paying Alice.
+ *  5. Bob builds a proof-of-permission by signing a Solana transaction
+ *     that calls `ace_hook::assert_access`.
+ *  6. Bob requests decryption key shares from ACE workers (they simulate
+ *     the txn against Solana to verify on-chain access).
+ *  7. Bob aggregates the shares and decrypts the ciphertext back to the
+ *     original content.
+ *
+ * Note on the encryption model: ACE encrypts the content directly. There
+ * is *no* intermediate symmetric-key wrapping layer — with ACE's current
+ * default t-IBE scheme, direct encryption of reasonable-sized payloads is
+ * the recommended pattern.
+ *
  * Prerequisites:
  * - ACE global network running (Aptos localnet + workers):
  *   cd scenarios && pnpm run-local-network-forever
@@ -56,18 +64,17 @@ describe("access-control", () => {
 
   /**
    * Main test demonstrating the complete flow:
-   * 
+   *
    * UPLOAD FLOW (Alice):
-   * 1. Generate a symmetric key (RedKey) for file encryption
-   * 2. Encrypt RedKey with ACE → GreenBox
-   * 3. Register GreenBox on-chain with a price
-   * 
+   * 1. Encrypt a content payload directly with ACE → ciphertext
+   * 2. Register the ciphertext on-chain with a price
+   *
    * DOWNLOAD FLOW (Bob):
    * 1. Try to decrypt without payment (should fail)
    * 2. Purchase access by paying Alice
    * 3. Create proof-of-permission (signed transaction)
-   * 4. Request decryption key from workers
-   * 5. Decrypt GreenBox → RedKey
+   * 4. Request decryption key shares from ACE workers
+   * 5. Decrypt ciphertext → original content
    */
   it("Pay-to-access content flow", async () => {
     // ========================================================================
@@ -94,10 +101,12 @@ describe("access-control", () => {
     console.log("=== Setting up ACE ===");
     const fileName = "start-wars.mov";
 
-    // RedKey: The symmetric encryption key for the actual file content
-    // In a real app, this would be used to encrypt the file (RedBox)
-    const redKeyHex = "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a";
-    const redKey = hexToBytes(redKeyHex);
+    // The content payload Alice is selling. For demo purposes this is a
+    // fixed 32-byte blob; in a real app it could be a license code, a
+    // signed download token, a premium-content payload, etc. — anything
+    // small enough to encrypt directly with ACE.
+    const secretContentHex = "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a";
+    const secretContent = hexToBytes(secretContentHex);
 
     // Load ACE config (aceDeployment, keypair_ids, knownChainName) via the
     // shared loader — same one the failures suite uses below.
@@ -107,14 +116,14 @@ describe("access-control", () => {
     console.log(`Keypair ID:   ${keypairId.toString()}`);
     
     // ========================================================================
-    // Step 3: Alice Encrypts RedKey → GreenBox
+    // Step 3: Alice Encrypts Content with ACE
     // ========================================================================
-    
+
     console.log("\n=== Alice: Encrypt and Register ===");
-    console.log("(2a.1) Encrypting RedKey into GreenBox...");
-    
+    console.log("(2a.1) Encrypting content directly with ACE...");
+
     const aliceAptosAddrBytes = aliceAptosAddr.toUint8Array();
-    
+
     // Full blob name format: "0x" + owner_aptos_addr (32 bytes) + "/" + blob_name
     // This uniquely identifies the blob across the system
     const fullBlobNameBytes = Buffer.concat([
@@ -124,40 +133,35 @@ describe("access-control", () => {
       Buffer.from(fileName),                  // N bytes: file name
     ]);
 
-    // Encrypt RedKey with ACE.
-    // The result (GreenBox) can only be decrypted by users who pass the access check.
-    const greenBox = (await ACE.SolanaBasicFlow.encrypt({
+    // Encrypt the content directly with ACE. The ciphertext can only be
+    // decrypted by users who pass the on-chain access check.
+    const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
       aceDeployment,
       keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: fullBlobNameBytes,  // Unique identifier for this blob
-      plaintext: redKey,          // The symmetric key to encrypt
+      domain: fullBlobNameBytes,
+      plaintext: secretContent,
     })).unwrapOrThrow('failed to encrypt');
-    // greenBox is Uint8Array
-    console.log("✓ RedKey encrypted into GreenBox");
 
     // ========================================================================
-    // Step 4: Alice Registers GreenBox On-Chain
+    // Step 4: Alice Registers the Listing On-Chain
     // ========================================================================
-    
-    console.log("(2a.2) Alice registering GreenBox on-chain...");
-    
-    const greenBoxScheme = 2;  // Encryption scheme version
-    const greenBoxBytes = greenBox; // already Uint8Array
-    const price = new anchor.BN(0.0005 * LAMPORTS_PER_SOL);  // 0.0005 SOL per download
-    
-    // Register creates a BlobMetadata PDA storing:
-    // - owner: Alice's Solana address
-    // - green_box_bytes: The encrypted symmetric key
-    // - price: Cost to purchase access
-    // - seqnum: Sequence number for access verification
+    //
+    // Only the listing metadata (price + seqnum) goes on-chain. The
+    // ciphertext stays in Alice's local possession — in a real app she'd
+    // upload it to her chosen storage (CDN / IPFS / direct upload after
+    // purchase / etc.) and Bob would retrieve it from there. For this
+    // test we just keep it as a closure variable.
+
+    console.log("(2a.2) Alice registering listing on-chain...");
+
+    const price = new anchor.BN(0.0005 * LAMPORTS_PER_SOL);  // 0.0005 SOL
+
     const fileRegTxn = await program.methods
       .registerBlob(
         Array.from(aliceAptosAddrBytes),  // Owner's Aptos address
         fileName,                          // Blob name (used in PDA seed)
-        greenBoxScheme,                    // Encryption scheme
-        Buffer.from(greenBoxBytes),        // Encrypted key
         price                              // Price in lamports
       )
       .accounts({
@@ -166,11 +170,7 @@ describe("access-control", () => {
       .signers([alice])
       .rpc();
     await confirmTransaction(connection, fileRegTxn);
-    console.log("✓ GreenBox registered on-chain");
-    
-    // NOTE: In a real application, Alice would also:
-    // (2b.1) Encrypt the file content with RedKey → RedBox
-    // (2b.2) Upload RedBox to Shelby storage
+    console.log("✓ Listing registered on-chain (ciphertext kept off-chain)");
 
     // ========================================================================
     // Step 5: Bob Attempts to Decrypt Without Payment (Should Fail)
@@ -191,14 +191,14 @@ describe("access-control", () => {
      * - Simulate the transaction to check if assert_access would succeed
      * - Only release key shares if verification passes
      */
-    async function bobOpenGreenBoxV0(): Promise<Result<Uint8Array>> {
+    async function bobDecryptLegacyTxn(): Promise<Result<Uint8Array>> {
       const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
         domain: fullBlobNameBytes,
-        ciphertext: greenBox,
+        ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
 
@@ -218,14 +218,14 @@ describe("access-control", () => {
       return session.decryptWithProof({ txn: txn.serialize() });
     }
 
-    async function bobOpenGreenBoxV1(): Promise<Result<Uint8Array>> {
+    async function bobDecryptVersionedTxn(): Promise<Result<Uint8Array>> {
       const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
         domain: fullBlobNameBytes,
-        ciphertext: greenBox,
+        ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
 
@@ -251,7 +251,7 @@ describe("access-control", () => {
 
     console.log("\n=== Bob: Attempt Decryption Without Payment ===");
     console.log("Bob attempting to decrypt (should fail - no receipt)...");
-    const bobAttempt0Result = await bobOpenGreenBoxV0();
+    const bobAttempt0Result = await bobDecryptLegacyTxn();
     console.log('Result:', bobAttempt0Result.isOk ? 'SUCCESS' : 'FAILED (expected)');
     bobAttempt0Result.unwrapErrOrThrow('attempt 0 should fail');
     console.log("✓ Correctly denied - Bob has not purchased access");
@@ -302,32 +302,32 @@ describe("access-control", () => {
     
     // Test with legacy transaction format
     console.log("Bob attempting to decrypt with legacy transaction...");
-    const bobAttempt1Result = await bobOpenGreenBoxV0();
+    const bobAttempt1Result = await bobDecryptLegacyTxn();
     console.log('Result:', bobAttempt1Result.isOk ? 'SUCCESS' : 'FAILED');
     const plaintext1 = bobAttempt1Result.unwrapOrThrow('attempt 1 should succeed');
-    expect(bytesToHex(plaintext1)).to.equal(redKeyHex);
+    expect(bytesToHex(plaintext1)).to.equal(secretContentHex);
     console.log("✓ Decrypted successfully with legacy transaction");
 
     // Test with versioned transaction format
     console.log("Bob attempting to decrypt with versioned transaction...");
-    const bobAttempt2Result = await bobOpenGreenBoxV1();
+    const bobAttempt2Result = await bobDecryptVersionedTxn();
     console.log('Result:', bobAttempt2Result.isOk ? 'SUCCESS' : 'FAILED');
     const plaintext2 = bobAttempt2Result.unwrapOrThrow('attempt 2 should succeed');
-    expect(bytesToHex(plaintext2)).to.equal(redKeyHex);
+    expect(bytesToHex(plaintext2)).to.equal(secretContentHex);
     console.log("✓ Decrypted successfully with versioned transaction");
 
     // ========================================================================
     // Test Complete
     // ========================================================================
-    
+
     console.log("\n=== All tests passed! ===");
     console.log("Summary:");
-    console.log("  1. ✓ Alice encrypted RedKey into GreenBox");
-    console.log("  2. ✓ Alice registered GreenBox on-chain with price");
+    console.log("  1. ✓ Alice encrypted content directly with ACE");
+    console.log("  2. ✓ Alice registered ciphertext on-chain with price");
     console.log("  3. ✓ Bob was denied decryption (no receipt)");
     console.log("  4. ✓ Bob purchased access (Receipt created)");
-    console.log("  5. ✓ Bob decrypted GreenBox → RedKey (legacy tx)");
-    console.log("  6. ✓ Bob decrypted GreenBox → RedKey (versioned tx)");
+    console.log("  5. ✓ Bob decrypted ciphertext → content (legacy tx)");
+    console.log("  6. ✓ Bob decrypted ciphertext → content (versioned tx)");
   });
 });
 
@@ -759,10 +759,13 @@ async function aliceEncryptAndRegisterBlob(args: {
     domain,
     plaintext,
   })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
+  // Only the listing (price + seqnum) goes on-chain; the ciphertext stays
+  // in-memory (returned to caller so it can be handed to Bob — modeling
+  // the "Alice delivers ciphertext to Bob off-chain" step).
   const txn = await args.program.methods
     .registerBlob(
-      Array.from(args.aliceAptosAddrBytes), args.fileName, 2,
-      Buffer.from(ciphertext), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+      Array.from(args.aliceAptosAddrBytes), args.fileName,
+      new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
     )
     .accounts({ owner: args.alice.publicKey })
     .signers([args.alice]).rpc();

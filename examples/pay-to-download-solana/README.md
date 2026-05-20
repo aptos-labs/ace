@@ -119,20 +119,17 @@ Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.te
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      UPLOAD FLOW (Alice - Content Owner)                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  1. Generate a symmetric encryption key (RedKey)                            │
-│  2. Encrypt RedKey with ACE → GreenBox (encrypted key)                      │
+│  1. Encrypt the content payload directly with ACE → ciphertext              │
 │     - Uses keypairId, aceContract, contractId, and fullBlobName             │
-│  3. Register GreenBox on-chain via access_control::register_blob           │
+│  2. Register the ciphertext on-chain via access_control::register_blob      │
 │     - Creates BlobMetadata PDA with price                                   │
-│  4. Encrypt file content with RedKey → RedBox (encrypted file)              │
-│  5. Upload RedBox to Shelby storage (off-chain)                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      DOWNLOAD FLOW (Bob - Consumer)                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  1. Purchase access via access_control::purchase                           │
+│  1. Purchase access via access_control::purchase                            │
 │     - Transfers SOL from Bob to Alice                                       │
 │     - Creates Receipt PDA (proves payment)                                  │
 │  2. Create proof-of-permission:                                             │
@@ -142,35 +139,23 @@ Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.te
 │     - ACE workers simulate the transaction to verify access                 │
 │     - If assert_access passes, ACE workers release key shares               │
 │  4. Aggregate key shares → decryption key                                   │
-│  5. Decrypt GreenBox → RedKey                                               │
-│  6. Download RedBox from Shelby, decrypt with RedKey → original file        │
+│  5. ACE-decrypt the ciphertext → original content                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Concepts
+### Encryption Model
 
-#### RedKey & GreenBox Pattern
+ACE encrypts the content **directly** — the bytes stored on-chain in
+`BlobMetadata.ciphertext` *are* the protected payload. There is no
+intermediate symmetric-key wrapping layer.
 
-```
-┌──────────────────┐         ACE         ┌──────────────────┐
-│     RedKey       │ ─────────────────►  │    GreenBox      │
-│  (32-byte key)   │     Encrypt         │ (encrypted key)  │
-└──────────────────┘                     └──────────────────┘
-        │
-        │ Symmetric
-        │ Encrypt
-        ▼
-┌──────────────────┐
-│     RedBox       │  ← Stored in Shelby (off-chain)
-│ (encrypted file) │
-└──────────────────┘
-```
+With ACE's current default t-IBE scheme, direct encryption of
+reasonably-sized payloads is the recommended pattern. Earlier designs
+sometimes used a two-layer model (symmetric key encrypts the file,
+ACE encrypts the symmetric key, file ciphertext lives off-chain); that
+pattern is no longer recommended for new applications.
 
-- **RedKey**: Random symmetric key for file encryption
-- **GreenBox**: RedKey encrypted with ACE (stored on-chain in BlobMetadata)
-- **RedBox**: File content encrypted with RedKey (stored off-chain in Shelby)
-
-#### Solana → Aptos Address Derivation
+### Solana → Aptos Address Derivation
 
 Solana addresses are converted to Aptos Derivable Abstracted Account (DAA) addresses for cross-chain compatibility:
 
@@ -190,7 +175,7 @@ This allows the same logical identity to be used across both chains.
 | `purchase` | Pay for access and create a receipt |
 
 **Accounts:**
-- `BlobMetadata` (PDA): Stores owner, encrypted key (GreenBox), price, sequence number
+- `BlobMetadata` (PDA): Stores owner, ACE ciphertext, price, sequence number
 - `Receipt` (PDA): Proves a user has purchased access
 
 ### ace_hook (Hook Program)
@@ -210,21 +195,21 @@ This allows the same logical identity to be used across both chains.
 ### Content Owner: Encrypt and Register
 
 ```typescript
-// Generate encryption key (RedKey)
-const redKey = crypto.getRandomValues(new Uint8Array(32));
-
-// Encrypt RedKey → GreenBox
-const { ciphertext: greenBox } = (await ace_ex.encrypt({
+// 1. Encrypt the content payload directly with ACE.
+const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
+  aceDeployment,
   keypairId,
-  contractId,
+  knownChainName,
+  programId: aceHookProgram.programId.toBase58(),
   domain: fullBlobNameBytes,
-  plaintext: redKey,
-  aceContract,
+  plaintext: secretContent,
 })).unwrapOrThrow();
 
-// Register on-chain
+// 2. Register the listing (price + seqnum) on-chain. The ciphertext
+//    itself stays with Alice — she uploads it to her chosen storage
+//    (CDN, IPFS, etc.) or hands it directly to buyers after purchase.
 await program.methods
-  .registerBlob(ownerAptosAddr, fileName, greenBoxScheme, Buffer.from(greenBox), price)
+  .registerBlob(ownerAptosAddr, fileName, price)
   .accounts({ owner: alice.publicKey })
   .signers([alice])
   .rpc();
@@ -240,9 +225,15 @@ await program.methods
   .signers([bob])
   .rpc();
 
-// Build proof-of-permission transaction
-const txn = await accessControlProgram.methods
-  .assertAccess(fullBlobNameBytes)
+// Build proof-of-permission transaction (calls ace_hook::assert_access)
+const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
+  aceDeployment, keypairId, knownChainName,
+  programId: aceHookProgram.programId.toBase58(),
+  domain: fullBlobNameBytes, ciphertext,
+});
+const fullRequestBytes = await session.getRequestToSign();
+const txn = await aceHookProgram.methods
+  .assertAccess(Buffer.from(fullRequestBytes))
   .accounts({
     blobMetadata: deriveBlobMetadataPda(...),
     receipt: deriveAccessReceiptPda(...),
@@ -253,9 +244,6 @@ txn.feePayer = bob.publicKey;
 txn.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 txn.sign(bob);
 
-// Request decryption key and decrypt GreenBox → RedKey
-const pop = ace_ex.ProofOfPermission.createSolana({ txn: txn.serialize() });
-const redKey = (await ace_ex.decrypt({
-  keypairId, contractId, domain: fullBlobNameBytes, proof: pop, ciphertext: greenBox, aceContract,
-})).unwrapOrThrow();
+// Request decryption from ACE workers; on success returns the original content.
+const content = (await session.decryptWithProof({ txn: txn.serialize() })).unwrapOrThrow();
 ```

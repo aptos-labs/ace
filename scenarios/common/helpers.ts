@@ -703,6 +703,14 @@ export function serializeNewSecretProposal(scheme: number): (state: ace.network.
     return (state) => serializeProposedEpochConfig(state, { newSecrets: [scheme] });
 }
 
+/** Same as [`serializeNewSecretProposal`] but proposes multiple new secrets
+ *  in a single epoch change (ACE's `newSecrets` wire field is a list).
+ *  All `schemes` get DKG'd as part of one epoch transition; faster than
+ *  N sequential `serializeNewSecretProposal` proposals. */
+export function serializeNewSecretsProposal(schemes: number[]): (state: ace.network.State) => Uint8Array {
+    return (state) => serializeProposedEpochConfig(state, { newSecrets: schemes });
+}
+
 export function serializeCommitteeChangeProposal(nodes: AccountAddress[], threshold: number): (state: ace.network.State) => Uint8Array {
     return (state) => serializeProposedEpochConfig(state, { nodes, threshold });
 }

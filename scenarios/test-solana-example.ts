@@ -37,7 +37,7 @@ import {
     sleep,
     getNetworkState,
     proposeAndApprove,
-    serializeNewSecretProposal,
+    serializeNewSecretsProposal,
 } from './common/helpers';
 import { buildRustWorkspace, killStaleNetworkNodes, spawnNetworkNodeMaybeSplit } from './common/network-clients';
 
@@ -121,23 +121,23 @@ async function main() {
             args: [workerAccounts.map(w => w.accountAddress), 2, 3600],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        // Two DKG'd secrets: the happy-path test encrypts under keypair[0];
-        // the failures suite (step A) sends a request claiming keypair[1] —
-        // a real, on-chain-known secret, but not the one the ciphertext was
-        // encrypted under — to exercise the worker's keypair_id check rather
-        // than the SDK's pre-flight `fetchCurrentSessionPks` throw.
-        log('Admin: propose 2 new_secret entries; workers 0,1 approve each...');
+        // Two DKG'd secrets in a SINGLE epoch change (ACE's `newSecrets` wire
+        // field is a list, so one proposal triggers both DKGs in parallel).
+        // The happy-path test encrypts under keypair[0]; the failures suite
+        // (step A) sends a request claiming keypair[1] — a real, on-chain-
+        // known secret, but not the one the ciphertext was encrypted under —
+        // to exercise the worker's keypair_id check rather than the SDK's
+        // pre-flight `fetchCurrentSessionPks` throw.
+        log('Admin: propose 2 new_secret entries in one epoch change; workers 0,1 approve...');
         const newSecretApprovers = workerAccounts.slice(0, 2);
-        for (let i = 0; i < 2; i++) {
-            await proposeAndApprove(
-                newSecretApprovers[0]!,
-                newSecretApprovers,
-                aceContract,
-                serializeNewSecretProposal(1),
-            );
-        }
+        await proposeAndApprove(
+            newSecretApprovers[0]!,
+            newSecretApprovers,
+            aceContract,
+            serializeNewSecretsProposal([1, 1]),
+        );
 
-        log('Waiting for both DKG epoch changes to complete...');
+        log('Waiting for DKG epoch change (2 secrets) to complete...');
         const deadline = Date.now() + 300_000;
         let networkState: ace.network.State | undefined;
         while (Date.now() < deadline) {

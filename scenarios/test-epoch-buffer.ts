@@ -32,12 +32,12 @@
  *   cd scenarios && pnpm test-epoch-buffer
  */
 
-import { Account, AccountAddress, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Ed25519PrivateKey, Signature } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
 
 import { setupAccessControlAppAndEncryptPing } from './common/access-control-app';
-import { setupAceOnLocalnet } from './common/ace-network';
+import { AceNetworkState, setupAceOnLocalnet } from './common/ace-network';
 import { CHAIN_ID } from './common/config';
 import { assert, cleanupScenario, fundAccount, getNetworkState, sleep } from './common/helpers';
 
@@ -87,101 +87,132 @@ async function buildAndFundBob(): Promise<Account> {
     return bob;
 }
 
+/** Build a `DecryptionSession` at the current epoch and capture Bob's
+ *  signature over the pretty-message. The session caches `request` (with
+ *  the current epoch) + `networkState`, so future `decryptWithProof(...)`
+ *  calls replay the captured bytes even after the chain rotates. */
+async function captureSignedSessionAtEpoch(args: {
+    aceState: AceNetworkState;
+    bob: Account;
+    keypair0Id: AccountAddress;
+    correctDomain: Uint8Array;
+    pingCiph: Uint8Array;
+    expectedEpoch: number;
+}): Promise<{ session: ACE.AptosBasicFlow.DecryptionSession; signature: Signature }> {
+    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+        aceDeployment: args.aceState.aceDeployment,
+        keypairId: args.keypair0Id,
+        chainId: CHAIN_ID,
+        moduleAddr: args.aceState.adminAccountAddress,
+        moduleName: 'access_control',
+        functionName: 'check_permission',
+        domain: args.correctDomain,
+        ciphertext: args.pingCiph,
+    });
+    const msg = await session.getRequestToSign();
+    const signature = args.bob.sign(msg);
+    const capturedEpoch = Number(session.request!.epoch);
+    console.log(`Session captured at epoch=${capturedEpoch}`);
+    assert(
+        capturedEpoch === args.expectedEpoch,
+        `session captured at wrong epoch (expected ${args.expectedEpoch}, got ${capturedEpoch})`,
+    );
+    return { session, signature };
+}
+
+/** Replay a previously-captured session's `decryptWithProof` and assert
+ *  the success/failure outcome the caller expects. On success, also
+ *  asserts the PING plaintext. */
+async function replayDecryptWithExpectation(args: {
+    session: ACE.AptosBasicFlow.DecryptionSession;
+    bob: Account;
+    signature: Signature;
+    expectOk: boolean;
+    label: string;
+}): Promise<void> {
+    console.log(`\n── ${args.label} ──`);
+    const r = await args.session.decryptWithProof({
+        userAddr: args.bob.accountAddress,
+        publicKey: args.bob.publicKey,
+        signature: args.signature,
+    });
+    if (args.expectOk) {
+        assert(r.isOk, `replay failed: ${r.errValue}`);
+        assert(
+            new TextDecoder().decode(r.okValue!) === 'PING',
+            `plaintext mismatch: ${r.okValue}`,
+        );
+        console.log('  ✓ Decrypt succeeded.');
+    } else {
+        assert(!r.isOk, `replay should have failed but succeeded`);
+        console.log(`  ✓ Decrypt rejected (${r.errValue}).`);
+    }
+}
+
+/** Stand up the ACE localnet, fund Bob, deploy access-control + encrypt
+ *  PING, sanity-check we're at epoch 1, and capture the signed session.
+ *  Returns everything `main()` needs to drive the rotation + replay
+ *  phases. */
+async function bringUpAndCaptureSession(): Promise<{
+    workers: ChildProcess[];
+    localnetProc: ChildProcess;
+    aceState: AceNetworkState;
+    session: ACE.AptosBasicFlow.DecryptionSession;
+    bob: Account;
+    signature: Signature;
+    initialEpoch: number;
+}> {
+    const setup = await setupAceOnLocalnet({
+        totalWorkers: TOTAL_WORKERS, epoch0WorkerIndices: EPOCH0_WORKER_INDICES,
+        epoch0Threshold: EPOCH0_THRESHOLD, fundAccount, numKeypairs: 1,
+        reshareIntervalSecs: RESHARE_INTERVAL_SECS,
+    });
+    const { actors, ace: aceState, keypairIds: [keypair0Id] } = setup;
+    const bob = await buildAndFundBob();
+    const { correctDomain, pingCiph } = await setupAccessControlAppAndEncryptPing(
+        actors, bob.accountAddress,
+        aceState.aceDeployment, aceState.adminAccountAddress, keypair0Id,
+    );
+    const initial = (await getNetworkState(aceState.adminAccountAddress))
+        .unwrapOrThrow('initial getNetworkState');
+    const initialEpoch = Number(initial.epoch);
+    assert(initialEpoch === 1, `expected initial epoch=1, got ${initialEpoch}`);
+    const { session, signature } = await captureSignedSessionAtEpoch({
+        aceState, bob, keypair0Id, correctDomain, pingCiph, expectedEpoch: initialEpoch,
+    });
+    return {
+        workers: setup.ace.workers, localnetProc: setup.localnetProc,
+        aceState, session, bob, signature, initialEpoch,
+    };
+}
+
 async function main(): Promise<void> {
     let workers: ChildProcess[] = [];
     let localnetProc: ChildProcess | null = null;
     let exitCode = 0;
     try {
-        const setup = await setupAceOnLocalnet({
-            totalWorkers: TOTAL_WORKERS,
-            epoch0WorkerIndices: EPOCH0_WORKER_INDICES,
-            epoch0Threshold: EPOCH0_THRESHOLD,
-            fundAccount,
-            numKeypairs: 1,
-            reshareIntervalSecs: RESHARE_INTERVAL_SECS,
-        });
-        localnetProc = setup.localnetProc;
-        workers = setup.ace.workers;
-        const { actors, ace: aceState, keypairIds: [keypair0Id] } = setup;
-
-        const bob = await buildAndFundBob();
-        const { correctDomain, pingCiph } = await setupAccessControlAppAndEncryptPing(
-            actors, bob.accountAddress,
-            aceState.aceDeployment, aceState.adminAccountAddress, keypair0Id,
-        );
-
-        // Sanity-check we're still at epoch 1 (not yet rotated). Tight enough
-        // that timing slippage causes a clean error rather than a confusing
-        // wrong-epoch capture.
-        const initial = (await getNetworkState(aceState.adminAccountAddress))
-            .unwrapOrThrow('initial getNetworkState');
-        const initialEpoch = Number(initial.epoch);
-        console.log(`Initial epoch: ${initialEpoch} (expected 1)`);
-        assert(initialEpoch === 1, `expected initial epoch=1, got ${initialEpoch}`);
-
-        // Build a session and capture the signed request at epoch 1. The
-        // session caches `request` (with epoch=1) + `networkState`, so
-        // future `decryptWithProof(...)` calls replay the captured bytes
-        // even after the chain rotates.
-        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
-            aceDeployment: aceState.aceDeployment,
-            keypairId: keypair0Id,
-            chainId: CHAIN_ID,
-            moduleAddr: aceState.adminAccountAddress,
-            moduleName: 'access_control',
-            functionName: 'check_permission',
-            domain: correctDomain,
-            ciphertext: pingCiph,
-        });
-        const msg = await session.getRequestToSign();
-        const signature = bob.sign(msg);
-        const capturedEpoch = Number(session.request!.epoch);
-        console.log(`Session captured at epoch=${capturedEpoch}`);
-        assert(capturedEpoch === initialEpoch, `session captured at wrong epoch ${capturedEpoch}`);
-
-        // ── Wait for auto-rotation ────────────────────────────────────────
-        console.log(`Waiting for auto-rotation to epoch=${initialEpoch + 1}...`);
+        const ctx = await bringUpAndCaptureSession();
+        workers = ctx.workers;
+        localnetProc = ctx.localnetProc;
+        console.log(`Waiting for auto-rotation to epoch=${ctx.initialEpoch + 1}...`);
         const rotation = await waitForEpochAdvance(
-            initialEpoch + 1, aceState.adminAccountAddress, 120_000,
+            ctx.initialEpoch + 1, ctx.aceState.adminAccountAddress, 120_000,
         );
         console.log(`Rotation observed at epoch=${rotation.epoch}.`);
-
-        // ── Within buffer ─────────────────────────────────────────────────
-        // Submit immediately. Workers' 5s state-poll may add up to 5s
-        // before they signal URH-1 shutdown, but the 30s eviction timer
-        // doesn't start until then — so the within-buffer window is
-        // comfortably wide right after we observe the rotation.
-        console.log('\n── Within-buffer replay (request signed at epoch=N, submitted after N+1) ──');
-        const r1 = await session.decryptWithProof({
-            userAddr: bob.accountAddress,
-            publicKey: bob.publicKey,
-            signature,
+        await replayDecryptWithExpectation({
+            session: ctx.session, bob: ctx.bob, signature: ctx.signature, expectOk: true,
+            label: 'Within-buffer replay (request signed at epoch=N, submitted after N+1)',
         });
-        assert(r1.isOk, `within-buffer decrypt failed: ${r1.errValue}`);
-        assert(
-            new TextDecoder().decode(r1.okValue!) === 'PING',
-            `within-buffer plaintext mismatch: ${r1.okValue}`,
+        const remainingMs = Math.max(
+            0,
+            (BUFFER_SECS + POST_BUFFER_GRACE_SECS) * 1000 - (Date.now() - rotation.observedAtMs),
         );
-        console.log('  ✓ Workers retained epoch-1 shares within the 30s buffer; decrypt succeeded.');
-
-        // ── Past buffer ───────────────────────────────────────────────────
-        // Wait until well past the 30s eviction deadline (timed from
-        // worker's view of the rotation) + the 5s cleanup-tick lag.
-        const sinceRotationMs = Date.now() - rotation.observedAtMs;
-        const totalWaitMs = (BUFFER_SECS + POST_BUFFER_GRACE_SECS) * 1000;
-        const remainingMs = Math.max(0, totalWaitMs - sinceRotationMs);
         console.log(`\nWaiting ${remainingMs / 1000}s past rotation for buffer eviction...`);
         await sleep(remainingMs);
-
-        console.log('── Past-buffer replay (same request, after eviction) ──');
-        const r2 = await session.decryptWithProof({
-            userAddr: bob.accountAddress,
-            publicKey: bob.publicKey,
-            signature,
+        await replayDecryptWithExpectation({
+            session: ctx.session, bob: ctx.bob, signature: ctx.signature, expectOk: false,
+            label: 'Past-buffer replay (same request, after eviction)',
         });
-        assert(!r2.isOk, `past-buffer decrypt should have failed but succeeded`);
-        console.log(`  ✓ Workers evicted epoch-1 shares; decrypt rejected (${r2.errValue}).`);
-
         console.log('\n✅ Epoch-buffer test passed!\n');
     } catch (err) {
         console.error('\n❌ Test failed:', err);

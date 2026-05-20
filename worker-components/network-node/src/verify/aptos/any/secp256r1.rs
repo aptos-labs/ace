@@ -25,20 +25,19 @@
 //!    `SHA3-256(signing_message(RawTransaction))` for `clientDataJSON.challenge`.
 //! 3. Parse `client_data_json` as JSON, read the `challenge` string, and
 //!    base64url-decode it (no-padding, per the WebAuthn `CollectedClientData`
-//!    encoding). The decoded bytes must equal `expected_challenge`.
-//! 4. Build the ECDSA preimage `ecdsa_preimage = authenticator_data || SHA-256(client_data_json)`.
-//!    `proof.full_message` is the hex of those same bytes — by definition the
-//!    `fullMessage` field carries "the actual bytes fed into the signature
-//!    scheme", which for WebAuthn is this preimage (P-256 ECDSA then prehashes
-//!    it once more with SHA-256).
-//! 5. Verify the P-256 ECDSA signature (64-byte raw `r||s`, low-s normalized,
-//!    rejected as malleable if high-s — same rule the sibling secp256k1 path
-//!    uses, and aptos-core's `p256_ecdsa::verify_signature_arbitrary_msg`
-//!    enforces it inside the crypto crate).
-//! 6. On-chain `authentication_key` at `userAddr` must match
+//!    encoding). The decoded bytes must equal `expected_challenge`. This is the
+//!    security-critical binding to the request payload — `proof.full_message`
+//!    plays no role in WebAuthn verification.
+//! 4. Verify the P-256 ECDSA signature over the preimage
+//!    `authenticator_data || SHA-256(client_data_json)` (64-byte raw `r||s`,
+//!    low-s normalized, rejected as malleable if high-s — same rule the
+//!    sibling secp256k1 path uses, and aptos-core's
+//!    `p256_ecdsa::verify_signature_arbitrary_msg` enforces it inside the
+//!    crypto crate).
+//! 5. On-chain `authentication_key` at `userAddr` must match
 //!    `SHA3-256( BCS(AnyPublicKey::Secp256r1Ecdsa(pk)) || 0x02 )` — the
 //!    standard SingleKey derivation handled by [`super::authentication_key`].
-//! 7. Call the dapp's `check_permission(user_addr, domain)` view function.
+//! 6. Call the dapp's `check_permission(user_addr, domain)` view function.
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -96,17 +95,23 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// WebAuthn assertion verification for one signing position. Pulls all the
-/// WebAuthn-specific checks into one place: challenge binding (against
-/// `req.payload.to_webauthn_challenge()`), `fullMessage` binding (against
-/// `hex(authenticator_data || SHA-256(clientDataJSON))`), and the P-256
-/// ECDSA verify over `SHA-256(authenticator_data || SHA-256(clientDataJSON))`.
+/// WebAuthn assertion verification for one signing position. Two checks:
+/// challenge binding (the decoded `clientDataJSON.challenge` must equal
+/// `req.payload.to_webauthn_challenge()`) and the P-256 ECDSA verify over
+/// `SHA-256(authenticator_data || SHA-256(clientDataJSON))`.
+///
+/// `proof.full_message` is intentionally not consulted: the security binding
+/// to the request payload runs through `clientDataJSON.challenge`, and
+/// `proof.full_message` is a single per-request field whose contents vary
+/// across the other (non-WebAuthn) verifier paths. The MultiKey dispatcher
+/// in particular shares one `proof.full_message` across positions that need
+/// different bytes — Ed25519 / Keyless want the pretty message, WebAuthn
+/// wants something else — so the WebAuthn path must not bind to it.
 ///
 /// Takes already-parsed `&VerifyingKey` / `&Signature` (with low-s already
 /// rejected) so the caller can hoist the SEC1 + low-s parse out of the hot
-/// path. The MultiKey path currently rejects WebAuthn positions (Phase 1);
-/// the parsed-types shape keeps the per-variant verify_signature_only API
-/// uniform for the eventual Phase 2 WebAuthn-in-MultiKey support.
+/// path. Single-key callers parse once in [`verify`]; MultiKey callers parse
+/// once in [`super::verify_position`].
 ///
 /// `async` for shape uniformity with the keyless/federated-keyless paths
 /// (which fetch chain-side inputs); this variant does no RPC.
@@ -115,7 +120,7 @@ pub(super) async fn verify(
 /// single-key wrapper [`verify`] adds both around this.
 pub(super) async fn verify_signature_only(
     req: &BasicFlowRequest,
-    proof: &AptosProofOfPermission,
+    _proof: &AptosProofOfPermission,
     vk: &VerifyingKey,
     sig: &Signature,
     assertion: &WebAuthnAssertion,
@@ -139,27 +144,15 @@ pub(super) async fn verify_signature_only(
         ));
     }
 
-    // Step 3 — build the ECDSA preimage and bind it to proof.full_message.
+    // Step 3 — verify the P-256 ECDSA signature over the WebAuthn preimage
+    // `authenticator_data || SHA-256(clientDataJSON)`. The VerifyingKey::verify
+    // trait impl prehashes with SHA-256 internally; do that explicitly via
+    // verify_prehash to keep the contract obvious.
     let cdj_hash = Sha256::digest(&assertion.client_data_json);
     let mut ecdsa_preimage =
         Vec::with_capacity(assertion.authenticator_data.len() + cdj_hash.len());
     ecdsa_preimage.extend_from_slice(&assertion.authenticator_data);
     ecdsa_preimage.extend_from_slice(&cdj_hash);
-
-    let expected_full_msg_hex = hex::encode(&ecdsa_preimage);
-    let stripped = proof
-        .full_message
-        .strip_prefix("0x")
-        .unwrap_or(proof.full_message.as_str());
-    if !stripped.eq_ignore_ascii_case(&expected_full_msg_hex) {
-        return Err(anyhow!(
-            "verify_aptos_any_secp256r1: proof.full_message does not equal hex(authenticator_data || SHA-256(clientDataJSON))"
-        ));
-    }
-
-    // Step 4 — verify the P-256 ECDSA signature over the preimage. The
-    // VerifyingKey::verify trait impl prehashes with SHA-256 internally; do
-    // that explicitly via verify_prehash to keep the contract obvious.
     let prehash: [u8; 32] = Sha256::digest(&ecdsa_preimage).into();
     vk.verify_prehash(&prehash, sig)
         .map_err(|e| anyhow!("verify_aptos_any_secp256r1: P-256 ECDSA verification failed: {}", e))?;

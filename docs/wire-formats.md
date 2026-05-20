@@ -214,7 +214,17 @@ struct SolanaProofOfPermission {
 }
 ```
 
-Today the worker accepts `pk_scheme=0, sig_scheme=0` (legacy Ed25519 only) for Aptos. Other schemes are reserved (multi-key, keyless) but rejected.
+The worker dispatches on the `(pk_scheme, sig_scheme)` pair. `public_key` and `signature` are framed as `Vec<u8>` here only for the table — the worker actually decodes the inner bytes per scheme via a custom serde impl (see `worker-components/network-node/src/verify/aptos/`). Supported pairings:
+
+| `pk_scheme` | `sig_scheme` | Account type |
+|-------------|--------------|--------------|
+| 0 | 0 | Legacy Ed25519 (`Ed25519PublicKey` + `Ed25519Signature`) |
+| 1 | 1 | `AnyPublicKey` / `AnySignature` (SingleKey). Inner variants: `Ed25519`, `Secp256k1Ecdsa`, `Secp256r1Ecdsa`+`WebAuthn` (passkeys), `Keyless`, `FederatedKeyless` |
+| 3 | 3 | `MultiKey` / `MultiKeyAuthenticator` (K-of-N over all five `AnyPublicKey` variants) |
+| 4 | 4 | Bare `KeylessPublicKey` / `KeylessSignature` |
+| 5 | 4 | `FederatedKeylessPublicKey` paired with `KeylessSignature` |
+
+`full_message` is the UTF-8 pretty-message string the wallet signed over (or its hex form for the AptosConnect wallet path). For `pk_scheme=1` `AnyPublicKey<Secp256r1Ecdsa>`+`AnySignature<WebAuthn>` (passkeys), `full_message` is `hex(authenticator_data || SHA-256(clientDataJSON))`. For MultiKey requests with a WebAuthn position, the WebAuthn arm binds to the request payload via `clientDataJSON.challenge` (not `full_message`), so a single shared `full_message` covers the pretty-message-signing positions without breaking the WebAuthn one.
 
 ### 2.6 `CustomFlowProof` (custom flow)
 

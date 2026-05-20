@@ -82,6 +82,12 @@ ACE supports two flows depending on what your contract needs to verify:
 - **Basic Flow** — your contract receives the requestor's Aptos address (extracted from their signature). Good for allowlists, time-locks, and pay-to-download.
 - **Custom Flow** — your contract receives an arbitrary `payload` byte string submitted by the requestor. Good for ZK proofs, Merkle witnesses, and other cryptographic credentials.
 
+### Account-Type Compatibility (Aptos)
+
+ACE's basic flow supports every cryptographic signature scheme the upstream `@aptos-labs/ts-sdk` produces — legacy Ed25519, `SingleKey` (Ed25519, Secp256k1, Secp256r1+WebAuthn passkeys, Keyless, FederatedKeyless), legacy `MultiEd25519`, and modern `MultiKey` K-of-N. If your users hold any of these, point them at the basic flow.
+
+Aptos's Account Abstraction (AA, `Scheme::Abstraction = 4`) and Derivable AA (DAA, `Scheme::DeriveDomainAbstraction = 5`) authenticate via a Move `authenticate(signer, AbstractionAuthData): signer` function rather than a cryptographic primitive — they have no "public key" the SDK can plug into a basic-flow `(pk_scheme, sig_scheme)` pair. AA-authenticated dapps should route through the **custom flow**: your `check_acl` view plays the same role as `authenticate` and can re-run the same credential check on the `payload` bytes (after binding `payload` to the request via `label` / `enc_pk`).
+
 ### The Contract Interface
 
 This is the most important part. Your view function is the sole access gate — get the signature right.

@@ -220,6 +220,7 @@ The worker dispatches on the `(pk_scheme, sig_scheme)` pair. `public_key` and `s
 |-------------|--------------|--------------|
 | 0 | 0 | Legacy Ed25519 (`Ed25519PublicKey` + `Ed25519Signature`) |
 | 1 | 1 | `AnyPublicKey` / `AnySignature` (SingleKey). Inner variants: `Ed25519`, `Secp256k1Ecdsa`, `Secp256r1Ecdsa`+`WebAuthn` (passkeys), `Keyless`, `FederatedKeyless` |
+| 2 | 2 | Legacy K-of-N `MultiEd25519` (`Scheme::MultiEd25519 = 0x01`). Flat-concat wire layout (`pk_1‖…‖pk_N‖threshold` and `sig_1‖…‖sig_K‖bitmap[4]`). Predates `MultiKey`; only raw Ed25519 positions. |
 | 3 | 3 | `MultiKey` / `MultiKeyAuthenticator` (K-of-N over all five `AnyPublicKey` variants) |
 | 4 | 4 | Bare `KeylessPublicKey` / `KeylessSignature` |
 | 5 | 4 | `FederatedKeylessPublicKey` paired with `KeylessSignature` |

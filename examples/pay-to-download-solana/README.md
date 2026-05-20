@@ -195,7 +195,7 @@ This allows the same logical identity to be used across both chains.
 ### Content Owner: Encrypt and Register
 
 ```typescript
-// Encrypt the content payload directly with ACE
+// 1. Encrypt the content payload directly with ACE.
 const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
   aceDeployment,
   keypairId,
@@ -205,9 +205,11 @@ const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
   plaintext: secretContent,
 })).unwrapOrThrow();
 
-// Register on-chain
+// 2. Register the listing (price + seqnum) on-chain. The ciphertext
+//    itself stays with Alice — she uploads it to her chosen storage
+//    (CDN, IPFS, etc.) or hands it directly to buyers after purchase.
 await program.methods
-  .registerBlob(ownerAptosAddr, fileName, ciphertextScheme, Buffer.from(ciphertext), price)
+  .registerBlob(ownerAptosAddr, fileName, price)
   .accounts({ owner: alice.publicKey })
   .signers([alice])
   .rpc();

@@ -145,25 +145,23 @@ describe("access-control", () => {
     })).unwrapOrThrow('failed to encrypt');
 
     // ========================================================================
-    // Step 4: Alice Registers the Ciphertext On-Chain
+    // Step 4: Alice Registers the Listing On-Chain
     // ========================================================================
+    //
+    // Only the listing metadata (price + seqnum) goes on-chain. The
+    // ciphertext stays in Alice's local possession — in a real app she'd
+    // upload it to her chosen storage (CDN / IPFS / direct upload after
+    // purchase / etc.) and Bob would retrieve it from there. For this
+    // test we just keep it as a closure variable.
 
-    console.log("(2a.2) Alice registering ciphertext on-chain...");
+    console.log("(2a.2) Alice registering listing on-chain...");
 
-    const ciphertextScheme = 2;  // ACE ciphertext scheme version
     const price = new anchor.BN(0.0005 * LAMPORTS_PER_SOL);  // 0.0005 SOL
 
-    // Register creates a BlobMetadata PDA storing:
-    // - owner: Alice's Solana address
-    // - ciphertext: The ACE-encrypted content
-    // - price: Cost to purchase access
-    // - seqnum: Sequence number for access verification
     const fileRegTxn = await program.methods
       .registerBlob(
         Array.from(aliceAptosAddrBytes),  // Owner's Aptos address
         fileName,                          // Blob name (used in PDA seed)
-        ciphertextScheme,                  // ACE ciphertext scheme version
-        Buffer.from(ciphertext),           // ACE-encrypted content
         price                              // Price in lamports
       )
       .accounts({
@@ -172,7 +170,7 @@ describe("access-control", () => {
       .signers([alice])
       .rpc();
     await confirmTransaction(connection, fileRegTxn);
-    console.log("✓ Ciphertext registered on-chain");
+    console.log("✓ Listing registered on-chain (ciphertext kept off-chain)");
 
     // ========================================================================
     // Step 5: Bob Attempts to Decrypt Without Payment (Should Fail)
@@ -761,10 +759,13 @@ async function aliceEncryptAndRegisterBlob(args: {
     domain,
     plaintext,
   })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
+  // Only the listing (price + seqnum) goes on-chain; the ciphertext stays
+  // in-memory (returned to caller so it can be handed to Bob — modeling
+  // the "Alice delivers ciphertext to Bob off-chain" step).
   const txn = await args.program.methods
     .registerBlob(
-      Array.from(args.aliceAptosAddrBytes), args.fileName, 2,
-      Buffer.from(ciphertext), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+      Array.from(args.aliceAptosAddrBytes), args.fileName,
+      new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
     )
     .accounts({ owner: args.alice.publicKey })
     .signers([args.alice]).rpc();

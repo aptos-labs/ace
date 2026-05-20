@@ -3,8 +3,10 @@
 
 //! Register Blob Instruction
 //!
-//! Lets content owners list a new ACE-encrypted blob for sale. Creates a
-//! BlobMetadata PDA holding the ciphertext + price.
+//! Lets content owners list a new ACE-gated blob for sale. Creates a
+//! BlobMetadata PDA holding the price + a fresh sequence number. The
+//! ciphertext is *not* stored on-chain — see the module docstring in
+//! `lib.rs` for the off-chain delivery model.
 
 use anchor_lang::prelude::*;
 use crate::BlobMetadata;
@@ -24,15 +26,12 @@ pub struct RegisterBlob<'info> {
     /// Space allocation:
     /// - 8 bytes: Anchor discriminator
     /// - 32 bytes: owner (Pubkey)
-    /// - 1 byte: ciphertext_scheme
-    /// - 4 bytes: ciphertext length prefix
-    /// - 1000 bytes: ciphertext bytes (max)
     /// - 8 bytes: seqnum
     /// - 8 bytes: price
     #[account(
         init,
         payer = owner,
-        space = 8 + 32 + 1 + 4 + 1000 + 8 + 8,
+        space = 8 + 32 + 8 + 8,
         seeds = [b"blob_metadata", owner_aptos_addr.as_ref(), blob_name.as_bytes()],
         bump
     )]
@@ -50,39 +49,33 @@ pub struct RegisterBlob<'info> {
 // Handler
 // ============================================================================
 
-/// Register a new ACE-encrypted blob for sale.
+/// Register a new ACE-gated blob listing for sale.
 ///
-/// This creates a BlobMetadata PDA storing:
+/// Creates a BlobMetadata PDA storing:
 /// - The owner's Solana address
-/// - The ACE-encrypted content (ciphertext)
 /// - The price to purchase access
 /// - A sequence number (for invalidating old receipts)
+///
+/// The ciphertext itself is not stored on-chain. Alice keeps it and
+/// delivers it to Bob via her chosen channel after purchase.
 ///
 /// # Arguments
 ///
 /// * `ctx` - Anchor context with accounts
 /// * `owner_aptos_addr` - Owner's Aptos address (used in PDA seeds, not stored)
 /// * `_blob_name` - Blob name (used in PDA seeds via instruction attribute)
-/// * `ciphertext_scheme` - ACE ciphertext scheme version
-/// * `ciphertext` - The ACE-encrypted content payload
 /// * `price` - Price in lamports
 #[allow(unused_variables)]
 pub fn handler(
     ctx: Context<RegisterBlob>,
     owner_aptos_addr: [u8; 32],
     _blob_name: String,
-    ciphertext_scheme: u8,
-    ciphertext: Vec<u8>,
     price: u64,
 ) -> Result<()> {
     let blob_metadata = &mut ctx.accounts.blob_metadata;
 
     // Set the owner to the signing Solana address
     blob_metadata.owner = ctx.accounts.owner.key();
-
-    // Store the ciphertext + its scheme version
-    blob_metadata.ciphertext_scheme = ciphertext_scheme;
-    blob_metadata.ciphertext = ciphertext;
 
     // Set the price for purchasing access
     blob_metadata.price = price;

@@ -22,6 +22,7 @@
     "test-access-failures-anypub-secp256r1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-secp256r1.ts",
     "test-access-failures-anypub-keyless": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-keyless.ts",
     "test-access-failures-anypub-federated-keyless": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-anypub-federated-keyless.ts",
+    "test-access-failures-multi-key": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-access-failures-multi-key.ts",
     "test-fault-tolerance": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-fault-tolerance.ts",
     "test-auto-epoch-change": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-auto-epoch-change.ts",
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",

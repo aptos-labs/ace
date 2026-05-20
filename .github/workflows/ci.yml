@@ -188,6 +188,7 @@ jobs:
           - test-access-failures-anypub-secp256r1
           - test-access-failures-anypub-keyless
           - test-access-failures-anypub-federated-keyless
+          - test-access-failures-multi-key
           - test-fault-tolerance
           - test-auto-epoch-change
           - large-committee

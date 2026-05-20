@@ -353,6 +353,215 @@ describe("access-control", () => {
 });
 
 // ============================================================================
+// Access-Control Failures (worker-side rejection)
+// ============================================================================
+//
+// Solana counterpart to the Aptos 5-step access-failure matrix used by
+// `scenarios/test-access-failures-*.ts`. The worker must reject when:
+//   A. The `keypair_id` in the request doesn't correspond to any DKG'd secret.
+//   B. The caller has no on-chain access record. (Already covered by "Bob
+//      attempts to decrypt without payment" inside the happy-path test above.)
+//   C. The session's `domain` doesn't match what the ciphertext was encrypted
+//      under — the in-program PDA derivation no longer matches the supplied
+//      `blob_metadata` / `receipt` accounts, so chain simulation aborts.
+//   D. (happy path — covered above)
+//   E. The submitted Solana txn carries a mauled signature — `simulateTransaction`
+//      runs with `sigVerify: true` (see `worker-components/network-node/src/verify/solana.rs::simulate_txn`),
+//      so the RPC rejects before program execution.
+//
+// One `before()` sets up Alice + Bob + a registered blob + Bob's paid receipt
+// (everything needed for a *valid* request); each `it()` mutates one input
+// and asserts worker rejection.
+
+describe("access-control failures (worker-side rejection)", () => {
+  anchor.setProvider(anchor.AnchorProvider.env());
+  const program = anchor.workspace.accessControl as Program<AccessControl>;
+  const accessControlProgram = anchor.workspace.aceHook as Program<AceHook>;
+  const provider = anchor.AnchorProvider.env();
+
+  let connection: Connection;
+  let alice: Keypair;
+  let bob: Keypair;
+  let aliceAptosAddrBytes: Uint8Array;
+  let fullBlobNameBytes: Buffer;
+  let greenBox: Uint8Array;
+  let aceDeployment: ACE.AceDeployment;
+  let keypairId: AccountAddress;
+  let knownChainName: string;
+
+  // Distinct from the happy-path file name so the two suites' PDAs don't
+  // collide on the same localnet validator.
+  const FILE_NAME = "failure-test.mov";
+
+  before(async function () {
+    this.timeout(180_000);
+    connection = provider.connection;
+    alice = Keypair.generate();
+    bob = Keypair.generate();
+    aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
+    await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
+
+    // ── ACE config (same shape as the happy-path test) ────────────────────
+    const isLocalnet =
+      connection.rpcEndpoint.includes('localhost') ||
+      connection.rpcEndpoint.includes('127.0.0.1');
+    knownChainName = isLocalnet ? "localnet" : "testnet";
+    if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
+      aceDeployment = new ACE.AceDeployment({
+        apiEndpoint: "http://localhost:8080/v1",
+        contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
+      });
+      keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
+    } else {
+      const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
+        { apiEndpoint: string; contractAddr: string; keypairId: string };
+      aceDeployment = new ACE.AceDeployment({
+        apiEndpoint: cfg.apiEndpoint,
+        contractAddr: AccountAddress.fromString(cfg.contractAddr),
+      });
+      keypairId = AccountAddress.fromString(cfg.keypairId);
+    }
+
+    // ── Alice encrypts and registers ──────────────────────────────────────
+    const plaintext = hexToBytes(
+      "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
+    );
+    fullBlobNameBytes = Buffer.concat([
+      Buffer.from("0x"),
+      Buffer.from(aliceAptosAddrBytes),
+      Buffer.from("/"),
+      Buffer.from(FILE_NAME),
+    ]);
+    greenBox = (await ACE.SolanaBasicFlow.encrypt({
+      aceDeployment, keypairId, knownChainName,
+      programId: accessControlProgram.programId.toBase58(),
+      domain: fullBlobNameBytes,
+      plaintext,
+    })).unwrapOrThrow('failures-suite: encrypt failed');
+
+    const fileRegTxn = await program.methods
+      .registerBlob(
+        Array.from(aliceAptosAddrBytes), FILE_NAME, 2,
+        Buffer.from(greenBox), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+      )
+      .accounts({ owner: alice.publicKey })
+      .signers([alice])
+      .rpc();
+    await confirmTransaction(connection, fileRegTxn);
+
+    // ── Bob purchases access ──────────────────────────────────────────────
+    const purchaseTxn = await program.methods
+      .purchase(Array.from(aliceAptosAddrBytes), FILE_NAME)
+      .accounts({ buyer: bob.publicKey, owner: alice.publicKey })
+      .signers([bob])
+      .rpc();
+    await confirmTransaction(connection, purchaseTxn);
+
+    // Wait for the Receipt PDA to be visible to workers' RPC view (same
+    // propagation-lag mitigation the happy-path test uses).
+    const receiptPda = deriveAccessReceiptPda(
+      aliceAptosAddrBytes, FILE_NAME, bob.publicKey, program.programId,
+    );
+    const expectedOwner = accessControlProgram.programId.toBase58();
+    const pollDeadline = Date.now() + 30_000;
+    while (Date.now() < pollDeadline) {
+      const info = await connection.getAccountInfo(receiptPda, 'confirmed');
+      if (info && info.owner.toBase58() === expectedOwner) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    await new Promise(r => setTimeout(r, 500));
+  });
+
+  /** Build a (well-formed, signed) `assert_access` txn for Bob → Alice's
+   *  blob. Returns the session + raw bytes so individual `it()` blocks can
+   *  override `sessionKeypairId` / `sessionDomain` (steps A and C) or maul
+   *  the bytes after signing (step E). */
+  async function buildBobAccessTxn(args: {
+    sessionDomain?: Buffer;
+    sessionKeypairId?: AccountAddress;
+  } = {}): Promise<{
+    session: ACE.SolanaBasicFlow.DecryptionSession;
+    txnBytes: Uint8Array;
+  }> {
+    const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
+      aceDeployment,
+      keypairId: args.sessionKeypairId ?? keypairId,
+      knownChainName,
+      programId: accessControlProgram.programId.toBase58(),
+      domain: args.sessionDomain ?? fullBlobNameBytes,
+      ciphertext: greenBox,
+    });
+    const fullRequestBytes = await session.getRequestToSign();
+    const txn = await accessControlProgram.methods
+      .assertAccess(Buffer.from(fullRequestBytes))
+      .accounts({
+        blobMetadata: deriveBlobMetadataPda(aliceAptosAddrBytes, FILE_NAME, program.programId),
+        receipt: deriveAccessReceiptPda(aliceAptosAddrBytes, FILE_NAME, bob.publicKey, program.programId),
+        user: bob.publicKey,
+      })
+      .transaction();
+    txn.feePayer = bob.publicKey;
+    const { blockhash } = await connection.getLatestBlockhash();
+    txn.recentBlockhash = blockhash;
+    txn.sign(bob);
+    return { session, txnBytes: txn.serialize() };
+  }
+
+  it("step A: rejects decrypt with nonexistent keypair_id", async function () {
+    this.timeout(60_000);
+    const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
+    const { session, txnBytes } = await buildBobAccessTxn({ sessionKeypairId: fakeKeypairId });
+    const result = await session.decryptWithProof({ txn: txnBytes });
+    expect(result.isOk).to.equal(
+      false,
+      `Expected decrypt to fail with nonexistent keypair_id, but it succeeded`,
+    );
+    console.log(`  ✓ rejected (${result.errValue})`);
+  });
+
+  it("step C: rejects decrypt with wrong domain (wrong blob name in session)", async function () {
+    this.timeout(60_000);
+    // GreenBox was encrypted under `fullBlobNameBytes`. A session that
+    // claims a different blob name produces a request whose `domain` field
+    // (and therefore embedded `full_request_bytes`) reference the wrong
+    // blob. The chain's `assert_access` derives the expected PDA from those
+    // bytes and finds it doesn't match the supplied `blob_metadata` account.
+    const wrongBlobName = Buffer.concat([
+      Buffer.from("0x"),
+      Buffer.from(aliceAptosAddrBytes),
+      Buffer.from("/"),
+      Buffer.from("other-blob"),
+    ]);
+    const { session, txnBytes } = await buildBobAccessTxn({ sessionDomain: wrongBlobName });
+    const result = await session.decryptWithProof({ txn: txnBytes });
+    expect(result.isOk).to.equal(
+      false,
+      `Expected decrypt to fail with wrong domain, but it succeeded`,
+    );
+    console.log(`  ✓ rejected (${result.errValue})`);
+  });
+
+  it("step E: rejects decrypt with mauled txn signature", async function () {
+    this.timeout(60_000);
+    const { session, txnBytes } = await buildBobAccessTxn();
+    // Solana legacy txn layout: [compact-u16 sig_count][N * 64B signatures][message].
+    // For one signer sig_count = 0x01 (1 byte), so the first signature byte
+    // lives at offset 1. Flipping a bit there leaves the structural shape
+    // intact — the worker's `validate_txn` parses cleanly — but breaks the
+    // Ed25519 verify the Solana RPC performs during `simulateTransaction`
+    // (we run with `sigVerify: true`).
+    const mauled = new Uint8Array(txnBytes);
+    mauled[1] ^= 0x01;
+    const result = await session.decryptWithProof({ txn: mauled });
+    expect(result.isOk).to.equal(
+      false,
+      `Expected decrypt to fail with mauled txn signature, but it succeeded`,
+    );
+    console.log(`  ✓ rejected (${result.errValue})`);
+  });
+});
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

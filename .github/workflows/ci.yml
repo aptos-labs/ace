@@ -192,6 +192,7 @@ jobs:
           - test-access-failures-multi-ed25519
           - test-fault-tolerance
           - test-auto-epoch-change
+          - test-epoch-buffer
           - large-committee
           - test-custom-flow-aptos
       fail-fast: false

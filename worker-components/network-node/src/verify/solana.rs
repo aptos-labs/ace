@@ -79,10 +79,10 @@ pub(super) async fn verify_custom_solana(
     validate_custom_txn(
         &proof.txn_bytes,
         &expected_program_id,
-        &req.keypair_id,
-        req.epoch,
+        &req.payload.keypair_id,
+        req.payload.epoch,
         enc_pk_bytes,
-        &req.label,
+        &req.payload.label,
         is_versioned,
     )?;
 

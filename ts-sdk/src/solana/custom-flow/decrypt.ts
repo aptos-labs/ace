@@ -6,6 +6,7 @@ import * as pke from "../../pke";
 import {
     AceDeployment,
     ContractID,
+    CustomFlowPayload,
     CustomFlowProof,
     CustomFlowRequest,
     fetchNetworkState,
@@ -36,11 +37,13 @@ export async function decrypt({
     const contractId = ContractID.newSolana({knownChainName, programId});
     const proof = CustomFlowProof.createSolana(txn);
     const customRequest = new CustomFlowRequest({
-        keypairId,
-        epoch,
-        contractId,
-        label,
-        encPk: callerEncPk,
+        payload: new CustomFlowPayload({
+            keypairId,
+            epoch,
+            contractId,
+            label,
+            encPk: callerEncPk,
+        }),
         proof,
     });
 

@@ -417,39 +417,88 @@ export class CustomFlowProof {
     }
 }
 
-// ── Custom-flow request ───────────────────────────────────────────────────────
+// ── Custom-flow payload + envelope ────────────────────────────────────────────
+//
+// Parallel to [`DecryptionRequestPayload`] (basic flow) but for the custom-flow
+// wire — `label` and `encPk` replace `domain` and `ephemeralEncKey` since
+// custom-flow ciphertexts have a different application contract. Mirrors the
+// Rust types `CustomFlowPayload` / `CustomFlowRequest` / `CustomFlowRequestV2`
+// in `worker-components/network-node/src/verify/mod.rs` — same field order,
+// BCS-identical wire shape.
 
-export class CustomFlowRequest {
+export class CustomFlowPayload {
     keypairId: AccountAddress;
     epoch: number;
     contractId: ContractID;
     label: Uint8Array;
     encPk: pke.EncryptionKey;
-    proof: CustomFlowProof;
 
-    constructor({keypairId, epoch, contractId, label, encPk, proof}: {
+    constructor({keypairId, epoch, contractId, label, encPk}: {
         keypairId: AccountAddress,
         epoch: number,
         contractId: ContractID,
         label: Uint8Array,
         encPk: pke.EncryptionKey,
-        proof: CustomFlowProof,
     }) {
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
         this.label = label;
         this.encPk = encPk;
-        this.proof = proof;
     }
 
-    serialize(serializer: Serializer): void {
-        this.keypairId.serialize(serializer);
-        serializer.serializeU64(BigInt(this.epoch));
-        this.contractId.serialize(serializer);
-        serializer.serializeBytes(this.label);
-        this.encPk.serialize(serializer);
-        this.proof.serialize(serializer);
+    serialize(s: Serializer): void {
+        this.keypairId.serialize(s);
+        s.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(s);
+        s.serializeBytes(this.label);
+        this.encPk.serialize(s);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export class CustomFlowRequest {
+    payload: CustomFlowPayload;
+    proof: CustomFlowProof;
+
+    constructor(args: { payload: CustomFlowPayload, proof: CustomFlowProof }) {
+        this.payload = args.payload;
+        this.proof = args.proof;
+    }
+
+    serialize(s: Serializer): void {
+        this.payload.serialize(s);
+        this.proof.serialize(s);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export class CustomFlowRequestV2 {
+    payload: CustomFlowPayload;
+    proof: CustomFlowProof;
+    /** Client-asserted t-IBE scheme the share should be formatted for. */
+    tibeScheme: number;
+
+    constructor(args: { payload: CustomFlowPayload, proof: CustomFlowProof, tibeScheme: number }) {
+        this.payload = args.payload;
+        this.proof = args.proof;
+        this.tibeScheme = args.tibeScheme;
+    }
+
+    serialize(s: Serializer): void {
+        this.payload.serialize(s);
+        this.proof.serialize(s);
+        s.serializeU8(this.tibeScheme);
     }
 
     toBytes(): Uint8Array {
@@ -537,7 +586,7 @@ export class RequestForDecryptionKey {
     private _basicReq?: BasicFlowRequest;
     private _basicReqV2?: BasicFlowRequestV2;
     private _customReq?: CustomFlowRequest;
-    private _customReqV2?: { req: CustomFlowRequest, tibeScheme: number };
+    private _customReqV2?: CustomFlowRequestV2;
 
     private constructor(scheme: number) { this.scheme = scheme; }
 
@@ -568,7 +617,11 @@ export class RequestForDecryptionKey {
         tibeScheme: number,
     ): RequestForDecryptionKey {
         const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2);
-        r._customReqV2 = { req: customRequest, tibeScheme };
+        r._customReqV2 = new CustomFlowRequestV2({
+            payload: customRequest.payload,
+            proof: customRequest.proof,
+            tibeScheme,
+        });
         return r;
     }
 
@@ -585,8 +638,7 @@ export class RequestForDecryptionKey {
                 this._basicReqV2!.serialize(serializer);
                 return;
             case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2:
-                this._customReqV2!.req.serialize(serializer);
-                serializer.serializeU8(this._customReqV2!.tibeScheme);
+                this._customReqV2!.serialize(serializer);
                 return;
             default:
                 throw new Error(`RequestForDecryptionKey: unknown scheme ${this.scheme}`);
@@ -847,9 +899,9 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
-                keypairId: customRequest.keypairId,
-                contractId: customRequest.contractId,
-                domain: customRequest.label,
+                keypairId: customRequest.payload.keypairId,
+                contractId: customRequest.payload.contractId,
+                domain: customRequest.payload.label,
             });
             const fddBytes = fdd.toBytes();
 
@@ -876,7 +928,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                         .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
                     return { endpoint: endpoint as string, nodeEncKey };
                 })),
-                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
+                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.payload.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {

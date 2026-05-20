@@ -29,13 +29,13 @@
 //! per-position SingleKey one), and the dapp `check_permission` view
 //! likewise runs once over `proof.user_addr` rather than per position.
 //!
-//! **Phase 1 limitation**: WebAuthn (`AnyPublicKey::Secp256r1Ecdsa` paired
-//! with `AnySignature::WebAuthn`) positions are rejected with a clear
-//! error. The producer-side wiring (a `MultiKeyAccount` API that knows how
-//! to elicit a WebAuthn assertion against the ACE challenge) does not
-//! exist in the TS-SDK today, so mixed MultiKey + WebAuthn is not a flow
-//! that needs proper off-chain support yet — see the design discussion on
-//! PR #96 for the Phase 2 path.
+//! All five `AnyPublicKey`/`AnySignature` pairings — Ed25519, Secp256k1Ecdsa,
+//! Keyless, FederatedKeyless, and Secp256r1Ecdsa+WebAuthn — are accepted as
+//! MultiKey positions. The WebAuthn path binds to the request payload via
+//! `clientDataJSON.challenge` rather than `proof.full_message`, so it
+//! composes with positions that need the pretty-message bytes (Ed25519,
+//! Secp256k1, Keyless, FederatedKeyless) under a single shared
+//! `proof.full_message`.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};

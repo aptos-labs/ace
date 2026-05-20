@@ -3,55 +3,79 @@
 
 /**
  * Unhappy-path test for the K-of-N `MultiKey` account type
- * (`pk_scheme=3` / `sig_scheme=3`), with diverse position variants.
+ * (`pk_scheme=3` / `sig_scheme=3`), with maximum position-variant diversity
+ * including a WebAuthn (passkeys) position.
  *
- * Bob here is a 2-of-3 `MultiKey` over three positions:
+ * Bob is a 3-of-4 `MultiKey` over four positions:
  *   - position 0: Ed25519 (a `SingleKeyAccount` wrapping a raw Ed25519 key)
  *   - position 1: Ed25519 backup (signed-with set excludes this position)
  *   - position 2: Keyless (`KeylessAccount` from the shared sample fixtures)
+ *   - position 3: Secp256r1Ecdsa + WebAuthn (passkey, synthesised via
+ *                 `common/webauthn-signer.ts::buildAssertion`)
  *
- * Signing-set picks positions {0, 2}, so the on-the-wire `MultiKeySignature`
- * carries one Ed25519 sig + one Keyless sig, with bitmap = `0b1010_0000`
- * (bits 0 and 2). On-chain auth-key derives via
+ * Signing-set picks positions {0, 2, 3}, so the on-the-wire `MultiKeySignature`
+ * carries one Ed25519 sig + one Keyless sig + one WebAuthn assertion, with
+ * bitmap = `0b1011_0000` (bits 0, 2, 3). On-chain auth-key derives via
  *   `SHA3-256( BCS(MultiKey) || 0x03 )`
- * (≠ the SingleKey `... || 0x02` derivation), and the worker dispatches
- * on `pk_scheme=3` / `sig_scheme=3` → `verify::aptos::multi_key`.
+ * and the worker dispatches on `pk_scheme=3` / `sig_scheme=3` →
+ * `verify::aptos::multi_key`.
  *
- * The worker iterates the bitmap MSB-first, pairs each set position with
- * the corresponding inner `AnySignature`, runs per-position
- * `verify_signature_only` (Ed25519 raw verify for position 0; JWK+VK+Cfg
- * fetch + Groth16 + EPK verify for position 2), then applies the
- * MultiKey-level auth-key check + the dapp `check_permission` view once
- * over `proof.user_addr`.
+ * The worker iterates the bitmap MSB-first, pairs each set position with the
+ * corresponding inner `AnySignature`, runs per-position
+ * `verify_signature_only`:
+ *   - position 0 → `any::ed25519::verify_signature_only` (signs pretty-message)
+ *   - position 2 → `aptos::keyless::verify_signature_only` (signs pretty-message,
+ *                  JWK + VK + Cfg fetch + Groth16 + EPK verify)
+ *   - position 3 → `any::secp256r1::verify_signature_only` (binds via
+ *                  `clientDataJSON.challenge` to the BCS payload, NOT via
+ *                  `proof.full_message` — that's why mixing pretty-message and
+ *                  WebAuthn-preimage signers under one MultiKey works)
+ * — then applies the MultiKey-level auth-key check + the dapp `check_permission`
+ * view once over `proof.user_addr`.
  *
- * Two variant-specific bits live in this file:
+ * Three variant-specific pieces live in this file:
  *
- *   1. [`MultiKeyMixedAccount`] subclasses `MultiKeyAccount` to wrap any
- *      bare `KeylessSignature` returned by a Keyless signer in
- *      `AnySignature` — the upstream `MultiKeyAccount.sign` doesn't do
- *      this wrapping, but the on-wire `MultiKeySignature.signatures`
- *      vector is typed as `Vec<AnySignature>`, so each element must carry
- *      the AnyPublicKey variant tag.
+ *   1. The MultiKeySignature is assembled manually rather than via
+ *      `MultiKeyAccount.sign(msg)` because position 3 signs over the
+ *      WebAuthn challenge (BCS-derived, 32 bytes) instead of the
+ *      pretty-message string. `MultiKeyAccount.sign(msg)` is
+ *      synchronous and feeds the same `msg` to every signer, which
+ *      doesn't fit the WebAuthn flow.
  *
- *   2. [`mauleMultiKeySignature`] peels the Ed25519 position's inner
- *      signature out of the `MultiKeySignature`, flips a bit, and re-packs
- *      with the unchanged bitmap.
+ *   2. WebAuthn position dispatch: the wallet returns DER from
+ *      `navigator.credentials.get(...).response.signature` and we
+ *      convert to raw `r || s` via noble's `p256.Signature.fromDER`
+ *      (the same conversion `session.ts::derEcdsaToRawLowS` does for
+ *      the single-key passkey path), then wrap in `WebAuthnSignature`
+ *      and `AnySignature`.
+ *
+ *   3. [`mauleMultiKeySignatureWebAuthn`] peels the WebAuthn position's
+ *      inner `WebAuthnSignature` out of the `MultiKeySignature`, flips
+ *      the LSB of the raw `s` (mirrors single-key Secp256r1 step E),
+ *      and re-packs with the unchanged bitmap. The worker should fail
+ *      the per-position P-256 ECDSA verify on position 3 before
+ *      reaching the MultiKey-level auth-key / ACL.
  *
  * Run:
  *   cd scenarios && pnpm test-access-failures-multi-key
  */
 
 import {
+    Account,
+    AccountAddress,
     AnySignature,
+    AuthenticationKey,
     Ed25519PrivateKey,
-    Ed25519Signature,
-    HexInput,
+    KeylessAccount,
     MultiKey,
-    MultiKeyAccount,
     MultiKeySignature,
-    Signature,
+    Secp256r1PrivateKey,
+    Secp256r1PublicKey,
     SingleKeyAccount,
+    WebAuthnSignature,
 } from '@aptos-labs/ts-sdk';
+import * as ACE from '@aptos-labs/ace-sdk';
+import { p256 } from '@noble/curves/p256';
 import { ChildProcess } from 'child_process';
 
 import {
@@ -59,65 +83,99 @@ import {
     setupAccessControlAppAndEncryptPing,
 } from './common/access-control-app';
 import { setupAceOnLocalnet } from './common/ace-network';
-import { cleanupScenario, fundAccount } from './common/helpers';
+import { CHAIN_ID } from './common/config';
+import { assert, cleanupScenario, fundAccount } from './common/helpers';
 import { buildBobKeylessAccount, runKeylessFrameworkBootstrap } from './common/keyless';
-import {
-    NonKeylessAccessFailureContext,
-    decryptAsNonAllowlistedUser,
-    decryptWithBadKeypairID,
-    decryptWithCorrectInputs,
-    decryptWithMauledSignature,
-    decryptWithWrongDomain,
-} from './common/non-keyless-access-failures';
+import { WebAuthnAssertion, buildAssertion } from './common/webauthn-signer';
 
 const TOTAL_WORKERS = 3;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
 const EPOCH0_THRESHOLD = 2;
 const ED25519_SEED_PRIMARY = 200;
 const ED25519_SEED_BACKUP = 210;
+const WEBAUTHN_SEED = 220;
 
-/** Wrapper around `MultiKeyAccount` that AnySignature-wraps any bare
- *  `KeylessSignature` returned by a Keyless signer before packing it
- *  into the `MultiKeySignature`. The upstream `MultiKeyAccount.sign`
- *  pushes whatever each signer returns into `signatures[]` verbatim;
- *  `SingleKeyAccount.sign` already returns `AnySignature`, but
- *  `AbstractKeylessAccount.sign` returns a bare `KeylessSignature` (no
- *  variant tag) and on-the-wire that breaks BCS round-trip against the
- *  worker's `Vec<AnySignature>`-typed signatures field. */
-class MultiKeyMixedAccount extends MultiKeyAccount {
-    override sign(data: HexInput): MultiKeySignature {
-        const sigs: Signature[] = this.signers.map((signer) => {
-            const sig = signer.sign(data) as Signature;
-            return sig instanceof AnySignature ? sig : new AnySignature(sig);
-        });
-        return new MultiKeySignature({
-            signatures: sigs,
-            bitmap: this.signaturesBitmap,
-        });
-    }
+/** The signing-set bit positions inside Bob's 4-position MultiKey
+ *  (Ed25519 = 0, Keyless = 2, Secp256r1+WebAuthn = 3). Position 1 is on-chain
+ *  but never signs. */
+const SIGNING_POSITIONS = [0, 2, 3];
+
+/** Bob's actively-signing key material, plus the on-chain MultiKey
+ *  composition. Constructed once and reused across all five steps. */
+interface MultiKeyWithWebAuthnBob {
+    multiKey: MultiKey;
+    accountAddress: AccountAddress;
+    ed25519Primary: SingleKeyAccount;
+    keyless: KeylessAccount;
+    webAuthnPrivateKey: Uint8Array;
+    webAuthnPublicKey: Secp256r1PublicKey;
 }
 
-/** Step-E mauler: peel the Ed25519 position's `Ed25519Signature` out of
- *  the `MultiKeySignature`, flip a bit, re-pack with the same bitmap.
- *  Position 0 (Ed25519) is `signatures[0]` because `MultiKeyAccount`
- *  sorts signers by ascending bit position; the Ed25519 signer was
- *  registered at position 0, so it's first. The worker should fail the
- *  per-position signature check on that position before reaching the
- *  MultiKey-level auth-key / ACL. */
-function mauleMultiKeySignature(signer: { sign(msg: string): Signature }, msg: string): Signature {
-    const good = signer.sign(msg) as MultiKeySignature;
-    const ed25519Any = good.signatures[0] as AnySignature;
-    const ed25519Sig = ed25519Any.signature as Ed25519Signature;
-    const mauledBytes = new Uint8Array(ed25519Sig.toUint8Array());
-    mauledBytes[0] ^= 0x01;
-    const mauledFirst = new AnySignature(new Ed25519Signature(mauledBytes));
+/** DER-decodes a P-256 ECDSA signature and normalises it to low-s; returns
+ *  the raw 64-byte `r || s`. Mirrors `derEcdsaToRawLowS` inside
+ *  `ts-sdk/src/aptos/basic-flow/session.ts` — the single-key WebAuthn path
+ *  does this conversion inside `decryptWithWebAuthnAssertion`, but here we
+ *  build the MultiKeySignature manually so we do it ourselves. */
+function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
+    return p256.Signature.fromDER(der).normalizeS().toCompactRawBytes();
+}
+
+/** Assemble the per-request MultiKeySignature. Each signing position pulls
+ *  the bytes it actually needs:
+ *    - position 0 (Ed25519): signs the pretty-message string
+ *    - position 2 (Keyless): signs the pretty-message string; bare
+ *      `KeylessSignature` wrapped in `AnySignature` for the on-wire
+ *      `Vec<AnySignature>`
+ *    - position 3 (WebAuthn): signs over the BCS-derived 32-byte WebAuthn
+ *      challenge; assertion bytes converted to raw `r||s` and wrapped in
+ *      `WebAuthnSignature` + `AnySignature`
+ *  An optional `mauler` rewrites the assembled signatures vector before
+ *  the bitmap-packed `MultiKeySignature` is constructed. */
+function buildMultiKeySignature(
+    bob: MultiKeyWithWebAuthnBob,
+    prettyMsg: string,
+    webAuthnChallenge: Uint8Array,
+    mauler?: (sigs: AnySignature[], webAuthnAssertion: WebAuthnAssertion) => AnySignature[],
+): MultiKeySignature {
+    const ed25519AnySig = bob.ed25519Primary.sign(prettyMsg) as AnySignature;
+    const keylessBare = bob.keyless.sign(prettyMsg);
+    const keylessAnySig = new AnySignature(keylessBare);
+    const webAuthnAssertion = buildAssertion(webAuthnChallenge, bob.webAuthnPrivateKey);
+    const webAuthnRs = derEcdsaToRawLowS(webAuthnAssertion.signature);
+    const webAuthnAnySig = new AnySignature(new WebAuthnSignature(
+        webAuthnRs, webAuthnAssertion.authenticatorData, webAuthnAssertion.clientDataJSON,
+    ));
+    let signatures: AnySignature[] = [ed25519AnySig, keylessAnySig, webAuthnAnySig];
+    if (mauler) signatures = mauler(signatures, webAuthnAssertion);
     return new MultiKeySignature({
-        signatures: [mauledFirst, ...good.signatures.slice(1)],
-        bitmap: good.bitmap,
+        signatures,
+        bitmap: MultiKeySignature.createBitmap({ bits: SIGNING_POSITIONS }),
     });
 }
 
-async function buildAndFundBob(): Promise<MultiKeyMixedAccount> {
+/** Step-E mauler: peel the WebAuthn position's `WebAuthnSignature` out of
+ *  the assembled signatures vector, flip the LSB of the raw `s`, re-wrap.
+ *  Mirrors single-key Secp256r1 step E in `test-access-failures-anypub-secp256r1.ts`.
+ *  Position 3 lands at `signatures[2]` because `SIGNING_POSITIONS` is in
+ *  ascending order (`[0, 2, 3]` → vector indices `[0, 1, 2]`). The worker
+ *  should fail the per-position P-256 ECDSA verify on position 3 before
+ *  reaching the MultiKey-level auth-key / ACL. */
+function mauleWebAuthnPosition(
+    signatures: AnySignature[],
+    assertion: WebAuthnAssertion,
+): AnySignature[] {
+    const sigRs = derEcdsaToRawLowS(assertion.signature);
+    const mauledRs = new Uint8Array(sigRs);
+    // Last byte is the LSB of `s`. Always lands in `1..curve_order`, so DER
+    // parsing + low-s normalisation succeed; the ECDSA verify fails.
+    mauledRs[mauledRs.length - 1] ^= 0x01;
+    const mauledWebAuthnSig = new WebAuthnSignature(
+        mauledRs, assertion.authenticatorData, assertion.clientDataJSON,
+    );
+    return [...signatures.slice(0, -1), new AnySignature(mauledWebAuthnSig)];
+}
+
+async function buildAndFundBob(): Promise<MultiKeyWithWebAuthnBob> {
     const ed25519Primary = new SingleKeyAccount({
         privateKey: new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + ED25519_SEED_PRIMARY))),
     });
@@ -125,14 +183,123 @@ async function buildAndFundBob(): Promise<MultiKeyMixedAccount> {
         privateKey: new Ed25519PrivateKey(Buffer.from(new Uint8Array(32).map((_, i) => i + ED25519_SEED_BACKUP))),
     });
     const keyless = buildBobKeylessAccount();
-    // publicKeys order = on-chain positions. signers = the subset that
-    // signs each request (positions 0 + 2; ed25519Backup at position 1
-    // is on-chain but not used here).
-    const publicKeys = [ed25519Primary.publicKey, ed25519Backup.publicKey, keyless.publicKey];
-    const multiKey = new MultiKey({ publicKeys, signaturesRequired: 2 });
-    const bob = new MultiKeyMixedAccount({ multiKey, signers: [ed25519Primary, keyless] });
-    await fundAccount(bob.accountAddress);
-    return bob;
+    const webAuthnSeed = new Uint8Array(32).map((_, i) => i + WEBAUTHN_SEED);
+    const webAuthnPublicKey = new Secp256r1PrivateKey(webAuthnSeed).publicKey();
+    // publicKeys order = on-chain positions. The MultiKey ctor wraps each
+    // raw PublicKey into AnyPublicKey internally.
+    const publicKeys = [
+        ed25519Primary.publicKey,
+        ed25519Backup.publicKey,
+        keyless.publicKey,
+        webAuthnPublicKey,
+    ];
+    const multiKey = new MultiKey({ publicKeys, signaturesRequired: 3 });
+    const accountAddress = AccountAddress.from(
+        AuthenticationKey.fromPublicKey({ publicKey: multiKey }).toUint8Array(),
+    );
+    await fundAccount(accountAddress);
+    return {
+        multiKey, accountAddress, ed25519Primary, keyless,
+        webAuthnPrivateKey: webAuthnSeed, webAuthnPublicKey,
+    };
+}
+
+interface Ctx {
+    aceDeployment: ACE.AceDeployment;
+    moduleAddr: AccountAddress;
+    moduleName: string;
+    functionName: string;
+    keypair0Id: AccountAddress;
+    correctDomain: Uint8Array;
+    wrongDomain: Uint8Array;
+    pingCiph: Uint8Array;
+    bob: MultiKeyWithWebAuthnBob;
+    charlie: Account;
+}
+
+const BOB_LABEL = 'MultiKey<3-of-4 Ed25519 + Keyless + Secp256r1+WebAuthn>';
+
+function step(n: string, msg: string): void {
+    console.log(`\n── Step ${n}: ${msg} ──`);
+}
+
+async function makeSession(
+    ctx: Ctx,
+    overrides: { keypairId?: AccountAddress; domain?: Uint8Array } = {},
+): Promise<ACE.AptosBasicFlow.DecryptionSession> {
+    return ACE.AptosBasicFlow.DecryptionSession.create({
+        aceDeployment: ctx.aceDeployment,
+        keypairId: overrides.keypairId ?? ctx.keypair0Id,
+        chainId: CHAIN_ID,
+        moduleAddr: ctx.moduleAddr,
+        moduleName: ctx.moduleName,
+        functionName: ctx.functionName,
+        domain: overrides.domain ?? ctx.correctDomain,
+        ciphertext: ctx.pingCiph,
+    });
+}
+
+async function decryptAsBob(
+    ctx: Ctx,
+    session: ACE.AptosBasicFlow.DecryptionSession,
+    mauler?: (sigs: AnySignature[], assertion: WebAuthnAssertion) => AnySignature[],
+) {
+    const prettyMsg = await session.getRequestToSign();
+    const webAuthnChallenge = await session.getRequestToSignForWebAuthn();
+    const signature = buildMultiKeySignature(ctx.bob, prettyMsg, webAuthnChallenge, mauler);
+    return session.decryptWithProof({
+        userAddr: ctx.bob.accountAddress,
+        publicKey: ctx.bob.multiKey,
+        signature,
+        fullMessage: prettyMsg,
+    });
+}
+
+async function stepA_BadKeypairID(ctx: Ctx): Promise<void> {
+    step('A', `Negative: Bob (${BOB_LABEL}) decrypt with nonexistent keypair ID → must fail (404)`);
+    const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
+    const session = await makeSession(ctx, { keypairId: fakeKeypairId });
+    const result = await decryptAsBob(ctx, session);
+    assert(!result.isOk, `Expected decrypt to fail with nonexistent keypairId, but it succeeded`);
+    console.log(`  ✓ decrypt with nonexistent keypairId correctly rejected (${result.errValue})`);
+}
+
+async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
+    step('B', `Negative: decrypt by Charlie (Ed25519, not allowlisted) → must fail (403)`);
+    const session = await makeSession(ctx);
+    const msg = await session.getRequestToSign();
+    const result = await session.decryptWithProof({
+        userAddr: ctx.charlie.accountAddress,
+        publicKey: ctx.charlie.publicKey,
+        signature: ctx.charlie.sign(msg),
+    });
+    assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
+    console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
+}
+
+async function stepC_WrongDomain(ctx: Ctx): Promise<void> {
+    step('C', `Negative: Bob (${BOB_LABEL}) decrypt with wrong domain → must fail (403)`);
+    const session = await makeSession(ctx, { domain: ctx.wrongDomain });
+    const result = await decryptAsBob(ctx, session);
+    assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
+    console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
+}
+
+async function stepD_HappyPath(ctx: Ctx): Promise<void> {
+    step('D', `Positive: Bob (${BOB_LABEL}, allowlisted) decrypts with correct inputs → must succeed`);
+    const session = await makeSession(ctx);
+    const result = await decryptAsBob(ctx, session);
+    assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
+    assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
+    console.log(`  ✓ Bob (${BOB_LABEL}) decrypted successfully`);
+}
+
+async function stepE_MauledWebAuthnSig(ctx: Ctx): Promise<void> {
+    step('E', `Negative: Bob (${BOB_LABEL}) with mauled WebAuthn r||s LSB → must fail`);
+    const session = await makeSession(ctx);
+    const result = await decryptAsBob(ctx, session, mauleWebAuthnPosition);
+    assert(!result.isOk, `Expected decrypt to fail with mauled WebAuthn signature, but it succeeded`);
+    console.log(`  ✓ decrypt with mauled WebAuthn signature correctly rejected (${result.errValue})`);
 }
 
 async function main(): Promise<void> {
@@ -152,21 +319,22 @@ async function main(): Promise<void> {
         workers = setup.ace.workers;
         const { actors, ace, keypairIds: [keypair0Id] } = setup;
         const bob = await buildAndFundBob();
+        console.log(`  Bob (${BOB_LABEL}): ${bob.accountAddress.toStringLong()}`);
         const { correctDomain, pingCiph } = await setupAccessControlAppAndEncryptPing(
             actors, bob.accountAddress, ace.aceDeployment, ace.adminAccountAddress, keypair0Id,
         );
-        const ctx: NonKeylessAccessFailureContext = {
+        const ctx: Ctx = {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
             moduleName: 'access_control', functionName: 'check_permission',
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
-            pingCiph, bob, bobLabel: 'MultiKey<2-of-3 Ed25519 + Keyless>', charlie: actors.charlie,
+            pingCiph, bob, charlie: actors.charlie,
         };
-        await decryptWithBadKeypairID(ctx);
-        await decryptAsNonAllowlistedUser(ctx);
-        await decryptWithWrongDomain(ctx);
-        await decryptWithCorrectInputs(ctx);
-        await decryptWithMauledSignature(ctx, mauleMultiKeySignature);
-        console.log('\n✅ All MultiKey<2-of-3 Ed25519 + Keyless> access-control enforcement tests passed!\n');
+        await stepA_BadKeypairID(ctx);
+        await stepB_NonAllowlistedCharlie(ctx);
+        await stepC_WrongDomain(ctx);
+        await stepD_HappyPath(ctx);
+        await stepE_MauledWebAuthnSig(ctx);
+        console.log(`\n✅ All ${BOB_LABEL} access-control enforcement tests passed!\n`);
     } catch (err) {
         console.error('\n❌ Test failed:', err);
         exitCode = 1;

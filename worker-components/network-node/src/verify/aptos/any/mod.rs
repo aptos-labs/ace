@@ -184,12 +184,12 @@ pub(super) async fn verify(
 /// in the MultiKey flow they happen once at the wrapper level
 /// ([`super::multi_key::verify`]) rather than per position.
 ///
-/// **Phase 1**: WebAuthn positions (`AnyPublicKey::Secp256r1Ecdsa` paired
-/// with `AnySignature::WebAuthn`) are explicitly rejected. The TS-SDK's
-/// `MultiKeyAccount.sign(message)` API has no path to coordinate a
-/// passkey ceremony against the ACE-derived challenge, so mixed MultiKey
-/// + WebAuthn isn't a real flow yet. Phase 2 will add that producer
-/// wiring and re-enable this arm.
+/// All five `AnyPublicKey`/`AnySignature` pairings (Ed25519, Secp256k1Ecdsa,
+/// Keyless, FederatedKeyless, and Secp256r1Ecdsa+WebAuthn) are supported as
+/// MultiKey positions. The WebAuthn arm binds to the request payload via
+/// `clientDataJSON.challenge` independently of `proof.full_message`, so it
+/// composes cleanly with the other arms that share one `proof.full_message`
+/// at the MultiKey level.
 pub(super) async fn verify_position(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -229,17 +229,36 @@ pub(super) async fn verify_position(
             }
             secp256k1::verify_signature_only(req, proof, &vk, &sig).await
         }
+        (AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes), AnySignatureInner::WebAuthn(assertion)) => {
+            if pk_bytes.len() != 65 {
+                return Err(anyhow!(
+                    "multi_key: Secp256r1 pk must be 65 bytes (SEC1 uncompressed), got {}",
+                    pk_bytes.len()
+                ));
+            }
+            let AssertionSignature::Secp256r1Ecdsa(sig_bytes) = &assertion.signature;
+            if sig_bytes.len() != 64 {
+                return Err(anyhow!(
+                    "multi_key: Secp256r1 sig must be 64 bytes, got {}",
+                    sig_bytes.len()
+                ));
+            }
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
+                .map_err(|e| anyhow!("multi_key: invalid Secp256r1 pubkey: {}", e))?;
+            let sig = p256::ecdsa::Signature::from_slice(sig_bytes)
+                .map_err(|e| anyhow!("multi_key: invalid Secp256r1 signature: {}", e))?;
+            if sig.normalize_s().is_some() {
+                return Err(anyhow!(
+                    "multi_key: Secp256r1 signature has high s (malleable); only low-s normalized accepted"
+                ));
+            }
+            secp256r1::verify_signature_only(req, proof, &vk, &sig, assertion).await
+        }
         (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
             super::keyless::verify_signature_only(req, contract, proof, pk, sig, chain_rpc).await
         }
         (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
             super::federated_keyless::verify_signature_only(req, contract, proof, fpk, sig, chain_rpc).await
-        }
-        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_)) => {
-            Err(anyhow!(
-                "multi_key: WebAuthn position (AnyPublicKey::Secp256r1Ecdsa + AnySignature::WebAuthn) \
-                 is not yet supported (Phase 2)"
-            ))
         }
         (pk, sig) => Err(anyhow!(
             "multi_key: invalid pk/sig pairing at signing position ({} pk vs {} sig)",

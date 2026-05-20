@@ -6,7 +6,6 @@ import * as pke from "../../pke";
 import {
     AceDeployment,
     ContractID,
-    CustomFlowPayload,
     CustomFlowProof,
     CustomFlowRequest,
     fetchNetworkState,
@@ -38,13 +37,11 @@ export async function decrypt({
     const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
     const proof = CustomFlowProof.createAptos(payload);
     const customRequest = new CustomFlowRequest({
-        payload: new CustomFlowPayload({
-            keypairId,
-            epoch: networkState.epoch,
-            contractId,
-            label,
-            encPk: callerEncPk,
-        }),
+        keypairId,
+        epoch: networkState.epoch,
+        contractId,
+        label,
+        encPk: callerEncPk,
         proof,
     });
 

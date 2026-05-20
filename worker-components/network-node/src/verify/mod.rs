@@ -84,22 +84,13 @@ pub struct BasicFlowRequest {
     pub proof: ProofOfPermission,
 }
 
-/// The 5 fields that bind a custom-flow request to its application context.
-/// Parallel to [`DecryptionRequestPayload`] but for the custom-flow wire —
-/// `label` and `enc_pk` replace `domain` and `ephemeral_enc_key` respectively
-/// since custom-flow ciphertexts have a different application contract.
 #[derive(Serialize, Deserialize)]
-pub struct CustomFlowPayload {
+pub struct CustomFlowRequest {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
     pub contract_id: ContractId,
     pub label: Vec<u8>,
     pub enc_pk: EncryptionKey,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CustomFlowRequest {
-    pub payload: CustomFlowPayload,
     pub proof: CustomFlowProof,
 }
 
@@ -114,7 +105,11 @@ pub struct BasicFlowRequestV2 {
 
 #[derive(Serialize, Deserialize)]
 pub struct CustomFlowRequestV2 {
-    pub payload: CustomFlowPayload,
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub contract_id: ContractId,
+    pub label: Vec<u8>,
+    pub enc_pk: EncryptionKey,
     pub proof: CustomFlowProof,
     pub tibe_scheme: u8,
 }
@@ -226,12 +221,12 @@ pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) ->
 
 /// Verify a custom-flow request: dispatches to the chain-specific ACL check.
 pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let enc_pk_bytes = bcs::to_bytes(&req.payload.enc_pk)
+    let enc_pk_bytes = bcs::to_bytes(&req.enc_pk)
         .map_err(|e| anyhow!("verify_custom: serialize enc_pk: {}", e))?;
 
-    match (&req.payload.contract_id, &req.proof) {
+    match (&req.contract_id, &req.proof) {
         (ContractId::Aptos(contract), CustomFlowProof::Aptos(payload)) => {
-            aptos::verify_custom_aptos(contract, &req.payload.label, &enc_pk_bytes, payload, chain_rpc)
+            aptos::verify_custom_aptos(contract, &req.label, &enc_pk_bytes, payload, chain_rpc)
                 .await
         }
         (ContractId::Solana(contract), CustomFlowProof::Solana(proof)) => {

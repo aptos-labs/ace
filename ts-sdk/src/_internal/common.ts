@@ -417,34 +417,38 @@ export class CustomFlowProof {
     }
 }
 
-// ── Custom-flow payload + envelope ────────────────────────────────────────────
+// ── Custom-flow request ───────────────────────────────────────────────────────
 //
-// Parallel to [`DecryptionRequestPayload`] (basic flow) but for the custom-flow
-// wire — `label` and `encPk` replace `domain` and `ephemeralEncKey` since
-// custom-flow ciphertexts have a different application contract. Mirrors the
-// Rust types `CustomFlowPayload` / `CustomFlowRequest` / `CustomFlowRequestV2`
-// in `worker-components/network-node/src/verify/mod.rs` — same field order,
-// BCS-identical wire shape.
+// Unlike the basic flow, the user does not sign anything — the proof is an
+// opaque `CustomFlowProof` payload (typically a Groth16 ZK proof) that the
+// dapp's `check_acl` view function validates. No "bytes the wallet signs"
+// concept here, so no nested payload type; the 6 fields sit flat in the
+// envelope, mirroring `CustomFlowRequest` in
+// `worker-components/network-node/src/verify/mod.rs`. V2 adds a trailing
+// `tibeScheme` byte.
 
-export class CustomFlowPayload {
+export class CustomFlowRequest {
     keypairId: AccountAddress;
     epoch: number;
     contractId: ContractID;
     label: Uint8Array;
     encPk: pke.EncryptionKey;
+    proof: CustomFlowProof;
 
-    constructor({keypairId, epoch, contractId, label, encPk}: {
+    constructor({keypairId, epoch, contractId, label, encPk, proof}: {
         keypairId: AccountAddress,
         epoch: number,
         contractId: ContractID,
         label: Uint8Array,
         encPk: pke.EncryptionKey,
+        proof: CustomFlowProof,
     }) {
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
         this.label = label;
         this.encPk = encPk;
+        this.proof = proof;
     }
 
     serialize(s: Serializer): void {
@@ -453,26 +457,6 @@ export class CustomFlowPayload {
         this.contractId.serialize(s);
         s.serializeBytes(this.label);
         this.encPk.serialize(s);
-    }
-
-    toBytes(): Uint8Array {
-        const s = new Serializer();
-        this.serialize(s);
-        return s.toUint8Array();
-    }
-}
-
-export class CustomFlowRequest {
-    payload: CustomFlowPayload;
-    proof: CustomFlowProof;
-
-    constructor(args: { payload: CustomFlowPayload, proof: CustomFlowProof }) {
-        this.payload = args.payload;
-        this.proof = args.proof;
-    }
-
-    serialize(s: Serializer): void {
-        this.payload.serialize(s);
         this.proof.serialize(s);
     }
 
@@ -484,19 +468,39 @@ export class CustomFlowRequest {
 }
 
 export class CustomFlowRequestV2 {
-    payload: CustomFlowPayload;
+    keypairId: AccountAddress;
+    epoch: number;
+    contractId: ContractID;
+    label: Uint8Array;
+    encPk: pke.EncryptionKey;
     proof: CustomFlowProof;
     /** Client-asserted t-IBE scheme the share should be formatted for. */
     tibeScheme: number;
 
-    constructor(args: { payload: CustomFlowPayload, proof: CustomFlowProof, tibeScheme: number }) {
-        this.payload = args.payload;
+    constructor(args: {
+        keypairId: AccountAddress,
+        epoch: number,
+        contractId: ContractID,
+        label: Uint8Array,
+        encPk: pke.EncryptionKey,
+        proof: CustomFlowProof,
+        tibeScheme: number,
+    }) {
+        this.keypairId = args.keypairId;
+        this.epoch = args.epoch;
+        this.contractId = args.contractId;
+        this.label = args.label;
+        this.encPk = args.encPk;
         this.proof = args.proof;
         this.tibeScheme = args.tibeScheme;
     }
 
     serialize(s: Serializer): void {
-        this.payload.serialize(s);
+        this.keypairId.serialize(s);
+        s.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(s);
+        s.serializeBytes(this.label);
+        this.encPk.serialize(s);
         this.proof.serialize(s);
         s.serializeU8(this.tibeScheme);
     }
@@ -628,7 +632,11 @@ export class RequestForDecryptionKey {
         return new RequestForDecryptionKey(
             RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2,
             new CustomFlowRequestV2({
-                payload: customRequest.payload,
+                keypairId: customRequest.keypairId,
+                epoch: customRequest.epoch,
+                contractId: customRequest.contractId,
+                label: customRequest.label,
+                encPk: customRequest.encPk,
                 proof: customRequest.proof,
                 tibeScheme,
             }),
@@ -894,9 +902,9 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
-                keypairId: customRequest.payload.keypairId,
-                contractId: customRequest.payload.contractId,
-                domain: customRequest.payload.label,
+                keypairId: customRequest.keypairId,
+                contractId: customRequest.contractId,
+                domain: customRequest.label,
             });
             const fddBytes = fdd.toBytes();
 
@@ -923,7 +931,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                         .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
                     return { endpoint: endpoint as string, nodeEncKey };
                 })),
-                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.payload.keypairId),
+                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {

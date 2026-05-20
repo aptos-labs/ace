@@ -347,9 +347,9 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         }
         RequestForDecryptionKey::Custom(req) => {
             ctx.flow = Some(Flow::Custom);
-            ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
-            ctx.epoch = Some(req.payload.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.enc_pk);
+            ctx.keypair_short = Some(short_hex(&req.keypair_id));
+            ctx.epoch = Some(req.epoch);
+            ctx.enc_pk_hex = enc_pk_to_hex(&req.enc_pk);
             handle_custom_flow(state, &snapshot, req, None, ctx).await
         }
         RequestForDecryptionKey::BasicV2(req) => {
@@ -362,10 +362,17 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         }
         RequestForDecryptionKey::CustomV2(req) => {
             ctx.flow = Some(Flow::Custom);
-            ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
-            ctx.epoch = Some(req.payload.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.enc_pk);
-            let v1 = CustomFlowRequest { payload: req.payload, proof: req.proof };
+            ctx.keypair_short = Some(short_hex(&req.keypair_id));
+            ctx.epoch = Some(req.epoch);
+            ctx.enc_pk_hex = enc_pk_to_hex(&req.enc_pk);
+            let v1 = CustomFlowRequest {
+                keypair_id: req.keypair_id,
+                epoch: req.epoch,
+                contract_id: req.contract_id,
+                label: req.label,
+                enc_pk: req.enc_pk,
+                proof: req.proof,
+            };
             handle_custom_flow(state, &snapshot, v1, Some(req.tibe_scheme), ctx).await
         }
     }
@@ -429,15 +436,15 @@ async fn handle_custom_flow(
         };
     }
     // Custom-flow identity uses `label` in place of `domain`; ContractId is unchanged.
-    let identity = verify::identity_bytes(&req.payload.keypair_id, &req.payload.contract_id, &req.payload.label);
-    let keypair_id = keypair_id_str(&req.payload.keypair_id);
+    let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.label);
+    let keypair_id = keypair_id_str(&req.keypair_id);
     let extract_start = Instant::now();
     let outcome = extract_and_respond(
         snapshot,
         &keypair_id,
-        req.payload.epoch,
+        req.epoch,
         &identity,
-        &req.payload.enc_pk,
+        &req.enc_pk,
         client_tibe_scheme,
     );
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);

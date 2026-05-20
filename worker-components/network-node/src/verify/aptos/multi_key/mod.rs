@@ -125,15 +125,21 @@ pub(crate) fn bitmap_iter_ones(bitmap: &[u8]) -> impl Iterator<Item = usize> + '
 
 /// Cheap synchronous checks that reject malformed MultiKey wire payloads
 /// before any RPC. Mirrors aptos-core's `MultiKeyAuthenticator::new` /
-/// `verify` invariants and the TS-SDK's `MultiKey.verifySignatureAsync`
-/// strict-equality checks:
+/// `verify` invariants (`types/src/transaction/authenticator.rs`):
 ///
-///   1. `signatures_required >= 1`
-///   2. `1 <= public_keys.len() <= 32`
-///   3. `bitmap.len() <= 4` (max bytes for 32 bits)
-///   4. `popcount(bitmap) == signatures.len()`
-///   5. `signatures.len() == signatures_required` (strict equality, per TS-SDK)
-///   6. Every set bit position is < `public_keys.len()`
+///   1. `signatures_required >= 1`                       — MultiKey::new
+///   2. `1 <= public_keys.len() <= MAX_NUM_OF_SIGS (32)` — MultiKey::new
+///   3. `public_keys.len() >= signatures_required`       — MultiKey::new
+///   4. `bitmap.len() <= 4` (max bytes for 32 bits)
+///   5. `popcount(bitmap) == signatures.len()`           — verify
+///   6. `signatures.len() >= signatures_required`        — verify
+///   7. Every set bit position is `< public_keys.len()`  — verify
+///
+/// Note rule 6 is `>=`, not `==`. aptos-core accepts over-signing (more
+/// signatures than the threshold) as long as every supplied signature
+/// verifies; this matches that policy. Earlier versions of this file
+/// enforced strict equality to match the TS-SDK producer, but consensus
+/// reference (aptos-core) is the authoritative spec.
 fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
     if mk.signatures_required == 0 {
         return Err(anyhow!("multi_key: signatures_required must be >= 1"));
@@ -146,6 +152,13 @@ fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
             "multi_key: public_keys.len() {} exceeds max {}",
             mk.public_keys.len(),
             MAX_NUM_OF_SIGS
+        ));
+    }
+    if mk.public_keys.len() < mk.signatures_required as usize {
+        return Err(anyhow!(
+            "multi_key: public_keys.len() {} < signatures_required {}",
+            mk.public_keys.len(),
+            mk.signatures_required
         ));
     }
     if ms.bitmap.len() > MAX_BITMAP_BYTES {
@@ -163,9 +176,9 @@ fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
             ms.signatures.len()
         ));
     }
-    if ms.signatures.len() != mk.signatures_required as usize {
+    if ms.signatures.len() < mk.signatures_required as usize {
         return Err(anyhow!(
-            "multi_key: signatures.len() {} != signatures_required {}",
+            "multi_key: signatures.len() {} < signatures_required {}",
             ms.signatures.len(),
             mk.signatures_required
         ));
@@ -363,8 +376,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_signatures_required_mismatch() {
-        // signatures.len() = 2 but signatures_required = 3.
+    fn validate_rejects_too_few_signatures() {
+        // signatures.len() = 2 but signatures_required = 3 — under threshold.
         let mk = MultiKeyInner {
             public_keys: vec![ed25519_pk(), ed25519_pk(), ed25519_pk()],
             signatures_required: 3,
@@ -372,6 +385,38 @@ mod tests {
         let ms = MultiKeySigInner {
             signatures: vec![ed25519_sig(), ed25519_sig()],
             bitmap: vec![0xC0], // bits 0,1 — popcount=2
+        };
+        let err = validate(&mk, &ms).unwrap_err().to_string();
+        assert!(err.contains("signatures_required"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_accepts_oversigning() {
+        // Threshold = 2 but 3 signatures supplied at positions {0,1,2}. aptos-core
+        // accepts this as long as every signature verifies (and downstream sig
+        // verify will catch invalid ones).
+        let mk = MultiKeyInner {
+            public_keys: vec![ed25519_pk(), ed25519_pk(), ed25519_pk()],
+            signatures_required: 2,
+        };
+        let ms = MultiKeySigInner {
+            signatures: vec![ed25519_sig(), ed25519_sig(), ed25519_sig()],
+            bitmap: vec![0xE0], // 0b1110_0000 — bits 0,1,2
+        };
+        validate(&mk, &ms).expect("3-of-2 over-signing should validate");
+    }
+
+    #[test]
+    fn validate_rejects_threshold_exceeds_pks() {
+        // Threshold > public_keys.len() — MultiKey itself is malformed
+        // (aptos-core's MultiKey::new rejects this with the same message).
+        let mk = MultiKeyInner {
+            public_keys: vec![ed25519_pk(), ed25519_pk()],
+            signatures_required: 3,
+        };
+        let ms = MultiKeySigInner {
+            signatures: vec![ed25519_sig(), ed25519_sig()],
+            bitmap: vec![0xC0],
         };
         let err = validate(&mk, &ms).unwrap_err().to_string();
         assert!(err.contains("signatures_required"), "got: {}", err);

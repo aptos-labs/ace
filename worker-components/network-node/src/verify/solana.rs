@@ -52,10 +52,10 @@ pub(super) async fn verify_solana(
 
     // 1. Structural validation: instruction count, program ID, full_request_bytes in data.
     let expected = ace_anchor_kit::build_full_request_bytes(
-        &req.keypair_id,
-        req.epoch,
+        &req.payload.keypair_id,
+        req.payload.epoch,
         ephemeral_ek_bytes,
-        &req.domain,
+        &req.payload.domain,
     );
     validate_txn(&proof.txn_bytes, &expected_program_id, &expected, is_versioned)?;
 

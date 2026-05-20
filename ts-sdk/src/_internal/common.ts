@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
+import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
@@ -341,6 +342,31 @@ export class DecryptionRequestPayload {
         const pad = '  '.repeat(indent);
         return `${pad}ACE Decryption Request\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}epoch: ${this.epoch}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}\n${pad}ephemeralEncKey: ${this.ephemeralEncKey.toHex()}`;
     }
+
+    /**
+     * Returns the 32-byte WebAuthn challenge bytes for this payload:
+     *
+     *   `SHA3-256( SHA3-256(b"ACE::DecryptionRequestPayload") || BCS(payload) )`
+     *
+     * Mirrors aptos-core's `CryptoHasher` pattern (`SHA3-256(b"APTOS::" || TypeName)`
+     * seed, then `SHA3-256(seed || BCS(value))` for the final digest) — see
+     * `aptos-crypto/src/hash.rs::prefixed_hash`. The worker-side verifier
+     * (`worker-components/network-node/src/verify/aptos/any/secp256r1.rs`)
+     * recomputes the same value to bind `clientDataJSON.challenge` to the
+     * application-layer request.
+     *
+     * A wallet base64url-encodes the result and passes it as the `challenge`
+     * field to `navigator.credentials.get(...)`. Only used by the
+     * `AnyPublicKey<Secp256r1Ecdsa>+AnySignature<WebAuthn>` (passkeys) path.
+     */
+    toWebAuthnChallenge(): Uint8Array {
+        const seed = sha3_256(new TextEncoder().encode("ACE::DecryptionRequestPayload"));
+        const body = this.toBytes();
+        const preimage = new Uint8Array(seed.length + body.length);
+        preimage.set(seed, 0);
+        preimage.set(body, seed.length);
+        return sha3_256(preimage);
+    }
 }
 
 // ── Custom-flow proof ─────────────────────────────────────────────────────────
@@ -392,6 +418,14 @@ export class CustomFlowProof {
 }
 
 // ── Custom-flow request ───────────────────────────────────────────────────────
+//
+// Unlike the basic flow, the user does not sign anything — the proof is an
+// opaque `CustomFlowProof` payload (typically a Groth16 ZK proof) that the
+// dapp's `check_acl` view function validates. No "bytes the wallet signs"
+// concept here, so no nested payload type; the 6 fields sit flat in the
+// envelope, mirroring `CustomFlowRequest` in
+// `worker-components/network-node/src/verify/mod.rs`. V2 adds a trailing
+// `tibeScheme` byte.
 
 export class CustomFlowRequest {
     keypairId: AccountAddress;
@@ -417,13 +451,114 @@ export class CustomFlowRequest {
         this.proof = proof;
     }
 
-    serialize(serializer: Serializer): void {
-        this.keypairId.serialize(serializer);
-        serializer.serializeU64(BigInt(this.epoch));
-        this.contractId.serialize(serializer);
-        serializer.serializeBytes(this.label);
-        this.encPk.serialize(serializer);
-        this.proof.serialize(serializer);
+    serialize(s: Serializer): void {
+        this.keypairId.serialize(s);
+        s.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(s);
+        s.serializeBytes(this.label);
+        this.encPk.serialize(s);
+        this.proof.serialize(s);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export class CustomFlowRequestV2 {
+    keypairId: AccountAddress;
+    epoch: number;
+    contractId: ContractID;
+    label: Uint8Array;
+    encPk: pke.EncryptionKey;
+    proof: CustomFlowProof;
+    /** Client-asserted t-IBE scheme the share should be formatted for. */
+    tibeScheme: number;
+
+    constructor(args: {
+        keypairId: AccountAddress,
+        epoch: number,
+        contractId: ContractID,
+        label: Uint8Array,
+        encPk: pke.EncryptionKey,
+        proof: CustomFlowProof,
+        tibeScheme: number,
+    }) {
+        this.keypairId = args.keypairId;
+        this.epoch = args.epoch;
+        this.contractId = args.contractId;
+        this.label = args.label;
+        this.encPk = args.encPk;
+        this.proof = args.proof;
+        this.tibeScheme = args.tibeScheme;
+    }
+
+    serialize(s: Serializer): void {
+        this.keypairId.serialize(s);
+        s.serializeU64(BigInt(this.epoch));
+        this.contractId.serialize(s);
+        s.serializeBytes(this.label);
+        this.encPk.serialize(s);
+        this.proof.serialize(s);
+        s.serializeU8(this.tibeScheme);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+// ── Basic-flow envelope ───────────────────────────────────────────────────────
+//
+// Named handle for the body of a `RequestForDecryptionKey::Basic` /
+// `RequestForDecryptionKey::BasicV2` arm. Mirrors the worker-side Rust types
+// `BasicFlowRequest` and `BasicFlowRequestV2` in `worker-components/network-node/
+// src/verify/mod.rs` — same field order, BCS-identical wire shape. V1 and V2
+// share the inner `DecryptionRequestPayload` + `ProofOfPermission`; V2 also
+// carries a trailing `tibeScheme` byte.
+
+export class BasicFlowRequest {
+    request: DecryptionRequestPayload;
+    proof: ProofOfPermission;
+
+    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission }) {
+        this.request = args.request;
+        this.proof = args.proof;
+    }
+
+    serialize(s: Serializer): void {
+        this.request.serialize(s);
+        this.proof.serialize(s);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export class BasicFlowRequestV2 {
+    request: DecryptionRequestPayload;
+    proof: ProofOfPermission;
+    /** Client-asserted t-IBE scheme the share should be formatted for. The
+     *  worker handler validates this against the share's group_scheme. */
+    tibeScheme: number;
+
+    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission, tibeScheme: number }) {
+        this.request = args.request;
+        this.proof = args.proof;
+        this.tibeScheme = args.tibeScheme;
+    }
+
+    serialize(s: Serializer): void {
+        this.request.serialize(s);
+        this.proof.serialize(s);
+        s.serializeU8(this.tibeScheme);
     }
 
     toBytes(): Uint8Array {
@@ -452,22 +587,31 @@ export class RequestForDecryptionKey {
     static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
 
     scheme: number;
-    private _basicPayload?: { request: DecryptionRequestPayload; proof: ProofOfPermission };
-    private _customPayload?: CustomFlowRequest;
-    private _tibeScheme?: number;
+    /** The scheme-specific request body. `scheme` discriminates which class
+     *  instance lives here; all four envelope types share a `serialize(s)`
+     *  method so the outer enum just delegates polymorphically. */
+    private inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2;
 
-    private constructor(scheme: number) { this.scheme = scheme; }
+    private constructor(
+        scheme: number,
+        inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2,
+    ) {
+        this.scheme = scheme;
+        this.inner = inner;
+    }
 
     static newBasicFlow(request: DecryptionRequestPayload, proof: ProofOfPermission): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW);
-        r._basicPayload = { request, proof };
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_BASIC_FLOW,
+            new BasicFlowRequest({ request, proof }),
+        );
     }
 
     static newCustomFlow(customRequest: CustomFlowRequest): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW);
-        r._customPayload = customRequest;
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW,
+            customRequest,
+        );
     }
 
     static newBasicFlowV2(
@@ -475,44 +619,33 @@ export class RequestForDecryptionKey {
         proof: ProofOfPermission,
         tibeScheme: number,
     ): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2);
-        r._basicPayload = { request, proof };
-        r._tibeScheme = tibeScheme;
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2,
+            new BasicFlowRequestV2({ request, proof, tibeScheme }),
+        );
     }
 
     static newCustomFlowV2(
         customRequest: CustomFlowRequest,
         tibeScheme: number,
     ): RequestForDecryptionKey {
-        const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2);
-        r._customPayload = customRequest;
-        r._tibeScheme = tibeScheme;
-        return r;
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2,
+            new CustomFlowRequestV2({
+                keypairId: customRequest.keypairId,
+                epoch: customRequest.epoch,
+                contractId: customRequest.contractId,
+                label: customRequest.label,
+                encPk: customRequest.encPk,
+                proof: customRequest.proof,
+                tibeScheme,
+            }),
+        );
     }
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        switch (this.scheme) {
-            case RequestForDecryptionKey.SCHEME_BASIC_FLOW:
-                this._basicPayload!.request.serialize(serializer);
-                this._basicPayload!.proof.serialize(serializer);
-                return;
-            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW:
-                this._customPayload!.serialize(serializer);
-                return;
-            case RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2:
-                this._basicPayload!.request.serialize(serializer);
-                this._basicPayload!.proof.serialize(serializer);
-                serializer.serializeU8(this._tibeScheme!);
-                return;
-            case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2:
-                this._customPayload!.serialize(serializer);
-                serializer.serializeU8(this._tibeScheme!);
-                return;
-            default:
-                throw new Error(`RequestForDecryptionKey: unknown scheme ${this.scheme}`);
-        }
+        this.inner.serialize(serializer);
     }
 
     toBytes(): Uint8Array {

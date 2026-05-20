@@ -162,6 +162,12 @@ importers:
       '@aptos-labs/ts-sdk':
         specifier: ^5.1.1
         version: 5.2.1(got@11.8.6)
+      '@noble/curves':
+        specifier: ^1.8.1
+        version: 1.9.7
+      '@noble/hashes':
+        specifier: ^1.7.1
+        version: 1.8.0
       tsx:
         specifier: ^4.6.0
         version: 4.21.0

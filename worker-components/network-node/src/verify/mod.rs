@@ -64,13 +64,23 @@ pub enum RequestForDecryptionKey {
     CustomV2(CustomFlowRequestV2),
 }
 
+/// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
+/// TS-side `DecryptionRequestPayload` class — same field order, BCS-identical
+/// wire shape. The `proof` lives one level up in [`BasicFlowRequest`] /
+/// [`BasicFlowRequestV2`], not here, because the proof is *about* this
+/// payload (it carries a signature over it).
 #[derive(Serialize, Deserialize)]
-pub struct BasicFlowRequest {
+pub struct DecryptionRequestPayload {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
     pub contract_id: ContractId,
     pub domain: Vec<u8>,
     pub ephemeral_enc_key: EncryptionKey,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BasicFlowRequest {
+    pub payload: DecryptionRequestPayload,
     pub proof: ProofOfPermission,
 }
 
@@ -86,11 +96,7 @@ pub struct CustomFlowRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct BasicFlowRequestV2 {
-    pub keypair_id: [u8; 32],
-    pub epoch: u64,
-    pub contract_id: ContractId,
-    pub domain: Vec<u8>,
-    pub ephemeral_enc_key: EncryptionKey,
+    pub payload: DecryptionRequestPayload,
     pub proof: ProofOfPermission,
     /// Client-asserted t-IBE scheme the share should be formatted for.
     /// The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme`.
@@ -155,6 +161,29 @@ impl CustomFlowProof {
     }
 }
 
+impl DecryptionRequestPayload {
+    /// 32-byte WebAuthn challenge bytes for this payload — mirrors the TS-side
+    /// `DecryptionRequestPayload.toWebAuthnChallenge()`:
+    ///
+    ///   `SHA3-256( SHA3-256(b"ACE::DecryptionRequestPayload") || BCS(self) )`
+    ///
+    /// Used by the `AnyPublicKey<Secp256r1Ecdsa>+AnySignature<WebAuthn>`
+    /// (passkeys) verifier to recompute what `clientDataJSON.challenge`
+    /// should base64url-decode to. Pattern mirrors aptos-core's
+    /// `CryptoHasher` derive — `SHA3-256(b"APTOS::" || TypeName)` seed,
+    /// then `SHA3-256(seed || BCS(value))` for the final digest.
+    pub fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        use sha3::{Digest, Sha3_256};
+        let seed: [u8; 32] = Sha3_256::digest(b"ACE::DecryptionRequestPayload").into();
+        let body = bcs::to_bytes(self)
+            .map_err(|e| anyhow!("DecryptionRequestPayload::to_webauthn_challenge: BCS encode: {}", e))?;
+        let mut h = Sha3_256::new();
+        h.update(seed);
+        h.update(&body);
+        Ok(h.finalize().into())
+    }
+}
+
 // ── Identity bytes ────────────────────────────────────────────────────────────
 
 /// IBE identity = `keypair_id (32B raw) ++ BCS(contract_id) ++ BCS(domain)`. This is the
@@ -172,10 +201,10 @@ pub fn identity_bytes(keypair_id: &[u8; 32], contract_id: &ContractId, domain: &
 /// Verify a basic-flow request: checks the proof-of-permission and binds it to the
 /// keypair_id, epoch, contract_id, domain, and ephemeral encryption key in `req`.
 pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let ephemeral_ek_bytes = bcs::to_bytes(&req.ephemeral_enc_key)
+    let ephemeral_ek_bytes = bcs::to_bytes(&req.payload.ephemeral_enc_key)
         .map_err(|e| anyhow!("verify_basic: serialize ephemeral_enc_key: {}", e))?;
 
-    match (&req.contract_id, &req.proof) {
+    match (&req.payload.contract_id, &req.proof) {
         (ContractId::Aptos(contract), ProofOfPermission::Aptos(proof)) => {
             aptos::verify_aptos(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
         }

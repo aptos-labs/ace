@@ -342,15 +342,15 @@ pub(super) fn pretty_message(
 ) -> String {
     // moduleAddr.toStringLong() = "0x" + 64 lowercase hex chars (32 bytes)
     let module_addr = format!("0x{}", hex::encode(contract.module_addr));
-    let domain_hex = format!("0x{}", hex::encode(&req.domain));
+    let domain_hex = format!("0x{}", hex::encode(&req.payload.domain));
     // `pke.EncryptionKey.toHex()` = bytesToHex(toBytes()); does NOT prepend "0x".
     let ephemeral_ek_hex = hex::encode(ephemeral_ek_bytes);
-    let keypair_id_hex = format!("0x{}", hex::encode(req.keypair_id));
+    let keypair_id_hex = format!("0x{}", hex::encode(req.payload.keypair_id));
 
     format!(
         "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}\nephemeralEncKey: {}",
         keypair_id_hex,
-        req.epoch,
+        req.payload.epoch,
         contract.chain_id,
         module_addr,
         contract.module_name,

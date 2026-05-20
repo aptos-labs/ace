@@ -16,11 +16,8 @@
 //! (`Ed25519=0, Secp256k1Ecdsa=1, Secp256r1Ecdsa=2, Keyless=3,
 //! FederatedKeyless=4`) — see [the aptos-core enum][permalink].
 //!
-//! Variants ship one at a time; this build supports `Ed25519`, `Secp256k1Ecdsa`,
-//! `Keyless`, and `FederatedKeyless`. The remaining variant
-//! (`Secp256r1Ecdsa`/WebAuthn) is present in the enum (so wire-format parsing
-//! covers all the tags aptos-core emits) but the dispatch returns a "not yet
-//! supported" error until its PR lands.
+//! All five variants are now wired up: `Ed25519`, `Secp256k1Ecdsa`,
+//! `Secp256r1Ecdsa`/WebAuthn (passkeys), `Keyless`, and `FederatedKeyless`.
 //!
 //! [permalink]: https://github.com/aptos-labs/aptos-core/blob/f8ad6eab698cfb638e56fa8afd92a48642efad12/types/src/transaction/authenticator.rs#L1452-L1473
 
@@ -28,6 +25,7 @@ pub mod ed25519;
 pub mod federated_keyless;
 pub mod keyless;
 pub mod secp256k1;
+pub mod secp256r1;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -143,9 +141,9 @@ pub(crate) fn authentication_key(pk: &AnyPublicKeyInner) -> [u8; 32] {
 }
 
 /// Inner dispatch for `pk_scheme = sig_scheme = 1`. Matches on the
-/// `(AnyPublicKey, AnySignature)` variant pair and delegates. Variants whose
-/// verifier has not been wired up yet return an "unsupported" error so the
-/// worker fails closed rather than silently accepting an unverified proof.
+/// `(AnyPublicKey, AnySignature)` variant pair and delegates. Cross-pairings
+/// (e.g. `Secp256k1Ecdsa` pk + `Ed25519` sig) return an error so the worker
+/// fails closed rather than silently accepting an unverified proof.
 pub(super) async fn verify(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
@@ -197,11 +195,18 @@ pub(super) async fn verify(
             )
             .await
         }
-        (AnyPublicKeyInner::Secp256r1Ecdsa(_), AnySignatureInner::WebAuthn(_)) => Err(anyhow!(
-            "verify_aptos_any: {} pk / {} sig is a valid pairing but not yet supported in this build",
-            any_pk.tag_name(),
-            any_sig.tag_name(),
-        )),
+        (AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes), AnySignatureInner::WebAuthn(assertion)) => {
+            secp256r1::verify(
+                req,
+                contract,
+                proof,
+                any_pk,
+                pk_bytes,
+                assertion,
+                chain_rpc,
+            )
+            .await
+        }
         (pk, sig) => Err(anyhow!(
             "verify_aptos_any: invalid pk/sig pairing ({} pk vs {} sig)",
             pk.tag_name(),

@@ -69,7 +69,7 @@ pub(super) async fn verify(
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, any_pk, rpc),
-        check_permission(contract, &req.domain, proof, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;

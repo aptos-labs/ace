@@ -71,7 +71,7 @@ pub(super) async fn verify(
         fetch_groth16_vk(rpc),
         fetch_configuration(rpc),
         check_auth_key(proof, fpk, rpc),
-        check_permission(contract, &req.domain, proof, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;

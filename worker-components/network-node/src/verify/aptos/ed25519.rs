@@ -45,7 +45,7 @@ pub(super) async fn verify(
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, &vk, rpc),
-        check_permission(contract, &req.domain, proof, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;

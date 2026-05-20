@@ -43,22 +43,14 @@
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sha3::Sha3_256;
 
-use super::super::super::{BasicFlowRequest, ContractId};
+use super::super::super::BasicFlowRequest;
 use super::super::{check_permission, AptosContractId, AptosProofOfPermission};
 use super::{authentication_key, AnyPublicKeyInner, WebAuthnAssertion, AssertionSignature};
 use crate::ChainRpcConfig;
 
 const SIG_LEN: usize = 64;
-
-/// DST string for the request-payload challenge. Hashed once into a 32-byte
-/// seed before being prepended to the BCS body — mirrors aptos-core's
-/// `CryptoHasher` derive (which prefixes with
-/// `SHA3-256(b"APTOS::" || TypeName)`).
-const PAYLOAD_DST: &[u8] = b"ACE::DecryptionRequestPayload";
 
 pub(super) async fn verify(
     req: &BasicFlowRequest,
@@ -97,7 +89,7 @@ pub(super) async fn verify(
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, any_pk, rpc),
-        check_permission(contract, &req.domain, proof, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;
@@ -114,7 +106,7 @@ fn verify_webauthn(
     sig: &Signature,
 ) -> Result<()> {
     // Step 1 — recompute the expected challenge from req.
-    let expected_challenge = compute_expected_challenge(req)?;
+    let expected_challenge = req.payload.to_webauthn_challenge()?;
 
     // Step 2 — parse client_data_json, extract `challenge`, base64url-decode.
     let cdj: serde_json::Value = serde_json::from_slice(&assertion.client_data_json)
@@ -157,40 +149,6 @@ fn verify_webauthn(
     vk.verify_prehash(&prehash, sig)
         .map_err(|e| anyhow!("verify_aptos_any_secp256r1: P-256 ECDSA verification failed: {}", e))?;
     Ok(())
-}
-
-/// `expected_challenge = SHA3-256( SHA3-256(PAYLOAD_DST) || BCS(payload) )`.
-fn compute_expected_challenge(req: &BasicFlowRequest) -> Result<[u8; 32]> {
-    let payload_bytes = bcs_payload(req)?;
-    let seed: [u8; 32] = Sha3_256::digest(PAYLOAD_DST).into();
-    let mut h = Sha3_256::new();
-    h.update(seed);
-    h.update(&payload_bytes);
-    Ok(h.finalize().into())
-}
-
-/// Serializes the request payload with the same BCS layout the TS SDK
-/// `DecryptionRequestPayload.serialize` produces — keypair_id, epoch,
-/// contract_id (the full enum, including the scheme tag), domain, and the
-/// ephemeral encryption key. Field order is fixed by the TS code at
-/// `ts-sdk/src/_internal/common.ts:322-327`.
-fn bcs_payload(req: &BasicFlowRequest) -> Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct PayloadBcs<'a> {
-        keypair_id: &'a [u8; 32],
-        epoch: u64,
-        contract_id: &'a ContractId,
-        domain: &'a Vec<u8>,
-        ephemeral_enc_key: &'a vss_common::pke::EncryptionKey,
-    }
-    let p = PayloadBcs {
-        keypair_id: &req.keypair_id,
-        epoch: req.epoch,
-        contract_id: &req.contract_id,
-        domain: &req.domain,
-        ephemeral_enc_key: &req.ephemeral_enc_key,
-    };
-    bcs::to_bytes(&p).map_err(|e| anyhow!("verify_aptos_any_secp256r1: BCS encode payload: {}", e))
 }
 
 /// On-chain `authentication_key` at `userAddr` must equal

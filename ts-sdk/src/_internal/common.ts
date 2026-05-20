@@ -459,6 +459,62 @@ export class CustomFlowRequest {
     }
 }
 
+// ── Basic-flow envelope ───────────────────────────────────────────────────────
+//
+// Named handle for the body of a `RequestForDecryptionKey::Basic` /
+// `RequestForDecryptionKey::BasicV2` arm. Mirrors the worker-side Rust types
+// `BasicFlowRequest` and `BasicFlowRequestV2` in `worker-components/network-node/
+// src/verify/mod.rs` — same field order, BCS-identical wire shape. V1 and V2
+// share the inner `DecryptionRequestPayload` + `ProofOfPermission`; V2 also
+// carries a trailing `tibeScheme` byte.
+
+export class BasicFlowRequest {
+    request: DecryptionRequestPayload;
+    proof: ProofOfPermission;
+
+    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission }) {
+        this.request = args.request;
+        this.proof = args.proof;
+    }
+
+    serialize(s: Serializer): void {
+        this.request.serialize(s);
+        this.proof.serialize(s);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export class BasicFlowRequestV2 {
+    request: DecryptionRequestPayload;
+    proof: ProofOfPermission;
+    /** Client-asserted t-IBE scheme the share should be formatted for. The
+     *  worker handler validates this against the share's group_scheme. */
+    tibeScheme: number;
+
+    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission, tibeScheme: number }) {
+        this.request = args.request;
+        this.proof = args.proof;
+        this.tibeScheme = args.tibeScheme;
+    }
+
+    serialize(s: Serializer): void {
+        this.request.serialize(s);
+        this.proof.serialize(s);
+        s.serializeU8(this.tibeScheme);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
 // ── RequestForDecryptionKey (outer enum with scheme byte) ─────────────────────
 //
 // Discriminants must match the worker-side Rust enum order:
@@ -478,21 +534,22 @@ export class RequestForDecryptionKey {
     static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
 
     scheme: number;
-    private _basicPayload?: { request: DecryptionRequestPayload; proof: ProofOfPermission };
-    private _customPayload?: CustomFlowRequest;
-    private _tibeScheme?: number;
+    private _basicReq?: BasicFlowRequest;
+    private _basicReqV2?: BasicFlowRequestV2;
+    private _customReq?: CustomFlowRequest;
+    private _customReqV2?: { req: CustomFlowRequest, tibeScheme: number };
 
     private constructor(scheme: number) { this.scheme = scheme; }
 
     static newBasicFlow(request: DecryptionRequestPayload, proof: ProofOfPermission): RequestForDecryptionKey {
         const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW);
-        r._basicPayload = { request, proof };
+        r._basicReq = new BasicFlowRequest({ request, proof });
         return r;
     }
 
     static newCustomFlow(customRequest: CustomFlowRequest): RequestForDecryptionKey {
         const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW);
-        r._customPayload = customRequest;
+        r._customReq = customRequest;
         return r;
     }
 
@@ -502,8 +559,7 @@ export class RequestForDecryptionKey {
         tibeScheme: number,
     ): RequestForDecryptionKey {
         const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2);
-        r._basicPayload = { request, proof };
-        r._tibeScheme = tibeScheme;
+        r._basicReqV2 = new BasicFlowRequestV2({ request, proof, tibeScheme });
         return r;
     }
 
@@ -512,8 +568,7 @@ export class RequestForDecryptionKey {
         tibeScheme: number,
     ): RequestForDecryptionKey {
         const r = new RequestForDecryptionKey(RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2);
-        r._customPayload = customRequest;
-        r._tibeScheme = tibeScheme;
+        r._customReqV2 = { req: customRequest, tibeScheme };
         return r;
     }
 
@@ -521,20 +576,17 @@ export class RequestForDecryptionKey {
         serializer.serializeU8(this.scheme);
         switch (this.scheme) {
             case RequestForDecryptionKey.SCHEME_BASIC_FLOW:
-                this._basicPayload!.request.serialize(serializer);
-                this._basicPayload!.proof.serialize(serializer);
+                this._basicReq!.serialize(serializer);
                 return;
             case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW:
-                this._customPayload!.serialize(serializer);
+                this._customReq!.serialize(serializer);
                 return;
             case RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2:
-                this._basicPayload!.request.serialize(serializer);
-                this._basicPayload!.proof.serialize(serializer);
-                serializer.serializeU8(this._tibeScheme!);
+                this._basicReqV2!.serialize(serializer);
                 return;
             case RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2:
-                this._customPayload!.serialize(serializer);
-                serializer.serializeU8(this._tibeScheme!);
+                this._customReqV2!.req.serialize(serializer);
+                serializer.serializeU8(this._customReqV2!.tibeScheme);
                 return;
             default:
                 throw new Error(`RequestForDecryptionKey: unknown scheme ${this.scheme}`);

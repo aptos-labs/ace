@@ -339,9 +339,9 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     match request {
         RequestForDecryptionKey::Basic(req) => {
             ctx.flow = Some(Flow::Basic);
-            ctx.keypair_short = Some(short_hex(&req.keypair_id));
-            ctx.epoch = Some(req.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.ephemeral_enc_key);
+            ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
+            ctx.epoch = Some(req.payload.epoch);
+            ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.ephemeral_enc_key);
             // V1: no tibe_scheme on the wire → derive from share's group_scheme.
             handle_basic_flow(state, &snapshot, req, None, ctx).await
         }
@@ -354,17 +354,10 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         }
         RequestForDecryptionKey::BasicV2(req) => {
             ctx.flow = Some(Flow::Basic);
-            ctx.keypair_short = Some(short_hex(&req.keypair_id));
-            ctx.epoch = Some(req.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.ephemeral_enc_key);
-            let v1 = BasicFlowRequest {
-                keypair_id: req.keypair_id,
-                epoch: req.epoch,
-                contract_id: req.contract_id,
-                domain: req.domain,
-                ephemeral_enc_key: req.ephemeral_enc_key,
-                proof: req.proof,
-            };
+            ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
+            ctx.epoch = Some(req.payload.epoch);
+            ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.ephemeral_enc_key);
+            let v1 = BasicFlowRequest { payload: req.payload, proof: req.proof };
             handle_basic_flow(state, &snapshot, v1, Some(req.tibe_scheme), ctx).await
         }
         RequestForDecryptionKey::CustomV2(req) => {
@@ -411,15 +404,15 @@ async fn handle_basic_flow(
             detail: Some(format!("{:#}", e)),
         };
     }
-    let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.domain);
-    let keypair_id = keypair_id_str(&req.keypair_id);
+    let identity = verify::identity_bytes(&req.payload.keypair_id, &req.payload.contract_id, &req.payload.domain);
+    let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let extract_start = Instant::now();
     let outcome = extract_and_respond(
         snapshot,
         &keypair_id,
-        req.epoch,
+        req.payload.epoch,
         &identity,
-        &req.ephemeral_enc_key,
+        &req.payload.ephemeral_enc_key,
         client_tibe_scheme,
     );
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);

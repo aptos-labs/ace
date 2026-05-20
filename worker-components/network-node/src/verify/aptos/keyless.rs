@@ -10,6 +10,19 @@
 //! `Configuration`), then delegates to [`aptos_keyless_common::verify_signature`].
 //! The Poseidon-BN254 public-input hash is computed on-the-fly inside that
 //! call from `(pk, sig, jwk, cfg)`.
+//!
+//! Layered as:
+//!   - [`verify_signature_only`] — pretty-message binding + JWK/VK/Cfg
+//!     parallel fetch + `aptos_keyless_common::verify_signature`. No
+//!     auth-key check, no ACL.
+//!   - [`verify`] — single-key wrapper: `tokio::join!` over the three
+//!     pieces (sig, auth-key, ACL). Net parallelism = 5 RPCs (3 inside
+//!     `verify_signature_only`'s sub-join + 2 outside) + Groth16, same as
+//!     pre-refactor.
+//!
+//! The MultiKey path calls [`verify_signature_only`] per signing position
+//! (when the position is a `Keyless` variant) and applies its own
+//! MultiKey-level auth-key + ACL checks once at the wrapper level.
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -29,9 +42,41 @@ pub(super) async fn verify(
     sig: &aptos_keyless_common::KeylessSignature,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let (sig_res, auth_res, perm_res) = tokio::join!(
+        verify_signature_only(req, contract, proof, pk, sig, chain_rpc),
+        check_auth_key(proof, pk, rpc),
+        check_permission(contract, &req.payload.domain, proof, rpc),
+    );
+    sig_res?;
+    auth_res?;
+    perm_res?;
+    Ok(())
+}
+
+/// Keyless signature verification only: pretty-message binding +
+/// concurrent JWK/VK/Cfg fetch + `aptos_keyless_common::verify_signature`
+/// (Groth16 + EPK Ed25519 sig over the wallet-signed message, plus
+/// `exp_date_secs > now` + `exp_horizon` + JWT-header-kid match).
+///
+/// Takes `contract` only to resolve the chain-id → RPC client for the
+/// JWK/VK/Cfg fetches; it is **not** used to drive any contract-level
+/// check (auth-key / ACL are the caller's responsibility).
+///
+/// **Not** included: SingleKey auth-key check or dapp ACL check. The
+/// single-key wrapper [`verify`] adds both around this; the MultiKey
+/// path applies its own equivalents once across all positions.
+pub(super) async fn verify_signature_only(
+    req: &BasicFlowRequest,
+    contract: &AptosContractId,
+    proof: &AptosProofOfPermission,
+    pk: &aptos_keyless_common::KeylessPublicKey,
+    sig: &aptos_keyless_common::KeylessSignature,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
     // 1. Reconstruct the message that the ephemeral key signed and confirm
     //    `proof.full_message` covers it (same logic as Ed25519 path's
-    //    verify_sig — pretty-message + AptosConnect hex tolerance).
+    //    verify_signature_only — pretty-message + AptosConnect hex tolerance).
     let pretty_msg = req.payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
     let full_msg = &proof.full_message;
@@ -48,22 +93,20 @@ pub(super) async fn verify(
         full_msg.as_bytes().to_vec()
     };
 
-    // 2. Fetch chain-side inputs concurrently with the on-chain auth-key check.
+    // 2. Fetch chain-side inputs in parallel. The single-key wrapper
+    //    `verify` runs this concurrently with check_auth_key + check_permission,
+    //    so net parallelism is the same 5-RPC fan-out as pre-refactor.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_aptos_keyless: parse jwt_header_json: {}", e))?;
-    let (jwk_res, vk_res, cfg_res, auth_res, perm_res) = tokio::join!(
+    let (jwk_res, vk_res, cfg_res) = tokio::join!(
         fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
         fetch_groth16_vk(rpc),
         fetch_configuration(rpc),
-        check_auth_key(proof, pk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;
     let cfg = cfg_res?;
-    auth_res?;
-    perm_res?;
 
     // 3. Wall-clock now. EPK expiry check inside verify_signature is `exp_date_secs > now`.
     let now_unix_secs = std::time::SystemTime::now()
@@ -72,9 +115,7 @@ pub(super) async fn verify(
         .as_secs();
 
     aptos_keyless_common::verify_signature(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
-        .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))?;
-
-    Ok(())
+        .map_err(|e| anyhow!("verify_aptos_keyless: {}", e))
 }
 
 /// Auth-key match for a keyless account: the on-chain `authentication_key` at

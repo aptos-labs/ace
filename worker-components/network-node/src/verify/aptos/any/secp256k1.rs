@@ -27,7 +27,7 @@ use sha3::{Digest, Sha3_256};
 
 use super::super::super::BasicFlowRequest;
 use super::super::{
-    check_permission, is_valid_hex, pretty_message, AptosContractId, AptosProofOfPermission,
+    check_permission, is_valid_hex, AptosContractId, AptosProofOfPermission,
 };
 use super::{authentication_key, AnyPublicKeyInner};
 use crate::ChainRpcConfig;
@@ -41,7 +41,6 @@ pub(super) async fn verify(
     any_pk: &AnyPublicKeyInner,
     pk_bytes: &[u8],
     sig_bytes: &[u8],
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     if sig_bytes.len() != SIG_LEN {
@@ -64,7 +63,7 @@ pub(super) async fn verify(
     }
 
     // Cheap synchronous check first — fail fast before hitting RPC.
-    verify_sig(req, contract, proof, ephemeral_ek_bytes, &vk, &sig)?;
+    verify_sig(req, proof, &vk, &sig)?;
 
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
@@ -81,13 +80,11 @@ pub(super) async fn verify(
 /// `secp256k1_ecdsa::bytes_to_message`).
 fn verify_sig(
     req: &BasicFlowRequest,
-    contract: &AptosContractId,
     proof: &AptosProofOfPermission,
-    ephemeral_ek_bytes: &[u8],
     vk: &VerifyingKey,
     sig: &Signature,
 ) -> Result<()> {
-    let pretty_msg = pretty_message(req, contract, ephemeral_ek_bytes);
+    let pretty_msg = req.payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
 
     let full_msg = &proof.full_message;

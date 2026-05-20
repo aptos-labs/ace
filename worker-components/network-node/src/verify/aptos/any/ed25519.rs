@@ -81,7 +81,7 @@ pub(super) async fn verify(
 /// **Not** included: SingleKey auth-key check or dapp ACL check. The
 /// single-key wrapper [`verify`] adds both around this; the MultiKey path
 /// applies its own equivalents once across all positions.
-pub(super) async fn verify_signature_only(
+pub(in crate::verify::aptos) async fn verify_signature_only(
     req: &BasicFlowRequest,
     proof: &AptosProofOfPermission,
     vk: &ed25519_dalek::VerifyingKey,

@@ -20,7 +20,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{check_permission, is_valid_hex, pretty_message, AptosContractId, AptosProofOfPermission};
+use super::{check_permission, is_valid_hex, AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 use super::super::BasicFlowRequest;
 
@@ -30,7 +30,6 @@ pub(super) async fn verify(
     proof: &AptosProofOfPermission,
     pk_bytes: &[u8; 32],
     sig_bytes: &[u8; 64],
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
@@ -38,7 +37,7 @@ pub(super) async fn verify(
     let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
 
     // verifySig is cheap and synchronous — fail fast before hitting RPC.
-    verify_sig(req, contract, proof, ephemeral_ek_bytes, &vk, &sig)?;
+    verify_sig(req, proof, &vk, &sig)?;
 
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
 
@@ -59,15 +58,13 @@ pub(super) async fn verify(
 /// the Ed25519 signature over the (possibly hex-decoded) message bytes.
 fn verify_sig(
     req: &BasicFlowRequest,
-    contract: &AptosContractId,
     proof: &AptosProofOfPermission,
-    ephemeral_ek_bytes: &[u8],
     vk: &ed25519_dalek::VerifyingKey,
     sig: &ed25519_dalek::Signature,
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let pretty_msg = pretty_message(req, contract, ephemeral_ek_bytes);
+    let pretty_msg = req.payload.to_pretty_message()?;
     // AptosConnect embeds hex(UTF-8(pretty_msg)) rather than the raw string.
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
 

@@ -337,21 +337,19 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     };
 
     match request {
-        RequestForDecryptionKey::Basic(req) => {
-            ctx.flow = Some(Flow::Basic);
-            ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
-            ctx.epoch = Some(req.payload.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.ephemeral_enc_key);
-            // V1: no tibe_scheme on the wire → derive from share's group_scheme.
-            handle_basic_flow(state, &snapshot, req, None, ctx).await
-        }
-        RequestForDecryptionKey::Custom(req) => {
-            ctx.flow = Some(Flow::Custom);
-            ctx.keypair_short = Some(short_hex(&req.keypair_id));
-            ctx.epoch = Some(req.epoch);
-            ctx.enc_pk_hex = enc_pk_to_hex(&req.enc_pk);
-            handle_custom_flow(state, &snapshot, req, None, ctx).await
-        }
+        // V1 wire variants (tags 0 and 1) are kept in the enum so V2's BCS
+        // tags (2 and 3) stay stable, but the handler refuses them — every
+        // client we ship today sends V2 (`RequestForDecryptionKey.newBasicFlowV2`
+        // / `newCustomFlowV2` in `ts-sdk/src/_internal/common.ts`). A V2-only
+        // server is one less variant to keep correct.
+        RequestForDecryptionKey::Basic(_) | RequestForDecryptionKey::Custom(_) => Outcome::Rejected {
+            reason: Reason::BadRequest,
+            detail: Some(
+                "V1 wire (RequestForDecryptionKey::Basic/Custom) is deprecated; \
+                 clients must send BasicV2 or CustomV2 (with tibe_scheme)"
+                    .to_string(),
+            ),
+        },
         RequestForDecryptionKey::BasicV2(req) => {
             ctx.flow = Some(Flow::Basic);
             ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));

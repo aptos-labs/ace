@@ -182,6 +182,76 @@ impl DecryptionRequestPayload {
         h.update(&body);
         Ok(h.finalize().into())
     }
+
+    /// Canonical human-readable form the wallet signs for the Flavor-A proof
+    /// path (Ed25519, Secp256k1, Keyless, FederatedKeyless). Mirrors the TS-side
+    /// `DecryptionRequestPayload.toPrettyMessage(0)` in
+    /// `ts-sdk/src/_internal/common.ts` byte-for-byte. Field order matches:
+    ///
+    /// ```text
+    /// ACE Decryption Request
+    /// keypairId: 0x<32 hex>
+    /// epoch: <u64>
+    /// contractId:
+    ///   scheme: aptos
+    ///   inner:
+    ///       chainId: <u8>
+    ///       moduleAddr: 0x<32 hex>
+    ///       moduleName: <string>
+    ///       functionName: <string>
+    /// domain: 0x<hex>
+    /// ephemeralEncKey: <hex of BCS(EncryptionKey), no 0x>
+    /// ```
+    ///
+    /// The verifier's binding step requires the wallet's `fullMessage` to
+    /// contain this string (or its hex form, for AptosConnect wallets that
+    /// sign the hex of the UTF-8). Binding `ephemeralEncKey` is critical: it
+    /// is the public key the IDK share is encrypted to in the response. If it
+    /// were not part of the signed message, anyone holding a valid proof
+    /// could replay it with a substituted `ephemeralEncKey` and have shares
+    /// re-encrypted to themselves.
+    ///
+    /// Returns an error if `self.contract_id` is not an Aptos contract — only
+    /// Flavor-A Aptos proofs use this pretty-message binding; Solana proofs
+    /// carry a real transaction and do not use a signed pretty message.
+    pub fn to_pretty_message(&self) -> Result<String> {
+        let contract_lines = self.contract_id.to_pretty_message_lines(1)?;
+        let ephemeral_ek_bytes = bcs::to_bytes(&self.ephemeral_enc_key).map_err(|e| {
+            anyhow!(
+                "DecryptionRequestPayload::to_pretty_message: serialize ephemeral_enc_key: {}",
+                e
+            )
+        })?;
+        Ok(format!(
+            "ACE Decryption Request\nkeypairId: 0x{}\nepoch: {}\ncontractId:{}\ndomain: 0x{}\nephemeralEncKey: {}",
+            hex::encode(self.keypair_id),
+            self.epoch,
+            contract_lines,
+            hex::encode(&self.domain),
+            hex::encode(&ephemeral_ek_bytes),
+        ))
+    }
+}
+
+impl ContractId {
+    /// Mirrors TS-SDK `ContractID.toPrettyMessage(indent)` in
+    /// `ts-sdk/src/_internal/common.ts:108-113`. Returns the inner block
+    /// (`\n{pad}scheme: <name>\n{pad}inner:<inner_lines>`) with `pad =
+    /// "  " * indent`. The inner-variant lines are produced at `indent + 2`,
+    /// matching the TS step. Errors for variants without a pretty-message
+    /// path (Solana's proof is a real txn, not a signed canonical string).
+    pub(crate) fn to_pretty_message_lines(&self, indent: usize) -> Result<String> {
+        let pad = "  ".repeat(indent);
+        match self {
+            ContractId::Aptos(c) => Ok(format!(
+                "\n{pad}scheme: aptos\n{pad}inner:{}",
+                c.to_pretty_message_lines(indent + 2),
+            )),
+            ContractId::Solana(_) => Err(anyhow!(
+                "ContractId::to_pretty_message_lines: Solana proofs are not bound via a signed pretty message"
+            )),
+        }
+    }
 }
 
 // ── Identity bytes ────────────────────────────────────────────────────────────
@@ -200,15 +270,18 @@ pub fn identity_bytes(keypair_id: &[u8; 32], contract_id: &ContractId, domain: &
 
 /// Verify a basic-flow request: checks the proof-of-permission and binds it to the
 /// keypair_id, epoch, contract_id, domain, and ephemeral encryption key in `req`.
+///
+/// The Aptos side derives the ephemeral-key hex from `req.payload.ephemeral_enc_key`
+/// itself (via [`DecryptionRequestPayload::to_pretty_message`]); only the Solana
+/// path needs the pre-serialized bytes for its `build_full_request_bytes` shape.
 pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
-    let ephemeral_ek_bytes = bcs::to_bytes(&req.payload.ephemeral_enc_key)
-        .map_err(|e| anyhow!("verify_basic: serialize ephemeral_enc_key: {}", e))?;
-
     match (&req.payload.contract_id, &req.proof) {
         (ContractId::Aptos(contract), ProofOfPermission::Aptos(proof)) => {
-            aptos::verify_aptos(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
+            aptos::verify_aptos(req, contract, proof, chain_rpc).await
         }
         (ContractId::Solana(contract), ProofOfPermission::Solana(proof)) => {
+            let ephemeral_ek_bytes = bcs::to_bytes(&req.payload.ephemeral_enc_key)
+                .map_err(|e| anyhow!("verify_basic: serialize ephemeral_enc_key: {}", e))?;
             solana::verify_solana(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
         }
         (contract, proof) => Err(anyhow!(
@@ -237,5 +310,77 @@ pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) 
             contract.tag_name(),
             proof.tag_name()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana::SolanaContractId;
+    use vss_common::pke::{ElGamalOtpRistretto255EncKey, EncryptionKey};
+
+    /// Pin down the exact pretty-message output for a hand-built Aptos payload.
+    /// Mirrors `ts-sdk/src/_internal/common.ts:341-344`'s `toPrettyMessage(0)`
+    /// byte-for-byte (verified by hand against the template). If this string
+    /// ever drifts, every wallet that has been signing the old shape will
+    /// stop passing the `contains()` binding check in the verifier — so this
+    /// test deliberately hard-codes the expected bytes rather than
+    /// recomputing them with `format!`.
+    #[test]
+    fn to_pretty_message_aptos_known_answer() {
+        let payload = DecryptionRequestPayload {
+            keypair_id: [0xab; 32],
+            epoch: 42,
+            contract_id: ContractId::Aptos(AptosContractId {
+                chain_id: 4,
+                module_addr: [0xcd; 32],
+                module_name: "my_module".to_string(),
+                function_name: "check_perm".to_string(),
+            }),
+            domain: vec![0x01, 0x02, 0x03, 0x04],
+            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey {
+                enc_base: vec![0x11; 32],
+                public_point: vec![0x22; 32],
+            }),
+        };
+        // BCS(EncryptionKey::ElGamalOtpRistretto255) = variant tag 0x00
+        //   || ULEB128(32)=0x20 || 32×0x11 || ULEB128(32)=0x20 || 32×0x22.
+        let expected = concat!(
+            "ACE Decryption Request\n",
+            "keypairId: 0xabababababababababababababababababababababababababababababababab\n",
+            "epoch: 42\n",
+            "contractId:\n",
+            "  scheme: aptos\n",
+            "  inner:\n",
+            "      chainId: 4\n",
+            "      moduleAddr: 0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n",
+            "      moduleName: my_module\n",
+            "      functionName: check_perm\n",
+            "domain: 0x01020304\n",
+            "ephemeralEncKey: 00201111111111111111111111111111111111111111111111111111111111111111202222222222222222222222222222222222222222222222222222222222222222",
+        );
+        assert_eq!(payload.to_pretty_message().unwrap(), expected);
+    }
+
+    /// Solana payloads don't have a signed pretty-message path (the proof is
+    /// a real Solana transaction). Calling the method must surface a clear
+    /// error rather than producing a nonsense string.
+    #[test]
+    fn to_pretty_message_solana_errors() {
+        let payload = DecryptionRequestPayload {
+            keypair_id: [0; 32],
+            epoch: 0,
+            contract_id: ContractId::Solana(SolanaContractId {
+                known_chain_name: "devnet".to_string(),
+                program_id: vec![0; 32],
+            }),
+            domain: vec![],
+            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey {
+                enc_base: vec![0; 32],
+                public_point: vec![0; 32],
+            }),
+        };
+        let err = payload.to_pretty_message().unwrap_err().to_string();
+        assert!(err.contains("Solana"), "expected Solana-rejection error, got: {}", err);
     }
 }

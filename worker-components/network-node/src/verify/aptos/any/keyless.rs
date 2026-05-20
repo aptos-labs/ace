@@ -29,8 +29,7 @@ pub(super) async fn verify(
     proof: &AptosProofOfPermission,
     pk: &aptos_keyless_common::KeylessPublicKey,
     sig: &aptos_keyless_common::KeylessSignature,
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    super::super::keyless::verify(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
+    super::super::keyless::verify(req, contract, proof, pk, sig, chain_rpc).await
 }

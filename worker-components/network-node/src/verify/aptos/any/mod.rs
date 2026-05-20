@@ -150,62 +150,23 @@ pub(super) async fn verify(
     proof: &AptosProofOfPermission,
     any_pk: &AnyPublicKeyInner,
     any_sig: &AnySignatureInner,
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     match (any_pk, any_sig) {
         (AnyPublicKeyInner::Ed25519(pk_bytes), AnySignatureInner::Ed25519(sig_bytes)) => {
-            ed25519::verify(
-                req,
-                contract,
-                proof,
-                any_pk,
-                pk_bytes,
-                sig_bytes,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
+            ed25519::verify(req, contract, proof, any_pk, pk_bytes, sig_bytes, chain_rpc).await
         }
         (AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes), AnySignatureInner::Secp256k1Ecdsa(sig_bytes)) => {
-            secp256k1::verify(
-                req,
-                contract,
-                proof,
-                any_pk,
-                pk_bytes,
-                sig_bytes,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
+            secp256k1::verify(req, contract, proof, any_pk, pk_bytes, sig_bytes, chain_rpc).await
         }
         (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
-            keyless::verify(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
+            keyless::verify(req, contract, proof, pk, sig, chain_rpc).await
         }
         (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
-            federated_keyless::verify(
-                req,
-                contract,
-                proof,
-                fpk,
-                sig,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
+            federated_keyless::verify(req, contract, proof, fpk, sig, chain_rpc).await
         }
         (AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes), AnySignatureInner::WebAuthn(assertion)) => {
-            secp256r1::verify(
-                req,
-                contract,
-                proof,
-                any_pk,
-                pk_bytes,
-                assertion,
-                chain_rpc,
-            )
-            .await
+            secp256r1::verify(req, contract, proof, any_pk, pk_bytes, assertion, chain_rpc).await
         }
         (pk, sig) => Err(anyhow!(
             "verify_aptos_any: invalid pk/sig pairing ({} pk vs {} sig)",

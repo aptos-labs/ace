@@ -24,8 +24,8 @@ use anyhow::{anyhow, Result};
 
 use super::keyless::{fetch_configuration, fetch_groth16_vk, fetch_system_rsa_jwk};
 use super::{
-    check_permission, find_rsa_jwk_in_jwks_resource, is_valid_hex, pretty_message,
-    AptosContractId, AptosProofOfPermission,
+    check_permission, find_rsa_jwk_in_jwks_resource, is_valid_hex, AptosContractId,
+    AptosProofOfPermission,
 };
 use super::super::BasicFlowRequest;
 use crate::ChainRpcConfig;
@@ -36,11 +36,10 @@ pub(super) async fn verify(
     proof: &AptosProofOfPermission,
     fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
     sig: &aptos_keyless_common::KeylessSignature,
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     // 1. Same pretty-message + AptosConnect hex tolerance as the regular path.
-    let pretty_msg = pretty_message(req, contract, ephemeral_ek_bytes);
+    let pretty_msg = req.payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
     let full_msg = &proof.full_message;
     if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {

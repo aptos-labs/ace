@@ -36,6 +36,24 @@ pub struct AptosContractId {
     pub function_name: String,
 }
 
+impl AptosContractId {
+    /// Mirrors TS-SDK `AptosContractID.toPrettyMessage(indent)` in
+    /// `ts-sdk/src/_internal/aptos.ts:90-93`. Returns the 4 inner contract
+    /// lines (`chainId`, `moduleAddr`, `moduleName`, `functionName`), each
+    /// prefixed with a leading `\n` + `"  " * indent`. Used by
+    /// [`super::ContractId::to_pretty_message_lines`] for the inner section.
+    pub(crate) fn to_pretty_message_lines(&self, indent: usize) -> String {
+        let pad = "  ".repeat(indent);
+        format!(
+            "\n{pad}chainId: {}\n{pad}moduleAddr: 0x{}\n{pad}moduleName: {}\n{pad}functionName: {}",
+            self.chain_id,
+            hex::encode(self.module_addr),
+            self.module_name,
+            self.function_name,
+        )
+    }
+}
+
 /// Proof of permission for a basic-flow Aptos request.
 ///
 /// `pk_scheme` / `sig_scheme` already disambiguate which inner type lives in
@@ -270,52 +288,22 @@ pub(super) async fn verify_aptos(
     req: &BasicFlowRequest,
     contract: &AptosContractId,
     proof: &AptosProofOfPermission,
-    ephemeral_ek_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     match (&proof.public_key, &proof.signature) {
         (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
-            ed25519::verify(
-                req,
-                contract,
-                proof,
-                pk_bytes,
-                sig_bytes,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
+            ed25519::verify(req, contract, proof, pk_bytes, sig_bytes, chain_rpc).await
         }
         (AptosPublicKeyMaterial::Any(any_pk), AptosSignatureMaterial::Any(any_sig)) => {
-            any::verify(
-                req,
-                contract,
-                proof,
-                any_pk,
-                any_sig,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
+            any::verify(req, contract, proof, any_pk, any_sig, chain_rpc).await
         }
         (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
-            keyless::verify(req, contract, proof, pk, sig, ephemeral_ek_bytes, chain_rpc).await
+            keyless::verify(req, contract, proof, pk, sig, chain_rpc).await
         }
         (
             AptosPublicKeyMaterial::FederatedKeyless(fpk),
             AptosSignatureMaterial::Keyless(sig),
-        ) => {
-            federated_keyless::verify(
-                req,
-                contract,
-                proof,
-                fpk,
-                sig,
-                ephemeral_ek_bytes,
-                chain_rpc,
-            )
-            .await
-        }
+        ) => federated_keyless::verify(req, contract, proof, fpk, sig, chain_rpc).await,
         (pk, sig) => Err(anyhow!(
             "verify_aptos: pk/sig scheme mismatch ({} pk vs {} sig)",
             pk.tag_name(),
@@ -325,40 +313,6 @@ pub(super) async fn verify_aptos(
 }
 
 // ── Shared helpers (used by ed25519 + keyless) ──────────────────────────────
-
-/// Produces `DecryptionRequestPayload.toPrettyMessage(0)` from
-/// `ts-sdk/src/_internal/common.ts` for an Aptos ContractID. Used by both
-/// schemes' sig-binding step to check that `fullMessage` covers the correct
-/// keypairId, epoch, contractId, domain, **and ephemeralEncKey**.
-///
-/// Binding the ephemeralEncKey is critical: it is the public key that the IDK
-/// share is encrypted to in the response. If it were not part of the signed
-/// message, anyone holding a valid proof could replay it with a substituted
-/// ephemeralEncKey and have shares re-encrypted to themselves.
-pub(super) fn pretty_message(
-    req: &BasicFlowRequest,
-    contract: &AptosContractId,
-    ephemeral_ek_bytes: &[u8],
-) -> String {
-    // moduleAddr.toStringLong() = "0x" + 64 lowercase hex chars (32 bytes)
-    let module_addr = format!("0x{}", hex::encode(contract.module_addr));
-    let domain_hex = format!("0x{}", hex::encode(&req.payload.domain));
-    // `pke.EncryptionKey.toHex()` = bytesToHex(toBytes()); does NOT prepend "0x".
-    let ephemeral_ek_hex = hex::encode(ephemeral_ek_bytes);
-    let keypair_id_hex = format!("0x{}", hex::encode(req.payload.keypair_id));
-
-    format!(
-        "ACE Decryption Request\nkeypairId: {}\nepoch: {}\ncontractId:\n  scheme: aptos\n  inner:\n      chainId: {}\n      moduleAddr: {}\n      moduleName: {}\n      functionName: {}\ndomain: {}\nephemeralEncKey: {}",
-        keypair_id_hex,
-        req.payload.epoch,
-        contract.chain_id,
-        module_addr,
-        contract.module_name,
-        contract.function_name,
-        domain_hex,
-        ephemeral_ek_hex,
-    )
-}
 
 /// True if `s` is a valid hex string (optional `0x` prefix, all hex digits).
 ///

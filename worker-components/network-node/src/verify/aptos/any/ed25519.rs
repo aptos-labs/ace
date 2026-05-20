@@ -39,10 +39,20 @@ pub(super) async fn verify(
     sig_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    let pk_arr: [u8; 32] = pk_bytes.try_into().map_err(|_| {
+        anyhow!("verify_aptos_any_ed25519: pk must be 32 bytes, got {}", pk_bytes.len())
+    })?;
+    let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| {
+        anyhow!("verify_aptos_any_ed25519: sig must be 64 bytes, got {}", sig_bytes.len())
+    })?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
+        .map_err(|e| anyhow!("verify_aptos_any_ed25519: invalid Ed25519 pubkey: {}", e))?;
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+
     // Cheap signature check first — fail fast before hitting RPC. Awaiting an
     // all-synchronous async fn is essentially free; the `.await` here doesn't
     // yield to the runtime, it just unwraps the immediately-ready future.
-    verify_signature_only(req, proof, pk_bytes, sig_bytes).await?;
+    verify_signature_only(req, proof, &vk, &sig).await?;
 
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
@@ -54,11 +64,16 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// Ed25519 signature check for one signing position. Parses `pk_bytes` and
-/// `sig_bytes`, rebuilds the expected pretty message from the request
-/// payload, confirms `proof.full_message` is bound to it (with the
-/// AptosConnect-style hex tolerance), then Ed25519-verifies the signature
-/// over the (possibly hex-decoded) message bytes.
+/// Ed25519 signature check for one signing position. Rebuilds the expected
+/// pretty message from the request payload, confirms `proof.full_message` is
+/// bound to it (with the AptosConnect-style hex tolerance), then
+/// Ed25519-verifies the supplied signature over the (possibly hex-decoded)
+/// message bytes.
+///
+/// Takes already-parsed `&VerifyingKey` / `&Signature` so the caller can
+/// hoist the length-check and Edwards-decode out of the hot path — both the
+/// single-key wrapper [`verify`] and the upcoming MultiKey dispatcher parse
+/// at their own level and pass parsed primitives in.
 ///
 /// `async` for shape uniformity with the keyless/federated-keyless paths
 /// (which fetch chain-side inputs); this variant does no RPC.
@@ -69,19 +84,9 @@ pub(super) async fn verify(
 pub(super) async fn verify_signature_only(
     req: &BasicFlowRequest,
     proof: &AptosProofOfPermission,
-    pk_bytes: &[u8],
-    sig_bytes: &[u8],
+    vk: &ed25519_dalek::VerifyingKey,
+    sig: &ed25519_dalek::Signature,
 ) -> Result<()> {
-    let pk_arr: [u8; 32] = pk_bytes.try_into().map_err(|_| {
-        anyhow!("verify_aptos_any_ed25519: pk must be 32 bytes, got {}", pk_bytes.len())
-    })?;
-    let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| {
-        anyhow!("verify_aptos_any_ed25519: sig must be 64 bytes, got {}", sig_bytes.len())
-    })?;
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
-        .map_err(|e| anyhow!("verify_aptos_any_ed25519: invalid Ed25519 pubkey: {}", e))?;
-    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-
     let pretty_msg = req.payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
     let full_msg = &proof.full_message;
@@ -98,7 +103,7 @@ pub(super) async fn verify_signature_only(
         full_msg.as_bytes().to_vec()
     };
 
-    vk.verify(&msg_bytes, &sig)
+    vk.verify(&msg_bytes, sig)
         .map_err(|e| anyhow!("verify_aptos_any_ed25519: Ed25519 verification failed: {}", e))
 }
 

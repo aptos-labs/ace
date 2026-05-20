@@ -400,76 +400,17 @@ describe("access-control failures (worker-side rejection)", () => {
     bob = Keypair.generate();
     aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
     await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
-
-    // ── ACE config (same shape as the happy-path test) ────────────────────
-    const isLocalnet =
-      connection.rpcEndpoint.includes('localhost') ||
-      connection.rpcEndpoint.includes('127.0.0.1');
-    knownChainName = isLocalnet ? "localnet" : "testnet";
-    if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
-      aceDeployment = new ACE.AceDeployment({
-        apiEndpoint: "http://localhost:8080/v1",
-        contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
-      });
-      keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
-    } else {
-      const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-        { apiEndpoint: string; contractAddr: string; keypairId: string };
-      aceDeployment = new ACE.AceDeployment({
-        apiEndpoint: cfg.apiEndpoint,
-        contractAddr: AccountAddress.fromString(cfg.contractAddr),
-      });
-      keypairId = AccountAddress.fromString(cfg.keypairId);
-    }
-
-    // ── Alice encrypts and registers ──────────────────────────────────────
-    const plaintext = hexToBytes(
-      "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
-    );
-    fullBlobNameBytes = Buffer.concat([
-      Buffer.from("0x"),
-      Buffer.from(aliceAptosAddrBytes),
-      Buffer.from("/"),
-      Buffer.from(FILE_NAME),
-    ]);
-    greenBox = (await ACE.SolanaBasicFlow.encrypt({
+    ({ aceDeployment, keypairId, knownChainName } = loadAceLocalnetConfig(connection));
+    ({ greenBox, fullBlobNameBytes } = await aliceEncryptAndRegisterBlob({
+      alice, aliceAptosAddrBytes, fileName: FILE_NAME,
       aceDeployment, keypairId, knownChainName,
-      programId: accessControlProgram.programId.toBase58(),
-      domain: fullBlobNameBytes,
-      plaintext,
-    })).unwrapOrThrow('failures-suite: encrypt failed');
-
-    const fileRegTxn = await program.methods
-      .registerBlob(
-        Array.from(aliceAptosAddrBytes), FILE_NAME, 2,
-        Buffer.from(greenBox), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
-      )
-      .accounts({ owner: alice.publicKey })
-      .signers([alice])
-      .rpc();
-    await confirmTransaction(connection, fileRegTxn);
-
-    // ── Bob purchases access ──────────────────────────────────────────────
-    const purchaseTxn = await program.methods
-      .purchase(Array.from(aliceAptosAddrBytes), FILE_NAME)
-      .accounts({ buyer: bob.publicKey, owner: alice.publicKey })
-      .signers([bob])
-      .rpc();
-    await confirmTransaction(connection, purchaseTxn);
-
-    // Wait for the Receipt PDA to be visible to workers' RPC view (same
-    // propagation-lag mitigation the happy-path test uses).
-    const receiptPda = deriveAccessReceiptPda(
-      aliceAptosAddrBytes, FILE_NAME, bob.publicKey, program.programId,
-    );
-    const expectedOwner = accessControlProgram.programId.toBase58();
-    const pollDeadline = Date.now() + 30_000;
-    while (Date.now() < pollDeadline) {
-      const info = await connection.getAccountInfo(receiptPda, 'confirmed');
-      if (info && info.owner.toBase58() === expectedOwner) break;
-      await new Promise(r => setTimeout(r, 250));
-    }
-    await new Promise(r => setTimeout(r, 500));
+      accessControlProgramId: accessControlProgram.programId,
+      program, connection,
+    }));
+    await bobPurchaseAndWaitForReceipt({
+      bob, alice, aliceAptosAddrBytes, fileName: FILE_NAME,
+      program, accessControlProgram, connection,
+    });
   });
 
   /** Build a (well-formed, signed) `assert_access` txn for Bob → Alice's
@@ -748,6 +689,115 @@ function solanaAddrToAptosAddr(solanaAddr: PublicKey): AccountAddress {
   // Compute the Aptos address from the function info and identifier
   const addressBytes = DerivableAbstractedAccount.computeAccountAddress(functionInfo, accountIdentifier);
   return AccountAddress.from(addressBytes);
+}
+
+/** Load ACE-localnet config (aceDeployment + keypairId + knownChainName) from
+ *  env vars (ACE_CONTRACT + KEYPAIR_ID, used by `run-local-network-forever`)
+ *  or fall back to /tmp/ace-localnet-config.json written by
+ *  `scenarios/test-solana-example.ts`. Mirrors the loader pattern in the
+ *  happy-path test inside this file. */
+function loadAceLocalnetConfig(connection: Connection): {
+  aceDeployment: ACE.AceDeployment;
+  keypairId: AccountAddress;
+  knownChainName: string;
+} {
+  const isLocalnet = connection.rpcEndpoint.includes('localhost') ||
+    connection.rpcEndpoint.includes('127.0.0.1');
+  const knownChainName = isLocalnet ? "localnet" : "testnet";
+  if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
+    return {
+      aceDeployment: new ACE.AceDeployment({
+        apiEndpoint: "http://localhost:8080/v1",
+        contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
+      }),
+      keypairId: AccountAddress.fromString(process.env.KEYPAIR_ID),
+      knownChainName,
+    };
+  }
+  const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
+    { apiEndpoint: string; contractAddr: string; keypairId: string };
+  return {
+    aceDeployment: new ACE.AceDeployment({
+      apiEndpoint: cfg.apiEndpoint,
+      contractAddr: AccountAddress.fromString(cfg.contractAddr),
+    }),
+    keypairId: AccountAddress.fromString(cfg.keypairId),
+    knownChainName,
+  };
+}
+
+/** Alice encrypts a fixed plaintext under (keypairId, fullBlobName) via
+ *  ACE, then registers the resulting GreenBox on-chain with a small price.
+ *  Returns the GreenBox bytes + the fullBlobName bytes so callers can build
+ *  matching decryption sessions. */
+async function aliceEncryptAndRegisterBlob(args: {
+  alice: Keypair;
+  aliceAptosAddrBytes: Uint8Array;
+  fileName: string;
+  aceDeployment: ACE.AceDeployment;
+  keypairId: AccountAddress;
+  knownChainName: string;
+  accessControlProgramId: PublicKey;
+  program: Program<AccessControl>;
+  connection: Connection;
+}): Promise<{ greenBox: Uint8Array; fullBlobNameBytes: Buffer }> {
+  const plaintext = hexToBytes(
+    "a3f7b2c9e1d84f6a0b5c3e2d1f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
+  );
+  const fullBlobNameBytes = Buffer.concat([
+    Buffer.from("0x"), Buffer.from(args.aliceAptosAddrBytes),
+    Buffer.from("/"), Buffer.from(args.fileName),
+  ]);
+  const greenBox = (await ACE.SolanaBasicFlow.encrypt({
+    aceDeployment: args.aceDeployment,
+    keypairId: args.keypairId,
+    knownChainName: args.knownChainName,
+    programId: args.accessControlProgramId.toBase58(),
+    domain: fullBlobNameBytes,
+    plaintext,
+  })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
+  const txn = await args.program.methods
+    .registerBlob(
+      Array.from(args.aliceAptosAddrBytes), args.fileName, 2,
+      Buffer.from(greenBox), new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+    )
+    .accounts({ owner: args.alice.publicKey })
+    .signers([args.alice]).rpc();
+  await confirmTransaction(args.connection, txn);
+  return { greenBox, fullBlobNameBytes };
+}
+
+/** Bob calls `purchase` on `access_control` (transfers SOL to Alice +
+ *  creates the Receipt PDA), then polls until the Receipt PDA's on-chain
+ *  owner reflects program ownership. The poll matches the happy-path
+ *  test's propagation-lag mitigation: confirmTransaction returns at
+ *  "confirmed" commitment, but workers' RPC view can take a few extra
+ *  seconds to see the new account-state. */
+async function bobPurchaseAndWaitForReceipt(args: {
+  bob: Keypair;
+  alice: Keypair;
+  aliceAptosAddrBytes: Uint8Array;
+  fileName: string;
+  program: Program<AccessControl>;
+  accessControlProgram: Program<AceHook>;
+  connection: Connection;
+}): Promise<void> {
+  const purchaseTxn = await args.program.methods
+    .purchase(Array.from(args.aliceAptosAddrBytes), args.fileName)
+    .accounts({ buyer: args.bob.publicKey, owner: args.alice.publicKey })
+    .signers([args.bob]).rpc();
+  await confirmTransaction(args.connection, purchaseTxn);
+  const receiptPda = deriveAccessReceiptPda(
+    args.aliceAptosAddrBytes, args.fileName, args.bob.publicKey, args.program.programId,
+  );
+  const expectedOwner = args.accessControlProgram.programId.toBase58();
+  const pollDeadline = Date.now() + 30_000;
+  while (Date.now() < pollDeadline) {
+    const info = await args.connection.getAccountInfo(receiptPda, 'confirmed');
+    if (info && info.owner.toBase58() === expectedOwner) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  await new Promise(r => setTimeout(r, 500));
 }
 
 // ============================================================================

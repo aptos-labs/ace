@@ -8,6 +8,7 @@
 //!   - [`keyless`] — ZK keyless signature
 //!   - [`federated_keyless`] — ZK keyless signature with dapp-managed JWKs
 //!   - [`any`] — modern `AnyPublicKey` / `AnySignature` (SingleKey scheme)
+//!   - [`multi_key`] — K-of-N `MultiKey` / `MultiKeyAuthenticator`
 //!
 //! The dispatcher [`verify_aptos`] matches on the typed [`AptosPublicKeyMaterial`] /
 //! [`AptosSignatureMaterial`] enum payload (decoded by [`AptosProofOfPermission`]'s
@@ -18,6 +19,7 @@ pub mod any;
 pub mod ed25519;
 pub mod federated_keyless;
 pub mod keyless;
+pub mod multi_key;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -82,6 +84,11 @@ pub enum AptosPublicKeyMaterial {
     /// account model also covers Secp256k1Ecdsa, Secp256r1Ecdsa, Keyless,
     /// and FederatedKeyless under a single SingleKey auth-key derivation.
     Any(any::AnyPublicKeyInner),
+    /// pk_scheme=3. BCS wire is the inline `MultiKey` struct
+    /// (`{ public_keys: Vec<AnyPublicKey>, signatures_required: u8 }`).
+    /// K-of-N over the AnyPublicKey variants; auth-key derivation uses
+    /// `Scheme::MultiKey = 0x03` (vs. `0x02` for SingleKey).
+    MultiKey(multi_key::MultiKeyInner),
     /// pk_scheme=4. BCS wire is the inline `KeylessPublicKey` struct
     /// (`{ iss_val: String, idc: Vec<u8> }`).
     Keyless(aptos_keyless_common::KeylessPublicKey),
@@ -99,6 +106,11 @@ pub enum AptosSignatureMaterial {
     /// sig_scheme=1. BCS wire is `ULEB128(any_variant) || BCS(inner)`. See
     /// [`any::AnySignatureInner`] — pairs with pk_scheme=1 / `AnyPublicKey`.
     Any(any::AnySignatureInner),
+    /// sig_scheme=3. BCS wire is the inline `MultiKeyAuthenticator`
+    /// signature struct (`{ signatures: Vec<AnySignature>, bitmap: Vec<u8> }`)
+    /// — pairs with pk_scheme=3 / `MultiKey`. Bitmap is MSB-first per byte;
+    /// position bits select which N of M positions signed.
+    MultiKey(multi_key::MultiKeySigInner),
     /// sig_scheme=4. BCS wire is the inline `KeylessSignature` struct.
     Keyless(aptos_keyless_common::KeylessSignature),
 }
@@ -108,6 +120,7 @@ impl AptosPublicKeyMaterial {
         match self {
             AptosPublicKeyMaterial::Ed25519(_) => "ed25519",
             AptosPublicKeyMaterial::Any(_) => "any",
+            AptosPublicKeyMaterial::MultiKey(_) => "multi_key",
             AptosPublicKeyMaterial::Keyless(_) => "keyless",
             AptosPublicKeyMaterial::FederatedKeyless(_) => "federated_keyless",
         }
@@ -119,6 +132,7 @@ impl AptosSignatureMaterial {
         match self {
             AptosSignatureMaterial::Ed25519(_) => "ed25519",
             AptosSignatureMaterial::Any(_) => "any",
+            AptosSignatureMaterial::MultiKey(_) => "multi_key",
             AptosSignatureMaterial::Keyless(_) => "keyless",
         }
     }
@@ -127,10 +141,12 @@ impl AptosSignatureMaterial {
 // pk_scheme / sig_scheme constants — keep in lockstep with `_internal/aptos.ts`.
 const PK_SCHEME_ED25519_WIRE: u8 = 0;
 const PK_SCHEME_ANY_WIRE: u8 = 1;
+const PK_SCHEME_MULTI_KEY_WIRE: u8 = 3;
 const PK_SCHEME_KEYLESS_WIRE: u8 = 4;
 const PK_SCHEME_FEDERATED_KEYLESS_WIRE: u8 = 5;
 const SIG_SCHEME_ED25519_WIRE: u8 = 0;
 const SIG_SCHEME_ANY_WIRE: u8 = 1;
+const SIG_SCHEME_MULTI_KEY_WIRE: u8 = 3;
 const SIG_SCHEME_KEYLESS_WIRE: u8 = 4;
 
 // `serde_bytes::ByteBuf` is what BCS uses to round-trip a `Vec<u8>` field
@@ -176,6 +192,12 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                             .ok_or_else(|| A::Error::custom("missing Any public_key"))?;
                         AptosPublicKeyMaterial::Any(inner)
                     }
+                    PK_SCHEME_MULTI_KEY_WIRE => {
+                        let inner: multi_key::MultiKeyInner = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing MultiKey public_key"))?;
+                        AptosPublicKeyMaterial::MultiKey(inner)
+                    }
                     PK_SCHEME_KEYLESS_WIRE => {
                         let pk: aptos_keyless_common::KeylessPublicKey = seq
                             .next_element()?
@@ -218,6 +240,12 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                             .next_element()?
                             .ok_or_else(|| A::Error::custom("missing Any signature"))?;
                         AptosSignatureMaterial::Any(inner)
+                    }
+                    SIG_SCHEME_MULTI_KEY_WIRE => {
+                        let inner: multi_key::MultiKeySigInner = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing MultiKey signature"))?;
+                        AptosSignatureMaterial::MultiKey(inner)
                     }
                     SIG_SCHEME_KEYLESS_WIRE => {
                         let sig: aptos_keyless_common::KeylessSignature = seq
@@ -266,6 +294,7 @@ impl serde::Serialize for AptosProofOfPermission {
                 t.serialize_element(serde_bytes::Bytes::new(arr))?
             }
             AptosPublicKeyMaterial::Any(inner) => t.serialize_element(inner)?,
+            AptosPublicKeyMaterial::MultiKey(inner) => t.serialize_element(inner)?,
             AptosPublicKeyMaterial::Keyless(pk) => t.serialize_element(pk)?,
             AptosPublicKeyMaterial::FederatedKeyless(fpk) => t.serialize_element(fpk)?,
         }
@@ -275,6 +304,7 @@ impl serde::Serialize for AptosProofOfPermission {
                 t.serialize_element(serde_bytes::Bytes::new(arr))?
             }
             AptosSignatureMaterial::Any(inner) => t.serialize_element(inner)?,
+            AptosSignatureMaterial::MultiKey(inner) => t.serialize_element(inner)?,
             AptosSignatureMaterial::Keyless(sig) => t.serialize_element(sig)?,
         }
         t.serialize_element(&self.full_message)?;
@@ -296,6 +326,9 @@ pub(super) async fn verify_aptos(
         }
         (AptosPublicKeyMaterial::Any(any_pk), AptosSignatureMaterial::Any(any_sig)) => {
             any::verify(req, contract, proof, any_pk, any_sig, chain_rpc).await
+        }
+        (AptosPublicKeyMaterial::MultiKey(mk), AptosSignatureMaterial::MultiKey(ms)) => {
+            multi_key::verify(req, contract, proof, mk, ms, chain_rpc).await
         }
         (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
             keyless::verify(req, contract, proof, pk, sig, chain_rpc).await

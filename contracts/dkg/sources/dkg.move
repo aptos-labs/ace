@@ -39,6 +39,7 @@ module ace::dkg {
 
     const E_ONLY_CALLER_CAN_DO_THIS: u64 = 1;
     const E_SESSION_NOT_COMPLETED: u64 = 2;
+    const E_INNER_VSSES_ALREADY_DELETED: u64 = 3;
 
     struct Session has key {
         caller: address,
@@ -214,5 +215,25 @@ module ace::dkg {
 
     entry fun touch_entry(session_addr: address) acquires Session, SignerStore {
         touch(session_addr);
+    }
+
+    /// Delete the inner VSS sessions of a DONE DKG and clear the `vss_sessions` /
+    /// `done_flags` vectors. The DKG `Session` resource itself is **kept** — the
+    /// encrypt path (`aptos/encrypt.ts`, `solana/encrypt.ts`) reads `basePoint` +
+    /// `resultPk` from it on every call, and the sticky-object address is the
+    /// public `keypair_id`.
+    ///
+    /// Gated only on terminal DKG state + non-empty `vss_sessions` (for
+    /// idempotency). The successor check ("a DKR resharing from this DKG has
+    /// completed") lives in `network::cleanup_after_epoch_change`, since `dkg`
+    /// can't import `dkr` without creating a circular Move.toml dep.
+    public fun delete_inner_vss_sessions(session_addr: address) acquires Session {
+        let session = borrow_global_mut<Session>(session_addr);
+        assert!(session.state == STATE__DONE, error::invalid_state(E_SESSION_NOT_COMPLETED));
+        assert!(!session.vss_sessions.is_empty(), error::invalid_state(E_INNER_VSSES_ALREADY_DELETED));
+        let vss_addrs = session.vss_sessions;
+        session.vss_sessions = vector[];
+        session.done_flags = vector[];
+        vss_addrs.for_each(|vss_addr| vss::delete_session(vss_addr));
     }
 }

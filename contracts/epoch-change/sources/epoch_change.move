@@ -124,4 +124,29 @@ module ace::epoch_change {
         secrets.append(session.dkgs);
         (session.nxt_nodes, session.nxt_threshold, secrets, session.nxt_epoch_duration_micros)
     }
+
+    /// Delete a DONE epoch_change session. Called by `network::touch` immediately
+    /// after `results()` is consumed into `network::State`. The new DKR/DKG
+    /// addresses returned by `results` are owned by `network::State.secrets` now,
+    /// so this `Session`'s book-keeping fields are no longer load-bearing.
+    /// Public (no friend) since `epoch_change` cannot import `network` (circular);
+    /// the state == DONE gate is sufficient against pre-consumption deletion
+    /// because `network::touch` deletes in the same transaction it consumes.
+    public fun delete_session(session_addr: address) acquires Session, SignerStore {
+        let Session {
+            caller: _,
+            cur_nodes: _,
+            cur_threshold: _,
+            nxt_nodes: _,
+            nxt_threshold: _,
+            nxt_epoch_duration_micros: _,
+            secrets_to_reshare: _,
+            new_secret_schemes: _,
+            state_code,
+            dkgs: _,
+            dkrs: _,
+        } = move_from<Session>(session_addr);
+        assert!(state_code == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        let SignerStore { extend_ref: _ } = move_from<SignerStore>(session_addr);
+    }
 }

@@ -14,6 +14,8 @@ module ace::dkr {
 
     const E_SECRET_SRC_NOT_COMPLETED: u64 = 1;
     const E_INVALID_SECRET_SRC: u64 = 2;
+    const E_SESSION_NOT_TERMINAL: u64 = 3;
+    const E_INVALID_SUCCESSOR: u64 = 4;
 
     /// VSS sessions are being created one per touch().
     const STATE__START_VSSS: u8 = 0;
@@ -195,6 +197,55 @@ module ace::dkr {
     public fun keypair_id_and_scheme(addr: address): (address, u8) {
         let s = &Session[addr];
         (s.original_session, group::element_scheme(&s.public_base_element))
+    }
+
+    public fun is_session(addr: address): bool {
+        exists<Session>(addr)
+    }
+
+    /// Immediate predecessor session — the DKR/DKG this session was reshared from.
+    /// For DKR_1, this is the original DKG. For DKR_{k+1} (k≥1), this is DKR_k.
+    public fun previous_session(session_addr: address): address acquires Session {
+        borrow_global<Session>(session_addr).previous_session
+    }
+
+    /// Delete a terminal DKR session and all of its inner VSS sessions.
+    /// Authorization is by *successor proof*: caller must pass a `successor_addr`
+    /// that is a DONE DKR with `previous_session == session_addr`. This means
+    /// `session_addr` has been superseded and is no longer the current session
+    /// for any keypair — so encrypting/decrypting the keypair's ciphertexts only
+    /// reads from `successor_addr` going forward. Frees `Session + SignerStore`
+    /// at `session_addr` (sticky address persists as an inert tombstone) plus
+    /// every `vss::Session` listed in `vss_sessions`.
+    public fun delete_session(session_addr: address, successor_addr: address) acquires Session, SignerStore {
+        let successor = borrow_global<Session>(successor_addr);
+        assert!(
+            successor.state_code == STATE__DONE && successor.previous_session == session_addr,
+            error::invalid_argument(E_INVALID_SUCCESSOR),
+        );
+        let Session {
+            caller: _,
+            public_base_element: _,
+            secretly_scaled_element: _,
+            original_session: _,
+            previous_session: _,
+            current_nodes: _,
+            current_threshold: _,
+            new_nodes: _,
+            new_threshold: _,
+            state_code,
+            src_share_pks: _,
+            vss_sessions,
+            vss_contribution_flags: _,
+            lagrange_coeffs_at_zero: _,
+            share_pks: _,
+        } = move_from<Session>(session_addr);
+        assert!(
+            state_code == STATE__DONE || state_code == STATE__FAIL,
+            error::invalid_state(E_SESSION_NOT_TERMINAL),
+        );
+        vss_sessions.for_each(|vss_addr| vss::delete_session(vss_addr));
+        let SignerStore { extend_ref: _ } = move_from<SignerStore>(session_addr);
     }
 
     /// Compute Lagrange interpolation coefficients at x=0 for the given evaluation points.

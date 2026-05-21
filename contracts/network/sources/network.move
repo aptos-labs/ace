@@ -225,6 +225,29 @@ module ace::network {
         }
     }
 
+    /// Reclaim on-chain storage after the epoch_change session at
+    /// `consumed_epoch_change_session` has been folded into `state.secrets`:
+    ///   * Each new DKR in `new_secrets` was reshared from some predecessor —
+    ///     delete that predecessor (DKR: the whole session + inner VSSes;
+    ///     DKG: only the inner VSSes, since the DKG `Session` is the keypair_id
+    ///     and stays referenced by the encrypt path).
+    ///   * The epoch_change session itself is no longer load-bearing.
+    /// New DKGs (entries in `new_secret_schemes`) have no predecessor and are
+    /// skipped here.
+    fun cleanup_after_epoch_change(consumed_epoch_change_session: address, new_secrets: &vector<address>) {
+        new_secrets.for_each_ref(|new_secret| {
+            if (dkr::is_session(*new_secret)) {
+                let predecessor = dkr::previous_session(*new_secret);
+                if (dkr::is_session(predecessor)) {
+                    dkr::delete_session(predecessor, *new_secret);
+                } else if (dkg::is_session(predecessor)) {
+                    dkg::delete_inner_vss_sessions(predecessor);
+                }
+            }
+        });
+        epoch_change::delete_session(consumed_epoch_change_session);
+    }
+
     #[randomness]
     /// Node should call this only after the current epoch is older than the epoch duration.
     entry fun touch() {
@@ -242,6 +265,7 @@ module ace::network {
                 state.epoch_duration_micros = epoch_duration_micros;
                 state.proposals = range(0, nodes.length()+1).map(|_| option::none());
                 state.epoch_change_info = option::none();
+                cleanup_after_epoch_change(session, &secrets);
             }
         } else {
             // Touch all voting sessions.

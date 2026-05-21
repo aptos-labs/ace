@@ -41,6 +41,7 @@ module ace::vss {
     const E_INVALID_SCALED_ELEMENT_PROOF: u64 = 33;
     const E_INVALID_COMMITMENT_FOR_RESHARING: u64 = 34;
     const E_TOO_EARLY_TO_OPEN: u64 = 35;
+    const E_SESSION_NOT_TERMINAL: u64 = 36;
     
     // ── Protocol constants ───────────────────────────────────────────────────
 
@@ -317,6 +318,32 @@ module ace::vss {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.share_pks
+    }
+
+    /// Remove the `Session` resource at `session_addr` and let all its data drop.
+    /// Gated on terminal state only — Move's friend system can't point downstream
+    /// (vss → dkr/dkg would require circular Move.toml deps), so this is callable
+    /// by anyone. In practice it is invoked from `dkr::delete_session` and
+    /// `dkg::delete_inner_vss_sessions` after the parent has been superseded.
+    /// The sticky-object address persists (sticky objects cannot be deleted), but
+    /// storage for the heavy `DealerContribution0` (PCS commitment + per-holder
+    /// ciphertexts + sigma proof) is freed.
+    public fun delete_session(session_addr: address) acquires Session {
+        let state = borrow_global<Session>(session_addr).state_code;
+        assert!(state == STATE__SUCCESS || state == STATE__FAILED, error::invalid_state(E_SESSION_NOT_TERMINAL));
+        let Session {
+            dealer: _,
+            share_holders: _,
+            threshold: _,
+            public_base_element: _,
+            resharing_challenge: _,
+            state_code: _,
+            deal_time_micros: _,
+            dealer_contribution_0: _,
+            share_holder_acks: _,
+            dealer_contribution_1: _,
+            share_pks: _,
+        } = move_from<Session>(session_addr);
     }
 
     public fun ack_vec(session_addr: address): vector<u8> acquires Session {

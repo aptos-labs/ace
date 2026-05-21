@@ -55,6 +55,7 @@ use axum::{
 };
 use serde_json::json;
 use tokio::sync::Semaphore;
+use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 use vss_common::crypto::pke_encrypt;
 use vss_common::normalize_account_addr;
@@ -82,11 +83,20 @@ pub struct AppState {
 }
 
 /// Spawn the user-request server. Runs until the process exits.
+///
+/// CORS is wide open (`Access-Control-Allow-Origin: *`, any method, any header)
+/// so browser-based clients (e.g. the Shelby explorer's decrypt flow at
+/// `https://explorer.shelby.xyz`, or any dApp using `@aptos-labs/ace-sdk`
+/// directly from the page) can read the share response. The endpoint has no
+/// cookies, no Authorization, and no per-origin authorization — the response
+/// ciphertext is only readable by the holder of the ephemeral PKE key encoded
+/// in the request — so there is nothing for the SOP to protect here.
 pub async fn run_user_server(port: u16, state: AppState) {
     let app = Router::new()
         .route("/", post(handle_request))
         .route("/healthz", get(handle_healthz))
-        .with_state(state);
+        .with_state(state)
+        .layer(CorsLayer::permissive());
     serve(port, app, "http-server (user)").await;
 }
 

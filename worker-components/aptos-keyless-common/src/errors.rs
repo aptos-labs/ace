@@ -11,6 +11,9 @@ pub enum VerifyError {
     #[error("ephemeral signature verification failed: {0}")]
     EphemeralSig(String),
 
+    #[error("training-wheels signature failed: {0}")]
+    TrainingWheels(String),
+
     #[error("Groth16 proof verification failed: {0}")]
     Groth16(String),
 

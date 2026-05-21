@@ -15,6 +15,19 @@ function shortAddr(addr: string): string {
     return `${addr.slice(0, 10)}...${addr.slice(-6)}`;
 }
 
+export function deployLabel(node: TrackedNode): string {
+    if (node.platform === 'gcp') {
+        if (node.mode === 'microservices') {
+            const h = node.gcp?.handlerServiceName ?? '?';
+            const m = node.gcp?.maintainerServiceName ?? '?';
+            return `GCP Cloud Run microservices (handler=${h}, maintainer=${m})`;
+        }
+        return `GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`;
+    }
+    if (node.platform === 'docker') return `Docker (${node.docker?.containerName ?? '?'})`;
+    return 'local build';
+}
+
 function addrLabel(addr: string, profiles: Record<string, TrackedNode>, rpcUrl: string, aceAddr: string): string {
     const match = Object.values(profiles).find(n => n.accountAddr === addr && n.rpcUrl === rpcUrl && n.aceAddr === aceAddr);
     return match?.alias ? `${addr}  ${D}(${match.alias})${R}` : addr;
@@ -254,15 +267,11 @@ export function renderNodeStatus(
     } else if (!node.platform) {
         lines.push(`${D}No deployment platform configured.${R}`);
     } else if (deployDiff instanceof Error) {
-        const platformName = node.platform === 'gcp'
-            ? `GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`
-            : `Docker (${node.docker?.containerName ?? '?'})`;
+        const platformName = deployLabel(node);
         lines.push(`${B}Deployment${R}  ${platformName}`);
         lines.push(`  ${E}Error: ${deployDiff.message}${R}`);
     } else if (deployDiff !== null) {
-        const platformName = node.platform === 'gcp'
-            ? `GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`
-            : `Docker (${node.docker?.containerName ?? '?'})`;
+        const platformName = deployLabel(node);
         const outdated = deployDiff.filter(r => !r.match);
         const statusStr = outdated.length === 0
             ? `${G}✓ all fields match${R}`

@@ -5,6 +5,7 @@ import { confirm } from '@inquirer/prompts';
 import { loadConfig, saveConfig, deriveRpcLabel } from '../config.js';
 import { CLI } from '../cli-name.js';
 import { isLocalNodeAlive, killLocalNode } from '../local-process.js';
+import { deployLabel } from '../render-state.js';
 
 const D = '\x1b[2m', R = '\x1b[0m', B = '\x1b[1m', G = '\x1b[32m', E = '\x1b[31m';
 
@@ -26,17 +27,15 @@ export function profileListCommand(): void {
         console.log(`    Network : ${deriveRpcLabel(node.rpcUrl)}`);
         console.log(`    Account : ${node.accountAddr}`);
         if (node.endpoint) console.log(`    Endpoint: ${node.endpoint}`);
-        if (node.platform === 'gcp') {
-            console.log(`    Deploy  : GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`);
-        } else if (node.platform === 'docker') {
-            console.log(`    Deploy  : Docker (${node.docker?.containerName ?? '?'})`);
-        } else if (node.platform === 'local') {
+        if (node.platform === 'local') {
             const alive = node.local?.pid ? isLocalNodeAlive(node.local.pid) : false;
             const procStatus = node.local?.pid
                 ? (alive ? `${G}running pid=${node.local.pid}${R}` : `${E}stopped (was pid=${node.local.pid})${R}`)
                 : `${D}not started${R}`;
-            console.log(`    Deploy  : local build  ${procStatus}`);
+            console.log(`    Deploy  : ${deployLabel(node)}  ${procStatus}`);
             if (node.local?.logFile) console.log(`    Log     : ${node.local.logFile}`);
+        } else if (node.platform) {
+            console.log(`    Deploy  : ${deployLabel(node)}`);
         }
         console.log();
     }

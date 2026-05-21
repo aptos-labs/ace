@@ -22,6 +22,7 @@ import {
 } from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
+import { gcloudReady, dockerReady, maybeAutoRun } from '../auto-deploy.js';
 import {
     schemeOf, generateTemplate, parseTemplate,
     type TemplateInputs, type ParsedNodeForm,
@@ -169,9 +170,8 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         if (rpcUrlsNeedVpcEgress(chainRpc)) {
             console.log(`${D}A private RPC URL was detected; the command below adds --network/--subnet/--vpc-egress so Cloud Run can reach it via VPC.${R}`);
         }
-        console.log('Run this command to apply the changes:\n');
-        if (mode === 'microservices') {
-            console.log(gcpDeployCmdMicroservices(
+        const cmd = mode === 'microservices'
+            ? gcpDeployCmdMicroservices(
                 {
                     project:                updatedNode.gcp.project,
                     region:                 updatedNode.gcp.region,
@@ -180,20 +180,27 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                     handlerMaxInstances:    updatedNode.gcp.handlerMaxInstances!,
                 },
                 image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-            ));
-        } else {
-            console.log(gcpDeployCmd(
+            )
+            : gcpDeployCmd(
                 updatedNode.gcp.serviceName!, image!, updatedNode.gcp.project, updatedNode.gcp.region,
                 nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-            ));
-        }
+            );
+        console.log('Re-deploy command:\n');
+        console.log(cmd);
+        console.log();
+        await maybeAutoRun(cmd, gcloudReady(), 'Apply this now?');
     } else if (node.platform === 'docker' && updatedNode.docker) {
-        console.log('Run this command to apply the changes:\n');
-        console.log(`docker rm -f ${updatedNode.docker.containerName} &&`);
-        console.log(dockerRunCmd(
-            updatedNode.docker.containerName, image!, updatedNode.docker.port,
-            nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-        ));
+        const cmd = [
+            `docker rm -f ${updatedNode.docker.containerName} &&`,
+            dockerRunCmd(
+                updatedNode.docker.containerName, image!, updatedNode.docker.port,
+                nodeArgs, node.nodeRpcUrl ?? node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+            ),
+        ].join('\n');
+        console.log('Restart command:\n');
+        console.log(cmd);
+        console.log();
+        await maybeAutoRun(cmd, dockerReady(), 'Apply this now?');
     } else if (node.platform === 'local' && updatedNode.local) {
         if (updatedNode.local.pid && isLocalNodeAlive(updatedNode.local.pid)) {
             console.log(`Stopping old process (pid=${updatedNode.local.pid})...`);

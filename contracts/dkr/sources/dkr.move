@@ -216,13 +216,17 @@ module ace::dkr {
     /// for any keypair — so encrypting/decrypting the keypair's ciphertexts only
     /// reads from `successor_addr` going forward. Frees `Session + SignerStore`
     /// at `session_addr` (sticky address persists as an inert tombstone) plus
-    /// every `vss::Session` listed in `vss_sessions`.
+    /// every `vss::Session` listed in `vss_sessions`. Each inner VSS is
+    /// authenticated against `vss::delete_session` using this DKR's own object
+    /// signer (regenerated from `SignerStore.extend_ref`), which matches the
+    /// signer that was passed to `vss::new_session` at creation.
     public fun delete_session(session_addr: address, successor_addr: address) acquires Session, SignerStore {
         let successor = borrow_global<Session>(successor_addr);
         assert!(
             successor.state_code == STATE__DONE && successor.previous_session == session_addr,
             error::invalid_argument(E_INVALID_SUCCESSOR),
         );
+        let owner_signer = SignerStore[session_addr].extend_ref.generate_signer_for_extending();
         let Session {
             caller: _,
             public_base_element: _,
@@ -244,7 +248,7 @@ module ace::dkr {
             state_code == STATE__DONE || state_code == STATE__FAIL,
             error::invalid_state(E_SESSION_NOT_TERMINAL),
         );
-        vss_sessions.for_each(|vss_addr| vss::delete_session(vss_addr));
+        vss_sessions.for_each(|vss_addr| vss::delete_session(&owner_signer, vss_addr));
         let SignerStore { extend_ref: _ } = move_from<SignerStore>(session_addr);
     }
 

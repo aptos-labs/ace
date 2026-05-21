@@ -42,6 +42,7 @@ module ace::vss {
     const E_INVALID_COMMITMENT_FOR_RESHARING: u64 = 34;
     const E_TOO_EARLY_TO_OPEN: u64 = 35;
     const E_SESSION_NOT_TERMINAL: u64 = 36;
+    const E_NOT_OWNER: u64 = 37;
     
     // ── Protocol constants ───────────────────────────────────────────────────
 
@@ -321,14 +322,17 @@ module ace::vss {
     }
 
     /// Remove the `Session` resource at `session_addr` and let all its data drop.
-    /// Gated on terminal state only — Move's friend system can't point downstream
-    /// (vss → dkr/dkg would require circular Move.toml deps), so this is callable
-    /// by anyone. In practice it is invoked from `dkr::delete_session` and
-    /// `dkg::delete_inner_vss_sessions` after the parent has been superseded.
-    /// The sticky-object address persists (sticky objects cannot be deleted), but
-    /// storage for the heavy `DealerContribution0` (PCS commitment + per-holder
-    /// ciphertexts + sigma proof) is freed.
-    public fun delete_session(session_addr: address) acquires Session {
+    /// Authorization: `owner` must be the address that called `new_session` — i.e.
+    /// the parent DKR or DKG's object signer (recorded by `create_sticky_object`
+    /// as the sticky object's owner). In practice the parent regenerates its own
+    /// object signer via its `SignerStore.extend_ref` and passes it here from
+    /// `dkr::delete_session` / `dkg::delete_inner_vss_sessions`. The sticky
+    /// address persists (sticky objects cannot be deleted), but storage for the
+    /// heavy `DealerContribution0` (PCS commitment + per-holder ciphertexts +
+    /// sigma proof) is freed.
+    public fun delete_session(owner: &signer, session_addr: address) acquires Session {
+        let obj: object::Object<Session> = object::address_to_object(session_addr);
+        assert!(object::is_owner(obj, address_of(owner)), error::permission_denied(E_NOT_OWNER));
         let state = borrow_global<Session>(session_addr).state_code;
         assert!(state == STATE__SUCCESS || state == STATE__FAILED, error::invalid_state(E_SESSION_NOT_TERMINAL));
         let Session {

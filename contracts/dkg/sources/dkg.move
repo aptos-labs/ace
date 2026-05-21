@@ -226,14 +226,18 @@ module ace::dkg {
     /// Gated only on terminal DKG state + non-empty `vss_sessions` (for
     /// idempotency). The successor check ("a DKR resharing from this DKG has
     /// completed") lives in `network::cleanup_after_epoch_change`, since `dkg`
-    /// can't import `dkr` without creating a circular Move.toml dep.
-    public fun delete_inner_vss_sessions(session_addr: address) acquires Session {
+    /// can't import `dkr` without creating a circular Move.toml dep. Each inner
+    /// VSS is authenticated against `vss::delete_session` using this DKG's own
+    /// object signer (regenerated from `SignerStore.extend_ref`), which matches
+    /// the signer that was passed to `vss::new_session` at creation.
+    public fun delete_inner_vss_sessions(session_addr: address) acquires Session, SignerStore {
         let session = borrow_global_mut<Session>(session_addr);
         assert!(session.state == STATE__DONE, error::invalid_state(E_SESSION_NOT_COMPLETED));
         assert!(!session.vss_sessions.is_empty(), error::invalid_state(E_INNER_VSSES_ALREADY_DELETED));
         let vss_addrs = session.vss_sessions;
         session.vss_sessions = vector[];
         session.done_flags = vector[];
-        vss_addrs.for_each(|vss_addr| vss::delete_session(vss_addr));
+        let owner_signer = SignerStore[session_addr].extend_ref.generate_signer_for_extending();
+        vss_addrs.for_each(|vss_addr| vss::delete_session(&owner_signer, vss_addr));
     }
 }

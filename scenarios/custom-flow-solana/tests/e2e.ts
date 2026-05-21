@@ -67,20 +67,28 @@ describe("custom-acl", () => {
         await fundAccounts(connection, [admin, payer], minBalance);
 
         // ── Read ACE config written by the scenario ──────────────────────────
+        // Accepts both legacy single-keypair format (`keypairId` / `KEYPAIR_ID`)
+        // and the multi-keypair list format (`keypairIds` / `KEYPAIR_IDS`).
+        // `test-custom-flow-solana.ts` writes the list form (two entries) so
+        // the failures sub-test can use [1] as a real-but-mismatching id.
         let apiEndpoint: string;
         let contractAddr: string;
-        let keypairId: AccountAddress;
-        if (process.env.ACE_CONTRACT && process.env.KEYPAIR_ID) {
+        let keypairIds: AccountAddress[];
+        if (process.env.ACE_CONTRACT && (process.env.KEYPAIR_IDS || process.env.KEYPAIR_ID)) {
             apiEndpoint = "http://localhost:8080/v1";
             contractAddr = process.env.ACE_CONTRACT;
-            keypairId = AccountAddress.fromString(process.env.KEYPAIR_ID);
+            const raw = process.env.KEYPAIR_IDS ?? process.env.KEYPAIR_ID!;
+            keypairIds = raw.split(",").map(s => AccountAddress.fromString(s.trim()));
         } else {
             const cfg = JSON.parse(readFileSync("/tmp/ace-localnet-config.json", "utf8")) as
-                { apiEndpoint: string; contractAddr: string; keypairId: string };
-            apiEndpoint = cfg.apiEndpoint;
-            contractAddr = cfg.contractAddr;
-            keypairId = AccountAddress.fromString(cfg.keypairId);
+                Partial<{ apiEndpoint: string; contractAddr: string; keypairIds: string[]; keypairId: string }>;
+            apiEndpoint = cfg.apiEndpoint!;
+            contractAddr = cfg.contractAddr!;
+            const idStrings = cfg.keypairIds ?? (cfg.keypairId ? [cfg.keypairId] : []);
+            keypairIds = idStrings.map(s => AccountAddress.fromString(s));
         }
+        const keypairId = keypairIds[0]!;
+        const mismatchingKeypairId = keypairIds[1];  // optional — only set in CI
         console.log(`ACE contract: ${contractAddr}`);
         console.log(`Keypair ID:   ${keypairId.toString()}`);
 
@@ -134,16 +142,24 @@ describe("custom-acl", () => {
         console.log(`Epoch: ${epoch}`);
 
         // ── Helper: attempt decrypt using a legacy (v0) transaction ──────────
-        async function tryDecryptV0(payload: Buffer): Promise<{ ok: boolean; value?: Uint8Array }> {
+        // Override args let the failures sub-tests target a mismatching
+        // keypair_id (step A) or a different label (step C) while reusing
+        // the rest of the txn-build + submit machinery.
+        async function tryDecryptV0(
+            payload: Buffer,
+            overrides: { keypairId?: AccountAddress; label?: Buffer } = {},
+        ): Promise<{ ok: boolean; value?: Uint8Array }> {
+            const effKeypairId = overrides.keypairId ?? keypairId;
+            const effLabel = overrides.label ?? label;
             const requestBytes = ACE.SolanaCustomFlow.buildCustomRequestBytes({
-                keypairId,
+                keypairId: effKeypairId,
                 epoch,
                 encPk,
-                label,
+                label: effLabel,
                 payload,
             });
 
-            const codeEntryPda = deriveCodeEntryPda(label, program.programId);
+            const codeEntryPda = deriveCodeEntryPda(effLabel, program.programId);
             const txn = await program.methods
                 .assertCustomAcl(Buffer.from(requestBytes))
                 .accounts({ codeEntry: codeEntryPda })
@@ -156,13 +172,13 @@ describe("custom-acl", () => {
             try {
                 const value = await ACE.SolanaCustomFlow.decrypt({
                     ciphertext,
-                    label,
+                    label: effLabel,
                     encPk,
                     encSk,
                     epoch,
                     txn: txn.serialize(),
                     aceDeployment,
-                    keypairId,
+                    keypairId: effKeypairId,
                     knownChainName,
                     programId,
                 });
@@ -234,6 +250,33 @@ describe("custom-acl", () => {
         expect(result1.ok).to.equal(true, "Correct payload (v1) should succeed");
         expect(Buffer.from(result1.value!).toString()).to.equal("HELLO CUSTOM FLOW");
         console.log("✓ Decrypted with versioned transaction");
+
+        // ── Step A: bad keypair_id ──────────────────────────────────────────
+        // Ciphertext was bound to keypair_ids[0]; submitting under
+        // keypair_ids[1] (a real, on-chain-known secret, but not the one
+        // the ciphertext was encrypted under) drives the request past the
+        // SDK's pre-flight `fetchCurrentSessionPks` check and into the
+        // worker's share lookup, which returns shares for the wrong identity.
+        // SDK fails the integrity check on the assembled IDK → Result.Err.
+        if (mismatchingKeypairId !== undefined) {
+            console.log("\n=== Step A: mismatching keypair_id (should fail) ===");
+            const stepA = await tryDecryptV0(correctCode, { keypairId: mismatchingKeypairId });
+            expect(stepA.ok).to.equal(false, "mismatching keypair_id should be rejected");
+            console.log("✓ Correctly rejected mismatching keypair_id");
+        } else {
+            console.log("\n=== Step A: skipped (only one keypair in env-var config) ===");
+        }
+
+        // ── Step C: wrong label ─────────────────────────────────────────────
+        // Ciphertext was bound to `label` at encrypt time; submitting under a
+        // different label produces a request whose code-entry PDA derives from
+        // the wrong label → on-chain `assert_custom_acl` aborts at PDA lookup,
+        // worker rejects via simulateTransaction.
+        console.log("\n=== Step C: wrong label (should fail) ===");
+        const wrongLabel = Buffer.from("different-label");
+        const stepC = await tryDecryptV0(correctCode, { label: wrongLabel });
+        expect(stepC.ok).to.equal(false, "wrong label should be rejected");
+        console.log("✓ Correctly rejected wrong label");
 
         console.log("\n=== All tests passed! ===");
     });

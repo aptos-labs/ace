@@ -20,7 +20,7 @@
  *  12. Decrypt with correct payload → expect success, verify plaintext.
  */
 
-import { Account } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { pke } from '@aptos-labs/ace-sdk';
 import { type ChildProcess } from 'child_process';
@@ -248,6 +248,46 @@ async function main() {
             `plaintext mismatch: ${new TextDecoder().decode(decrypted)}`,
         );
         log('Correct payload accepted; plaintext recovered ✓');
+
+        // ── 13. Step A: bad keypair_id ────────────────────────────────────────
+        // SDK pre-flight `fetchCurrentSessionPks` throws on an unknown
+        // keypair_id; `Result.captureAsync` inside `decryptCoreCustom` converts
+        // it to Result.Err, surfaced here as the unwrapErrOrThrow() in the
+        // ace-sdk's decrypt wrapper (i.e., a thrown error from the await).
+        log('Step A: decrypt with nonexistent keypair_id (should fail)...');
+        const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
+        let badKeypairFailed = false;
+        try {
+            await ACE.AptosCustomFlow.decrypt({
+                ciphertext, label, encPk, encSk, payload: correctCode,
+                aceDeployment, keypairId: fakeKeypairId, chainId: CHAIN_ID,
+                moduleAddr: adminAddr, moduleName: 'check_acl_demo', functionName: 'check_acl',
+            });
+        } catch (_e) {
+            badKeypairFailed = true;
+        }
+        assert(badKeypairFailed, 'Step A: bad keypair_id should have been rejected');
+        log('  ✓ Bad keypair_id rejected');
+
+        // ── 14. Step C: wrong label ───────────────────────────────────────────
+        // Ciphertext was bound to `label` at encrypt time; decrypting with a
+        // different label produces a request whose embedded `label` field
+        // doesn't match — chain's `check_acl(label, encPk, payload)` view is
+        // called with the *wrong* label, returns false, worker refuses.
+        log('Step C: decrypt with wrong label (should fail)...');
+        const wrongLabel = new TextEncoder().encode('different-content');
+        let wrongLabelFailed = false;
+        try {
+            await ACE.AptosCustomFlow.decrypt({
+                ciphertext, label: wrongLabel, encPk, encSk, payload: correctCode,
+                aceDeployment, keypairId, chainId: CHAIN_ID,
+                moduleAddr: adminAddr, moduleName: 'check_acl_demo', functionName: 'check_acl',
+            });
+        } catch (_e) {
+            wrongLabelFailed = true;
+        }
+        assert(wrongLabelFailed, 'Step C: wrong label should have been rejected');
+        log('  ✓ Wrong label rejected');
 
         log('\n✅ Aptos custom-flow tests passed!\n');
     } catch (err) {

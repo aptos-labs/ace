@@ -19,8 +19,41 @@ use crate::{
         JwtHeader, KeylessPublicKey, KeylessSignature, ZkProof,
     },
 };
-use ed25519_dalek::Verifier;
 use sha3::{Digest, Sha3_256};
+
+/// Little-endian byte representation of L, the order of the Ed25519 base point.
+/// L = 2^252 + 27742317777372353535851937790883648493.
+const ED25519_L_LE: [u8; 32] = [
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+    0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+];
+
+/// Verify an Ed25519 signature with the same strictness as aptos-core's
+/// `Ed25519Signature::verify_arbitrary_msg`: explicit s-malleability check
+/// (s in [0, L)) plus `verify_strict` (rejects non-canonical R/A and
+/// low-order public keys that plain `verify` would otherwise accept).
+fn verify_ed25519_strict(
+    pk_bytes: &[u8; 32],
+    sig_bytes: &[u8; 64],
+    msg: &[u8],
+) -> Result<(), String> {
+    // s = last 32 bytes, little-endian. Reject s >= L.
+    let s = &sig_bytes[32..];
+    let mut s_lt_l = false;
+    for i in (0..32).rev() {
+        if s[i] < ED25519_L_LE[i] { s_lt_l = true; break; }
+        if s[i] > ED25519_L_LE[i] { break; }
+    }
+    if !s_lt_l {
+        return Err("s not in canonical range [0, L)".into());
+    }
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
+        .map_err(|e| format!("invalid pubkey: {}", e))?;
+    let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
+    vk.verify_strict(msg, &sig).map_err(|e| format!("verify_strict: {}", e))
+}
 
 /// Verify a keyless ZK signature over `message`.
 ///
@@ -147,16 +180,12 @@ pub fn verify_training_wheels_signature(
             training_wheels_pubkey.len()
         ))
     })?;
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
-        .map_err(|e| VerifyError::TrainingWheels(format!("invalid pubkey: {}", e)))?;
-
     let mut msg = Sha3_256::digest(b"APTOS::Groth16ProofAndStatement").to_vec();
     bcs::serialize_into(&mut msg, proof)
         .map_err(|e| VerifyError::Internal(format!("BCS serialize proof: {}", e)))?;
     msg.extend_from_slice(public_inputs_hash_le);
 
-    vk.verify(&msg, &ed25519_dalek::Signature::from_bytes(&sig_arr))
-        .map_err(|e| VerifyError::TrainingWheels(format!("verify: {}", e)))
+    verify_ed25519_strict(&pk_arr, &sig_arr, &msg).map_err(VerifyError::TrainingWheels)
 }
 
 fn verify_ephemeral_sig(
@@ -182,12 +211,8 @@ fn verify_ephemeral_sig(
                 )));
             }
             let pk_arr: [u8; 32] = public_key.as_slice().try_into().unwrap();
-            let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
-                .map_err(|e| VerifyError::EphemeralSig(format!("invalid pubkey: {}", e)))?;
             let sig_arr: [u8; 64] = signature.as_slice().try_into().unwrap();
-            let s = ed25519_dalek::Signature::from_bytes(&sig_arr);
-            vk.verify(message, &s)
-                .map_err(|e| VerifyError::EphemeralSig(format!("verify: {}", e)))
+            verify_ed25519_strict(&pk_arr, &sig_arr, message).map_err(VerifyError::EphemeralSig)
         }
         (EphemeralPublicKey::Secp256r1Ecdsa { .. }, _)
         | (_, EphemeralSignature::WebAuthn { .. }) => Err(VerifyError::Unsupported(
@@ -272,6 +297,39 @@ mod tests {
         pih_le[0] ^= 0x01;
         let err = verify_training_wheels_signature(proof, &pih_le, tw_pk, tw_sig)
             .expect_err("flipped PIH must not verify");
+        assert!(matches!(err, VerifyError::TrainingWheels(_)), "got {:?}", err);
+    }
+
+    /// Add L to s in place (LE, may produce a value in [L, 2L)). Used to build
+    /// a non-canonical-s variant of an otherwise-valid signature.
+    fn add_l_to_s(s: &mut [u8]) {
+        assert_eq!(s.len(), 32);
+        let mut carry: u16 = 0;
+        for i in 0..32 {
+            let sum = s[i] as u16 + ED25519_L_LE[i] as u16 + carry;
+            s[i] = (sum & 0xff) as u8;
+            carry = sum >> 8;
+        }
+        assert_eq!(carry, 0, "s + L overflowed 32 bytes — fixture s is unexpectedly large");
+    }
+
+    #[test]
+    fn training_wheels_signature_rejects_non_canonical_s() {
+        // Take the valid fixture signature, replace s with s + L. The result is the
+        // same scalar mod L, so plain `verify` (and dalek's `verify_strict` alone)
+        // would still accept it. Our explicit s-malleability check must reject it,
+        // matching aptos-core's on-chain behavior.
+        let (_pk, sig, _jwk, config, pih_le) = fixture();
+        let (proof, tw_sig) = proof_and_tw_sig(&sig);
+        let tw_pk = config.training_wheels_pubkey.as_ref().unwrap();
+
+        let EphemeralSignature::Ed25519 { signature: good_sig } = tw_sig else { panic!() };
+        let mut bad_bytes = good_sig.clone();
+        add_l_to_s(&mut bad_bytes[32..]);
+        let bad_sig = EphemeralSignature::Ed25519 { signature: bad_bytes };
+
+        let err = verify_training_wheels_signature(proof, &pih_le, tw_pk, &bad_sig)
+            .expect_err("non-canonical s must be rejected");
         assert!(matches!(err, VerifyError::TrainingWheels(_)), "got {:?}", err);
     }
 }

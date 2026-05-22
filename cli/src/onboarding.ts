@@ -19,6 +19,7 @@ import {
     pickScheme, modeOf, platformOf, generateTemplate, parseTemplate, defaultsFor,
     type Scheme, type TemplateInputs,
 } from './node-schemes.js';
+import { gcloudReady, dockerReady, maybeAutoRun, captureCloudRunUrl } from './auto-deploy.js';
 
 const LOGROTATE_DIR   = path.join(homedir(), '.ace', 'logrotate');
 const LOGROTATE_STATE = path.join(LOGROTATE_DIR, 'logrotate.state');
@@ -518,11 +519,16 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
 
     if (scheme === 'gcp-cloudrun-monolith') {
         gcpCfg = { project: parsed.project!, region: parsed.region!, serviceName: parsed.serviceName! };
-        console.log('\nRun this command to deploy your node:\n');
-        console.log(gcpDeployCmd(parsed.serviceName!, image!, parsed.project!, parsed.region!,
-            profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc));
+        const cmd = gcpDeployCmd(parsed.serviceName!, image!, parsed.project!, parsed.region!,
+            profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+        console.log('\nDeploy command:\n');
+        console.log(cmd);
         console.log();
-        endpoint = await promptEndpoint('Cloud Run service URL (paste after deploy completes)');
+        const ran = await maybeAutoRun(cmd, gcloudReady(), 'Run this now?');
+        const defaultEndpoint = ran
+            ? captureCloudRunUrl(parsed.serviceName!, parsed.project!, parsed.region!)
+            : undefined;
+        endpoint = await promptEndpoint('Cloud Run service URL', defaultEndpoint);
     } else if (scheme === 'gcp-cloudrun-microservices') {
         gcpCfg = {
             project:                parsed.project!,
@@ -531,8 +537,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
             handlerServiceName:     parsed.handlerServiceName!,
             handlerMaxInstances:    parsed.handlerMaxInstances!,
         };
-        console.log('\nRun the script below to deploy your node:\n');
-        console.log(gcpDeployCmdMicroservices(
+        const cmd = gcpDeployCmdMicroservices(
             {
                 project:                parsed.project!,
                 region:                 parsed.region!,
@@ -541,15 +546,23 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
                 handlerMaxInstances:    parsed.handlerMaxInstances!,
             },
             image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
-        ));
+        );
+        console.log('\nDeploy script:\n');
+        console.log(cmd);
         console.log();
-        endpoint = await promptEndpoint("Handler service URL (paste after deploy completes)");
+        const ran = await maybeAutoRun(cmd, gcloudReady(), 'Run this script now?');
+        const defaultEndpoint = ran
+            ? captureCloudRunUrl(parsed.handlerServiceName!, parsed.project!, parsed.region!)
+            : undefined;
+        endpoint = await promptEndpoint('Handler service URL', defaultEndpoint);
     } else if (scheme === 'docker-monolith') {
         dockerCfg = { containerName: parsed.containerName!, port: parsed.port! };
-        console.log('\nRun this command to start your node:\n');
-        console.log(dockerRunCmd(parsed.containerName!, image!, parsed.port!,
-            profile, nodeRpcUrl!, net.aceAddr, rpcApiKey, gasStationKey, chainRpc));
+        const cmd = dockerRunCmd(parsed.containerName!, image!, parsed.port!,
+            profile, nodeRpcUrl!, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+        console.log('\nStart command:\n');
+        console.log(cmd);
         console.log();
+        await maybeAutoRun(cmd, dockerReady(), 'Run this now?');
         const defaultEndpoint = isLocalnet ? `http://localhost:${parsed.port}` : undefined;
         endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
     } else {

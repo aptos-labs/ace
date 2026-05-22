@@ -15,6 +15,22 @@ function shortAddr(addr: string): string {
     return `${addr.slice(0, 10)}...${addr.slice(-6)}`;
 }
 
+function renderDiffSection(lines: string[], heading: string | undefined, rows: DiffRow[]): void {
+    if (rows.length === 0) return;
+    lines.push('');
+    if (heading) lines.push(`  ${B}${heading}${R}`);
+    const FW = 12, VW = 36;
+    lines.push(`  ${D}${'Field'.padEnd(FW)}  ${'Profile'.padEnd(VW)}  Running${R}`);
+    lines.push('  ' + '─'.repeat(FW + VW * 2 + 6));
+    for (const row of rows) {
+        const pv = row.secret ? '••••••••' : row.profile;
+        const rv = row.secret ? '••••••••' : row.running;
+        const tr = (s: string) => s.length > VW ? s.slice(0, VW - 3) + '...' : s.padEnd(VW);
+        const line = `  ${row.field.padEnd(FW)}  ${tr(pv)}  ${tr(rv)}`;
+        lines.push(row.match ? `${D}${line}${R}` : `${E}${line}  ✗${R}`);
+    }
+}
+
 export function deployLabel(node: TrackedNode): string {
     if (node.platform === 'gcp') {
         if (node.mode === 'microservices') {
@@ -280,16 +296,12 @@ export function renderNodeStatus(
         lines.push(`${B}Deployment${R}  ${platformName}  ${statusStr}`);
 
         if (outdated.length > 0) {
-            lines.push('');
-            const FW = 12, VW = 36;
-            lines.push(`  ${D}${'Field'.padEnd(FW)}  ${'Profile'.padEnd(VW)}  Running${R}`);
-            lines.push('  ' + '─'.repeat(FW + VW * 2 + 6));
-            for (const row of deployDiff) {
-                const pv = row.secret ? '••••••••' : row.profile;
-                const rv = row.secret ? '••••••••' : row.running;
-                const tr = (s: string) => s.length > VW ? s.slice(0, VW - 3) + '...' : s.padEnd(VW);
-                const line = `  ${row.field.padEnd(FW)}  ${tr(pv)}  ${tr(rv)}`;
-                lines.push(row.match ? `${D}${line}${R}` : `${E}${line}  ✗${R}`);
+            const isMicro = deployDiff.some(r => r.service !== undefined);
+            if (isMicro) {
+                renderDiffSection(lines, '[maintainer]', deployDiff.filter(r => r.service === 'maintainer'));
+                renderDiffSection(lines, '[handler]',    deployDiff.filter(r => r.service === 'handler'));
+            } else {
+                renderDiffSection(lines, undefined, deployDiff);
             }
             lines.push('');
             lines.push(`  ${D}Run \`${CLI} node edit [--profile ${node.alias ?? '<alias>'}]\` to update profile and get new deploy command.${R}`);

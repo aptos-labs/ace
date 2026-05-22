@@ -128,13 +128,13 @@ nodeCmd
                 const currentDefault = config.nodes[config.defaultNode];
                 const currentLabel = currentDefault?.alias ?? config.defaultNode;
                 const setDefault = await confirm({
-                    message: `Set "${node.alias ?? nodeKey}" as the default node? (current default: ${currentLabel})`,
+                    message: `Set it as the default node? (current default: ${currentLabel})`,
                     default: false,
                 });
                 if (setDefault) config.defaultNode = nodeKey;
             }
             saveConfig(config);
-            console.log(`\n✓ Node "${node.alias ?? nodeKey}" saved to profile.\n`);
+            console.log(`\n✓ New node profile saved.\n`);
         } catch (e) {
             exitOnError(e);
         }

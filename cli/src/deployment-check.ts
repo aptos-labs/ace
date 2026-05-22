@@ -14,7 +14,14 @@ export interface DiffRow {
     running: string;
     secret: boolean;
     match: boolean;
+    /** For microservices: which Cloud Run service this row's "Running" was read from. Unset for monolith. */
+    service?: 'maintainer' | 'handler';
 }
+
+/** Discriminated container for whatever shape of services this deployment has. */
+export type FetchedDeployment =
+    | { kind: 'mono'; args: ParsedArgs }
+    | { kind: 'microservices'; maintainer: ParsedArgs; handler: ParsedArgs };
 
 interface ParsedArgs {
     api?: string;
@@ -124,17 +131,26 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
     return parsed;
 }
 
-export async function fetchDeployment(node: TrackedNode): Promise<ParsedArgs | Error | null> {
+export async function fetchDeployment(node: TrackedNode): Promise<FetchedDeployment | Error | null> {
     try {
-        if (node.platform === 'docker' && node.docker)
-            return await fetchDockerDeployment(node.docker.containerName);
+        if (node.platform === 'docker' && node.docker) {
+            const args = await fetchDockerDeployment(node.docker.containerName);
+            return { kind: 'mono', args };
+        }
         if (node.platform === 'gcp' && node.gcp) {
-            // Microservices: poll the handler (user-facing service). The
-            // maintainer is a separate Cloud Run service; introspecting both
-            // is left for a follow-up. Monolith: `serviceName` is the only one.
-            const svc = node.gcp.serviceName ?? node.gcp.handlerServiceName;
-            if (!svc) return new Error('No Cloud Run service name on this profile');
-            return await fetchGcpDeployment(svc, node.gcp.project, node.gcp.region);
+            const { project, region, serviceName, maintainerServiceName, handlerServiceName } = node.gcp;
+            if (serviceName) {
+                const args = await fetchGcpDeployment(serviceName, project, region);
+                return { kind: 'mono', args };
+            }
+            if (maintainerServiceName && handlerServiceName) {
+                const [maintainer, handler] = await Promise.all([
+                    fetchGcpDeployment(maintainerServiceName, project, region),
+                    fetchGcpDeployment(handlerServiceName, project, region),
+                ]);
+                return { kind: 'microservices', maintainer, handler };
+            }
+            return new Error('No Cloud Run service name on this profile');
         }
         if (node.platform === 'local')
             return null; // local processes aren't introspectable; skip diff
@@ -144,56 +160,113 @@ export async function fetchDeployment(node: TrackedNode): Promise<ParsedArgs | E
     }
 }
 
-export function computeDiff(node: TrackedNode, running: ParsedArgs): DiffRow[] {
-    const rows: DiffRow[] = [];
-    const add = (field: string, profile: string | undefined, run: string | undefined, secret = false) => {
-        const p = profile ?? '', r = run ?? '';
-        rows.push({ field, profile: p, running: r, secret, match: p === r });
-    };
-    add('api', node.nodeRpcUrl ?? node.rpcUrl, running.api);
-    add('addr',         node.aceAddr,       running.addr);
-    if (node.rpcApiKey     || running.apikey)  add('apikey',    node.rpcApiKey,     running.apikey,    true);
-    if (node.gasStationKey || running.gaskey)  add('gaskey',    node.gasStationKey, running.gaskey,    true);
-    add('account-addr', node.accountAddr,   running.accountAddr);
-    if (node.accountSk || running.accountSk)   add('account-sk', node.accountSk,   running.accountSk, true);
-    if (node.pkeDk     || running.pkeDk)       add('pke-dk',    node.pkeDk,         running.pkeDk,     true);
-    if (node.image     || running.image)       add('image',     node.image,         running.image);
+type Adder = (field: string, profile: string | undefined, run: string | undefined, secret?: boolean) => void;
 
-    // Per-chain RPC overrides. Only emit a row when either side has a value, so
-    // the common "neither override the binary default" case doesn't add noise.
-    const profileRpc = node.chainRpc ?? {};
+function makeAdder(rows: DiffRow[], service?: 'maintainer' | 'handler'): Adder {
+    return (field, profile, run, secret = false) => {
+        const p = profile ?? '', r = run ?? '';
+        rows.push({ field, profile: p, running: r, secret, match: p === r, service });
+    };
+}
+
+/** Per-chain-RPC override rows. Always read from `running` since only worker code (mono or handler) has them. */
+function addChainRpcRows(add: Adder, profileRpc: ChainRpcOverrides, running: ParsedArgs): void {
     for (const [flag, key] of Object.entries(CHAIN_RPC_FLAGS)) {
         const p = profileRpc[key];
         const r = running.chainRpc[key];
         if (p || r) add(flag, p, r, CHAIN_RPC_SECRET[key] ?? false);
     }
+}
 
-    // VPC egress (Cloud Run only). gcpDeployCmd auto-emits the standard config
-    // when a chainRpc URL is private. Show rows only when the profile's
-    // derivation OR the running service has any value, so unrelated docker/local
-    // nodes don't get noisy.
+/** Compare a single Cloud Run service's VPC config against the expected config. */
+function addVpcRows(
+    add: Adder,
+    running: ParsedArgs,
+    expected: { network?: string; subnet?: string; egress?: string },
+): void {
+    // Cloud Run records `network` / `subnetwork` as resource paths; trim to the trailing name.
+    const lastPathPart = (v: string | undefined) => v?.replace(/^.*\//, '');
+    const runningNetwork = lastPathPart(running.vpcNetwork);
+    const runningSubnet  = lastPathPart(running.vpcSubnet);
+    if (expected.network || runningNetwork)   add('vpc-network', expected.network, runningNetwork);
+    if (expected.subnet  || runningSubnet)    add('vpc-subnet',  expected.subnet,  runningSubnet);
+    if (expected.egress  || running.vpcEgress) add('vpc-egress', expected.egress,  running.vpcEgress);
+    const cc = running.containerConcurrency;
+    if (typeof cc === 'number' && cc !== DEFAULT_CONTAINER_CONCURRENCY) {
+        add('concurrency', String(DEFAULT_CONTAINER_CONCURRENCY), String(cc));
+    }
+}
+
+function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
+    const rows: DiffRow[] = [];
+    const add = makeAdder(rows);
+    add('api',          node.nodeRpcUrl ?? node.rpcUrl, running.api);
+    add('addr',         node.aceAddr,                   running.addr);
+    if (node.rpcApiKey     || running.apikey)    add('apikey',    node.rpcApiKey,     running.apikey,     true);
+    if (node.gasStationKey || running.gaskey)    add('gaskey',    node.gasStationKey, running.gaskey,     true);
+    add('account-addr', node.accountAddr, running.accountAddr);
+    if (node.accountSk || running.accountSk)     add('account-sk', node.accountSk,    running.accountSk,  true);
+    if (node.pkeDk     || running.pkeDk)         add('pke-dk',    node.pkeDk,         running.pkeDk,      true);
+    if (node.image     || running.image)         add('image',     node.image,         running.image);
+
+    addChainRpcRows(add, node.chainRpc ?? {}, running);
+
     if (node.platform === 'gcp') {
         const expectedVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
-        const profileNetwork = expectedVpc ? DEFAULT_VPC_NETWORK : undefined;
-        const profileSubnet  = expectedVpc ? DEFAULT_VPC_SUBNET  : undefined;
-        const profileEgress  = expectedVpc ? DEFAULT_VPC_EGRESS  : undefined;
-        // Cloud Run records `network` and `subnetwork` as resource paths
-        // (`projects/<num>/regions/<r>/subnetworks/<name>`) — normalize to the trailing name for comparison.
-        const lastPathPart = (v: string | undefined) => v?.replace(/^.*\//, '');
-        const runningNetwork = lastPathPart(running.vpcNetwork);
-        const runningSubnet  = lastPathPart(running.vpcSubnet);
-        if (profileNetwork || runningNetwork) add('vpc-network', profileNetwork, runningNetwork);
-        if (profileSubnet  || runningSubnet)  add('vpc-subnet',  profileSubnet,  runningSubnet);
-        if (profileEgress  || running.vpcEgress) add('vpc-egress', profileEgress, running.vpcEgress);
-
-        // Concurrency: gcpDeployCmd always emits --concurrency=DEFAULT_CONTAINER_CONCURRENCY;
-        // surface drift if the running service has a different value (e.g., legacy 80 default).
-        const runningCC = running.containerConcurrency;
-        if (typeof runningCC === 'number' && runningCC !== DEFAULT_CONTAINER_CONCURRENCY) {
-            add('concurrency', String(DEFAULT_CONTAINER_CONCURRENCY), String(runningCC));
-        }
+        addVpcRows(add, running, {
+            network: expectedVpc ? DEFAULT_VPC_NETWORK : undefined,
+            subnet:  expectedVpc ? DEFAULT_VPC_SUBNET  : undefined,
+            egress:  expectedVpc ? DEFAULT_VPC_EGRESS  : undefined,
+        });
     }
     return rows;
+}
+
+/**
+ * Microservices diff: the worker config is split across two Cloud Run services.
+ *   - Maintainer carries the chain/admin secrets (api/addr/apikey/gaskey/account-addr/account-sk).
+ *   - Handler carries pke-dk + per-chain RPC overrides + the always-on `--maintainer-url`.
+ *   - Both share the image and pke-dk; we diff both copies so drift on either side surfaces.
+ *   - VPC: maintainer follows the same chainRpc rule as monolith; handler is hard-wired
+ *     to network=default, subnet=default, egress=all-traffic (see gcpDeployCmdMicroservices).
+ */
+function computeDiffMicroservices(
+    node: TrackedNode, maintainer: ParsedArgs, handler: ParsedArgs,
+): DiffRow[] {
+    const rows: DiffRow[] = [];
+    const addM = makeAdder(rows, 'maintainer');
+    const addH = makeAdder(rows, 'handler');
+
+    addM('api',  node.nodeRpcUrl ?? node.rpcUrl, maintainer.api);
+    addM('addr', node.aceAddr,                   maintainer.addr);
+    if (node.rpcApiKey     || maintainer.apikey)    addM('apikey',    node.rpcApiKey,     maintainer.apikey,    true);
+    if (node.gasStationKey || maintainer.gaskey)    addM('gaskey',    node.gasStationKey, maintainer.gaskey,    true);
+    addM('account-addr', node.accountAddr, maintainer.accountAddr);
+    if (node.accountSk || maintainer.accountSk)     addM('account-sk', node.accountSk,    maintainer.accountSk, true);
+    if (node.pkeDk     || maintainer.pkeDk)         addM('pke-dk',    node.pkeDk,         maintainer.pkeDk,     true);
+    if (node.image     || maintainer.image)         addM('image',     node.image,         maintainer.image);
+
+    if (node.pkeDk || handler.pkeDk)                addH('pke-dk',    node.pkeDk,         handler.pkeDk,        true);
+    if (node.image || handler.image)                addH('image',     node.image,         handler.image);
+    addChainRpcRows(addH, node.chainRpc ?? {}, handler);
+
+    const expectedMaintVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
+    addVpcRows(addM, maintainer, {
+        network: expectedMaintVpc ? DEFAULT_VPC_NETWORK : undefined,
+        subnet:  expectedMaintVpc ? DEFAULT_VPC_SUBNET  : undefined,
+        egress:  expectedMaintVpc ? DEFAULT_VPC_EGRESS  : undefined,
+    });
+    addVpcRows(addH, handler, {
+        network: DEFAULT_VPC_NETWORK,
+        subnet:  DEFAULT_VPC_SUBNET,
+        egress:  'all-traffic',
+    });
+    return rows;
+}
+
+export function computeDiff(node: TrackedNode, fetched: FetchedDeployment): DiffRow[] {
+    if (fetched.kind === 'mono') return computeDiffMono(node, fetched.args);
+    return computeDiffMicroservices(node, fetched.maintainer, fetched.handler);
 }
 
 export function hasOutdated(rows: DiffRow[]): boolean {

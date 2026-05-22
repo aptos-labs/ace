@@ -12,6 +12,7 @@
 import { execSync, spawnSync } from 'child_process';
 import { confirm } from '@inquirer/prompts';
 
+// ANSI escape codes: D = dim, R = reset.
 const D = '\x1b[2m', R = '\x1b[0m';
 
 export interface PreflightResult {

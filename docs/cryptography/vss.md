@@ -18,7 +18,7 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
 1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 ($v_k = g^{a_k} h^{r_k}$). ACE pins `PC` to **Feldman commitments over BLS12-381 $\mathbb{G}_1$ or $\mathbb{G}_2$** (the dealer publishes $v_k = g^{a_k}$, no $h$-blinding). Consequence: `PC.Open` is trivial — the share $y_i$ *is* the witness, and `PC.Verify` is the equation $g^{y_i} = \prod_{k=0}^{t-1} v_k^{(i+1)^k}$. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". See §1.2 below for the formula.
 
-    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§2)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by $\mathsf{Adv}_{\mathrm{DLog}} + n \cdot \mathsf{Adv}_{\mathrm{IND\text{-}CPA}} + 1/|\mathbb{F}_r|$. The game samples $s \xleftarrow{\$} \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §1.3 for the two ACE derivations, both uniform).
+    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§2)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by $\mathsf{Adv}_{\text{DLog}} + n \cdot \mathsf{Adv}_{\text{IND-CPA}} + 1/|\mathbb{F}_r|$. The game samples $s \in_R \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §1.3 for the two ACE derivations, both uniform).
 
     **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
 
@@ -70,7 +70,7 @@ a_0 &:= \begin{cases}
    \mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, 0) & \text{otherwise}
 \end{cases} \\
 a_k &:= \mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, k) \qquad \text{for } k = 1, \dots, t-1 \\
-\mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, i) &:= \mathsf{Fr\_from\_LE}\bigl(\mathsf{SHA3\text{-}256}(\text{``vss-coef-v1/''} \,\|\, \mathsf{dk} \,\|\, \mathsf{LE64}(i))\bigr)
+\mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, i) &:= \mathsf{Fr\_from\_LE}\bigl(\text{SHA3-256}(\text{``vss-coef-v1/''} \,\|\, \mathsf{dk} \,\|\, \mathsf{LE64}(i))\bigr)
 \end{aligned}
 $$
 
@@ -87,16 +87,16 @@ Both call paths supply a uniform $\mathbb{F}_r$ secret (required by **Theorem 1*
 
 Replacing the paper's Pedersen PCS with Feldman (§1.1 item 1) requires a new security argument: paper's Lemma 1 leans on the Pedersen blinding $r(\cdot)$ to absorb arbitrary secret choices, which has no Feldman analogue. We state the resulting Feldman-based secrecy as a game-based reduction to DLog and PKE IND-CPA.
 
-**Game $\mathsf{VSS\text{-}OW}$** (one-wayness of the sharing-phase secret).
+**Game $\text{VSS-OW}$** (one-wayness of the sharing-phase secret).
 
 1. $\mathcal{A}$ picks corruption set $J \subseteq [n]$ with $|J| \leq t$.
 2. The challenger generates $(\mathsf{sk}_i, \mathsf{dk}_i, \mathsf{pk}_i, \mathsf{ek}_i)$ for each $i \in [n]$; hands $(\mathsf{sk}_j, \mathsf{dk}_j)_{j \in J}$ to $\mathcal{A}$; publishes all $(\mathsf{pk}_i, \mathsf{ek}_i)$.
-3. The challenger samples $s \xleftarrow{\$} \mathbb{F}_r$ uniformly.
+3. The challenger samples $s \in_R \mathbb{F}_r$ uniformly.
 4. The challenger plays the honest dealer with secret $s$ and runs the full sharing phase (including round-2 reveal of any non-ACKed share). $\mathcal{A}$ controls the corrupted parties' protocol behaviour.
 5. $\mathcal{A}$ outputs $s' \in \mathbb{F}_r$.
 6. $\mathcal{A}$ wins iff $s' = s$.
 
-Define $\mathsf{Adv}_{\mathsf{VSS\text{-}OW}}(\mathcal{A}) := \Pr[\mathcal{A}\ \text{wins}]$.
+Define $\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) := \Pr[\mathcal{A}\ \text{wins}]$.
 
 **Theorem 1 (Sharing-phase one-wayness).** Assuming
 
@@ -109,26 +109,26 @@ Define $\mathsf{Adv}_{\mathsf{VSS\text{-}OW}}(\mathcal{A}) := \Pr[\mathcal{A}\ \
 
 for any PPT adversary $\mathcal{A}$ there exist PPT algorithms $\mathcal{B}$ (DLog solver) and $\mathcal{C}$ (PKE IND-CPA distinguisher) such that
 
-$$\mathsf{Adv}_{\mathsf{VSS\text{-}OW}}(\mathcal{A}) \;\leq\; \mathsf{Adv}_{\mathrm{DLog}}(\mathcal{B}) \;+\; n \cdot \mathsf{Adv}_{\mathrm{IND\text{-}CPA}}(\mathcal{C}) \;+\; \frac{1}{|\mathbb{F}_r|}.$$
+$$\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \;\leq\; \mathsf{Adv}_{\text{DLog}}(\mathcal{B}) \;+\; n \cdot \mathsf{Adv}_{\text{IND-CPA}}(\mathcal{C}) \;+\; \frac{1}{|\mathbb{F}_r|}.$$
 
-In particular, under (H2)+(H3), $\mathsf{Adv}_{\mathsf{VSS\text{-}OW}}(\mathcal{A}) \leq \mathsf{negl}(\kappa)$.
+In particular, under (H2)+(H3), $\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \leq \mathsf{negl}(\kappa)$.
 
 **Reduction sketch ($\mathcal{B}$'s construction).** On DLog challenge $(g, P)$ where the goal is to recover $x$ with $P = g^x$:
 
 1. Accept $\mathcal{A}$'s corruption set $J$. Generate all node keys honestly and hand $(\mathsf{sk}_j, \mathsf{dk}_j)_{j \in J}$ to $\mathcal{A}$.
 2. Set $v_0 := P$ (i.e., implicitly let the latent secret be $s = \log_g P$, unknown to $\mathcal{B}$).
-3. Sample $\{y_j : j \in J\} \xleftarrow{\$} \mathbb{F}_r$ uniformly — these will play the role of the corrupted parties' shares.
-4. Sample $t - |J|$ uniformly random group elements $u_h \xleftarrow{\$} \mathbb{G}$ for "honest-holder placeholder" evaluations at fresh free indices outside $J \cup \{0\}$.
+3. Sample $\{y_j : j \in J\} \in_R \mathbb{F}_r$ uniformly — these will play the role of the corrupted parties' shares.
+4. Sample $t - |J|$ uniformly random group elements $u_h \in_R \mathbb{G}$ for "honest-holder placeholder" evaluations at fresh free indices outside $J \cup \{0\}$.
 5. Compute $v_1, \dots, v_{t-1}$ via Lagrange interpolation **in the exponent** over the $t + 1$ group points $(v_0,\, \{g^{y_j}\}_{j \in J},\, \{u_h\})$, using inverse-Vandermonde coefficients.
 6. Encrypt $0$ under each honest holder's $\mathsf{ek}_i$ (dummy ciphertext); encrypt $y_j$ under each corrupted holder's $\mathsf{ek}_j$ (so $\mathcal{A}$'s decryption recovers the prepared $y_j$).
 7. Publish $(v_0, \dots, v_{t-1})$ and the ciphertexts as the dealer's first-round contribution on the simulated chain.
 8. Sign ACK messages on behalf of each honest holder using its real signing key. For any corrupted holder $\mathcal{A}$ chooses not to ACK, perform the round-2 reveal by publishing $y_j$; on-chain Feldman verification accepts because $v$ was constructed to satisfy $g^{y_j} = \prod_k v_k^{(j+1)^k}$ by step 5.
 9. $\mathcal{A}$ outputs $s'$. $\mathcal{B}$ outputs $s'$ as its DLog answer.
 
-**Correctness.** The view $\mathcal{B}$ presents to $\mathcal{A}$ is computationally indistinguishable from the real $\mathsf{VSS\text{-}OW}$ game conditioned on $s = \log_g P$. Two ingredients carry the argument:
+**Correctness.** The view $\mathcal{B}$ presents to $\mathcal{A}$ is computationally indistinguishable from the real $\text{VSS-OW}$ game conditioned on $s = \log_g P$. Two ingredients carry the argument:
 
-- *PKE step (computational gap, $n \cdot \mathsf{Adv}_{\mathrm{IND\text{-}CPA}}$).* The only real-vs-simulated mismatch is that honest holders' ciphertexts are $\mathsf{Enc}(\mathsf{ek}_i,\, 0)$ in $\mathcal{B}$'s simulation but $\mathsf{Enc}(\mathsf{ek}_i,\, y_i)$ in the real game. A hybrid over the $\leq n$ honest holders bridges this by IND-CPA; the corrupted holders' decryption keys do not leak the honest holders' plaintexts because $\mathcal{A}$ does not hold $(\mathsf{sk}_i, \mathsf{dk}_i)$ for $i \notin J$.
-- *Commitment-vector distribution (perfect equality).* Conditional on $(s,\, \{y_j\}_{j \in J})$, the real dealer's polynomial $a(\cdot)$ is uniform over the $(t - |J|)$-dimensional affine subspace of degree-$t$ polynomials with $a(0) = s$ and $a(j+1) = y_j$ for $j \in J$. Therefore $a(i_h + 1)$ for each free index $i_h$ is uniform in $\mathbb{F}_r$, hence $g^{a(i_h + 1)}$ is uniform in $\mathbb{G}$ — matching $\mathcal{B}$'s choice $u_h \xleftarrow{\$} \mathbb{G}$. The inverse-Vandermonde map from $t + 1$ group evaluation points to $(v_0, \dots, v_{t-1})$ is a deterministic bijection, so $v$'s joint distribution is identical in the two worlds.
+- *PKE step (computational gap, $n \cdot \mathsf{Adv}_{\text{IND-CPA}}$).* The only real-vs-simulated mismatch is that honest holders' ciphertexts are $\mathsf{Enc}(\mathsf{ek}_i,\, 0)$ in $\mathcal{B}$'s simulation but $\mathsf{Enc}(\mathsf{ek}_i,\, y_i)$ in the real game. A hybrid over the $\leq n$ honest holders bridges this by IND-CPA; the corrupted holders' decryption keys do not leak the honest holders' plaintexts because $\mathcal{A}$ does not hold $(\mathsf{sk}_i, \mathsf{dk}_i)$ for $i \notin J$.
+- *Commitment-vector distribution (perfect equality).* Conditional on $(s,\, \{y_j\}_{j \in J})$, the real dealer's polynomial $a(\cdot)$ is uniform over the $(t - |J|)$-dimensional affine subspace of degree-$t$ polynomials with $a(0) = s$ and $a(j+1) = y_j$ for $j \in J$. Therefore $a(i_h + 1)$ for each free index $i_h$ is uniform in $\mathbb{F}_r$, hence $g^{a(i_h + 1)}$ is uniform in $\mathbb{G}$ — matching $\mathcal{B}$'s choice $u_h \in_R \mathbb{G}$. The inverse-Vandermonde map from $t + 1$ group evaluation points to $(v_0, \dots, v_{t-1})$ is a deterministic bijection, so $v$'s joint distribution is identical in the two worlds.
 
 ACK signatures use real honest signing keys in both worlds (bit-identical); round-2 reveals are a subset of $\{y_j : j \in J\}$ in both worlds (bit-identical).
 

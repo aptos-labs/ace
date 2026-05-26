@@ -4,7 +4,7 @@ DKG composes $n$ parallel VSS sessions ([`vss.md`](./vss.md)), one per committee
 
 ## 1. Construction
 
-Every committee member runs one VSS as dealer with a freshly sampled uniform secret $a_0^{(\mathrm{dealer})} \xleftarrow{\$} \mathbb{F}_r$. The on-chain orchestrator (`contracts/dkg/sources/dkg.move`) snapshots a **qualifying set** $Q$ at the first `touch()` for which $|Q| \geq \mathsf{threshold}$ VSSs have reached the qualifying state (`dkg.move:135-140`). Once $Q$ is frozen:
+Every committee member runs one VSS as dealer with a freshly sampled uniform secret $a_0^{(\mathrm{dealer})} \in_R \mathbb{F}_r$. The on-chain orchestrator (`contracts/dkg/sources/dkg.move`) snapshots a **qualifying set** $Q$ at the first `touch()` for which $|Q| \geq \mathsf{threshold}$ VSSs have reached the qualifying state (`dkg.move:135-140`). Once $Q$ is frozen:
 
 - The joint master secret is $\mathsf{MSK} = \sum_{i \in Q} a_0^{(i)}$ (sum over qualifying dealers' constant terms).
 - The master public key is $\mathsf{master\_pk} = \prod_{i \in Q} v_0^{(i)} = g^{\mathsf{MSK}}$ (product of Feldman first commitments).

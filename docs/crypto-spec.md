@@ -171,9 +171,9 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 
 1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 (`v_k = g^{a_k} · h^{r_k}`). ACE pins `PC` to **Feldman commitments over BLS12-381 G1 or G2** (the dealer publishes `v_k = a_k · basePoint`, no `h`-blinding). Consequence: `PC.Open` is trivial — the share `y_i` *is* the witness, and `PC.Verify` is the equation `y_i · basePoint == Σ_k (i+1)^k · v_k`. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". See §4.1.
 
-    **Hiding is lost; secrecy is preserved only under a precondition.** Feldman is *not* a hiding commitment: `v_0 = s · basePoint` together with publicly-known `basePoint` reveals `s` up to a discrete-log inversion, and to *all* coefficients via `v_k`. ACE's VSS is therefore safe to use **only when `s` is a uniformly random scalar in `Fr`** (or has cryptographically high min-entropy). The paper itself acknowledges this regime (§7.1, page 9): *"these VE schemes were designed for VSS schemes for Distributed Key Generation (DKG) protocols, where the shared secret is a random element from a large field."* Under that precondition, secrecy against an adversary holding `≤ t-1` shares reduces to DLog (paper's hiding-based argument is replaced by: `v[0..t]` are `t` independent uniform group elements computationally indistinguishable under DLog, and `< t` evaluation points are insufficient to interpolate a degree-`t-1` polynomial). Auditors should confirm the precondition holds at every call site that produces a VSS dealing — see §4.2 below for the two derivations ACE uses, both of which yield uniform `Fr` elements.
+    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — `v_0 = s · basePoint` publicly determines `g^s`. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor `r(·)` to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§4.5)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by `Adv_DLog + n · Adv_PKE-IND-CPA + 1/|Fr|`. The game samples `s ←$ Fr` uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §4.2 for the two ACE derivations, both uniform).
 
-    **Why not Pedersen (the paper's choice).** Adopting Pedersen would force `v_0 = s · basePoint + r_0 · H`, which deliberately hides `s` from any public observer. ACE's DKR resharing-soundness check (§4.0.1 modification 1, `vss.move:201`) is `element_eq(v_0, s_j · B_old)` — a one-line group equality against the *publicly pre-published* `s_j · B_old` carried over from the parent committee's DKG. That check requires `v_0` to *equal* `g^{s_j}`, not to be a Pedersen commitment that hides it. With Pedersen we would need either an additional NIZK proof of opening (more transcript, more verification cost, no extra real safety beyond what `element_eq` already provides) or to publish `r_0` (which destroys hiding for `coefs[0]` and brings us back to Feldman for that coefficient anyway). Since ACE's VSS is *only* ever invoked on uniform-`Fr` secrets, the hiding property buys nothing operational. Feldman is the natural fit.
+    **Why not Pedersen (the paper's choice).** Adopting Pedersen would force `v_0 = s · basePoint + r_0 · H`, which deliberately hides `g^s` from any public observer. ACE's DKR resharing-soundness check (§4.0.1 modification 1, `vss.move:201`) is `element_eq(v_0, s_j · B_old)` — a one-line group equality against the *publicly pre-published* `s_j · B_old` carried over from the parent committee's DKG. That check requires `v_0` to *equal* `g^{s_j}`, not to be a Pedersen commitment that hides it. With Pedersen we would need either an additional NIZK proof of opening (more transcript, more verification cost, no extra real safety beyond what `element_eq` already provides) or to publish `r_0` (which destroys hiding for `coefs[0]` and brings us back to Feldman for that coefficient anyway). Since ACE applications (DKG output `g^{MSK}` and DKR's pre-published `g^{s_j}`) make `g^s` public anyway, the hiding property buys nothing operational. Feldman is the natural fit.
 2. **Private authenticated channel = PKE.** The paper assumes private authenticated channels between dealer and each node. ACE realizes this by **PKE-encrypting each share to the recipient's registered `pke_enc_key`**, with the resulting ciphertext riding the public broadcast channel. Confidentiality reduces to PKE security (§2). The auth side is provided by the chain layer: the share ciphertext is bound to the dealer's account by virtue of the `on_dealer_contribution_0` signed transaction.
 3. **Byzantine broadcast channel = the L1 chain.** Total ordering, immutability, and authentication of the transcript come from the Aptos L1 (Aptos's BFT consensus replaces the abstract `BB` channel). Trust assumption shifts from "broadcast channel exists" to "Aptos validator quorum is honest". Documented in [`trust-model.md`](./trust-model.md) §5.
 4. **Signed `ACK` = on-chain transaction.** The paper has nodes send `⟨ACK, σ_i⟩` over the broadcast channel, where `σ_i = sign(sk_i, v)`. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* `σ_i`, and the chain naturally rejects `(t)` ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
@@ -273,6 +273,66 @@ The dealer must produce a Sigma-DLog-Eq proof (§5) that the constant term $a_0$
 - **DKR**: every old-committee member runs one VSS as dealer **with the resharing challenge** so they're committed to resharing their existing share `s_i`; new shares for the new committee are Lagrange combinations of the contributing old shares at `x = 0`. (`contracts/dkr/sources/dkr.move::touch`.)
 
 See [`protocols.md`](./protocols.md) for the on-chain state machines, error paths, and timeouts.
+
+### 4.5 Sharing-phase secrecy theorem
+
+Replacing the paper's Pedersen PCS with Feldman (§4.0 modification 1) requires a new security argument: paper's Lemma 1 leans on the Pedersen blinding `r(·)` to absorb arbitrary secret choices, which has no Feldman analogue. We state the resulting Feldman-based secrecy as a game-based reduction to DLog and PKE IND-CPA.
+
+**Game `VSS-OW`** (one-wayness of the sharing-phase secret).
+
+```
+1. A picks corruption set J ⊆ [n] with |J| ≤ t.
+2. Challenger generates (sk_i, dk_i, pk_i, ek_i) for each i ∈ [n];
+   hands (sk_j, dk_j) for j ∈ J to A; publishes all (pk_i, ek_i).
+3. Challenger samples s ←$ Fr uniformly.
+4. Challenger plays the honest dealer with secret s and runs the full
+   sharing phase (including round-2 reveal of any non-ACKed share).
+   A controls the corrupted parties' protocol behaviour.
+5. A outputs s' ∈ Fr.
+6. A wins iff s' = s.
+```
+
+Define `Adv_VSS-OW(A) := Pr[A wins]`.
+
+**Theorem 1 (Sharing-phase one-wayness).** Assuming
+
+- (H1) `n ≥ 2t + 1`; polynomial degree `t`; reconstruction threshold `t + 1`;
+- (H2) DLog is hard in the BLS12-381 group (`G1` or `G2`, whichever the session uses);
+- (H3) the PKE scheme that encrypts shares (`pke.rs`) is IND-CPA-secure;
+- (H4) the signature scheme used for ACK messages is EUF-CMA-secure;
+- (H5) the Aptos L1 provides Byzantine broadcast and monotonic timestamps within the `ACK_WINDOW_MICROS` bound;
+- (H6) static corruption: `|J| ≤ t` and the dealer `L ∉ J`;
+
+for any PPT adversary `A` there exist PPT algorithms `B` (DLog solver) and `C` (PKE IND-CPA distinguisher) such that
+
+```
+Adv_VSS-OW(A)  ≤  Adv_DLog(B)  +  n · Adv_IND-CPA(C)  +  1/|Fr|.
+```
+
+In particular, under (H2)+(H3), `Adv_VSS-OW(A) ≤ negl(κ)`.
+
+**Reduction sketch (`B`'s construction).** On DLog challenge `(g, P)` where the goal is to recover `x` with `P = g^x`:
+
+1. Accept `A`'s corruption set `J`. Generate all node keys honestly and hand `(sk_j, dk_j)_{j ∈ J}` to `A`.
+2. Set `v_0 := P` (i.e., implicitly let the latent secret be `s = log_g P`, unknown to `B`).
+3. Sample `{y_j : j ∈ J} ←$ Fr` uniformly — these will play the role of the corrupted parties' shares.
+4. Sample `t − |J|` uniformly random group elements `u_h ←$ G` for "honest-holder placeholder" evaluations at fresh free indices outside `J ∪ {0}`.
+5. Compute `v_1, ..., v_t` via Lagrange interpolation **in the exponent** over the `t + 1` group points `(v_0, {g^{y_j}}_{j ∈ J}, {u_h})`, using inverse-Vandermonde coefficients.
+6. Encrypt `0` under each honest holder's `ek_i` (dummy ciphertext); encrypt `y_j` under each corrupted holder's `ek_j` (so `A`'s decryption recovers the prepared `y_j`).
+7. Publish `(v_0, ..., v_t)` and the ciphertexts as the dealer's first-round contribution on the simulated chain.
+8. Sign ACK messages on behalf of each honest holder using its real signing key. For any corrupted holder `A` chooses not to ACK, perform the round-2 reveal by publishing `y_j`; on-chain Feldman verification accepts because `v` was constructed to satisfy `g^{y_j} = MSM(v, powers_of_(j+1))` by step 5.
+9. `A` outputs `s'`. `B` outputs `s'` as its DLog answer.
+
+**Correctness.** The view `B` presents to `A` is computationally indistinguishable from the real `VSS-OW` game conditioned on `s = log_g P`. Two ingredients carry the argument:
+
+- *PKE step (computational gap, `n · Adv_IND-CPA`).* The only real-vs-simulated mismatch is that honest holders' ciphertexts are `Enc(ek_i, 0)` in `B`'s simulation but `Enc(ek_i, real y_i)` in the real game. A hybrid over the `≤ n` honest holders bridges this by IND-CPA; the corrupted holders' decryption keys do not leak the honest holders' plaintexts because `A` does not hold `(sk_i, dk_i)` for `i ∉ J`.
+- *Commitment-vector distribution (perfect equality).* Conditional on `(s, {y_j}_{j ∈ J})`, the real dealer's polynomial `a(·)` is uniform over the `(t − |J|)`-dimensional affine subspace of degree-`t` polynomials with `a(0) = s` and `a(j+1) = y_j` for `j ∈ J`. Therefore `a(i_h + 1)` for each free index `i_h` is uniform in `Fr`, hence `g^{a(i_h + 1)}` is uniform in `G` — matching `B`'s choice `u_h ←$ G`. The inverse-Vandermonde map from `t + 1` group evaluation points to `(v_0, ..., v_t)` is a deterministic bijection, so `v`'s joint distribution is identical in the two worlds.
+
+ACK signatures use real honest signing keys in both worlds (bit-identical); round-2 reveals are a subset of `{y_j : j ∈ J}` in both worlds (bit-identical).
+
+**Scope.** Theorem 1 covers only the **sharing phase** of a single VSS instance — from the dealer's first on-chain contribution through VSS reaching the qualifying state. Downstream uses (DKG aggregation, DKR resharing, threshold decryption, etc.) require independent theorems composed with this one.
+
+**References.** The reduction structure is standard Feldman'87 / Pedersen'91 secrecy analysis under DLog, applied to the DAS 2023/1196 synchronous-VSS protocol skeleton with Feldman PCS substituted in. The PKE IND-CPA hybrid technique is standard Goldwasser–Micali.
 
 ---
 

@@ -74,15 +74,15 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **DKG** — Distributed Key Generation. $n$ parallel VSS sessions; output is a fresh master secret jointly held. See [`protocols.md`](./protocols.md) §3.
 
-- **DKR** — Distributed Key Resharing. $n_{\text{curr}}$ parallel resharing-VSS sessions from old committee to new; the master secret is **the same** as before, just held by a different committee. Acronym: D = Distributed, K = Key, R = Resharing — note "DKR resharing" is redundant. See [`crypto-spec.md`](./crypto-spec.md) §4.0.1, [`protocols.md`](./protocols.md) §4.
+- **DKR** — Distributed Key Resharing. $n_{\text{curr}}$ parallel resharing-VSS sessions from old committee to new; the master secret is **the same** as before, just held by a different committee. Acronym: D = Distributed, K = Key, R = Resharing — note "DKR resharing" is redundant. See [`cryptography/dkr.md`](./cryptography/dkr.md), [`protocols.md`](./protocols.md) §4.
 
 - **PSS / PVSS** — Proactive Secret Sharing / Publicly Verifiable Secret Sharing. Academic umbrella terms; ACE's DKR is a PSS instance.
 
-- **t-IBE** — Threshold Identity-Based Encryption. The user-facing layer; see [`crypto-spec.md`](./crypto-spec.md) §3.
+- **t-IBE** — Threshold Identity-Based Encryption. The user-facing layer; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md).
 
 - **BF-IBE** — Boneh–Franklin IBE. The construction family ACE's t-IBE belongs to.
 
-- **PKE** — Public-Key Encryption. The transport layer used inside ACE for VSS share messages and decryption-request bodies. See [`crypto-spec.md`](./crypto-spec.md) §2.
+- **PKE** — Public-Key Encryption. The transport layer used inside ACE for VSS share messages and decryption-request bodies. See [`cryptography/pke.md`](./cryptography/pke.md).
 
 - **HPKE** — Hybrid Public Key Encryption (RFC 9180). ACE's production PKE.
 
@@ -106,7 +106,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
   - **Aptos custom flow:** Arbitrary bytes the contract's `check_acl(label, encPk, payload)` will validate.
   - **Solana custom flow:** Like basic, but with `CustomFullRequestBytes` and the program's `assert_custom_acl` instruction.
 
-- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share rather than a fresh secret. Geometrically: a pair $(P = s_j \cdot B_{\text{old}}, H = \mathsf{HashToCurve}(P))$, plus a Sigma-DLog-Eq proof from the dealer that the new polynomial's constant term $a_0$ equals $s_j$. See [`crypto-spec.md`](./crypto-spec.md) §4.3 and §5.
+- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share rather than a fresh secret. Geometrically: a pair $(P = s_j \cdot B_{\text{old}}, H = \mathsf{HashToCurve}(P))$, plus a Sigma-DLog-Eq proof from the dealer that the new polynomial's constant term $a_0$ equals $s_j$. See [`cryptography/dkr.md`](./cryptography/dkr.md) §2 and [`cryptography/sigma-dlog-eq.md`](./cryptography/sigma-dlog-eq.md).
 
 - **Sigma-DLog-Eq** — Discrete-log equality proof. Convinces a verifier that two pairs $(B_0, P_0)$ and $(B_1, P_1)$ share a common scalar $s$ such that $P_0 = s B_0$ and $P_1 = s B_1$, without revealing $s$. Implemented via Schnorr commitments + Fiat–Shamir.
 

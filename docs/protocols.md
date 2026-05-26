@@ -65,7 +65,7 @@ The cost: a small per-transaction gas footprint for every protocol step, and a d
 
 A single dealer commits to a degree-`t-1` polynomial over `Fr` and distributes Feldman-verifiable shares to `n` recipients. Used as a building block by DKG and DKR.
 
-The state machine below implements §5 / Algorithm 1 of [Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren — "Verifiable Secret Sharing Simplified", IACR ePrint 2023/1196](https://eprint.iacr.org/2023/1196), with the crypto-relevant modifications enumerated in [`cryptography/vss.md`](./cryptography/vss.md) §1 (Feldman PCS in place of generic `PC`, PKE-as-private-channel, the chain as broadcast channel, on-chain ACK, selective reveal as `Option<BcsScalar>` vector, resharing-dealer challenge for DKR).
+The state machine below implements §5 / Algorithm 1 of [Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren — "Verifiable Secret Sharing Simplified", IACR ePrint 2023/1196](https://eprint.iacr.org/2023/1196), with the crypto-relevant implementation choices enumerated in [`cryptography/vss.md`](./cryptography/vss.md) §1.1 (Feldman PCS in place of generic `PC`, PKE-as-private-channel, the chain as broadcast channel, on-chain ACK, selective reveal as `Option<BcsScalar>` vector, resharing-dealer challenge for DKR).
 
 ### 2.1 Session struct (abridged)
 

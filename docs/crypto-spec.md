@@ -9,7 +9,7 @@ This file has been split into per-scheme documents under [`cryptography/`](./cry
 | §1 Notation and conventions | [`cryptography/notation.md`](./cryptography/notation.md) |
 | §2 Public-Key Encryption | [`cryptography/pke.md`](./cryptography/pke.md) |
 | §3 Threshold IBE | [`cryptography/t-ibe.md`](./cryptography/t-ibe.md) |
-| §4 VSS — Origin, modifications, PCS, share derivation, **Theorem 1** | [`cryptography/vss.md`](./cryptography/vss.md) |
+| §4 VSS — origin, implementation choices, PCS, share derivation, **Theorem 1** | [`cryptography/vss.md`](./cryptography/vss.md) |
 | §4.0.1 DKR origin and modifications | [`cryptography/dkr.md`](./cryptography/dkr.md) |
 | §4.3 Resharing-dealer challenge | [`cryptography/dkr.md`](./cryptography/dkr.md) §2 |
 | §4.4 DKG/DKR composition | [`cryptography/dkg.md`](./cryptography/dkg.md), [`cryptography/dkr.md`](./cryptography/dkr.md) |

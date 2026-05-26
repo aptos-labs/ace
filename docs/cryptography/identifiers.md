@@ -23,5 +23,5 @@
 | Move (on-chain) | `aptos_framework::randomness` API | DKG basepoint sampling (e.g. `epoch_change::touch` uses `randomness::generate(...)` for new G2 base points) |
 
 **Audit notes.**
-- VSS dealer randomness is **derived from the dealer's PKE decryption key** (see [`vss.md`](./vss.md) §3), not freshly sampled. This is intentional and security-equivalent provided the PKE dk is itself uniformly random; the operator-CLI generates the dk via `WebCrypto` at onboarding and stores it in the provider-specific secret manager (Cloud Run Secret, etc.).
+- VSS dealer randomness is **derived from the dealer's PKE decryption key** (see [`vss.md`](./vss.md) §1.3), not freshly sampled. This is intentional and security-equivalent provided the PKE dk is itself uniformly random; the operator-CLI generates the dk via `WebCrypto` at onboarding and stores it in the provider-specific secret manager (Cloud Run Secret, etc.).
 - Aptos's on-chain `randomness::generate` is itself a threshold protocol. Trust assumption: the Aptos validator quorum is honest. This is part of the "contract is truth" trust premise — see [`../trust-model.md`](../trust-model.md).

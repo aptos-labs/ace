@@ -2,31 +2,28 @@
 
 ACE uses a Feldman-style polynomial commitment scheme (PCS) over an abstract `group::Element` (BLS12-381 G1 or G2). The core building block is a single dealer-driven VSS session; [`dkg.md`](./dkg.md) composes `n` VSS sessions in parallel, [`dkr.md`](./dkr.md) composes them with a resharing-dealer challenge.
 
-## 1. Origin and modifications
+## 1. Construction
 
-ACE's VSS implements the **synchronous VSS** of Algorithm 1, §5 in:
+ACE's VSS is the **synchronous VSS** of Algorithm 1, §5 in:
 
 > Sourav Das, Zhuolun Xiang, Alin Tomescu, Alexander Spiegelman, Benny Pinkas, Ling Ren. **"Verifiable Secret Sharing Simplified."** IACR ePrint 2023/1196. <https://eprint.iacr.org/2023/1196>
 
-The paper presents a publicly-verifiable, complete, t-resilient VSS for `n ≥ 2t+1` synchronous nodes assuming a polynomial commitment scheme `PC`, signatures, and a Byzantine broadcast channel. ACE preserves the protocol skeleton — single-round dealer share-out, ACK collection, second-round reveal of unacked shares — and inherits the paper's correctness, completeness, and termination properties modulo the modifications below. The *secrecy* property is the one place where ACE diverges from the paper meaningfully; the replacement is **Theorem 1** in §4 below.
+The paper presents a publicly-verifiable, complete, t-resilient VSS for `n ≥ 2t+1` synchronous nodes assuming a polynomial commitment scheme `PC`, signatures, and a Byzantine broadcast channel. ACE preserves the protocol skeleton — single-round dealer share-out, ACK collection, second-round reveal of unacked shares — and inherits the paper's correctness, completeness, and termination properties. Secrecy needs a fresh argument tailored to ACE's PCS choice; see §2 below.
 
-The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) are NOT adapted; ACE relies on synchrony.
+### 1.1 Implementation choices
 
-**Modifications relative to Algorithm 1.** Auditors should re-check the security argument against each:
+Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Auditors should re-check the security argument against each:
 
-1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 (`v_k = g^{a_k} · h^{r_k}`). ACE pins `PC` to **Feldman commitments over BLS12-381 G1 or G2** (the dealer publishes `v_k = a_k · basePoint`, no `h`-blinding). Consequence: `PC.Open` is trivial — the share `y_i` *is* the witness, and `PC.Verify` is the equation `y_i · basePoint == Σ_k (i+1)^k · v_k`. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". See §2 below.
+1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 (`v_k = g^{a_k} · h^{r_k}`). ACE pins `PC` to **Feldman commitments over BLS12-381 G1 or G2** (the dealer publishes `v_k = a_k · basePoint`, no `h`-blinding). Consequence: `PC.Open` is trivial — the share `y_i` *is* the witness, and `PC.Verify` is the equation `y_i · basePoint == Σ_k (i+1)^k · v_k`. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". See §1.2 below for the formula.
 
-    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — `v_0 = s · basePoint` publicly determines `g^s`. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor `r(·)` to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§4)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by `Adv_DLog + n · Adv_PKE-IND-CPA + 1/|Fr|`. The game samples `s ←$ Fr` uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §3 for the two ACE derivations, both uniform).
+    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — `v_0 = s · basePoint` publicly determines `g^s`. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor `r(·)` to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§2)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by `Adv_DLog + n · Adv_PKE-IND-CPA + 1/|Fr|`. The game samples `s ←$ Fr` uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §1.3 for the two ACE derivations, both uniform).
 
-    **Why not Pedersen (the paper's choice).** The structural reason is the **t-IBE pairing equation**. ACE's threshold-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via
-    ```
-    pairing(idk_share_i, basePoint) == pairing(Q_id, share_pk_i)
-    ```
-    which only holds when `share_pk_i = s_i · basePoint` is the **unblinded Feldman form**. A Pedersen-VSS would produce `share_pk_i = s_i · basePoint + r(i) · H` and break the pairing equation outright. To rescue t-IBE we would have to either (a) publish a separate Feldman commitment alongside Pedersen (the GJKR'99 dual-commitment construction) or (b) reveal the blinding polynomial `r(·)` at the end of VSS — either way `g^{f(i+1)}` becomes public, ACE's end-to-end secrecy collapses to DLog, and Pedersen's information-theoretic hiding contributes nothing beyond the per-VSS transcript window.
+    **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
 
-    A secondary reason aligned with the same root cause: ACE's DKR resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is `element_eq(v_0, s_j · B_old)` — a one-line group equality against the *publicly pre-published* `s_j · B_old` from the parent committee. That check requires `v_0` to *equal* `g^{s_j}`, not to be a Pedersen commitment that hides it. With Pedersen we would need either an additional NIZK proof of opening (more transcript, more verification cost, no extra real safety) or to publish `r_0` (which destroys hiding for `coefs[0]` and brings us back to Feldman for that coefficient anyway).
+    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation `pairing(idk_share_i, basePoint) == pairing(Q_id, share_pk_i)`, which holds only when `share_pk_i = s_i · basePoint` is the unblinded Feldman form. A Pedersen-VSS share-PK is `s_i · basePoint + r(i) · H` and does not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal `r(·)` at VSS end) all expose `g^{f(i+1)}` publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
+    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is `element_eq(v_0, s_j · B_old)`, a one-line group equality against the publicly pre-published `s_j · B_old` from the parent committee. Under Pedersen, `v_0 = s_j · basePoint + r_0 · H` does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
 
-    Both reasons reduce to the same observation: ACE's application layers (t-IBE pairings, DKR `element_eq`) publicly consume `g^s` and `g^{f(i+1)}`, so hiding has nowhere to hide. Feldman is the natural fit.
+    This is **not** a claim that Pedersen is structurally impossible — only that we don't know how to keep t-IBE and DKR as simple as the Feldman case while paying for Pedersen's blinding. Since ACE's end-to-end secrecy is bounded by DLog regardless (downstream applications publish `g^{MSK}` and the per-recipient `g^{share_pks[i]}`), Feldman achieves the same security floor with strictly less machinery.
 
 2. **Private authenticated channel = PKE.** The paper assumes private authenticated channels between dealer and each node. ACE realizes this by **PKE-encrypting each share to the recipient's registered `pke_enc_key`**, with the resulting ciphertext riding the public broadcast channel. Confidentiality reduces to PKE security ([`pke.md`](./pke.md)). The auth side is provided by the chain layer: the share ciphertext is bound to the dealer's account by virtue of the `on_dealer_contribution_0` signed transaction.
 
@@ -34,7 +31,7 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 
 4. **Signed `ACK` = on-chain transaction.** The paper has nodes send `⟨ACK, σ_i⟩` over the broadcast channel, where `σ_i = sign(sk_i, v)`. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* `σ_i`, and the chain naturally rejects `(t)` ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
 
-5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent reveals only the scalar shares of non-ackers as a vector of optional scalars (one slot per holder; `None` if they acked, `Some(y_j)` otherwise). With Feldman the proof drops out (modification 1), so the second-round message carries scalars only — the verifier (an on-chain incremental computation) re-runs the Feldman MSM check on each revealed share.
+5. **Selective reveal of missing shares.** The paper's second round does `(s, π) := PC.BatchOpen(p, I, w)` and broadcasts `(v, I, σ, s, π)`. ACE's equivalent reveals only the scalar shares of non-ackers as a vector of optional scalars (one slot per holder; `None` if they acked, `Some(y_j)` otherwise). With Feldman the proof drops out (item 1), so the second-round message carries scalars only — the verifier (an on-chain incremental computation) re-runs the Feldman MSM check on each revealed share.
 
 6. **Lazy `touch()` progression.** Move's per-transaction gas budget forces splitting the second-round verification across multiple `touch()` calls (one share-PK MSM per call). The paper's protocol is single-shot. This is a realization detail, not a security modification — `touch()` only ratchets state forward and is monotonic.
 
@@ -46,7 +43,7 @@ The asynchronous variant (Algorithm 2) and the dual-threshold extension (§7) ar
 
 10. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
 
-## 2. Polynomial commitment
+### 1.2 Polynomial commitment
 
 Given a polynomial `f(x) = a_0 + a_1·x + … + a_{t-1}·x^{t-1}` over `Fr`, the dealer publishes a commitment vector
 ```
@@ -58,7 +55,7 @@ y_i · basePoint == Σ_{k=0}^{t-1} ((i+1)^k mod r) · v_k
 ```
 (Multi-scalar multiplication on-chain.) Implemented in `worker-components/vss-common/src/vss_types.rs::feldman_verify` (Rust) and `contracts/vss/sources/vss.move::touch` (Move).
 
-## 3. Share derivation
+### 1.3 Share derivation
 
 VSS shares are encrypted to recipients with the per-recipient PKE encryption key registered in `worker_config`. Each recipient's plaintext is a single `Fr` scalar serialized as `[scheme_byte u8][ULEB128(32) = 0x20][32B y_LE]`.
 
@@ -71,15 +68,15 @@ where
 ```
 (Source: `worker-components/vss-common/src/crypto.rs::fr_from_dk_bytes` + `worker-components/vss-dealer/src/lib.rs:198-208`.)
 
-Both call paths supply a uniform `Fr` secret (required by **Theorem 1**, §4 below):
+Both call paths supply a uniform `Fr` secret (required by **Theorem 1**, §2 below):
 - `fr_from_dk_bytes(pke_dk_bytes, 0)` — derived from a freshly-generated PKE decryption key (uniform `Fr` at node init).
 - `secret_override` — documented contract is "a DKG/DKR share", a Lagrange evaluation of a uniform-random DKG polynomial, itself uniform in `Fr`.
 
 **Audit note.** Determinism is intentional: it lets a dealer recover its own contribution after a crash, and lets failed recipients have their share revealed by `on_dealer_open` without re-running the whole VSS. The downside is that **anyone who learns a dealer's PKE decryption key learns every secret that dealer has ever contributed to**. The `worker-config` registration step therefore commits the dealer to a single PKE key per `account_addr` for the duration of its membership.
 
-## 4. Sharing-phase secrecy theorem
+## 2. Security
 
-Replacing the paper's Pedersen PCS with Feldman (§1 modification 1) requires a new security argument: paper's Lemma 1 leans on the Pedersen blinding `r(·)` to absorb arbitrary secret choices, which has no Feldman analogue. We state the resulting Feldman-based secrecy as a game-based reduction to DLog and PKE IND-CPA.
+Replacing the paper's Pedersen PCS with Feldman (§1.1 item 1) requires a new security argument: paper's Lemma 1 leans on the Pedersen blinding `r(·)` to absorb arbitrary secret choices, which has no Feldman analogue. We state the resulting Feldman-based secrecy as a game-based reduction to DLog and PKE IND-CPA.
 
 **Game `VSS-OW`** (one-wayness of the sharing-phase secret).
 

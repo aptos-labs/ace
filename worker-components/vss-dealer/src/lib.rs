@@ -195,7 +195,7 @@ async fn build_and_submit_dc0(
     // If secret_override is provided (e.g. DKR dealer using their DKG share), use it for coefs[0].
     // All other coefficients are derived deterministically from the DK.
     //
-    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §4, Theorem 1): coefs[0] MUST be sampled
+    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §2, Theorem 1): coefs[0] MUST be sampled
     // uniformly from Fr. The sharing-phase secrecy theorem reduces an adversary's chance of
     // recovering coefs[0] to DLog hardness + PKE IND-CPA, but the reduction's game samples
     // s ←$ Fr — a non-uniform secret breaks the reduction's distribution argument and

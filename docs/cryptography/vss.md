@@ -22,8 +22,8 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
     **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
 
-    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation $e(\mathsf{idk\_share}_i,\, g) = e(Q_{\mathsf{id}},\, \mathsf{share\_pk}_i)$, which holds only when $\mathsf{share\_pk}_i = g^{s_i}$ is in unblinded Feldman form. A Pedersen-VSS share-PK is $g^{s_i} h^{r(i)}$ and does not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
-    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is $\mathsf{element\_eq}(v_0,\, g_{\text{old}}^{s_j})$, a one-line group equality against the publicly pre-published $g_{\text{old}}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
+    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation $e(\mathsf{idkShare}_i,\, g) = e(Q_{\mathsf{id}},\, \mathsf{sharePk}_i)$, which holds only when $\mathsf{sharePk}_i = g^{s_i}$ is in unblinded Feldman form. A Pedersen-VSS share-PK is $g^{s_i} h^{r(i)}$ and does not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
+    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is $\mathsf{elementEq}(v_0,\, g_{\text{old}}^{s_j})$, a one-line group equality against the publicly pre-published $g_{\text{old}}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
 
     This is **not** a claim that Pedersen is structurally impossible — only that we don't know how to keep t-IBE and DKR as simple as the Feldman case while paying for Pedersen's blinding. Since ACE's end-to-end secrecy is bounded by DLog regardless (downstream applications publish $g^{\mathsf{MSK}}$ and the per-recipient $g^{s_i}$), Feldman achieves the same security floor with strictly less machinery.
 
@@ -66,11 +66,11 @@ The dealer's polynomial coefficients are **deterministically derived** from its 
 $$
 \begin{aligned}
 a_0 &:= \begin{cases}
-   \mathsf{Fr\_from\_LE}(\mathsf{secret\_override}) & \text{if } \mathsf{secret\_override}\ \text{is set}\\
-   \mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, 0) & \text{otherwise}
+   \mathsf{FrFromLE}(\mathsf{secretOverride}) & \text{if } \mathsf{secretOverride}\ \text{is set}\\
+   \mathsf{frFromDkBytes}(\mathsf{dk},\, 0) & \text{otherwise}
 \end{cases} \\
-a_k &:= \mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, k) \qquad \text{for } k = 1, \dots, t-1 \\
-\mathsf{fr\_from\_dk\_bytes}(\mathsf{dk},\, i) &:= \mathsf{Fr\_from\_LE}\bigl(\text{SHA3-256}(\text{``vss-coef-v1/''} \,\|\, \mathsf{dk} \,\|\, \mathsf{LE64}(i))\bigr)
+a_k &:= \mathsf{frFromDkBytes}(\mathsf{dk},\, k) \qquad \text{for } k = 1, \dots, t-1 \\
+\mathsf{frFromDkBytes}(\mathsf{dk},\, i) &:= \mathsf{FrFromLE}\bigl(\text{SHA3-256}(\text{``vss-coef-v1/''} \,\|\, \mathsf{dk} \,\|\, \mathsf{LE64}(i))\bigr)
 \end{aligned}
 $$
 

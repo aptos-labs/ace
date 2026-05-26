@@ -81,7 +81,7 @@ Recover seed and decrypt:
 **Security.** CCA-secure under [Boneh–Franklin 2001 / FullIdent](https://crypto.stanford.edu/~dabo/papers/bfibe.pdf) on BLS12-381 (BDH assumption), threshold-extended via Shamir over $\mathbb{F}_r$, in the random-oracle model. The AEAD provides authenticated encryption with a single-use derived (key, nonce) — no nonce reuse risk because each fresh $r$ derives a fresh seed and therefore a fresh $(\text{key}, \text{nonce})$. ~128-bit security level.
 
 **Audit notes.**
-- Share verification is the pairing equation $e(\mathsf{idk\_share}_i,\, \mathsf{basePoint}) = e(Q_{\mathsf{id}},\, \mathsf{share\_pk}_i)$ (`ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts:374-380`).
+- Share verification is the pairing equation $e(\mathsf{idkShare}_i,\, \mathsf{basePoint}) = e(Q_{\mathsf{id}},\, \mathsf{sharePk}_i)$ (`ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts:374-380`).
 - The HKDF `info` parameter is the DST literal — there is no per-ciphertext context beyond the seed itself. Because the seed already binds `Q_id`, the basePoint, and the random `r`, this is sound; but if you ever add a second use of HKDF with the same seed, you must change `info`.
 - HKDF L=44 is exactly key+nonce; the AEAD's internal IV expansion is per the AEAD spec.
 

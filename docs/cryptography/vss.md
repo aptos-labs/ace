@@ -22,8 +22,16 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
     **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
 
-    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation $e(\mathsf{idkShare}_i,\, g) = e(Q_{\mathsf{id}},\, \mathsf{sharePk}_i)$, which holds only when $\mathsf{sharePk}_i = g^{s_i}$ is in unblinded Feldman form. A Pedersen-VSS share-PK is $g^{s_i} h^{r(i)}$ and does not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
-    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is $\mathsf{elementEq}(v_0,\, g_{\text{old}}^{s_j})$, a one-line group equality against the publicly pre-published $g_{\text{old}}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
+    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation
+
+      $$e(\sigma_i,\ g) \;=\; e(Q_\text{id},\ P_i),$$
+
+      which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the IDK share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
+    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is the on-chain group equality
+
+      $$v_0 \;\stackrel{?}{=}\; g_\text{old}^{s_j},$$
+
+      against the publicly pre-published $g_\text{old}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
 
     This is **not** a claim that Pedersen is structurally impossible — only that we don't know how to keep t-IBE and DKR as simple as the Feldman case while paying for Pedersen's blinding. Since ACE's end-to-end secrecy is bounded by DLog regardless (downstream applications publish $g^{\mathsf{MSK}}$ and the per-recipient $g^{s_i}$), Feldman achieves the same security floor with strictly less machinery.
 
@@ -31,19 +39,17 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
 3. **Byzantine broadcast channel = the L1 chain.** Total ordering, immutability, and authentication of the transcript come from the Aptos L1 (Aptos's BFT consensus replaces the abstract `BB` channel). Trust assumption shifts from "broadcast channel exists" to "Aptos validator quorum is honest". Documented in [`../trust-model.md`](../trust-model.md) §5.
 
-4. **Signed `ACK` = on-chain transaction.** The paper has nodes send $\langle \mathsf{ACK},\, \sigma_i \rangle$ over the broadcast channel, where $\sigma_i = \mathsf{sign}(\mathsf{sk}_i,\, v)$. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* $\sigma_i$, and the chain naturally rejects $(t)$ ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
+4. **Signed `ACK` = on-chain transaction.** The paper has nodes send $\langle \mathsf{ACK}, \sigma_i \rangle$ over the broadcast channel, where $\sigma_i = \mathsf{sign}(\mathsf{sk}_i, v)$. ACE has them call `on_share_holder_ack(session_addr)` on-chain; the Aptos transaction signature *is* $\sigma_i$, and the chain naturally rejects $(t)$ ACKs from any node that already ACKed. The authenticated-tally property the paper needs is provided by the L1.
 
 5. **Selective reveal of missing shares.** The paper's second round does $(s, \pi) := \mathsf{PC.BatchOpen}(p, I, w)$ and broadcasts $(v, I, \sigma, s, \pi)$. ACE's equivalent reveals only the scalar shares of non-ackers as a vector of optional scalars (one slot per holder; `None` if they acked, `Some(y_j)` otherwise). With Feldman the proof drops out (item 1), so the second-round message carries scalars only — the verifier (an on-chain incremental computation) re-runs the Feldman MSM check on each revealed share.
 
-6. **Lazy `touch()` progression.** Move's per-transaction gas budget forces splitting the second-round verification across multiple `touch()` calls (one share-PK MSM per call). The paper's protocol is single-shot. This is a realization detail, not a security modification — `touch()` only ratchets state forward and is monotonic.
+6. **Resharing-dealer challenge.** ACE adds an *optional* challenge $(P, H)$ plus a Sigma-DLog-Eq proof (see [`sigma-dlog-eq.md`](./sigma-dlog-eq.md)) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $P = g_\text{old}^{s_j}$ from the parent DKG/DKR, and $H$ is an independent base derived from $P$). Used by Distributed Key Resharing (see [`dkr.md`](./dkr.md)) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq.
 
-7. **Resharing-dealer challenge.** ACE adds an *optional* challenge $(P, H)$ plus a Sigma-DLog-Eq proof (see [`sigma-dlog-eq.md`](./sigma-dlog-eq.md)) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $P = g_{\text{old}}^{s_j}$ from the parent DKG/DKR, and $H$ is an independent base derived from $P$). Used by Distributed Key Resharing (see [`dkr.md`](./dkr.md)) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq.
+7. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
 
-8. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
+8. **Single threshold only.** ACE uses $\text{secrecy threshold} = \text{reconstruction threshold} = t$; the paper's dual-threshold variant ($\ell \in [t, n - t]$) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
 
-9. **Single threshold only.** ACE uses $\text{secrecy threshold} = \text{reconstruction threshold} = t$; the paper's dual-threshold variant ($\ell \in [t, n - t]$) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
-
-10. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
+9. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
 
 ### 1.2 Polynomial commitment
 
@@ -67,10 +73,10 @@ $$
 \begin{aligned}
 a_0 &:= \begin{cases}
    \mathsf{FrFromLE}(\mathsf{secretOverride}) & \text{if } \mathsf{secretOverride}\ \text{is set}\\
-   \mathsf{frFromDkBytes}(\mathsf{dk},\, 0) & \text{otherwise}
+   \mathsf{frFromDkBytes}(\mathsf{dk}, 0) & \text{otherwise}
 \end{cases} \\
-a_k &:= \mathsf{frFromDkBytes}(\mathsf{dk},\, k) \qquad \text{for } k = 1, \dots, t-1 \\
-\mathsf{frFromDkBytes}(\mathsf{dk},\, i) &:= \mathsf{FrFromLE}\bigl(\text{SHA3-256}(\text{``vss-coef-v1/''} \,\|\, \mathsf{dk} \,\|\, \mathsf{LE64}(i))\bigr)
+a_k &:= \mathsf{frFromDkBytes}(\mathsf{dk}, k) \qquad \text{for } k = 1, \dots, t-1 \\
+\mathsf{frFromDkBytes}(\mathsf{dk}, i) &:= \mathsf{FrFromLE}(\text{SHA3-256}(\texttt{"vss-coef-v1/"} \mathbin{\|} \mathsf{dk} \mathbin{\|} \mathsf{LE64}(i)))
 \end{aligned}
 $$
 
@@ -119,7 +125,7 @@ In particular, under (H2)+(H3), $\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \leq 
 2. Set $v_0 := P$ (i.e., implicitly let the latent secret be $s = \log_g P$, unknown to $\mathcal{B}$).
 3. Sample $\{y_j : j \in J\} \in_R \mathbb{F}_r$ uniformly — these will play the role of the corrupted parties' shares.
 4. Sample $t - |J|$ uniformly random group elements $u_h \in_R \mathbb{G}$ for "honest-holder placeholder" evaluations at fresh free indices outside $J \cup \{0\}$.
-5. Compute $v_1, \dots, v_{t-1}$ via Lagrange interpolation **in the exponent** over the $t + 1$ group points $(v_0,\, \{g^{y_j}\}_{j \in J},\, \{u_h\})$, using inverse-Vandermonde coefficients.
+5. Compute $v_1, \dots, v_{t-1}$ via Lagrange interpolation **in the exponent** over the $t + 1$ group points $(v_0, \{g^{y_j}\}_{j \in J}, \{u_h\})$, using inverse-Vandermonde coefficients.
 6. Encrypt $0$ under each honest holder's $\mathsf{ek}_i$ (dummy ciphertext); encrypt $y_j$ under each corrupted holder's $\mathsf{ek}_j$ (so $\mathcal{A}$'s decryption recovers the prepared $y_j$).
 7. Publish $(v_0, \dots, v_{t-1})$ and the ciphertexts as the dealer's first-round contribution on the simulated chain.
 8. Sign ACK messages on behalf of each honest holder using its real signing key. For any corrupted holder $\mathcal{A}$ chooses not to ACK, perform the round-2 reveal by publishing $y_j$; on-chain Feldman verification accepts because $v$ was constructed to satisfy $g^{y_j} = \prod_k v_k^{(j+1)^k}$ by step 5.
@@ -127,8 +133,8 @@ In particular, under (H2)+(H3), $\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \leq 
 
 **Correctness.** The view $\mathcal{B}$ presents to $\mathcal{A}$ is computationally indistinguishable from the real $\text{VSS-OW}$ game conditioned on $s = \log_g P$. Two ingredients carry the argument:
 
-- *PKE step (computational gap, $n \cdot \mathsf{Adv}_{\text{IND-CPA}}$).* The only real-vs-simulated mismatch is that honest holders' ciphertexts are $\mathsf{Enc}(\mathsf{ek}_i,\, 0)$ in $\mathcal{B}$'s simulation but $\mathsf{Enc}(\mathsf{ek}_i,\, y_i)$ in the real game. A hybrid over the $\leq n$ honest holders bridges this by IND-CPA; the corrupted holders' decryption keys do not leak the honest holders' plaintexts because $\mathcal{A}$ does not hold $(\mathsf{sk}_i, \mathsf{dk}_i)$ for $i \notin J$.
-- *Commitment-vector distribution (perfect equality).* Conditional on $(s,\, \{y_j\}_{j \in J})$, the real dealer's polynomial $a(\cdot)$ is uniform over the $(t - |J|)$-dimensional affine subspace of degree-$t$ polynomials with $a(0) = s$ and $a(j+1) = y_j$ for $j \in J$. Therefore $a(i_h + 1)$ for each free index $i_h$ is uniform in $\mathbb{F}_r$, hence $g^{a(i_h + 1)}$ is uniform in $\mathbb{G}$ — matching $\mathcal{B}$'s choice $u_h \in_R \mathbb{G}$. The inverse-Vandermonde map from $t + 1$ group evaluation points to $(v_0, \dots, v_{t-1})$ is a deterministic bijection, so $v$'s joint distribution is identical in the two worlds.
+- *PKE step (computational gap, $n \cdot \mathsf{Adv}_{\text{IND-CPA}}$).* The only real-vs-simulated mismatch is that honest holders' ciphertexts are $\mathsf{Enc}(\mathsf{ek}_i, 0)$ in $\mathcal{B}$'s simulation but $\mathsf{Enc}(\mathsf{ek}_i, y_i)$ in the real game. A hybrid over the $\leq n$ honest holders bridges this by IND-CPA; the corrupted holders' decryption keys do not leak the honest holders' plaintexts because $\mathcal{A}$ does not hold $(\mathsf{sk}_i, \mathsf{dk}_i)$ for $i \notin J$.
+- *Commitment-vector distribution (perfect equality).* Conditional on $(s, \{y_j\}_{j \in J})$, the real dealer's polynomial $a(\cdot)$ is uniform over the $(t - |J|)$-dimensional affine subspace of degree-$t$ polynomials with $a(0) = s$ and $a(j+1) = y_j$ for $j \in J$. Therefore $a(i_h + 1)$ for each free index $i_h$ is uniform in $\mathbb{F}_r$, hence $g^{a(i_h + 1)}$ is uniform in $\mathbb{G}$ — matching $\mathcal{B}$'s choice $u_h \in_R \mathbb{G}$. The inverse-Vandermonde map from $t + 1$ group evaluation points to $(v_0, \dots, v_{t-1})$ is a deterministic bijection, so $v$'s joint distribution is identical in the two worlds.
 
 ACK signatures use real honest signing keys in both worlds (bit-identical); round-2 reveals are a subset of $\{y_j : j \in J\}$ in both worlds (bit-identical).
 

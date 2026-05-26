@@ -50,7 +50,7 @@ This is the **dual** of the user-friendly liveness phrasing (which says: at leas
 **Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates one or two nodes. With overlap:
 
 - A node in the overlap that is corrupted contributes to **both** $b_{\text{old}}$ and $b_{\text{new}}$.
-- The *abstract* secrecy bound is unchanged: still $b_{\text{old}} < t \,\land\, b_{\text{new}} < t'$.
+- The *abstract* secrecy bound is unchanged: still $b_\text{old} < t$ and $b_\text{new} < t'$.
 - The *number of distinct physical nodes an adversary must corrupt* to reach both budgets is smaller. With overlap of size $k$, corrupting up to $\min(t - 1, t' - 1)$ overlap-nodes counts double — a $(t-1)$-bounded attacker on the old side automatically gets $t - 1$ corruptions on the new side too if every corruption is an overlap node.
 - In the limit ($C_{\text{old}} = C_{\text{new}}$, full overlap, $t = t'$), the resharing protocol's secrecy collapses to the static secrecy of the underlying VSS in that committee: if you don't change the committee, fresh polynomial coefficients alone do not protect against an attacker who already corrupts $\geq t$ of those nodes.
 

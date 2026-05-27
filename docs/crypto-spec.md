@@ -13,7 +13,6 @@ This file has been split into per-scheme documents under [`cryptography/`](./cry
 | §4.0.1 DKR origin and modifications | [`cryptography/dkr.md`](./cryptography/dkr.md) |
 | §4.3 Resharing-dealer challenge | [`cryptography/dkr.md`](./cryptography/dkr.md) §2 |
 | §4.4 DKG/DKR composition | [`cryptography/dkg.md`](./cryptography/dkg.md), [`cryptography/dkr.md`](./cryptography/dkr.md) |
-| §5 Sigma-DLog-Eq | [`cryptography/sigma-dlog-eq.md`](./cryptography/sigma-dlog-eq.md) |
 | §6 Symmetric primitives (KDF, HMAC) | [`cryptography/symmetric.md`](./cryptography/symmetric.md) |
 | §7 RNG · §8 Curve cheat sheet | [`cryptography/identifiers.md`](./cryptography/identifiers.md) |
 | §9 Out of scope | [`cryptography/out-of-scope.md`](./cryptography/out-of-scope.md) |

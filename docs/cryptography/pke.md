@@ -29,5 +29,5 @@ aad    = b""       (empty by default; callers do NOT pass AAD)
 **Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
 
 **Caveats / audit notes.**
-- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer (Sigma-DLog-Eq, Aptos full-message signature, Solana txn simulation) provides binding instead.
+- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer (Aptos full-message signature, Solana txn simulation) provides binding instead.
 - Implementations across TS/Rust/Move use **independent** HPKE libraries — wire-compatibility is verified by the round-trip tests in `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:166-307` and `contracts/pke/tests/`.

@@ -21,16 +21,11 @@ The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degr
 
 ## 2. Resharing-dealer challenge
 
-A VSS session created as part of DKR carries a *resharing challenge* — a pair $(P, H)$ — so the dealer must prove they're resharing a *specific* known secret rather than dealing a fresh one. The challenge geometry:
-
-- $P = g_{\text{old}}^{s_j}$, the dealer's existing share-PK (read from the parent DKG/DKR's on-chain state).
-- $H = \mathsf{HashToCurve}_{\mathbb{G}}(P)$, an independent base point in the random-oracle model.
-
-The dealer must produce a Sigma-DLog-Eq proof ([`sigma-dlog-eq.md`](./sigma-dlog-eq.md)) that the constant term $a_0$ committed via $v_0 = g_{\text{old}}^{a_0}$ equals the secret used to scale $H$ to a publicly-revealed $H^{a_0}$. The on-chain verifier checks this proof during the dealer's first-round message; a forged or absent proof aborts the VSS.
+A VSS session created as part of DKR carries a *resharing challenge*: the parent committee's pre-published share-PK $P_j = g_\text{old}^{s_j}$ is used as the binding target. The new VSS session is configured with base point $g_\text{old}$, and the on-chain handler verifies that the dealer's first Feldman commitment $v_0$ equals $P_j$ (a direct group equality). Combined with the Feldman polynomial-verification check during normal-or-dispute share opening, this forces the dealer's polynomial $g_j(\cdot)$ to satisfy $g_j(0) = s_j$ regardless of dealer behavior — a different secret would either fail this $v_0$ equality up front or fail Feldman verification during reveal.
 
 ## 3. Modifications relative to classical PSS / the blog construction
 
-1. **Resharing-dealer challenge.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this in two layers. The load-bearing layer is an on-chain check (`vss.move:201`) that the dealer's first Feldman commitment $v_0$ equals the pre-published $g_{\text{old}}^{s_j}$ — combined with Feldman verification of the polynomial during normal-or-dispute share opening, this forces $f(0) = s_j$ regardless of dealer behavior. (This check is also one of the reasons ACE's PCS is Feldman and not the paper's Pedersen instantiation — see [`vss.md`](./vss.md) §1.1 item 1: a hiding $v_0$ would obstruct this group equality.) On top of that, ACE requires a Sigma-DLog-Eq proof ([`sigma-dlog-eq.md`](./sigma-dlog-eq.md)) that the dealer *knows* $s_j$ as a scalar; this gives an early-reject of dealers who don't (which would otherwise fail later via no-ACK → reveal → on-chain Feldman fail) and provides an extractability hook for the simulation-based security argument. A future simplification may drop the Sigma-DLog-Eq proof — the on-chain check + Feldman are sufficient for safety; the proof's main value is reasoning convenience, not concrete attack prevention.
+1. **Resharing-dealer binding.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this by requiring the dealer's first Feldman commitment $v_0 = g_\text{old}^{a_0}$ to equal the pre-published $P_j = g_\text{old}^{s_j}$ — an on-chain `element_eq` check at `vss.move:201`. Combined with Feldman verification of the polynomial during normal-or-dispute share opening, this forces $g_j(0) = s_j$ regardless of dealer behavior. This is the reason ACE's PCS is Feldman and not the paper's Pedersen instantiation — see [`vss.md`](./vss.md) §1.1 item 1: a hiding $v_0$ would obstruct this group equality.
 
 2. **Agreement on contributing set $H$ = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which $t$ VSS sessions to combine. ACE delegates this to the L1: the on-chain orchestrator deterministically reads each VSS's completion flag and freezes the contributing set the first time $|\{j : \mathsf{vss}_j\ \text{done}\}| \geq t$. Every observer reads the same $H$ from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same pattern as VSS §1.1 item 3 in [`vss.md`](./vss.md).
 
@@ -60,7 +55,7 @@ This is the expected behavior for any PSS — the proactive benefit comes from c
 
 DKR completes when:
 
-- $\geq t$ honest-and-online old dealers submit a valid first-round message (with valid Sigma-DLog-Eq proof for resharing); the chain advances the contribution flags.
+- $\geq t$ honest-and-online old dealers submit a valid first-round message (whose $v_0$ passes the resharing-challenge group equality); the chain advances the contribution flags.
 - For each of those VSS sessions, $\geq t'$ honest-and-online new ackers ACK within the 10-second window (or the dealer reveals the missing shares in the second round).
 
 Heavy overlap also helps liveness: a single honest-and-online physical node serves both as old dealer and as new acker.

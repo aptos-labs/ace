@@ -72,7 +72,7 @@ Recipients run Feldman verification (`worker-components/vss-common/src/vss_types
 
 > **A DKR dealer cannot reshare a secret it does not actually hold a share of.**
 
-The resharing-VSS carries a challenge $(P, H)$ where $P = s_j \cdot B_{\text{old}}$ is the dealer's existing share-PK (read from the previous DKG/DKR's on-chain state) and $H$ is an independent base derived deterministically from $P$. The dealer must produce a Sigma-DLog-Eq proof (see [`cryptography/sigma-dlog-eq.md`](./cryptography/sigma-dlog-eq.md)) that the polynomial constant term committed in the new VSS equals the secret behind $P$. Verified on-chain when the dealer submits its first-round message.
+The resharing-VSS uses the parent committee's pre-published share-PK $P_j = g_\text{old}^{s_j}$ as a binding target: the on-chain handler verifies that the dealer's first Feldman commitment $v_0$ equals $P_j$. This forces the dealer's polynomial constant term to equal the known share $s_j$ regardless of dealer behaviour.
 
 ---
 
@@ -152,7 +152,6 @@ Out of scope for the protocol-level trust model:
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | RFC 9180 base-mode security: GapDH on X25519, HKDF-SHA256, ChaCha20-Poly1305 IND-CCA | PKE scheme 1 *(production)* |
 | BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md))* |
 | BFIBE-BLS12381-ShortSig-AEAD | BDH on BLS12-381 + ROM, ChaCha20-Poly1305 IND-CCA | t-IBE scheme 1 *(production)* |
-| Sigma-DLog-Eq | DLog on BLS12-381 + ROM (Fiat–Shamir) | VSS resharing |
 | Feldman PCS | DLog on BLS12-381 (binding) | VSS share verification |
 | Ed25519 | EUF-CMA (RFC 8032) | ProofOfPermission (Aptos) |
 | Aptos chain | BFT honest 2/3 supermajority | Truth of view-function results |

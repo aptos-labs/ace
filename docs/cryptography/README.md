@@ -21,7 +21,6 @@ For the higher-level protocol (DKG / DKR / decryption-request flow), see [`../pr
 - [`dkr.md`](./dkr.md) — Distributed Key Resharing (proactive secret sharing variant): resharing-dealer challenge, old → new committee transition, corruption model.
 
 **Building blocks.**
-- [`sigma-dlog-eq.md`](./sigma-dlog-eq.md) — Sigma protocol proving equal discrete log in two bases; used by the DKR resharing-dealer challenge.
 - [`symmetric.md`](./symmetric.md) — Custom SHA3-256 KDF and HMAC-like construction shared by TS, Rust, and Move.
 - [`identifiers.md`](./identifiers.md) — Curve/group identifier cheat sheet, byte sizes, RNG sources.
 
@@ -35,8 +34,7 @@ For the higher-level protocol (DKG / DKR / decryption-request flow), see [`../pr
 2. [`pke.md`](./pke.md) and [`symmetric.md`](./symmetric.md) — the lowest-level primitives.
 3. [`vss.md`](./vss.md) — the secret-sharing core, including the modified secrecy argument.
 4. [`dkg.md`](./dkg.md) and [`dkr.md`](./dkr.md) — protocol composition on top of VSS.
-5. [`sigma-dlog-eq.md`](./sigma-dlog-eq.md) — the NIZK used by DKR.
-6. [`t-ibe.md`](./t-ibe.md) — the application layer that consumes the DKG output.
-7. [`out-of-scope.md`](./out-of-scope.md), [`references.md`](./references.md) — known boundaries and citations.
+5. [`t-ibe.md`](./t-ibe.md) — the application layer that consumes the DKG output.
+6. [`out-of-scope.md`](./out-of-scope.md), [`references.md`](./references.md) — known boundaries and citations.
 
 > Historical note: this folder replaces the former monolithic `docs/crypto-spec.md`. That file is now a thin index/redirect; new content should be added under the appropriate per-scheme file here.

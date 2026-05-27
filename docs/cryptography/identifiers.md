@@ -19,7 +19,7 @@
 | Component | RNG | Usage |
 |-----------|-----|-------|
 | TS SDK | WebCrypto `crypto.getRandomValues` (browser) / Node `crypto.randomBytes` | All ephemerals (`r` in PKE/IBE encrypt, ephemeral encryption keys) |
-| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen, Sigma-DLog-Eq proof randomness |
+| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen |
 | Move (on-chain) | `aptos_framework::randomness` API | DKG basepoint sampling (e.g. `epoch_change::touch` uses `randomness::generate(...)` for new G2 base points) |
 
 **Audit notes.**

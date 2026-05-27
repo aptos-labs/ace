@@ -16,7 +16,7 @@ ACE runs four orchestration sub-protocols plus one request/response flow. Each i
 
 - **DKG — Distributed Key Generation.** Each member of the committee runs one VSS as dealer (and is a recipient in all $n$ VSS sessions). The joint master secret $s$ is the sum of the constant terms of the $\geq t$ contributing dealer polynomials; nobody ever holds $s$ in the clear. Each committee member ends up holding a Shamir share of $s$. Outputs: the master public key $\mathsf{mpk}$ on-chain, and one share per committee member off-chain (re-derivable from the on-chain VSS messages by that member).
 
-- **DKR — Distributed Key Resharing.** Hands an existing master secret from an *old committee* $(C_{\text{old}}, t)$ to a *new committee* $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. Each old node runs a fresh VSS as dealer, *bound* by a Sigma-DLog-Eq proof to be resharing their actual current share (not a fresh secret). New shares are Lagrange combinations of the contributing old reshares at $x=0$. See [`cryptography/dkr.md`](./cryptography/dkr.md) for the construction and references.
+- **DKR — Distributed Key Resharing.** Hands an existing master secret from an *old committee* $(C_{\text{old}}, t)$ to a *new committee* $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. Each old node runs a fresh VSS as dealer, *bound* by an on-chain resharing-challenge check to be resharing their actual current share (not a fresh secret). New shares are Lagrange combinations of the contributing old reshares at $x=0$. See [`cryptography/dkr.md`](./cryptography/dkr.md) for the construction and references.
 
 - **Epoch-change orchestrator.** Runs zero-or-more DKRs (one per master secret being preserved) and zero-or-more DKGs (one per fresh master secret) in parallel, then signals the network module to advance the epoch. Triggered either by a passed proposal (committee change, fresh secret) or automatically when the current epoch's duration expires.
 
@@ -56,7 +56,6 @@ The cost: a small per-transaction gas footprint for every protocol step, and a d
 | `ace::epoch_change` | `contracts/epoch-change/sources/epoch_change.move` | Orchestrator that launches the DKR/DKG sessions for an epoch transition. |
 | `ace::network` | `contracts/network/sources/network.move` | The top-level state: epoch, committee, active secrets, pending proposals. Drives `epoch_change`. |
 | `ace::group` | `contracts/group/sources/group.move` (+ `group_bls12381_g1.move`, `group_bls12381_g2.move`) | Abstract `Element` enum over BLS12-381 G1 / G2; MSM, hash-to-curve, generators. |
-| `ace::sigma_dlog_eq` | `contracts/sigma-dlog-eq/sources/sigma_dlog_eq.move` | Two-element DLog-equality verifier (used by VSS resharing). |
 | `ace::pke` | `contracts/pke/sources/pke.move` | Decoders for `EncryptionKey` / `Ciphertext` enums (no on-chain encrypt or decrypt). |
 
 ---
@@ -94,7 +93,7 @@ struct Session {
    │  STATE__DEALER_DEAL  │ ← new_session_entry()
    └──────────┬───────────┘
               │ on_dealer_contribution_0(payload)
-              │   • verifies resharing-challenge proof if present (Sigma-DLog-Eq)
+              │   • verifies resharing-challenge equality if present (v_0 = P_j)
               │   • records deal_time_micros
               ▼
    ┌────────────────────────────┐
@@ -128,7 +127,7 @@ struct Session {
 | Function | Caller | Pre-state | Post-state | Notes |
 |----------|--------|-----------|------------|-------|
 | `new_session_entry(dealer, share_holders, threshold, base_point, secretly_scaled_element)` | any | n/a | `DEALER_DEAL` | All share_holders must have a registered `pke_enc_key`. `secretly_scaled_element=None` for fresh DKG; `Some(s · basePoint_old)` for DKR (becomes the resharing challenge's `expected_scaled_element`). |
-| `on_dealer_contribution_0(session_addr, payload)` | session.dealer only | `DEALER_DEAL` | `RECIPIENT_ACK` | Aborts if resharing-challenge Sigma-DLog-Eq verification fails. |
+| `on_dealer_contribution_0(session_addr, payload)` | session.dealer only | `DEALER_DEAL` | `RECIPIENT_ACK` | Aborts if the resharing-challenge group equality $v_0 = P_j$ fails. |
 | `on_share_holder_ack(session_addr)` | any holder in `share_holders` | `RECIPIENT_ACK` | (same) | Toggles `share_holder_acks[idx] = true`. |
 | `on_dealer_open(session_addr, payload)` | session.dealer only | `RECIPIENT_ACK`, `now ≥ deal_time_micros + 10s`, `acks ≥ threshold`, every holder either acked or revealed | `VERIFY_DEALER_OPENING` | Reveals scalar shares for every non-acker. |
 | `touch(session_addr)` | any | `VERIFY_DEALER_OPENING` | `VERIFY_DEALER_OPENING` (loop) or `SUCCESS` | Computes one `share_pk` per call (gas budget). |
@@ -300,7 +299,7 @@ The reshared master_pk is unchanged: `secretly_scaled_element` is copied from th
 
 ### 4.3 Worker behavior
 
-Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer who **must** include a correct Sigma-DLog-Eq proof that they know the share `s_j` behind `src_share_pks[j]`. The dealer's polynomial constant term `a_0` is forced to equal `s_j` by the proof; non-constant coefficients are still derived deterministically from `pke_dk`.
+Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer whose first Feldman commitment $v_0$ **must** equal the pre-published $P_j = \mathsf{src\_share\_pks}[j]$ from the parent session. The on-chain `element_eq` check at `vss.move:201` forces the dealer's polynomial constant term `a_0` to equal `s_j` regardless of dealer behaviour; non-constant coefficients are still derived deterministically from `pke_dk`.
 
 ---
 

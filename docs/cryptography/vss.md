@@ -33,7 +33,7 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
       which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the IDK share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
     - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is the on-chain group equality
 
-      $$v_0 \;\stackrel{?}{=}\; g_\text{old}^{s_j},$$
+      $$v_0 \stackrel{?}{=} g_\text{old}^{s_j}$$
 
       against the publicly pre-published $g_\text{old}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
 
@@ -71,7 +71,7 @@ Replacing Pedersen with Feldman (§1.1 item 1) breaks the paper's secrecy proof:
 
 In its place we get a weaker, **computational, one-wayness** guarantee. In the game where the challenger samples $s \in_R \mathbb{F}_r$, runs the honest sharing phase, and the adversary $\mathcal{A}$ (statically corrupting $\leq t$ recipients) outputs a guess $s'$ for $s$,
 
-$$\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \;\leq\; \mathsf{Adv}_{\text{DLog}}(\mathcal{B}) \;+\; n \cdot \mathsf{Adv}_{\text{IND-CPA}}(\mathcal{C}) \;+\; \frac{1}{|\mathbb{F}_r|}$$
+$$\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \leq \mathsf{Adv}_{\text{DLog}}(\mathcal{B}) + n \cdot \mathsf{Adv}_{\text{IND-CPA}}(\mathcal{C}) + \frac{1}{|\mathbb{F}_r|}$$
 
 for PPT reductions $\mathcal{B}$ (DLog solver) and $\mathcal{C}$ (PKE IND-CPA distinguisher). Proof idea: given a DLog challenge $(g, P)$, $\mathcal{B}$ plants $P$ as $v_0$ in a simulated VSS transcript, fills the remaining commitment vector via Lagrange-in-exponent over fresh uniform group elements, encrypts dummies under honest-holder PKE keys (PKE IND-CPA bridges the resulting computational gap), and returns $\mathcal{A}$'s guess as its DLog answer. Full proof is omitted here; the construction is a routine application of Feldman'87 / Pedersen'91 secrecy analysis to the DAS Algorithm 1 protocol skeleton.
 

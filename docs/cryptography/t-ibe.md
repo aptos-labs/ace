@@ -83,7 +83,7 @@ Recover seed and decrypt:
 **Audit notes.**
 - Share verification is the pairing equation
 
-  $$e(\sigma_i,\ g) \;=\; e(Q_\text{id},\ P_i)$$
+  $$e(\sigma_i,g)=e(Q_\text{id},P_i)$$
 
   where $\sigma_i$ is the IDK share, $g$ the basePoint, $P_i$ the share-PK (`ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts:374-380`).
 - The HKDF `info` parameter is the DST literal — there is no per-ciphertext context beyond the seed itself. Because the seed already binds `Q_id`, the basePoint, and the random `r`, this is sound; but if you ever add a second use of HKDF with the same seed, you must change `info`.

@@ -31,6 +31,7 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
       and the protocl needs to use $$P_i$ to quickly detect/reject faulty node who is trying to share the wrong thing.
 
     With Feldman PCS, things are a lot easier.
+    - If the polynomial commitment is $v_0, ..., v_{t-1}$, the public key share for node $x$ is simply $\prod_{k=0}^{t-1}v_k^{x^k}$.
     - The t-IBE decryption key share verification is simply a pairing $e(\sigma_i,g)=e(Q_\text{id},P_i)$.
     - In key resharing protocol, if the old key share $s_i$ is committed by $g, P_i$ where $g^s=P_i$,
       the VSS session is created with base point also being $g$,

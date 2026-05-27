@@ -29,7 +29,7 @@ A VSS session created as part of DKR carries a *resharing challenge*: the parent
 
 2. **Agreement on contributing set $H$ = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which $t$ VSS sessions to combine. ACE delegates this to the L1: the on-chain orchestrator deterministically reads each VSS's completion flag and freezes the contributing set the first time $|\{j : \mathsf{vss}_j\ \text{done}\}| \geq t$. Every observer reads the same $H$ from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same pattern as VSS §1.1 item 3 in [`vss.md`](./vss.md).
 
-3. **Lagrange coefficients computed on-chain.** Move computes $\{\lambda_j\}_{j \in H}$ once per session; new nodes don't compute their own. Saves cross-committee replay and ensures every party uses the same $\lambda_j$.
+3. **Lagrange coefficients computed on-chain.** Move computes $\{\lambda_j : j \in H\}$ once per session; new nodes don't compute their own. Saves cross-committee replay and ensures every party uses the same $\lambda_j$.
 
 4. **No within-epoch share refresh.** Classical PSS refreshes shares periodically within an epoch to handle a mobile adversary. ACE refreshes only at epoch boundaries (`epoch_duration_micros` $\geq 30\text{s}$); within an epoch, shares are static.
 

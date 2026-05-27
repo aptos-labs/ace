@@ -24,23 +24,23 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
     **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. ACE instead settles for a weaker, computational, reduction-style argument summarized in §2. The argument's game samples $s \in_R \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (item 7 documents the two ACE derivations, both uniform).
 
-    **Why Feldman, not Pedersen.** In ACE, there are 2 upper-level components that depend on VSS with extra requirements that favor Feldman over Pedersen.
+    **Why Feldman, not Pedersen.** VSS ensures every node has a private key share.
+    In ACE, we additonally want the public key shares to also be available somewhere to facilitate some other ACE pieces.
+    - In t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1), a client will want to verify a decryption key share $\sigma_i$ against the match public key share $P_i$.
+    - In the key resharing protocol, the $j$-th node in the old committee is supposed to re-share its key share $s_j$ using VSS,
+      and the protocl needs to use $$P_i$ to quickly detect/reject faulty node who is trying to share the wrong thing.
 
-    - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation
+    With Feldman PCS, things are a lot easier.
+    - The t-IBE decryption key share verification is simply a pairing $e(\sigma_i,g)=e(Q_\text{id},P_i)$.
+    - In key resharing protocol, if the old key share $s_i$ is committed by $g, P_i$ where $g^s=P_i$,
+      the VSS session is created with base point also being $g$,
+      and dealer's sharing polynomial commitment is $(v_0, ..., v_{t-1})$,
+      then everyone can immediately check secret the consitency as follows in the 1st phase.
 
-      $$e(\sigma_i,g)=e(Q_\text{id},P_i)$$
+      $$v_0 = g_\text{old}^{s_j}$$
 
-      which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the identity decryption key share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
-    - In the key resharing protocol, the $j$-th node in the old committee re-shares its key share $s_j$ using VSS.
-      The key share is assumed to have been committed by 2 public points $g, p$ (so everyone believes $g^{s_j}=p$).
-      The VSS should additionally help detect/reject faulty node who is trying to share the wrong thing.
-      With Feldman, this is trivially done by checking
 
-      $$v_0 \stackrel{?}{=} g_\text{old}^{s_j}$$
-
-      against the publicly pre-published $g_\text{old}^{s_j}$ from the parent committee.
-
-    This is **not** a claim that Pedersen is structurally impossible — only that we don't know how to keep t-IBE and DKR as simple as the Feldman case while paying for Pedersen's blinding. Since ACE's end-to-end secrecy is bounded by DLog regardless (downstream applications publish $g^{\mathsf{MSK}}$ and the per-recipient $g^{s_i}$), Feldman achieves the same security floor with strictly less machinery.
+    With paper's Pedersen variant, it can still be possible to support the above requirements. But construction can be a lot more compliated.
 
 2. **Private authenticated channel = PKE.** The paper assumes private authenticated channels between dealer and each node. ACE realizes this by **PKE-encrypting each share to the recipient's registered `pke_enc_key`**, with the resulting ciphertext riding the public broadcast channel. Confidentiality reduces to PKE security ([`pke.md`](./pke.md)). The auth side is provided by the chain layer: the share ciphertext is bound to the dealer's account by virtue of the `on_dealer_contribution_0` signed transaction.
 

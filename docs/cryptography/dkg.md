@@ -17,41 +17,32 @@ See [`../protocols.md`](../protocols.md) for the on-chain state machine, error p
 
 ## 2. Security properties
 
-ACE DKG inherits the standard Pedersen-DKG family security properties. Each follows from the corresponding per-VSS property (see [`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$.
+Each property below follows from the corresponding per-VSS property ([`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$. Properties 1–4 assume **static corruption** (adversary commits to the corruption set $J$ with $|J| \leq t$ before the protocol starts); property 5 is a structural bias gap; adaptive corruption is treated separately at the end.
 
-Unless stated otherwise, properties below assume **static corruption**: $\mathcal{A}$ commits to a corruption set $J$ with $|J| \leq t$ before the protocol starts.
+**1. Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$, and the shares interpolate to $\log_g \mathsf{masterPk}$ via a unique degree-$t$ polynomial $F$ with $F(0) = \mathsf{MSK}$ and $F(j+1) = s_j$.
 
-1. **Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$. There exists a unique degree- $t$ polynomial $F$ with $F(0) = \mathsf{MSK} = \log_g \mathsf{masterPk}$, and each honest node $j$'s share $s_j = F(j+1)$.
+*Sketch.* By §1, all honest parties read the same $Q$ from the broadcast channel, hence agree on $\mathsf{masterPk}$. Per-VSS binding pins each dealer's polynomial $g_i$ uniquely; the sum $F = \sum_{i \in Q} g_i$ inherits degree $t$ and the desired evaluations.
 
-   *Sketch.* By §1, all honest parties read the same $Q$ and the same $\mathsf{masterPk} = \prod_{i \in Q} v_0^{(i)}$. Per-VSS binding (Feldman + DLog) pins each $i \in Q$ to a unique degree-$t$ polynomial $g_i$; $F := \sum_i g_i$ has degree $t$ with $F(0) = \log_g \mathsf{masterPk}$ and $F(j+1) = s_j$.
+**2. Completeness.** Up to $t$ malicious dealers cannot prevent honest parties from producing a consistent output.
 
-2. **Completeness.** Up to $t$ malicious dealers cannot prevent honest parties from outputting a consistent $(\mathsf{masterPk}, s_j)$.
+*Sketch.* Per-VSS completeness gives each honest dealer's session $O(\Delta)$ termination. With $\geq n - t \geq t + 1$ honest dealers, $|Q|$ reaches the threshold from honest VSSs alone.
 
-   *Sketch.* Per-VSS completeness gives each honest dealer $O(\Delta)$ termination regardless of malicious recipients. With $\geq n - t \geq t + 1$ honest dealers contributing, $|Q|$ reaches threshold from honest VSSs alone.
+**3. Termination.** All honest parties terminate within $O(\Delta)$.
 
-3. **Termination.** All honest parties terminate within $O(\Delta)$.
+*Sketch.* Per-VSS termination plus the deterministic composition step in §1.
 
-   *Sketch.* Per-VSS termination plus §1's composition step (deterministic on already-public data) gives the same $O(\Delta)$ bound.
+**4. Secrecy.** The adversary's view is computationally simulatable from $(\mathsf{masterPk}, \{s_j : j \in J\})$. Reduces to DLog and PKE IND-CPA.
 
-4. **Secrecy.** $\mathcal{A}$'s view is computationally simulatable from $(\mathsf{masterPk}, \{s_j : j \in J\})$. Reduces to DLog + PKE IND-CPA with multiplicative loss factor at most $n^2$.
+*Sketch.* The DKG-level simulator takes $\mathsf{masterPk}$ and corrupted shares as input, then assigns each honest dealer a target $g^{a_0^{(i)}}$ so that the product over $Q$ equals $\mathsf{masterPk}$; it similarly assigns target evaluations to corrupted recipients. Each per-VSS simulator (see [`vss.md`](./vss.md) §2) is invoked with its assigned target. The composition is sound because, in the real protocol, the joint distribution of honest dealers' contributions conditional on $(\mathsf{masterPk}, \{s_j\}_{j \in J})$ is uniform over the affine subspace the simulator samples from. Loss factor at most $n^2$ times the per-VSS advantage.
 
-   *Sketch.* Compose per-VSS simulators across $Q$. The DKG-level simulator receives $\mathsf{masterPk}$ and corrupted shares, then coordinates honest dealers' targets: pick $|Q \cap \text{honest}| - 1$ values of $g^{a_0^{(i)}}$ uniformly in $\mathbb{G}$ and force the last so the product equals $\mathsf{masterPk}$ divided by the (publicly-observable) corrupted contributions; similarly distribute each corrupted recipient's target share $s_j$ by sampling $|Q \cap \text{honest}| - 1$ honest contributions uniformly in $\mathbb{F}_r$ and forcing the last. Feed those targets to the per-VSS simulators. The conditional distribution matches the real protocol's (uniform subject to product / sum constraint), so composition is sound. Concrete bound:
+**5. Bounded bias on $\mathsf{masterPk}$.** $\mathsf{masterPk}$'s distribution is **not** uniform over $\mathbb{G}$: a rushing adversary controlling $k \leq t$ dealers can restrict the output to one of $\leq 2^k$ candidate values of its choosing — **at most $t$ bits of entropy loss**.
 
-   $$\mathsf{Adv}_{\text{DKG-Sec}}(\mathcal{A}) \leq n \cdot \mathsf{Adv}_{\text{DLog}} + n^2 \cdot \mathsf{Adv}_{\text{IND-CPA}}.$$
-
-5. **Bounded bias on $\mathsf{masterPk}$.** $\mathsf{masterPk}$'s distribution is **NOT** uniform over $\mathbb{G}$: an adversary controlling $k \leq t$ dealers can restrict the protocol output to one of $\leq 2^k \leq 2^t$ candidate values of its choosing — **at most $t$ bits of entropy loss on $\log_g \mathsf{masterPk}$**.
-
-   *Sketch.* §1 fixes $Q$ in a single agreement step with no prior commitment; for each of its $k$ controlled dealers, $\mathcal{A}$ can adaptively decide whether that VSS qualifies in time to enter $Q$, after observing honest dealers' $v_0$ values. This yields $2^k$ attainable subsets of $\mathcal{A}$'s VSSs in $Q$, each giving a different product $\mathsf{masterPk}$; $\mathcal{A}$ picks the most favourable.
-
-   For ACE's typical $t \in \{2, 3\}$ this is $\leq 3$ bits of entropy loss on $\sim 256$-bit $\log_g \mathsf{masterPk}$ — not exploitable for $t$-IBE / threshold signing. The standard mitigation (GJKR'99 commit-then-open) reduces it to $0$ at the cost of an extra round.
+*Sketch.* §1 fixes $Q$ in a single agreement step with no prior commitment binding dealers. For each controlled dealer, the adversary can adaptively decide — after observing honest dealers' $v_0$ values — whether to push that VSS to qualify in time to enter $Q$. This yields $2^k$ attainable values of $\mathsf{masterPk}$, from which the adversary picks the most favourable. The standard mitigation (GJKR'99 commit-then-open) eliminates the bias at the cost of an extra round; ACE does not implement it. For typical $t \in \{2, 3\}$ deployments, $\leq 3$ bits of entropy loss is not exploitable on $\sim 256$-bit DLog-hard $\log_g \mathsf{masterPk}$.
 
 ### Adaptive corruption: not proved
 
-If $\mathcal{A}$ may **adaptively** choose which nodes to corrupt during the protocol (rather than committing to $J$ upfront), the secrecy reduction (item 4) **breaks**. The concrete failure mode:
+If the adversary may **adaptively** choose which nodes to corrupt during the protocol (rather than committing to $J$ upfront), the secrecy reduction in item 4 breaks. Concretely: the per-VSS simulator encrypts dummy `0` to honest holders; if the adversary later corrupts such a holder $i$ and learns $\mathsf{dk}_i$, decrypting that ciphertext yields `0` instead of the share value $y_i$ that the real protocol would have produced, and the simulation is trivially distinguished.
 
-- The per-VSS simulator ([`vss.md`](./vss.md) §2) encrypts dummy `0` under honest holders' PKE keys to hide the real shares $y_i$.
-- If $\mathcal{A}$ later corrupts a previously-honest holder $i$ and learns its $\mathsf{dk}_i$, it decrypts the dummy ciphertext and observes `0` instead of the share value $y_i$ that the real protocol would have produced. The simulation is trivially distinguishable; the reduction's advantage collapses to $\approx 1$.
+Fixing this requires non-committing encryption, programmable-RO plus selective-erasure assumptions, or a different share-channel construction — none of which ACE implements. We deem this acceptable because the operational threat (compromising an operator-run node *during* the $O(\Delta)$ sharing window of a fresh DKG/DKR) is strictly stronger than the static-corruption model already covered.
 
-Fixing this requires non-committing encryption, programmable-RO plus selective-erasure assumptions, or a fundamentally different share-channel construction — none of which ACE implements. We deem this acceptable because the operational threat (compromising an operator-run node *during* the $O(\Delta)$ sharing window of a fresh DKG/DKR) is strictly stronger than the static-corruption model already covered, and ACE's deployment doesn't see realistic mid-DKG compromise.
-
-**References.** Pedersen'91 (original DKG, bias attack later identified); Gennaro–Jarecki–Krawczyk–Rabin '99 (commit-then-open mitigation; first adaptive-secure DKG techniques); Gennaro et al. '07 (analysis of biased Pedersen-DKG under threshold applications); Canetti et al. '99 "Adaptive Security for Threshold Cryptosystems" (canonical NCE-based adaptive fix).
+**References.** Pedersen'91 (original DKG, bias attack later identified); Gennaro–Jarecki–Krawczyk–Rabin '99 (commit-then-open mitigation; first adaptive-secure DKG techniques); Gennaro et al. '07 (analysis of biased Pedersen-DKG under threshold applications); Canetti et al. '99 (canonical non-committing-encryption-based adaptive fix).

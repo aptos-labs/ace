@@ -32,7 +32,7 @@ Each property below follows from the corresponding per-VSS property ([`vss.md`](
 - **(C1)** $\prod_{i \in Q} v_0^{(i)} = \mathsf{masterPk}$.
 - **(C2)** For each $j \in J$, $\sum_{i \in Q} g_i(j+1) = s_j$.
 
-$\mathcal{S}$ proceeds as follows. *(Notation: $J$ = corrupted parties, $H$ = honest dealers in $Q$, so $|H| = |Q| - |Q \cap J|$.)*
+$\mathcal{S}$ proceeds as follows. (Notation: $J$ = corrupted parties, $H$ = honest dealers in $Q$, so $|H| = |Q| - |Q \cap J|$.)
 
 - **Reading off corrupted dealers.** For each $i \in Q \cap J$, $\mathcal{A}$ acts as dealer and publishes $(v_0^{(i)}, \dots, v_{t-1}^{(i)})$ on chain plus encrypted shares to every holder. $\mathcal{S}$ holds $\mathsf{dk}_j$ for honest $j \in [n] \setminus J$, decrypts those ciphertexts, and Lagrange-interpolates two of them to recover $g_i$ in full as a scalar polynomial. This lets $\mathcal{S}$ compute the corrupted dealers' contributions to both $\mathsf{masterPk}$ (in the exponent) and $s_j$ (in the scalar field).
 - **Sampling $|H| - 1$ honest dealers freely.** Pick any $|H| - 1$ of the honest dealers and sample each one's polynomial $g_i \in_R \mathbb{F}_r[x]_{\deg \leq t-1}$ uniformly, just as the real protocol does. Compute their $v_k^{(i)}$ honestly.

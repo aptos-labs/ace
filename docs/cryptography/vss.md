@@ -54,10 +54,6 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
 Replacing Pedersen with Feldman (§1.1 item 1) breaks the paper's secrecy proof: paper's Lemma 1 uses the Pedersen blinding $r(\cdot)$ to absorb arbitrary secret choices into the commitment in a perfect-indistinguishability simulation, and Feldman has no $r(\cdot)$ to absorb anything. Information-theoretic secrecy is therefore no longer achievable for ACE's VSS.
 
-In its place we get a weaker, **computational, one-wayness** guarantee. In the game where the challenger samples $s \in_R \mathbb{F}_r$, runs the honest sharing phase, and the adversary $\mathcal{A}$ (statically corrupting $\leq t$ recipients) outputs a guess $s'$ for $s$,
-
-$$\mathsf{Adv}_{\text{VSS-OW}}(\mathcal{A}) \leq \mathsf{Adv}_{\text{DLog}}(\mathcal{B}) + n \cdot \mathsf{Adv}_{\text{IND-CPA}}(\mathcal{C}) + \frac{1}{|\mathbb{F}_r|}$$
+In its place we get a weaker, **computational, one-wayness** guarantee, which can be reduced to hardness of computational discrete logarithm problem.
 
 for PPT reductions $\mathcal{B}$ (DLog solver) and $\mathcal{C}$ (PKE IND-CPA distinguisher). Proof idea: given a DLog challenge $(g, P)$, $\mathcal{B}$ plants $P$ as $v_0$ in a simulated VSS transcript, fills the remaining commitment vector via Lagrange-in-exponent over fresh uniform group elements, encrypts dummies under honest-holder PKE keys (PKE IND-CPA bridges the resulting computational gap), and returns $\mathcal{A}$'s guess as its DLog answer. Full proof is omitted here; the construction is a routine application of Feldman'87 / Pedersen'91 secrecy analysis to the DAS Algorithm 1 protocol skeleton.
-
-**Scope.** This argument covers only the **sharing phase** of a single VSS instance. Composition with downstream uses (DKG, DKR, threshold decryption) requires independent arguments — see [`dkg.md`](./dkg.md), [`dkr.md`](./dkr.md), and [`t-ibe.md`](./t-ibe.md).

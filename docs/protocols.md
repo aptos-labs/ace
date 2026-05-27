@@ -12,7 +12,7 @@ This document describes the protocols ACE runs (sub-protocols + roles + the off-
 
 ACE runs four orchestration sub-protocols plus one request/response flow. Each is described below at the conceptual level; the state-machine realizations are §2 onward.
 
-- **VSS — Verifiable Secret Sharing** (single-dealer building block). One designated *dealer* commits to a secret-bearing degree-$(t-1)$ polynomial and distributes Feldman-verifiable shares to $n$ designated *recipients*. After a synchrony window, the dealer publicly reveals shares for any recipient who failed to acknowledge. Outputs: a public commitment vector and per-recipient share-PKs that anyone can verify on-chain. Used as a primitive by DKG and DKR.
+- **VSS — Verifiable Secret Sharing** (single-dealer building block). One designated *dealer* commits to a secret-bearing polynomial of degree $t-1$ and distributes Feldman-verifiable shares to $n$ designated *recipients*. After a synchrony window, the dealer publicly reveals shares for any recipient who failed to acknowledge. Outputs: a public commitment vector and per-recipient share-PKs that anyone can verify on-chain. Used as a primitive by DKG and DKR.
 
 - **DKG — Distributed Key Generation.** Each member of the committee runs one VSS as dealer (and is a recipient in all $n$ VSS sessions). The joint master secret $s$ is the sum of the constant terms of the $\geq t$ contributing dealer polynomials; nobody ever holds $s$ in the clear. Each committee member ends up holding a Shamir share of $s$. Outputs: the master public key $\mathsf{mpk}$ on-chain, and one share per committee member off-chain (re-derivable from the on-chain VSS messages by that member).
 
@@ -299,7 +299,7 @@ The reshared master_pk is unchanged: `secretly_scaled_element` is copied from th
 
 ### 4.3 Worker behavior
 
-Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer whose first Feldman commitment $v_0$ **must** equal the pre-published $P_j = \mathsf{src\_share\_pks}[j]$ from the parent session. The on-chain `element_eq` check at `vss.move:201` forces the dealer's polynomial constant term `a_0` to equal `s_j` regardless of dealer behaviour; non-constant coefficients are still derived deterministically from `pke_dk`.
+Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer whose first Feldman commitment $v_0$ **must** equal the pre-published $P_j$ — the parent session's `src_share_pks[j]`. The on-chain `element_eq` check at `vss.move:201` forces the dealer's polynomial constant term `a_0` to equal `s_j` regardless of dealer behaviour; non-constant coefficients are still derived deterministically from `pke_dk`.
 
 ---
 

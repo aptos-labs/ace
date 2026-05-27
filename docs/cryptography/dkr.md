@@ -39,7 +39,7 @@ A VSS session created as part of DKR carries a *resharing challenge*: the parent
 
 DKR is the cross-committee (Desmedt-Jajodia) variant of the proactive refresh primitive defined in Cachin, Kursawe, Lysyanskaya, Strobl '02 (CKLS) — see references at the end of §1. We adopt CKLS's [§5.1 Definition 3](https://eprint.iacr.org/2002/134) property list directly, adapted to ACE's synchronous + L1-broadcast setting with Feldman PCS, plus one ACE-specific addition (resharing-dealer soundness, item 4).
 
-Each property assumes static corruption with the PSS budget: $b_\text{old} \leq t - 1$ in the old committee and $b_\text{new} \leq t' - 1$ in the new.
+Each property assumes static corruption with the PSS budget: $b_\text{old} \leq t - 1$ in the old committee and $b_\text{new} \leq t' - 1$ in the new. Adaptive corruption is out of scope.
 
 **1. Liveness (= termination).** All honest new-committee nodes complete the refresh within $O(\Delta)$ under synchrony + L1 liveness. — Per-VSS termination for each contributing old dealer; on-chain $H$-freezing and Lagrange-coefficient computation add only finite deterministic computation.
 
@@ -59,10 +59,6 @@ Each property assumes static corruption with the PSS budget: $b_\text{old} \leq 
 - In the limit ($C_\text{old} = C_\text{new}$, full overlap, $t = t'$), DKR's secrecy collapses to the *static* secrecy of the underlying VSS in that committee — refreshing the polynomial alone doesn't protect against an attacker who already corrupts $\geq t$ of those same nodes.
 
 This is the expected behavior for any PSS — the proactive benefit comes from *changing the corrupted set*, not from the polynomial refresh. The overlap level is a deployment-policy choice: small overlap maximizes proactive benefit at the cost of operational continuity; large overlap maximizes continuity at the cost of attacker-cost reduction.
-
-### Adaptive corruption: not proved
-
-Same caveat as DKG ([`dkg.md`](./dkg.md) §2 "Adaptive corruption"): if the adversary may adaptively choose which nodes to corrupt during the protocol (rather than committing to $J_\text{old}, J_\text{new}$ upfront), the per-VSS secrecy reduction breaks because the simulator's dummy ciphertexts to honest holders become distinguishable once those holders are corrupted. The mitigation paths (non-committing encryption, programmable-RO plus erasures, alternative share-channel) are not implemented in ACE; the operational threat of mid-DKR node compromise is judged strictly stronger than static corruption, hence out of scope.
 
 **Audit notes.**
 

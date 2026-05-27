@@ -17,7 +17,7 @@ See [`../protocols.md`](../protocols.md) for the on-chain state machine, error p
 
 ## 2. Security properties
 
-Each property below follows from the corresponding per-VSS property ([`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$. Properties 1–4 assume **static corruption** (adversary commits to the corruption set $J$ with $|J| \leq t$ before the protocol starts); property 5 is a structural bias gap; adaptive corruption is treated separately at the end.
+Each property below follows from the corresponding per-VSS property ([`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$. Properties 1–4 assume **static corruption** (adversary commits to the corruption set $J$ with $|J| \leq t$ before the protocol starts); property 5 is a structural bias gap. Adaptive corruption is out of scope.
 
 **1. Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$, and the shares interpolate to $\log_g \mathsf{masterPk}$ via a unique polynomial $F$ of degree $t$ with $F(0) = \mathsf{MSK}$ and $F(j+1) = s_j$. — Immediate from §1: $Q$ is broadcast, $\mathsf{masterPk}$ and $s_j$ are deterministic linear functions of public Feldman commitments, and per-VSS binding pins each $g_i$ uniquely.
 
@@ -49,11 +49,5 @@ $\mathcal{S}$ proceeds as follows. (Notation: $J$ = corrupted parties, $H$ = hon
 **5. Bounded bias on $\mathsf{masterPk}$.** $\mathsf{masterPk}$'s distribution is **not** uniform over $\mathbb{G}$: a rushing adversary controlling $k \leq t$ dealers can restrict the output to one of $\leq 2^k$ candidate values of its choosing — **at most $t$ bits of entropy loss**.
 
 *Sketch.* §1 fixes $Q$ in a single agreement step with no prior commitment binding dealers. For each controlled dealer, the adversary can adaptively decide — after observing honest dealers' $v_0$ values — whether to push that VSS to qualify in time to enter $Q$. This yields ${2^k}$ attainable values of $\mathsf{masterPk}$, from which the adversary picks the most favourable. The standard mitigation (GJKR'99 commit-then-open) eliminates the bias at the cost of an extra round; ACE does not implement it. For typical $t \in \{2, 3\}$ deployments, $\leq 3$ bits of entropy loss is not exploitable on $\sim 256$-bit DLog-hard $\log_g \mathsf{masterPk}$.
-
-### Adaptive corruption: not proved
-
-If the adversary may **adaptively** choose which nodes to corrupt during the protocol (rather than committing to $J$ upfront), the secrecy reduction in item 4 breaks. Concretely: the per-VSS simulator encrypts dummy `0` to honest holders; if the adversary later corrupts such a holder $i$ and learns $\mathsf{dk}_i$, decrypting that ciphertext yields `0` instead of the share value $y_i$ that the real protocol would have produced, and the simulation is trivially distinguished.
-
-Fixing this requires non-committing encryption, programmable-RO plus selective-erasure assumptions, or a different share-channel construction — none of which ACE implements. We deem this acceptable because the operational threat (compromising an operator-run node *during* the $O(\Delta)$ sharing window of a fresh DKG/DKR) is strictly stronger than the static-corruption model already covered.
 
 **References.** Pedersen'91 (original DKG, bias attack later identified); Gennaro–Jarecki–Krawczyk–Rabin '99 (commit-then-open mitigation; first adaptive-secure DKG techniques); Gennaro et al. '07 (analysis of biased Pedersen-DKG under threshold applications); Canetti et al. '99 (canonical non-committing-encryption-based adaptive fix).

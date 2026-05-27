@@ -1,6 +1,6 @@
 # Distributed Key Resharing (DKR)
 
-DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext (each committee is a set of node addresses; on-chain these are the `current_nodes` / `new_nodes` fields of `dkr::Session`). ACE's instance lives in `contracts/dkr/sources/dkr.move`. The protocol consumes [`vss.md`](./vss.md) as a building block with the resharing-dealer challenge enabled (§2 below).
+DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. The protocol consumes [`vss.md`](./vss.md) as a building block with the resharing-dealer challenge enabled (§2 below).
 
 Notation: $g_{\text{old}}$ is the base point of the old committee's session, $g_{\text{new}}$ of the new. We write group operations multiplicatively, consistent with [`vss.md`](./vss.md).
 
@@ -25,7 +25,7 @@ A VSS session created as part of DKR carries a *resharing challenge*: the parent
 
 ## 3. Modifications relative to classical PSS / the blog construction
 
-1. **Resharing-dealer binding.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this by requiring the dealer's first Feldman commitment $v_0 = g_\text{old}^{a_0}$ to equal the pre-published $P_j = g_\text{old}^{s_j}$ — an on-chain `element_eq` check at `vss.move:201`. Combined with Feldman verification of the polynomial during normal-or-dispute share opening, this forces $g_j(0) = s_j$ regardless of dealer behavior. This is the reason ACE's PCS is Feldman and not the paper's Pedersen instantiation — see [`vss.md`](./vss.md) §1.1 item 1: a hiding $v_0$ would obstruct this group equality.
+1. **Resharing-dealer binding.** A standard PSS dealer can quietly substitute their own fresh secret for $s_j$. ACE prevents this by requiring the dealer's first Feldman commitment $v_0 = g_\text{old}^{a_0}$ to equal the pre-published $P_j = g_\text{old}^{s_j}$ — verified on chain by a single group-equality check. Combined with Feldman verification of the polynomial during normal-or-dispute share opening, this forces $g_j(0) = s_j$ regardless of dealer behavior. This is the reason ACE's PCS is Feldman and not the paper's Pedersen instantiation — see [`vss.md`](./vss.md) §1.1 item 1: a hiding $v_0$ would obstruct this group equality.
 
 2. **Agreement on contributing set $H$ = chain.** Naïvely, the new committee would need a Byzantine agreement protocol among themselves to agree on which $t$ VSS sessions to combine. ACE delegates this to the L1: the on-chain orchestrator deterministically reads each VSS's completion flag and freezes the contributing set the first time $|\{j : \mathsf{vss}_j\ \text{done}\}| \geq t$. Every observer reads the same $H$ from on-chain state. **New-node honesty does not provide agreement; the chain does.** Same pattern as VSS §1.1 item 3 in [`vss.md`](./vss.md).
 

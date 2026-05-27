@@ -32,7 +32,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **Operator / worker** — Synonyms. Runs one worker process; holds an Ed25519 account key + a PKE decryption key + Shamir shares of every currently-active master secret. Participates in DKG, DKR, and serves decryption requests.
 
-- **Committee** — The set of operators in the current epoch. Size $n$, secrecy/reconstruction threshold $t$ with $2t > n$.
+- **Committee** — The set of operators in the current epoch. Size $n$, secrecy/reconstruction threshold $t$ with $n < 2t$.
 
 - **Admin** — Controls the ACE Move package. Bootstraps the initial epoch; can propose committee changes (subject to vote). Holds no shares; cannot decrypt.
 
@@ -112,7 +112,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 ## Numeric constants and parameters
 
-- **$t$, $t'$** — Secrecy/reconstruction threshold, current and next epoch. The protocol requires $2t > n$.
+- **$t$, $t'$** — Secrecy/reconstruction threshold, current and next epoch. The protocol requires $n < 2t$.
 - **$n$, $n'$** — Committee size, current and next epoch.
 - **$\Delta$** — Synchrony bound between honest parties (paper notation). In ACE realized as `ACK_WINDOW_MICROS = 10s` (the time a dealer waits for ACKs before opening shares publicly).
 - **$\kappa$** — Cryptographic security parameter. ACE's primitives target $\kappa \approx 128$ throughout.

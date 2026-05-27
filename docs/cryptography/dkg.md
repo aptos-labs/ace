@@ -19,17 +19,11 @@ See [`../protocols.md`](../protocols.md) for the on-chain state machine, error p
 
 Each property below follows from the corresponding per-VSS property ([`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$. Properties 1–4 assume **static corruption** (adversary commits to the corruption set $J$ with $|J| \leq t$ before the protocol starts); property 5 is a structural bias gap; adaptive corruption is treated separately at the end.
 
-**1. Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$, and the shares interpolate to $\log_g \mathsf{masterPk}$ via a unique degree-$t$ polynomial $F$ with $F(0) = \mathsf{MSK}$ and $F(j+1) = s_j$.
+**1. Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$, and the shares interpolate to $\log_g \mathsf{masterPk}$ via a unique degree-$t$ polynomial $F$ with $F(0) = \mathsf{MSK}$ and $F(j+1) = s_j$. *Immediate from §1: $Q$ is broadcast, $\mathsf{masterPk}$ and $s_j$ are deterministic linear functions of public Feldman commitments, and per-VSS binding pins each $g_i$ uniquely.*
 
-*Sketch.* By §1, all honest parties read the same $Q$ from the broadcast channel, hence agree on $\mathsf{masterPk}$. Per-VSS binding pins each dealer's polynomial $g_i$ uniquely; the sum $F = \sum_{i \in Q} g_i$ inherits degree $t$ and the desired evaluations.
+**2. Completeness.** Up to $t$ malicious dealers cannot prevent honest parties from producing a consistent output. *Per-VSS completeness gives each honest dealer's session $O(\Delta)$ termination; with $\geq t+1$ honest dealers, $|Q|$ reaches threshold from honest VSSs alone.*
 
-**2. Completeness.** Up to $t$ malicious dealers cannot prevent honest parties from producing a consistent output.
-
-*Sketch.* Per-VSS completeness gives each honest dealer's session $O(\Delta)$ termination. With $\geq n - t \geq t + 1$ honest dealers, $|Q|$ reaches the threshold from honest VSSs alone.
-
-**3. Termination.** All honest parties terminate within $O(\Delta)$.
-
-*Sketch.* Per-VSS termination plus the deterministic composition step in §1.
+**3. Termination.** All honest parties terminate within $O(\Delta)$. *Per-VSS termination plus the deterministic composition in §1.*
 
 **4. Secrecy.** The adversary's view is computationally simulatable from $(\mathsf{masterPk}, \{s_j : j \in J\})$. Reduces to DLog and PKE IND-CPA.
 

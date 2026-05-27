@@ -2,7 +2,7 @@
 
 This document is the threat model for the ACE protocol — who is trusted, what they're trusted for, what an adversary can do, and what specifically is *not* protected.
 
-For cryptographic constructions, see [`crypto-spec.md`](./crypto-spec.md). For protocol state machines, see [`protocols.md`](./protocols.md). For shared term definitions, see [`glossary.md`](./glossary.md).
+For cryptographic constructions, see [`cryptography/`](./cryptography/). For protocol state machines, see [`protocols.md`](./protocols.md). For shared term definitions, see [`glossary.md`](./glossary.md).
 
 ---
 
@@ -42,7 +42,7 @@ The actors not on this list — block explorer operators, gas station providers,
 > **No coalition of `t-1` operators in a given epoch can decrypt any ciphertext encrypted to a master public key from that epoch's DKG/DKR.**
 
 This reduces to:
-- Boneh–Franklin IBE security on BLS12-381 (§3 of [`crypto-spec.md`](./crypto-spec.md)) under the BDH assumption + ROM.
+- Boneh–Franklin IBE security on BLS12-381 ([`cryptography/t-ibe.md`](./cryptography/t-ibe.md)) under the BDH assumption + ROM.
 - Shamir secret sharing's (`t-1`)-privacy.
 - The honesty of the DKG: with at least `t` honest dealers contributing, the master secret is uniformly random in Fr from the adversary's viewpoint.
 
@@ -72,7 +72,7 @@ Recipients run Feldman verification (`worker-components/vss-common/src/vss_types
 
 > **A DKR dealer cannot reshare a secret it does not actually hold a share of.**
 
-The resharing-VSS carries a challenge $(P, H)$ where $P = s_j \cdot B_{\text{old}}$ is the dealer's existing share-PK (read from the previous DKG/DKR's on-chain state) and $H$ is an independent base derived deterministically from $P$. The dealer must produce a Sigma-DLog-Eq proof (see [`crypto-spec.md`](./crypto-spec.md) §5) that the polynomial constant term committed in the new VSS equals the secret behind $P$. Verified on-chain when the dealer submits its first-round message.
+The resharing-VSS uses the parent committee's pre-published share-PK $P_j = g_\text{old}^{s_j}$ as a binding target: the on-chain handler verifies that the dealer's first Feldman commitment $v_0$ equals $P_j$. This forces the dealer's polynomial constant term to equal the known share $s_j$ regardless of dealer behaviour.
 
 ---
 
@@ -118,7 +118,7 @@ The chain itself is subject to whatever ordering / front-running properties the 
 ### 4.4 Long-term secret rotation
 
 Master secrets rotate on every epoch (auto every `epoch_duration_micros` ≥ 30s, or on `CommitteeChange`). However:
-- A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. **The PKE decryption key derivation step (§4.2 of `crypto-spec.md`) deterministically derives polynomial coefficients from the dealer's PKE dk, so the dealer can always recover their old contributions while their PKE dk lives.** Operationally, deleting old shares from disk is the operator's responsibility; the protocol does not enforce it.
+- A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. **The PKE decryption key derivation step ([`cryptography/vss.md`](./cryptography/vss.md) §1.1 item 7) deterministically derives polynomial coefficients from the dealer's PKE dk, so the dealer can always recover their old contributions while their PKE dk lives.** Operationally, deleting old shares from disk is the operator's responsibility; the protocol does not enforce it.
 - See [`project_epoch_in_decryption_request`](../.claude/projects/-Users-zhoujun-ma-repos-aptos-labs-ace/memory/project_epoch_in_decryption_request.md) — workers retain old shares for ~30s after rotation to handle in-flight requests.
 
 ### 4.5 Sybil resistance and cryptoeconomic incentives
@@ -148,11 +148,10 @@ Out of scope for the protocol-level trust model:
 
 | Primitive | Assumption | Used by |
 |-----------|------------|---------|
-| ElGamal-OTP-Ristretto255 | DDH on Ristretto255 + ROM (KDF, HMAC) | PKE scheme 0 *(test-only; see [`crypto-spec.md`](./crypto-spec.md) §2)* |
+| ElGamal-OTP-Ristretto255 | DDH on Ristretto255 + ROM (KDF, HMAC) | PKE scheme 0 *(test-only; see [`cryptography/pke.md`](./cryptography/pke.md))* |
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | RFC 9180 base-mode security: GapDH on X25519, HKDF-SHA256, ChaCha20-Poly1305 IND-CCA | PKE scheme 1 *(production)* |
-| BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`crypto-spec.md`](./crypto-spec.md) §3)* |
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md))* |
 | BFIBE-BLS12381-ShortSig-AEAD | BDH on BLS12-381 + ROM, ChaCha20-Poly1305 IND-CCA | t-IBE scheme 1 *(production)* |
-| Sigma-DLog-Eq | DLog on BLS12-381 + ROM (Fiat–Shamir) | VSS resharing |
 | Feldman PCS | DLog on BLS12-381 (binding) | VSS share verification |
 | Ed25519 | EUF-CMA (RFC 8032) | ProofOfPermission (Aptos) |
 | Aptos chain | BFT honest 2/3 supermajority | Truth of view-function results |
@@ -177,7 +176,7 @@ The worker process expects two pieces of secret material at startup, both passed
 The CLI's onboarding wizard (`cli/src/onboarding.ts`) generates both secrets locally, prints a `gcloud run deploy` / `docker run` command that writes them as Cloud Run secrets / env vars, and registers the public counterparts on-chain.
 
 **Audit hooks:**
-- A worker that loses its `pke-dk` cannot be replaced with a fresh PKE dk without losing all its current Shamir shares (because share derivation is deterministic on the dk per §4.2 of `crypto-spec.md`). Recovery requires either a DKR (which fails if the worker's dk is unrecoverable and they hold above-threshold shares) or admin intervention via `CommitteeChange`.
+- A worker that loses its `pke-dk` cannot be replaced with a fresh PKE dk without losing all its current Shamir shares (because share derivation is deterministic on the dk per [`cryptography/vss.md`](./cryptography/vss.md) §1.1 item 7). Recovery requires either a DKR (which fails if the worker's dk is unrecoverable and they hold above-threshold shares) or admin intervention via `CommitteeChange`.
 - A leaked `pke-dk` reveals every Shamir share that worker has ever dealt — past *and* future, until they're rotated out.
 - Storing the dk as a Cloud Run env var places trust in the cloud provider's secret-manager. Field-level KMS encryption is not currently used.
 

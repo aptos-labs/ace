@@ -194,6 +194,18 @@ async fn build_and_submit_dc0(
     // Derive polynomial coefficients. coefs[0] = secret = f(0).
     // If secret_override is provided (e.g. DKR dealer using their DKG share), use it for coefs[0].
     // All other coefficients are derived deterministically from the DK.
+    //
+    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §2): coefs[0] MUST be sampled
+    // uniformly from Fr. The §2 modified secrecy argument reduces an adversary's chance of
+    // recovering coefs[0] to DLog hardness + PKE IND-CPA, but the reduction's game samples
+    // s ←$ Fr — a non-uniform secret breaks the reduction's distribution argument and
+    // (because Feldman is non-hiding) v_0 = g^{coefs[0]} would expose a low-entropy secret
+    // to brute force. Both call paths below satisfy uniformity:
+    //   - `fr_from_dk_bytes(pke_dk_bytes, 0)`: derived from a freshly-generated PKE
+    //     decryption key (uniform Fr at node init).
+    //   - `secret_override`: documented contract is "a DKG/DKR share" — a Lagrange
+    //     evaluation of a uniform-random DKG polynomial, itself uniform in Fr.
+    // Do NOT call this dealer with a structured, low-entropy, or attacker-influenceable secret.
     let coefs: Vec<Fr> = {
         let secret = if let Some(s) = secret_override {
             Fr::from_le_bytes_mod_order(&s)
@@ -327,6 +339,7 @@ async fn build_and_submit_dc1(
     let scheme = bcs_session.base_point.scheme();
 
     // Re-derive the same polynomial (must match DC0 exactly).
+    // SECURITY HYPOTHESIS on coefs[0]: see the dealing path above (vss.md §2).
     let coefs: Vec<Fr> = {
         let secret = if let Some(s) = secret_override {
             Fr::from_le_bytes_mod_order(&s)

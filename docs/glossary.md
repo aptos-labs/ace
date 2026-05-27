@@ -70,19 +70,19 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 ## Sub-protocols and acronyms
 
-- **VSS** — Verifiable Secret Sharing. Single-dealer building block. See [`crypto-spec.md`](./crypto-spec.md) §4 and [`protocols.md`](./protocols.md) §2.
+- **VSS** — Verifiable Secret Sharing. Single-dealer building block. See [`cryptography/vss.md`](./cryptography/vss.md) and [`protocols.md`](./protocols.md) §2.
 
 - **DKG** — Distributed Key Generation. $n$ parallel VSS sessions; output is a fresh master secret jointly held. See [`protocols.md`](./protocols.md) §3.
 
-- **DKR** — Distributed Key Resharing. $n_{\text{curr}}$ parallel resharing-VSS sessions from old committee to new; the master secret is **the same** as before, just held by a different committee. Acronym: D = Distributed, K = Key, R = Resharing — note "DKR resharing" is redundant. See [`crypto-spec.md`](./crypto-spec.md) §4.0.1, [`protocols.md`](./protocols.md) §4.
+- **DKR** — Distributed Key Resharing. $n_{\text{curr}}$ parallel resharing-VSS sessions from old committee to new; the master secret is **the same** as before, just held by a different committee. Acronym: D = Distributed, K = Key, R = Resharing — note "DKR resharing" is redundant. See [`cryptography/dkr.md`](./cryptography/dkr.md), [`protocols.md`](./protocols.md) §4.
 
 - **PSS / PVSS** — Proactive Secret Sharing / Publicly Verifiable Secret Sharing. Academic umbrella terms; ACE's DKR is a PSS instance.
 
-- **t-IBE** — Threshold Identity-Based Encryption. The user-facing layer; see [`crypto-spec.md`](./crypto-spec.md) §3.
+- **t-IBE** — Threshold Identity-Based Encryption. The user-facing layer; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md).
 
 - **BF-IBE** — Boneh–Franklin IBE. The construction family ACE's t-IBE belongs to.
 
-- **PKE** — Public-Key Encryption. The transport layer used inside ACE for VSS share messages and decryption-request bodies. See [`crypto-spec.md`](./crypto-spec.md) §2.
+- **PKE** — Public-Key Encryption. The transport layer used inside ACE for VSS share messages and decryption-request bodies. See [`cryptography/pke.md`](./cryptography/pke.md).
 
 - **HPKE** — Hybrid Public Key Encryption (RFC 9180). ACE's production PKE.
 
@@ -106,9 +106,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
   - **Aptos custom flow:** Arbitrary bytes the contract's `check_acl(label, encPk, payload)` will validate.
   - **Solana custom flow:** Like basic, but with `CustomFullRequestBytes` and the program's `assert_custom_acl` instruction.
 
-- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share rather than a fresh secret. Geometrically: a pair $(P = s_j \cdot B_{\text{old}}, H = \mathsf{HashToCurve}(P))$, plus a Sigma-DLog-Eq proof from the dealer that the new polynomial's constant term $a_0$ equals $s_j$. See [`crypto-spec.md`](./crypto-spec.md) §4.3 and §5.
-
-- **Sigma-DLog-Eq** — Discrete-log equality proof. Convinces a verifier that two pairs $(B_0, P_0)$ and $(B_1, P_1)$ share a common scalar $s$ such that $P_0 = s B_0$ and $P_1 = s B_1$, without revealing $s$. Implemented via Schnorr commitments + Fiat–Shamir.
+- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share $s_j$ rather than a fresh secret. Realized by configuring the new VSS session's base point to the parent committee's $g_\text{old}$ and verifying on-chain that the dealer's first Feldman commitment $v_0$ equals the pre-published $P_j = g_\text{old}^{s_j}$. See [`cryptography/dkr.md`](./cryptography/dkr.md) §2.
 
 ---
 
@@ -126,7 +124,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 ## Network / chain terms
 
 - **L1** — Layer-1 blockchain. ACE depends on the Aptos L1 for its orchestration state, BFT consensus, on-chain randomness, and timestamps. Solana appears only as a *target* chain for proof-of-permission verification — ACE itself does not run on Solana.
-- **chain_id** — The Aptos chain identifier (1 = mainnet, 2 = testnet, 4 = local devnet, etc.). Bound into the Sigma-DLog-Eq Fiat–Shamir transcript to prevent cross-chain replay.
+- **chain_id** — The Aptos chain identifier (1 = mainnet, 2 = testnet, 4 = local devnet, etc.). Bound into Fiat–Shamir transcripts produced by on-chain Move modules to prevent cross-chain replay.
 - **Aptos `randomness`** — On-chain randomness primitive used to sample fresh DKG basepoints. Itself a threshold protocol; trust assumption: Aptos validator quorum is honest.
 - **`view function`** — Move read-only function callable by RPC. Workers use these to read on-chain state without submitting transactions.
 - **`simulateTransaction`** — Solana RPC call that runs a transaction in a fresh state without committing it. ACE workers use it (with `sigVerify=true`) to verify the user's signed Solana txn without sending it on-chain.

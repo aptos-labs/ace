@@ -49,7 +49,7 @@ Properties 1–4 below follow from the corresponding per-VSS property ([`vss.md`
 
 *Sketch.* Compose per-VSS simulators ([`vss.md`](./vss.md) §2) across each old dealer's reshare-VSS. For each honest old dealer $j$, the per-VSS simulator gets $P_j = g_\text{old}^{s_j}$ (publicly known from the parent committee) as the target $v_0$, and the corrupted new-committee shares $\{g_j(i+1) : i \in J_\text{new}\}$ as constraints. The DKR-level simulator's task is just to coordinate: each honest old dealer's share-to-corrupted-new is a Lagrange-determined function of $\{S_i : i \in J_\text{new}\}$ and the corrupted old dealers' contributions. The conditional distribution of honest contributions in the real protocol matches the simulator's by the same affine-subspace argument as in DKG ([`dkg.md`](./dkg.md) §2 item 4).
 
-**5. No bias.** Unlike DKG, DKR does not sample fresh randomness for the master secret — it preserves the existing $s$. There is therefore no rushing-adversary bias of the kind described in [`dkg.md`](./dkg.md) §2 item 5. The new share-PKs $\{g_\text{new}^{S_i}\}$ are deterministic functions of $s$ and $H$.
+(There is no analogue of DKG's "bounded bias on masterPk" property: DKR preserves the parent committee's masterPk by construction, so the distribution of the output public key is whatever the parent DKG produced — nothing fresh to bias.)
 
 **Effect of committee overlap.** ACE's typical deployment has heavy overlap: an epoch transition often rotates only one or two nodes. The implications:
 

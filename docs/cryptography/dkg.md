@@ -11,7 +11,7 @@ Once $Q$ is fixed:
 - The joint master secret is $\mathsf{MSK} = \sum_{i \in Q} a_0^{(i)}$ (sum over qualifying dealers' constant terms).
 - The master public key is $\mathsf{masterPk} = \prod_{i \in Q} v_0^{(i)} = g^{\mathsf{MSK}}$ (product of Feldman first commitments).
 - Each recipient $j \in [n]$ holds $s_j = \sum_{i \in Q} g_i(j+1)$ — a Shamir share of $\mathsf{MSK}$ at evaluation point $j + 1$.
-- The per-recipient public share key $\mathsf{sharePk}_j = \prod_{i \in Q} g^{g_i(j+1)} = g^{s_j}$ is also publicly derivable from the Feldman commitments.
+- The per-recipient public share key is $g^{s_j}$, also publicly derivable from the Feldman commitments (by the same MSM used inside each VSS, then multiplied over $Q$).
 
 See [`../protocols.md`](../protocols.md) for the on-chain state machine, error paths, and timeouts.
 

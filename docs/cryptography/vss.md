@@ -24,18 +24,21 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
     **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. ACE instead settles for a weaker, computational, reduction-style argument summarized in §2. The argument's game samples $s \in_R \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (item 7 documents the two ACE derivations, both uniform).
 
-    **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
+    **Why Feldman, not Pedersen.** In ACE, there are 2 upper-level components that depend on VSS with extra requirements that favor Feldman over Pedersen.
 
     - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation
 
       $$e(\sigma_i,g)=e(Q_\text{id},P_i)$$
 
-      which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the IDK share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
-    - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is the on-chain group equality
+      which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the identity decryption key share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
+    - In the key resharing protocol, every node re-shares its key share $s$ using VSS.
+      The key share is assumed to have been committed by 2 public points $g, p$ (so everyone believes $g^s=p$).
+      The VSS should additionally help detect/reject faulty node who is trying to share the wrong thing.
+      With Feldman, this is trivially done by checking
 
       $$v_0 \stackrel{?}{=} g_\text{old}^{s_j}$$
 
-      against the publicly pre-published $g_\text{old}^{s_j}$ from the parent committee. Under Pedersen, $v_0 = g^{s_j} h^{r_0}$ does not satisfy that equation; replacing it with a NIZK opening proof is possible but adds transcript size and verifier cost.
+      against the publicly pre-published $g_\text{old}^{s_j}$ from the parent committee.
 
     This is **not** a claim that Pedersen is structurally impossible — only that we don't know how to keep t-IBE and DKR as simple as the Feldman case while paying for Pedersen's blinding. Since ACE's end-to-end secrecy is bounded by DLog regardless (downstream applications publish $g^{\mathsf{MSK}}$ and the per-recipient $g^{s_i}$), Feldman achieves the same security floor with strictly less machinery.
 

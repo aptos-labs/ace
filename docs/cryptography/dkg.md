@@ -27,7 +27,24 @@ Each property below follows from the corresponding per-VSS property ([`vss.md`](
 
 **4. Secrecy.** The adversary's view is computationally simulatable from $(\mathsf{masterPk}, \{s_j : j \in J\})$. Reduces to DLog and PKE IND-CPA.
 
-*Sketch.* The DKG-level simulator takes $\mathsf{masterPk}$ and corrupted shares as input, then assigns each honest dealer a target $g^{a_0^{(i)}}$ so that the product over $Q$ equals $\mathsf{masterPk}$; it similarly assigns target evaluations to corrupted recipients. Each per-VSS simulator (see [`vss.md`](./vss.md) §2) is invoked with its assigned target. The composition is sound because, in the real protocol, the joint distribution of honest dealers' contributions conditional on $(\mathsf{masterPk}, \{s_j\}_{j \in J})$ is uniform over the affine subspace the simulator samples from. Loss factor at most $n^2$ times the per-VSS advantage.
+*Sketch.* The DKG-level simulator $\mathcal{S}$ must produce $\mathcal{A}$'s real-protocol view — chain transcript (Feldman commitments $v_k^{(i)}$ and ciphertexts), honest holders' ACKs, and the decryptable shares $\mathcal{A}$ extracts from ciphertexts addressed to corrupted holders. Two consistency constraints come from $\mathcal{S}$'s input:
+
+- **(C1)** $\prod_{i \in Q} v_0^{(i)} = \mathsf{masterPk}$.
+- **(C2)** For each $j \in J$, $\sum_{i \in Q} g_i(j+1) = s_j$.
+
+$\mathcal{S}$ proceeds as follows. *(Notation: $J$ = corrupted parties, $H$ = honest dealers in $Q$, so $|H| = |Q| - |Q \cap J|$.)*
+
+- **Reading off corrupted dealers.** For each $i \in Q \cap J$, $\mathcal{A}$ acts as dealer and publishes $(v_0^{(i)}, \dots, v_{t-1}^{(i)})$ on chain plus encrypted shares to every holder. $\mathcal{S}$ holds $\mathsf{dk}_j$ for honest $j \in [n] \setminus J$, decrypts those ciphertexts, and Lagrange-interpolates two of them to recover $g_i$ in full as a scalar polynomial. This lets $\mathcal{S}$ compute the corrupted dealers' contributions to both $\mathsf{masterPk}$ (in the exponent) and $s_j$ (in the scalar field).
+- **Sampling $|H| - 1$ honest dealers freely.** Pick any $|H| - 1$ of the honest dealers and sample each one's polynomial $g_i \in_R \mathbb{F}_r[x]_{\deg \leq t-1}$ uniformly, just as the real protocol does. Compute their $v_k^{(i)}$ honestly.
+- **Forcing the last honest dealer via Lagrange-in-exponent.** Call this dealer $i^\star$. Both constraints (C1) and (C2) now fully pin $i^\star$'s contributions:
+  - From (C1): $v_0^{(i^\star)} = \mathsf{masterPk} / \prod_{i \in Q \setminus \{i^\star\}} v_0^{(i)}$ (computable group element; $\mathcal{S}$ does not know its discrete log).
+  - From (C2), for each $j \in J$: $g_{i^\star}(j+1) = s_j - \sum_{i \in Q \setminus \{i^\star\}} g_i(j+1)$ (computable scalar).
+  
+  These are $1 + |J| \leq t$ fixed evaluations of a degree-$(t-1)$ polynomial — one group-side ($v_0^{(i^\star)}$ at $x=0$) and $|J|$ scalar-side ($g_{i^\star}(j+1)$ for $j \in J$). The remaining commitment coefficients $v_1^{(i^\star)}, \dots, v_{t-1}^{(i^\star)}$ are then determined by **Lagrange interpolation in the exponent** (see [`vss.md`](./vss.md) §2): $\mathcal{S}$ never learns $a_k^{(i^\star)}$ as scalars, but it can publish each $v_k^{(i^\star)}$ as a deterministic group expression in the fixed-point group elements above. For honest holders' shares $g_{i^\star}(j+1)$ ($j \notin J$), $\mathcal{S}$ doesn't need a scalar — only the ciphertext to those holders.
+- **Encrypting honest-holder ciphertexts as dummies.** For any $(i, j)$ with $j \notin J$, the ciphertext $c_{i,j}$ on chain is $\mathsf{Enc}(\mathsf{ek}_j, 0)$. $\mathcal{A}$ doesn't hold $\mathsf{dk}_j$ and cannot decrypt.
+- **Signing honest ACKs.** $\mathcal{S}$ holds $\mathsf{sk}_j$ for $j \notin J$ and signs the ACK message on $\mathcal{A}$'s behalf, matching what an honest holder would produce.
+
+**Why it matches the real distribution.** Conditional on $(\mathsf{masterPk}, \{s_j\}_{j \in J}, \text{corrupted dealers' contributions})$, the real protocol's honest dealer polynomials are uniform over the affine subspace defined by (C1) and (C2). That subspace has dimension $|H| - 1$ in the coefficient space, with $|H| - 1$ free choices and one forced. $\mathcal{S}$ samples from exactly the same subspace by the construction above. The simulated and real views are then identical except for honest-holder ciphertexts (real share vs. dummy $0$), which $\mathcal{A}$ cannot tell apart by PKE IND-CPA — a hybrid over $\leq n$ honest holders, each VSS-level hybrid via [`vss.md`](./vss.md) §2's per-VSS argument, gives total advantage $\leq n^2 \cdot \mathsf{Adv}_{\text{IND-CPA}} + n \cdot \mathsf{Adv}_{\text{DLog}}$.
 
 **5. Bounded bias on $\mathsf{masterPk}$.** $\mathsf{masterPk}$'s distribution is **not** uniform over $\mathbb{G}$: a rushing adversary controlling $k \leq t$ dealers can restrict the output to one of $\leq 2^k$ candidate values of its choosing — **at most $t$ bits of entropy loss**.
 

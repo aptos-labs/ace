@@ -6,7 +6,7 @@ Notation: $g_{\text{old}}$ is the base point of the old committee's session, $g_
 
 ## 1. Construction
 
-Each old node $j$ runs a fresh degree-$(t'-1)$ VSS as dealer with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $C_{\text{new}}$. The resharing-dealer challenge (§2 below) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq C_{\text{old}}$ is frozen on-chain, and each new node $i \in C_{\text{new}}$ derives its new share via Lagrange-at-zero over the contributing old indices:
+Each old node $j$ runs a fresh VSS as dealer of degree $t'-1$, with $g_j(0) := s_j$ (their own old share, where $s_j = f(j+1)$ is the share of the underlying polynomial $f$), recipients = $C_{\text{new}}$. The resharing-dealer challenge (§2 below) forces $g_j(0) = s_j$. Once $\geq t$ such VSS reach the success state, the contributing set $H \subseteq C_{\text{old}}$ is frozen on-chain, and each new node $i \in C_{\text{new}}$ derives its new share via Lagrange-at-zero over the contributing old indices:
 
 $$S_i := \sum_{j \in H} \lambda_j \cdot z_{j,i}, \qquad z_{j,i} = g_j(i+1), \qquad \lambda_j = \prod_{k \in H,\, k \neq j} \frac{0 - (k+1)}{(j+1) - (k+1)} \pmod r$$
 

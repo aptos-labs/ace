@@ -43,6 +43,9 @@ export const ACE_CONTRACTS: readonly string[] = [
 
 export interface AceNetworkOptions {
     adminAccount: Account;
+    /** Resource account address where the ACE Move packages were published; required for
+     *  worker config / start_initial_epoch calls. Returned by `deployContracts`. */
+    aceAddr: string;
     /** Total worker accounts to mint. Indices 0..totalWorkers-1. */
     totalWorkers: number;
     /** Indices of the workers in the initial committee (subset of 0..totalWorkers-1). */
@@ -67,6 +70,8 @@ export interface AceNetworkState {
     epoch0WorkerAccounts: Account[];
     aceDeployment: ACE.AceDeployment;
     adminAccountAddress: AccountAddress;
+    /** Resource account address where ACE was published. */
+    aceAddr: string;
 }
 
 /**
@@ -85,16 +90,16 @@ export interface AceNetworkState {
  * access-failure scenarios want exactly this composition.
  */
 export async function deployAndBringUpAceNetwork(
-    opts: AceNetworkOptions,
+    opts: Omit<AceNetworkOptions, 'aceAddr'>,
 ): Promise<AceNetworkState> {
-    await deployContracts(opts.adminAccount, [...ACE_CONTRACTS]);
-    return setupAceNetworkAndWorkers(opts);
+    const aceAddr = await deployContracts(opts.adminAccount, [...ACE_CONTRACTS]);
+    return setupAceNetworkAndWorkers({ ...opts, aceAddr });
 }
 
 export async function setupAceNetworkAndWorkers(
     opts: AceNetworkOptions,
 ): Promise<AceNetworkState> {
-    const { adminAccount, totalWorkers, epoch0WorkerIndices, epoch0Threshold } = opts;
+    const { adminAccount, aceAddr, totalWorkers, epoch0WorkerIndices, epoch0Threshold } = opts;
     const reshareIntervalSecs = opts.reshareIntervalSecs ?? 600;
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminAccountAddress = adminAccount.accountAddress;
@@ -120,7 +125,7 @@ export async function setupAceNetworkAndWorkers(
         assertTxnSuccess(
             await submitTxn({
                 signer: workerAccounts[i]!,
-                entryFunction: `${adminAddr}::worker_config::register_pke_enc_key`,
+                entryFunction: `${aceAddr}::worker_config::register_pke_enc_key`,
                 args: [Array.from(encKeypairs[i]!.encryptionKey.toBytes())],
             }),
             `register_pke_enc_key worker ${i}`,
@@ -128,22 +133,28 @@ export async function setupAceNetworkAndWorkers(
         assertTxnSuccess(
             await submitTxn({
                 signer: workerAccounts[i]!,
-                entryFunction: `${adminAddr}::worker_config::register_endpoint`,
+                entryFunction: `${aceAddr}::worker_config::register_endpoint`,
                 args: [endpoint],
             }),
             `register_endpoint worker ${i}`,
         );
     }
 
-    // ── Kick off the initial epoch ──────────────────────────────────────────
+    // ── Kick off the initial epoch (sealed bootstrap Phase C) ───────────────
+    // Admin signs the tx but the sender is the resource account (aceAddr); auth_key on
+    // aceAddr still matches admin's pubkey, so this passes admission. Inside the call,
+    // `retrieve_resource_account_cap` extracts the SignerCapability from
+    // `Container[admin_addr]` AND burns aceAddr's auth_key to zero — after this tx,
+    // admin's key can no longer sign as @ace.
     const epoch0Addrs = epoch0WorkerIndices.map(
         (i) => workerAccounts[i]!.accountAddress.toStringLong(),
     );
     assertTxnSuccess(
         await submitTxn({
             signer: adminAccount,
-            entryFunction: `${adminAddr}::network::start_initial_epoch`,
-            args: [epoch0Addrs, epoch0Threshold, reshareIntervalSecs],
+            sender: aceAddr,
+            entryFunction: `${aceAddr}::network::start_initial_epoch`,
+            args: [adminAddr, epoch0Addrs, epoch0Threshold, reshareIntervalSecs],
         }),
         'network::start_initial_epoch',
     );
@@ -158,7 +169,7 @@ export async function setupAceNetworkAndWorkers(
             total: totalWorkers,
             runAs: workerAccounts[i]!,
             pkeDkHex,
-            aceDeploymentAddr: adminAddr,
+            aceDeploymentAddr: aceAddr,
             aceDeploymentApi: LOCALNET_URL,
             workerBasePort: WORKER_BASE_PORT,
         }));
@@ -167,7 +178,7 @@ export async function setupAceNetworkAndWorkers(
 
     const aceDeployment = new ACE.AceDeployment({
         apiEndpoint: LOCALNET_URL,
-        contractAddr: adminAccountAddress,
+        contractAddr: AccountAddress.fromString(aceAddr),
     });
 
     return {
@@ -177,6 +188,7 @@ export async function setupAceNetworkAndWorkers(
         epoch0WorkerAccounts: epoch0WorkerIndices.map((i) => workerAccounts[i]!),
         aceDeployment,
         adminAccountAddress,
+        aceAddr,
     };
 }
 

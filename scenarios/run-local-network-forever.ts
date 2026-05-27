@@ -25,7 +25,7 @@
  *   pnpm run-local-network-forever
  */
 
-import { Account } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
 import { spawn, type ChildProcess } from 'child_process';
 import { mkdtempSync, openSync, writeFileSync } from 'fs';
@@ -74,13 +74,17 @@ async function main() {
     }
 
     const adminAccount = accounts[numWorkers]!;
+    const adminAddr = adminAccount.accountAddress.toStringLong();
     const workerAccounts = accounts.slice(0, numWorkers);
-    const aceContract = adminAccount.accountAddress.toStringLong();
     const threshold = 2;
 
-    // ── Deploy contracts ─────────────────────────────────────────────────────
-    log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+    // ── Deploy contracts (sealed bootstrap Phase A + B) ──────────────────────
+    log('Deploying contracts via resource-account bootstrap...');
+    const aceContract = await deployContracts(
+        adminAccount,
+        ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network'],
+    );
+    log(`@ace resource account: ${aceContract}`);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 19000;
@@ -136,12 +140,14 @@ async function main() {
     // ── Keep all accounts funded ─────────────────────────────────────────────
     keepFunded(accounts.map(a => a.accountAddress));
 
-    // ── Start initial epoch ──────────────────────────────────────────────────
+    // ── Start initial epoch (sealed bootstrap Phase C) ───────────────────────
     log('Admin: start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=120)...');
     (await submitTxn({
         signer: adminAccount,
+        sender: aceContract,
         entryFunction: `${aceContract}::network::start_initial_epoch`,
         args: [
+            adminAddr,
             workerAccounts.map(w => w.accountAddress),
             threshold,
             120,
@@ -160,7 +166,7 @@ async function main() {
     const dkgDeadlineMs = Date.now() + 300_000; // 5-minute timeout
     let networkState: ace.network.State | undefined;
     while (Date.now() < dkgDeadlineMs) {
-        const maybe = await getNetworkState(adminAccount.accountAddress);
+        const maybe = await getNetworkState(AccountAddress.fromString(aceContract));
         if (maybe.isOk) {
             networkState = maybe.okValue!;
             if (networkState.epochChangeInfo === null && networkState.secrets.length >= 1) break;
@@ -205,7 +211,7 @@ async function main() {
     // ── Heartbeat loop (run forever) ─────────────────────────────────────────
     while (true) {
         await sleep(30_000);
-        const maybeState = await getNetworkState(adminAccount.accountAddress);
+        const maybeState = await getNetworkState(AccountAddress.fromString(aceContract));
         if (maybeState.isOk) {
             const s = maybeState.okValue!;
             log(`epoch=${s.epoch}  secrets=${s.secrets.length}  epoch_change=${s.epochChangeInfo !== null ? 'in_progress' : 'none'}`);

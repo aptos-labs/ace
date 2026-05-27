@@ -25,7 +25,14 @@ import {
 import * as os from 'os';
 import * as path from 'path';
 
-import type { Account } from '@aptos-labs/ts-sdk';
+import {
+    Account,
+    Aptos,
+    AptosConfig,
+    AuthenticationKey,
+    Network,
+    createResourceAddress,
+} from '@aptos-labs/ts-sdk';
 
 /** `<repo>` — `cli/src` is two levels deep (cli is CommonJS, so `__dirname` is available). */
 export const REPO_ROOT = path.resolve(__dirname, '../..');
@@ -122,7 +129,12 @@ export function rmContractsPublishScratch(scratch: ContractsPublishScratch): voi
     rmSync(scratch.tmpRoot, { recursive: true, force: true });
 }
 
-export async function publishMovePackage(packageDir: string, privateKeyHex: string, rpcUrl: string): Promise<void> {
+export async function publishMovePackage(
+    packageDir: string,
+    privateKeyHex: string,
+    rpcUrl: string,
+    senderAddr?: string,
+): Promise<void> {
     const args = [
         'move', 'publish',
         '--package-dir', packageDir,
@@ -131,11 +143,41 @@ export async function publishMovePackage(packageDir: string, privateKeyHex: stri
         '--assume-yes',
         '--skip-fetch-latest-git-deps',
     ];
+    if (senderAddr) args.push('--sender-account', senderAddr);
     // Print the command with the private key redacted; the real value is still passed
     // to the spawned process via `args`.
     const redactedArgs = args.map((a, i) => (args[i - 1] === '--private-key' ? '<REDACTED>' : a));
     console.log(`  $ aptos ${redactedArgs.join(' ')}`);
     await spawnExitZero('aptos', args, 'aptos move publish');
+}
+
+/** Derive the `@ace` resource account address from (admin, seed). Pure function — no chain calls. */
+export function deriveAceAddr(adminAddrStr: string, seed: string): string {
+    const { AccountAddress } = require('@aptos-labs/ts-sdk') as typeof import('@aptos-labs/ts-sdk');
+    return createResourceAddress(AccountAddress.fromString(adminAddrStr), seed).toStringLong();
+}
+
+/** Phase A of sealed bootstrap: submit `0x1::resource_account::create_resource_account` with
+ *  `optional_auth_key` = admin's auth_key, so admin's SK signs Phase-B publishes as the resource
+ *  account. Returns the resource account address. */
+export async function createAceResourceAccount(
+    admin: Account,
+    seed: string,
+    rpcUrl: string,
+): Promise<string> {
+    const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
+    const seedBytes = new Uint8Array(Buffer.from(seed, 'utf8'));
+    const adminAuthKey = AuthenticationKey.fromPublicKey({ publicKey: admin.publicKey });
+    const txn = await aptos.transaction.build.simple({
+        sender: admin.accountAddress,
+        data: {
+            function: '0x1::resource_account::create_resource_account',
+            functionArguments: [seedBytes, adminAuthKey.toUint8Array()],
+        },
+    });
+    const resp = await aptos.signAndSubmitTransaction({ signer: admin, transaction: txn });
+    await aptos.waitForTransaction({ transactionHash: resp.hash, options: { checkSuccess: true } });
+    return deriveAceAddr(admin.accountAddress.toStringLong(), seed);
 }
 
 /** Hex (no `0x`) for an Ed25519-backed `Account`. */
@@ -148,29 +190,38 @@ export function ed25519PrivateKeyHex(account: Account): string {
 }
 
 /**
- * Publish the canonical 11 ACE packages (or any subset) under `REPO_ROOT/contracts/<folder>` in order.
+ * Sealed bootstrap (Phase A + B): create the `@ace` resource account, then publish the
+ * canonical 11 ACE packages (or any subset) to that resource account.
  *
- * If `versionStr` is provided, every `Move.toml`'s `version = "..."` line is rewritten to that value
- * before publishing (the shipped values are placeholders).
+ * Phase C (`network::start_initial_epoch`) must be invoked separately by the caller to
+ * burn admin's signing path and finish the sealing. After Phase C, contract upgrades
+ * are only possible via committee voting (`network::new_upgrade_proposal` → `touch`).
+ *
+ * If `versionStr` is provided, every `Move.toml`'s `version = "..."` line is rewritten
+ * before publishing.
+ *
+ * Returns the resource account address that became `@ace`.
  */
 export async function deployContracts(
     adminAccount: Account,
     rpcUrl: string,
+    seed: string,
     packageFolders: readonly string[] = ACE_CONTRACT_PACKAGES,
     versionStr?: string,
-): Promise<void> {
-    const adminAddr   = adminAccount.accountAddress.toStringLong();
+): Promise<string> {
+    const aceAddr     = await createAceResourceAccount(adminAccount, seed, rpcUrl);
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
-    const scratch     = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr, versionStr);
+    const scratch     = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), aceAddr, versionStr);
     try {
         for (const folder of packageFolders) {
             const packageDir = path.join(scratch.contractsDir, folder);
             if (!existsSync(path.join(packageDir, 'Move.toml'))) {
                 throw new Error(`missing Move package at ${packageDir}`);
             }
-            await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
+            await publishMovePackage(packageDir, adminKeyHex, rpcUrl, aceAddr);
         }
     } finally {
         rmContractsPublishScratch(scratch);
     }
+    return aceAddr;
 }

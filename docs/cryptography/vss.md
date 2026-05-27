@@ -31,8 +31,8 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
       $$e(\sigma_i,g)=e(Q_\text{id},P_i)$$
 
       which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the identity decryption key share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
-    - In the key resharing protocol, every node re-shares its key share $s$ using VSS.
-      The key share is assumed to have been committed by 2 public points $g, p$ (so everyone believes $g^s=p$).
+    - In the key resharing protocol, the $j$-th node in the old committee re-shares its key share $s_j$ using VSS.
+      The key share is assumed to have been committed by 2 public points $g, p$ (so everyone believes $g^{s_j}=p$).
       The VSS should additionally help detect/reject faulty node who is trying to share the wrong thing.
       With Feldman, this is trivially done by checking
 

@@ -28,7 +28,7 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
     - t-IBE decryption ([`t-ibe.md`](./t-ibe.md) §1) verifies each share-PK via the pairing equation
 
-      $$e(\sigma_i,\ g) \;=\; e(Q_\text{id},\ P_i),$$
+      $$e(\sigma_i,g)=e(Q_\text{id},P_i)$$
 
       which holds only when $P_i = g^{s_i}$ is in unblinded Feldman form ($\sigma_i$ is the IDK share, $P_i$ the share-PK). A Pedersen-VSS share-PK would be $g^{s_i} h^{r(i)}$ and would not satisfy this equation. The known workarounds (GJKR'99 dual commitment — publish a Feldman commitment alongside Pedersen and prove they're consistent; or reveal $r(\cdot)$ at VSS end) all expose $g^{f(i+1)}$ publicly anyway, dropping Pedersen's hiding back to DLog-level secrecy.
     - DKR's resharing-soundness check (see [`dkr.md`](./dkr.md), `vss.move:201`) is the on-chain group equality

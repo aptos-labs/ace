@@ -16,9 +16,13 @@ The paper presents a publicly-verifiable, complete, $t$-resilient VSS for $n \ge
 
 Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Auditors should re-check the security argument against each:
 
-1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 ($v_k = g^{a_k} h^{r_k}$). ACE pins `PC` to **Feldman commitments over BLS12-381 $\mathbb{G}_1$ or $\mathbb{G}_2$** (the dealer publishes $v_k = g^{a_k}$, no $h$-blinding). Consequence: `PC.Open` is trivial — the share $y_i$ *is* the witness, and `PC.Verify` is the equation $g^{y_i} = \prod_{k=0}^{t-1} v_k^{(i+1)^k}$. The paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly". See §1.2 below for the formula.
+1. **Polynomial commitment scheme = Feldman.** The paper's `PC` is generic; its formal hiding requirement (§4.2 of the paper) is satisfied by the Pedersen-style PCS in their Appendix A.2 ($v_k = g^{a_k} h^{r_k}$). ACE pins `PC` to **Feldman commitments over BLS12-381 $\mathbb{G}_1$ or $\mathbb{G}_2$**: given a polynomial $f(x) = a_0 + a_1 x + \cdots + a_{t-1} x^{t-1}$ over $\mathbb{F}_r$, the dealer publishes
 
-    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§2)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by $\mathsf{Adv}_{\text{DLog}} + n \cdot \mathsf{Adv}_{\text{IND-CPA}} + 1/|\mathbb{F}_r|$. The game samples $s \in_R \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (see §1.3 for the two ACE derivations, both uniform).
+    $$v_k = g^{a_k} \in \mathbb{G}, \qquad k = 0, 1, \dots, t-1,$$
+
+    where $g$ is the session's `public_base_element` (no $h$-blinding). Verifying a share $y_i = f(i+1)$ against the commitment amounts to checking $g^{y_i} = \prod_{k=0}^{t-1} v_k^{(i+1)^k}$ (a multi-scalar multiplication on-chain; implemented in `worker-components/vss-common/src/vss_types.rs::feldman_verify` and `contracts/vss/sources/vss.move::touch`). Consequence: `PC.Open` is trivial — the share $y_i$ *is* the witness — and the paper's `PC.BatchOpen` collapses to "publish the missing scalar shares directly".
+
+    **Security argument: computational reduction, not hiding-based simulation.** Feldman is *not* a hiding commitment — $v_0 = g^s$ publicly determines $g^s$. So paper's information-theoretic Lemma 1 (App. C) does NOT carry over: paper's simulator uses the Pedersen blinding factor $r(\cdot)$ to "rebind" the commitment to any candidate secret, which has no Feldman analogue. We instead prove **Theorem 1 (§2)** — a game-based reduction showing that any PPT adversary's chance of recovering the secret from the sharing-phase view is bounded by $\mathsf{Adv}_{\text{DLog}} + n \cdot \mathsf{Adv}_{\text{IND-CPA}} + 1/|\mathbb{F}_r|$. The game samples $s \in_R \mathbb{F}_r$ uniformly; auditors should verify that every VSS call site supplies a uniformly random secret (item 7 documents the two ACE derivations, both uniform).
 
     **Why Feldman, not Pedersen.** Two ACE-specific consumers of the VSS output make Pedersen awkward:
 
@@ -45,49 +49,21 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
 
 6. **Resharing-dealer challenge.** ACE adds an *optional* challenge $(P, H)$ plus a Sigma-DLog-Eq proof (see [`sigma-dlog-eq.md`](./sigma-dlog-eq.md)) that pins the dealer's polynomial constant term $a_0$ to a previously-known share $s_j$ (where $P = g_\text{old}^{s_j}$ from the parent DKG/DKR, and $H$ is an independent base derived from $P$). Used by Distributed Key Resharing (see [`dkr.md`](./dkr.md)) to prevent a dealer from substituting a fresh secret. **This is outside the paper's scope.** Audit hook: the soundness of resharing reduces to the soundness of Sigma-DLog-Eq.
 
-7. **Dealer-state crash recovery.** ACE encrypts the dealer's own polynomial coefficients to itself (via PKE) so a crashed dealer can resume. Not in the paper. Encrypted with the dealer's own `pke_enc_key`; no other recipient ever decrypts it. Pure operational add-on; doesn't affect any security claim.
+7. **Dealer state derived deterministically from PKE dk.** ACE's dealer derives polynomial coefficients deterministically from its PKE decryption key:
+
+    $$a_k := \mathsf{FrFromLE}\bigl(\text{SHA3-256}(\texttt{"vss-coef-v1/"} \mathbin{\|} \mathsf{dk} \mathbin{\|} \mathsf{LE64}(k))\bigr) \quad \text{for } k = 0, 1, \dots, t-1.$$
+
+    A `secret_override` input (used by DKR dealers) replaces $a_0$ with a caller-supplied scalar; otherwise $a_0$ also comes from the formula above with $k=0$. Source: `worker-components/vss-common/src/crypto.rs::fr_from_dk_bytes` + `worker-components/vss-dealer/src/lib.rs:198-208`.
+
+    **Uniformity for Theorem 1.** Both call paths supply a uniform $\mathbb{F}_r$ secret as $a_0$, as required by Theorem 1's hypothesis (§2): the dk-derived path is uniform because the dk itself is uniform (generated by `WebCrypto` at node init), and the `secret_override` path's documented contract is "a DKG/DKR share", a Lagrange evaluation of a uniform-random parent-DKG polynomial, itself uniform in $\mathbb{F}_r$.
+
+    **Operational consequences (not in the paper).** Determinism enables (i) a crashed dealer recovering its own contribution after restart, and (ii) failed recipients having their share revealed via `on_dealer_open` without re-running the whole VSS. As a separate add-on, ACE also PKE-encrypts the dealer's own polynomial to itself so the dealer can resume without re-deriving — purely operational, not a security modification.
+
+    **Audit caveat.** Anyone who learns a dealer's PKE dk learns every secret the dealer has ever contributed to. `worker-config` therefore commits the dealer to a single PKE key per `account_addr` for the duration of its membership.
 
 8. **Single threshold only.** ACE uses $\text{secrecy threshold} = \text{reconstruction threshold} = t$; the paper's dual-threshold variant ($\ell \in [t, n - t]$) and the verifiable-encryption-of-Pedersen-commitment scheme of §7 are NOT used.
 
 9. **Synchrony bound.** The paper's $2\Delta$ round timer becomes ACE's `ACK_WINDOW_MICROS = 10s` (`vss.move:47`). The chain's clock (`timestamp::now_microseconds`) provides $\Delta$-monotonicity; honest dealers and honest nodes are assumed to submit their next-round transactions within that window. Audit hook: under chain-level liveness pauses (Aptos BFT halt), the timer can lapse without genuine asynchrony being the cause; this is a *liveness* concern, not a *safety* concern (a halt cannot manufacture false ACKs).
-
-### 1.2 Polynomial commitment
-
-Given a polynomial $f(x) = a_0 + a_1 x + \cdots + a_{t-1} x^{t-1}$ over $\mathbb{F}_r$, the dealer publishes a commitment vector
-
-$$v_k = g^{a_k} \in \mathbb{G}, \qquad k = 0, 1, \dots, t-1$$
-
-where $g$ is the session's `public_base_element`. Verifying a share $y_i = f(i+1)$ against the commitment amounts to checking
-
-$$g^{y_i} \;=\; \prod_{k=0}^{t-1} v_k^{(i+1)^k \bmod r}.$$
-
-(Multi-scalar multiplication on-chain.) Implemented in `worker-components/vss-common/src/vss_types.rs::feldman_verify` (Rust) and `contracts/vss/sources/vss.move::touch` (Move).
-
-### 1.3 Share derivation
-
-VSS shares are encrypted to recipients with the per-recipient PKE encryption key registered in `worker_config`. Each recipient's plaintext is a single $\mathbb{F}_r$ scalar serialized as `[scheme_byte u8][ULEB128(32) = 0x20][32B y_LE]`.
-
-The dealer's polynomial coefficients are **deterministically derived** from its PKE decryption key:
-
-$$
-\begin{aligned}
-a_0 &:= \begin{cases}
-   \mathsf{FrFromLE}(\mathsf{secretOverride}) & \text{if } \mathsf{secretOverride}\ \text{is set}\\
-   \mathsf{frFromDkBytes}(\mathsf{dk}, 0) & \text{otherwise}
-\end{cases} \\
-a_k &:= \mathsf{frFromDkBytes}(\mathsf{dk}, k) \qquad \text{for } k = 1, \dots, t-1 \\
-\mathsf{frFromDkBytes}(\mathsf{dk}, i) &:= \mathsf{FrFromLE}(\text{SHA3-256}(\texttt{"vss-coef-v1/"} \mathbin{\|} \mathsf{dk} \mathbin{\|} \mathsf{LE64}(i)))
-\end{aligned}
-$$
-
-(Source: `worker-components/vss-common/src/crypto.rs::fr_from_dk_bytes` + `worker-components/vss-dealer/src/lib.rs:198-208`.)
-
-Both call paths supply a uniform $\mathbb{F}_r$ secret (required by **Theorem 1**, §2 below):
-
-- `fr_from_dk_bytes(pke_dk_bytes, 0)` — derived from a freshly-generated PKE decryption key (uniform $\mathbb{F}_r$ at node init).
-- `secret_override` — documented contract is "a DKG/DKR share", a Lagrange evaluation of a uniform-random DKG polynomial, itself uniform in $\mathbb{F}_r$.
-
-**Audit note.** Determinism is intentional: it lets a dealer recover its own contribution after a crash, and lets failed recipients have their share revealed by `on_dealer_open` without re-running the whole VSS. The downside is that **anyone who learns a dealer's PKE decryption key learns every secret that dealer has ever contributed to**. The `worker-config` registration step therefore commits the dealer to a single PKE key per `account_addr` for the duration of its membership.
 
 ## 2. Security
 

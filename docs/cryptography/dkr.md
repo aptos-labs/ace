@@ -1,6 +1,6 @@
 # Distributed Key Resharing (DKR)
 
-DKR is a [proactive-secret-sharing](https://link.springer.com/chapter/10.1007/3-540-44750-4_27)-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. The protocol consumes [`vss.md`](./vss.md) as a building block, with the resharing-dealer challenge (§1.2 below) enabled.
+DKR is a proactive-secret-sharing-style **resharing** protocol that hands a master secret $s$ from an old committee $(C_{\text{old}}, t)$ to a new committee $(C_{\text{new}}, t')$ without $s$ ever existing in cleartext. The protocol consumes [`vss.md`](./vss.md) as a building block, with the resharing-dealer challenge (§1.2 below) enabled. The exact construction ACE implements is described in Alin Tomescu's blog post ["How to reshare a secret"](https://alinush.github.io/2024/04/26/How-to-reshare-a-secret.html); academic provenance is in the references at the end of §1.
 
 Notation: $g_{\text{old}}$ is the base point of the old committee's session, $g_{\text{new}}$ of the new. Group operations are written multiplicatively, consistent with [`vss.md`](./vss.md).
 

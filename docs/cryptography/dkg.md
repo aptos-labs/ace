@@ -21,7 +21,7 @@ ACE DKG inherits the standard Pedersen-DKG family security properties. Each foll
 
 Unless stated otherwise, properties below assume **static corruption**: $\mathcal{A}$ commits to a corruption set $J$ with $|J| \leq t$ before the protocol starts.
 
-1. **Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$. There exists a unique degree-$t$ polynomial $F$ with $F(0) = \mathsf{MSK} = \log_g \mathsf{masterPk}$, and each honest node $j$'s share $s_j = F(j+1)$.
+1. **Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$. There exists a unique degree- $t$ polynomial $F$ with $F(0) = \mathsf{MSK} = \log_g \mathsf{masterPk}$, and each honest node $j$'s share $s_j = F(j+1)$.
 
    *Sketch.* By §1, all honest parties read the same $Q$ and the same $\mathsf{masterPk} = \prod_{i \in Q} v_0^{(i)}$. Per-VSS binding (Feldman + DLog) pins each $i \in Q$ to a unique degree-$t$ polynomial $g_i$; $F := \sum_i g_i$ has degree $t$ with $F(0) = \log_g \mathsf{masterPk}$ and $F(j+1) = s_j$.
 

@@ -16,7 +16,7 @@ For the higher-level protocol (DKG / DKR / decryption-request flow), see [`../pr
 - [`t-ibe.md`](./t-ibe.md) — Threshold Identity-Based Encryption (the user-facing layer).
 
 **Secret-sharing stack.**
-- [`vss.md`](./vss.md) — Synchronous VSS protocol, Feldman PCS, share derivation, **Theorem 1** (sharing-phase one-wayness).
+- [`vss.md`](./vss.md) — Synchronous VSS protocol, Feldman PCS, share derivation, the modified secrecy argument (Feldman-side reduction to DLog).
 - [`dkg.md`](./dkg.md) — Distributed Key Generation as a composition of `n` parallel VSS sessions.
 - [`dkr.md`](./dkr.md) — Distributed Key Resharing (proactive secret sharing variant): resharing-dealer challenge, old → new committee transition, corruption model.
 
@@ -33,7 +33,7 @@ For the higher-level protocol (DKG / DKR / decryption-request flow), see [`../pr
 
 1. [`notation.md`](./notation.md) and [`identifiers.md`](./identifiers.md) — pin the symbols and curve choices.
 2. [`pke.md`](./pke.md) and [`symmetric.md`](./symmetric.md) — the lowest-level primitives.
-3. [`vss.md`](./vss.md) — the secret-sharing core, including **Theorem 1**.
+3. [`vss.md`](./vss.md) — the secret-sharing core, including the modified secrecy argument.
 4. [`dkg.md`](./dkg.md) and [`dkr.md`](./dkr.md) — protocol composition on top of VSS.
 5. [`sigma-dlog-eq.md`](./sigma-dlog-eq.md) — the NIZK used by DKR.
 6. [`t-ibe.md`](./t-ibe.md) — the application layer that consumes the DKG output.

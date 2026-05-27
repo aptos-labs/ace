@@ -13,13 +13,13 @@ Every committee member runs one VSS as dealer with a freshly sampled uniform sec
 
 See [`../protocols.md`](../protocols.md) for the on-chain state machine, error paths, and timeouts.
 
-## 2. Security (forthcoming Theorem 2)
+## 2. Security (forthcoming)
 
-A full DKG secrecy theorem composing [`vss.md`](./vss.md) Theorem 1 across $Q$ is **not yet written down here**. The high-level shape will be:
+A full DKG secrecy argument composing [`vss.md`](./vss.md) §2 across $Q$ is **not yet written down here**. The high-level shape will be:
 
 - *Composition.* Each per-VSS simulator is fed a target $g^{a_0^{(i)}}$ derived from the DKG-level simulator's $\mathsf{masterPk}$ plus the corrupted dealers' publicly observable contributions. Honest dealers' $g^{a_0^{(i)}}$ values are coordinated so they multiply to $\mathsf{masterPk}$ divided by the corrupted contributions.
 - *Bias rider.* $\mathsf{masterPk}$'s distribution is NOT uniformly random across $\mathbb{G}$; an adversary controlling up to $t$ dealers can, by selectively completing or stalling its own VSSs, bias the $Q$ snapshot. The achievable bias is bounded by $\leq 2^t$ candidate $\mathsf{masterPk}$ values, i.e., $\leq t$ bits of entropy loss. Current ACE DKG does NOT include the GJKR'99-style commit-then-open round that would close this bias.
 
-This is a known, bounded attack surface. Theorem 2 will state the bound explicitly when written.
+This is a known, bounded attack surface. A future DKG-level argument will state the bound explicitly when written.
 
 **Reference.** Gennaro, Jarecki, Krawczyk, Rabin. "Secure Distributed Key Generation for Discrete-Log Based Cryptosystems." Eurocrypt 1999 — the classical bias-avoidance construction we are NOT applying.

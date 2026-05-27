@@ -5,7 +5,7 @@ Audit-oriented technical specifications. These docs are versioned with the code;
 | Document | Audience | Covers |
 |----------|----------|--------|
 | [`glossary.md`](./glossary.md) | All readers | Shared definitions of identifiers, roles, cryptographic objects, sub-protocol acronyms, parameters. **Hit an undefined term in any doc? Look here first.** |
-| [`cryptography/`](./cryptography/) | Cryptographic auditor | One file per scheme (PKE, t-IBE, VSS+Theorem 1, DKG, DKR, Sigma-DLog-Eq, KDF, HMAC, identifiers). Start at [`cryptography/README.md`](./cryptography/README.md). |
+| [`cryptography/`](./cryptography/) | Cryptographic auditor | One file per scheme (PKE, t-IBE, VSS, DKG, DKR, Sigma-DLog-Eq, KDF, HMAC, identifiers). Start at [`cryptography/README.md`](./cryptography/README.md). |
 | [`trust-model.md`](./trust-model.md) | Protocol auditor / security reviewer | Actors, threat model, what each adversary class can/cannot do, non-goals |
 | [`protocols.md`](./protocols.md) | Protocol auditor / implementer | On-chain state machines (VSS, DKG, DKR, voting, epoch_change, network), end-to-end decryption-request flow |
 | [`wire-formats.md`](./wire-formats.md) | Auditor + cross-implementation reviewer | Byte-level BCS layouts for every type that crosses a chain or network boundary |

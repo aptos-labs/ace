@@ -195,8 +195,8 @@ async fn build_and_submit_dc0(
     // If secret_override is provided (e.g. DKR dealer using their DKG share), use it for coefs[0].
     // All other coefficients are derived deterministically from the DK.
     //
-    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §2, Theorem 1): coefs[0] MUST be sampled
-    // uniformly from Fr. The sharing-phase secrecy theorem reduces an adversary's chance of
+    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §2): coefs[0] MUST be sampled
+    // uniformly from Fr. The §2 modified secrecy argument reduces an adversary's chance of
     // recovering coefs[0] to DLog hardness + PKE IND-CPA, but the reduction's game samples
     // s ←$ Fr — a non-uniform secret breaks the reduction's distribution argument and
     // (because Feldman is non-hiding) v_0 = g^{coefs[0]} would expose a low-entropy secret
@@ -339,7 +339,7 @@ async fn build_and_submit_dc1(
     let scheme = bcs_session.base_point.scheme();
 
     // Re-derive the same polynomial (must match DC0 exactly).
-    // SECURITY HYPOTHESIS on coefs[0]: see the dealing path above (Theorem 1).
+    // SECURITY HYPOTHESIS on coefs[0]: see the dealing path above (vss.md §2).
     let coefs: Vec<Fr> = {
         let secret = if let Some(s) = secret_override {
             Fr::from_le_bytes_mod_order(&s)

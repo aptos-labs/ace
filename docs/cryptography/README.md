@@ -26,7 +26,7 @@ The notation, group/curve cheat sheet, out-of-scope items, and references are ke
 5. [`t-ibe.md`](./t-ibe.md) — the application layer that consumes the DKG output.
 6. **Out of scope** and **References** (sections below) — known boundaries and citations.
 
-> Historical note: this folder replaces the former monolithic `docs/crypto-spec.md`. That file is now a thin index/redirect; new content should be added under the appropriate per-scheme file here.
+> Historical note: this folder replaces the former monolithic `docs/crypto-spec.md`, which has been removed.
 
 ---
 

@@ -70,7 +70,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 ## Sub-protocols and acronyms
 
-- **VSS** — Verifiable Secret Sharing. Single-dealer building block. See [`crypto-spec.md`](./crypto-spec.md) §4 and [`protocols.md`](./protocols.md) §2.
+- **VSS** — Verifiable Secret Sharing. Single-dealer building block. See [`cryptography/vss.md`](./cryptography/vss.md) and [`protocols.md`](./protocols.md) §2.
 
 - **DKG** — Distributed Key Generation. $n$ parallel VSS sessions; output is a fresh master secret jointly held. See [`protocols.md`](./protocols.md) §3.
 

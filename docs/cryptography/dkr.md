@@ -10,7 +10,7 @@ Each old node $j$ runs a fresh VSS as dealer of degree $t'-1$, with $g_j(0) := s
 
 $$S_i := \sum_{j \in H} \lambda_j \cdot z_{j,i}, \qquad z_{j,i} = g_j(i+1), \qquad \lambda_j = \prod_{k \in H,\, k \neq j} \frac{0 - (k+1)}{(j+1) - (k+1)} \pmod r$$
 
-The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degree $t' - 1$ and satisfies $F(0) = \sum_{j} \lambda_j s_j = f(0) = s$ (since the $\lambda_j$ Lagrange-interpolate $f$ at $0$ over $H$).
+The combined polynomial $F(x) := \sum_{j \in H} \lambda_j \cdot g_j(x)$ has degree $t' - 1$ and satisfies $F(0) = \sum_{j} \lambda_j s_j = f(0) = s$ (since the $\lambda_j$ Lagrange-interpolate $f$ at zero over $H$).
 
 **References.**
 

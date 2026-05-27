@@ -6,7 +6,7 @@ This file has been split into per-scheme documents under [`cryptography/`](./cry
 
 | Old section | New location |
 |---|---|
-| §1 Notation and conventions | [`cryptography/notation.md`](./cryptography/notation.md) |
+| §1 Notation and conventions | [`cryptography/README.md`](./cryptography/README.md) "Notation and conventions" |
 | §2 Public-Key Encryption | [`cryptography/pke.md`](./cryptography/pke.md) |
 | §3 Threshold IBE | [`cryptography/t-ibe.md`](./cryptography/t-ibe.md) |
 | §4 VSS — origin, implementation choices, modified security argument | [`cryptography/vss.md`](./cryptography/vss.md) |
@@ -14,8 +14,8 @@ This file has been split into per-scheme documents under [`cryptography/`](./cry
 | §4.3 Resharing-dealer challenge | [`cryptography/dkr.md`](./cryptography/dkr.md) §2 |
 | §4.4 DKG/DKR composition | [`cryptography/dkg.md`](./cryptography/dkg.md), [`cryptography/dkr.md`](./cryptography/dkr.md) |
 | §6 Symmetric primitives (KDF, HMAC) | [`cryptography/symmetric.md`](./cryptography/symmetric.md) |
-| §7 RNG · §8 Curve cheat sheet | [`cryptography/identifiers.md`](./cryptography/identifiers.md) |
-| §9 Out of scope | [`cryptography/out-of-scope.md`](./cryptography/out-of-scope.md) |
-| §10 References | [`cryptography/references.md`](./cryptography/references.md) |
+| §7 RNG · §8 Curve cheat sheet | [`cryptography/README.md`](./cryptography/README.md) "Identifiers" |
+| §9 Out of scope | [`cryptography/README.md`](./cryptography/README.md) "Out of scope" |
+| §10 References | [`cryptography/README.md`](./cryptography/README.md) "References" |
 
 This stub exists so that external references to `docs/crypto-spec.md` still resolve to a meaningful landing page. New content should be added under the appropriate file in [`cryptography/`](./cryptography/).

@@ -35,10 +35,7 @@ Where the paper's protocol uses abstract primitives, ACE pins concrete ones. Aud
     - In key resharing protocol, if the old key share $s_i$ is committed by $g, P_i$ where $g^s=P_i$,
       the VSS session is created with base point also being $g$,
       and dealer's sharing polynomial commitment is $(v_0, ..., v_{t-1})$,
-      then everyone can immediately check secret the consitency as follows in the 1st phase.
-
-      $$v_0 = g_\text{old}^{s_j}$$
-
+      then everyone can immediately confirm secret consitency by checking $v_0 = g_\text{old}^{s_j}$.
 
     With paper's Pedersen variant, it can still be possible to support the above requirements. But construction can be a lot more compliated.
 

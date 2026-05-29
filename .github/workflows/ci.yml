@@ -91,7 +91,10 @@ jobs:
       - name: Install tools
         run: sudo scripts/install-tools.sh
       - name: Test
-        run: aptos move test --package-dir contracts/vss
+        run: |
+          aptos move test --package-dir contracts/vss
+          aptos move test --package-dir contracts/sigma-dlog-linear
+          aptos move test --package-dir contracts/pedersen-polynomial-commitment
 
   solana-example:
     name: scenario / solana-example

@@ -37,6 +37,10 @@ module ace::group_bls12381_g2 {
         point: vector<u8>,
     }
 
+    public fun identity(): PublicPoint {
+        from_inner_element(&crypto_algebra::zero<G2>())
+    }
+    
     public fun point_sum(pks: &vector<PublicPoint>): PublicPoint {
         let accumulator = crypto_algebra::zero<G2>();
         pks.for_each_ref(|pk| {

@@ -62,7 +62,7 @@ module ace::dkr {
     }
 
     #[lint::allow_unsafe_randomness]
-    public fun new_session(caller: &signer, previous_session: address, new_nodes: vector<address>, new_threshold: u64): address acquires Session {
+    public fun new_session(caller: &signer, previous_session: address, new_nodes: vector<address>, new_threshold: u64): address {
         let is_dkg = dkg::completed(previous_session);
         let is_dkr = completed(previous_session);
         assert!(is_dkg || is_dkr, error::invalid_argument(E_SECRET_SRC_NOT_COMPLETED));
@@ -104,7 +104,8 @@ module ace::dkr {
         session_addr
     }
 
-    public fun touch(session_addr: address) acquires Session, SignerStore {
+    #[lint::allow_unsafe_randomness]
+    public fun touch(session_addr: address) {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.state_code == STATE__START_VSSS) {
             let idx = session.vss_sessions.length();
@@ -154,16 +155,17 @@ module ace::dkr {
     }
 
     #[randomness]
-    entry fun new_session_entry(caller: &signer, secret_src: address, recipients: vector<address>, threshold: u64) acquires Session {
+    entry fun new_session_entry(caller: &signer, secret_src: address, recipients: vector<address>, threshold: u64) {
         new_session(caller, secret_src, recipients, threshold);
     }
 
-    entry fun touch_entry(session_addr: address) acquires Session, SignerStore {
+    #[randomness]
+    entry fun touch_entry(session_addr: address) {
         touch(session_addr);
     }
 
     #[view]
-    public fun get_session_bcs(session_addr: address): vector<u8> acquires Session {
+    public fun get_session_bcs(session_addr: address): vector<u8> {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
@@ -178,13 +180,13 @@ module ace::dkr {
     }
 
     /// Returns (original_session, base_point, public_key, new_nodes, new_threshold, new_committee_share_pks).
-    public fun params_for_resharing(secret_src: address): (address, group::Element, group::Element, vector<address>, u64, vector<group::Element>) acquires Session {
+    public fun params_for_resharing(secret_src: address): (address, group::Element, group::Element, vector<address>, u64, vector<group::Element>) {
         let session = borrow_global<Session>(secret_src);
         assert!(session.state_code == STATE__DONE, error::invalid_argument(E_SECRET_SRC_NOT_COMPLETED));
         (session.original_session, session.public_base_element, session.secretly_scaled_element, session.new_nodes, session.new_threshold, session.share_pks)
     }
 
-    public fun share_pks(session_addr: address): vector<group::Element> acquires Session {
+    public fun share_pks(session_addr: address): vector<group::Element> {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state_code == STATE__DONE, error::invalid_argument(E_SECRET_SRC_NOT_COMPLETED));
         session.share_pks

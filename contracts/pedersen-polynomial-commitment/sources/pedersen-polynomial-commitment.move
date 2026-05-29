@@ -2,6 +2,7 @@ module ace::pedersen_polynomial_commitment {
     use std::bcs;
     use std::error;
     use std::vector::range;
+    use aptos_std::bcs_stream::{Self, BCSStream};
     use ace::group;
     #[test_only]
     use aptos_framework::randomness;
@@ -65,6 +66,25 @@ module ace::pedersen_polynomial_commitment {
         if (raw_len == 0) 0 else raw_len - 1
     }
 
+    public fun new_context_from_generators(generator_g: group::Element, generator_h: group::Element): PublicParams {
+        assert!(
+            group::element_scheme(&generator_g) == group::element_scheme(&generator_h),
+            error::invalid_argument(E_INCONSISTENT_SCHEME),
+        );
+        PublicParams { generator_g, generator_h }
+    }
+
+    public fun commitment_from_points(points: vector<group::Element>): Commitment {
+        assert!(points.length() > 1, error::invalid_argument(E_INVALID_DIMENSIONS));
+        let scheme = group::element_scheme(&points[0]);
+        assert!(elements_have_scheme(&points, scheme), error::invalid_argument(E_INCONSISTENT_SCHEME));
+        Commitment { points }
+    }
+
+    public fun commitment_points(commitment: &Commitment): vector<group::Element> {
+        commitment.points
+    }
+
     public fun commitment_point(commitment: &Commitment, eval_position: u64): group::Element {
         assert!(
             valid_commitment_position(commitment, eval_position),
@@ -87,6 +107,32 @@ module ace::pedersen_polynomial_commitment {
 
     public fun generator_h(context: &PublicParams): group::Element {
         context.generator_h
+    }
+
+    public fun deserialize_commitment(stream: &mut BCSStream): Commitment {
+        let points = bcs_stream::deserialize_vector(stream, |s| group::deserialize_element(s));
+        commitment_from_points(points)
+    }
+
+    public fun deserialize_opening(stream: &mut BCSStream): Opening {
+        Opening {
+            eval_position: bcs_stream::deserialize_u64(stream),
+            eval_value_p: group::deserialize_scalar(stream),
+            eval_value_r: group::deserialize_scalar(stream),
+        }
+    }
+
+    public fun opening_eval_position(opening: &Opening): u64 {
+        opening.eval_position
+    }
+
+    public fun opening_eval_value_p(opening: &Opening): group::Scalar {
+        opening.eval_value_p
+    }
+
+    #[test_only]
+    public fun new_prover_state(poly_p: vector<group::Scalar>, poly_r: vector<group::Scalar>): ProverState {
+        ProverState { poly_p, poly_r }
     }
 
     #[lint::allow_unsafe_randomness]

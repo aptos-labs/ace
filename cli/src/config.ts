@@ -64,15 +64,19 @@ export interface LocalConfig {
  * An ACE deployment you administer. Persists the admin private key + RPC config.
  * Created by `ace deployment new`; consumed by `ace deployment {update-contracts,edit,...}`.
  *
- * `aceAddr` and `adminAddress` are the same Aptos account in this codebase (the package
- * is published *at* the admin address). They're stored as separate fields for clarity
- * and so a future "delegated admin" deployment shape doesn't need a migration.
+ * `aceAddr` is the **resource account address** where the Move packages live (committee
+ * voting governs upgrades; admin's key cannot sign for it after `start_initial_epoch`).
+ * `adminAddress` is the EOA that created the resource account during sealed bootstrap;
+ * its only post-bootstrap power is submitting upgrade proposals (no voting power).
+ * `bootstrapSeed` is the seed used in `createResourceAddress(admin, seed)` to derive
+ * `aceAddr`; persisted for reproducibility / debugging.
  */
 export interface TrackedDeployment {
     rpcUrl:            string;
     aceAddr:           string;
     adminAddress:      string;
     adminPrivateKey:   string;       // 0x-prefixed hex
+    bootstrapSeed:     string;       // utf-8 seed used to derive aceAddr from adminAddress
     sharedNodeApiKey?: string;
     gasStationApiKey?: string;
     alias?:            string;

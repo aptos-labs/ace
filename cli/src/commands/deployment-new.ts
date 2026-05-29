@@ -45,6 +45,7 @@ import {
     ACE_CONTRACT_PACKAGES,
     REPO_ROOT,
     deployContracts,
+    deriveAceAddr,
     ed25519PrivateKeyHex,
 } from '../deploy-contracts.js';
 import { CLI } from '../cli-name.js';
@@ -247,7 +248,21 @@ export async function deploymentNewCommand(): Promise<void> {
     const adminPrivKeyHex = ed25519PrivateKeyHex(adminAccount);
     console.log();
     console.log(`Admin account address: ${adminAddr}`);
-    console.log(`(The contract package will be published AT this address; it doubles as the deployment's identity.)`);
+    console.log(`(EOA that creates the resource account. After bootstrap, the admin key has NO`);
+    console.log(` power to upgrade contracts — only to *propose* upgrades for committee approval.)`);
+    console.log();
+
+    // 3b. Resource-account seed — derives the on-chain @ace address.
+    console.log(`Bootstrap seed — used in createResourceAddress(admin, seed) to derive @ace.`);
+    console.log(`This makes the deployment address deterministic + reproducible.`);
+    const seedDefault = `ace-${network}-${tag}`;
+    const seedInput = (await input({
+        message: `Bootstrap seed [default: "${seedDefault}"]:`,
+    })).trim();
+    const bootstrapSeed = seedInput || seedDefault;
+    const aceAddr = deriveAceAddr(adminAddr, bootstrapSeed);
+    console.log();
+    console.log(`Resource account address (= @ace where contracts will live): ${aceAddr}`);
     console.log();
 
     // 4. Fund.
@@ -287,7 +302,10 @@ export async function deploymentNewCommand(): Promise<void> {
         console.log(` but slower and rate-limited. To speed up: Ctrl-C now, \`export NODE_API_KEY=aptoslabs_...\`, and re-run.)`);
         console.log();
     }
-    await deployContracts(adminAccount, rpcUrl, ACE_CONTRACT_PACKAGES, version);
+    const deployedAceAddr = await deployContracts(adminAccount, rpcUrl, bootstrapSeed, ACE_CONTRACT_PACKAGES, version);
+    if (deployedAceAddr.toLowerCase() !== aceAddr.toLowerCase()) {
+        throw new Error(`Internal inconsistency: predicted aceAddr (${aceAddr}) != actual (${deployedAceAddr}).`);
+    }
     console.log();
     console.log(`  ✓ All ${ACE_CONTRACT_PACKAGES.length} packages published at version ${version}.`);
     console.log();
@@ -316,7 +334,7 @@ export async function deploymentNewCommand(): Promise<void> {
 
     // 7. Operator onboarding blob.
     const operatorBlob = JSON.stringify(
-        Object.assign({ rpcUrl, aceAddr: adminAddr },
+        Object.assign({ rpcUrl, aceAddr },
             sharedNodeApiKey ? { rpcApiKey: sharedNodeApiKey } : {},
             gasStationApiKey ? { gasStationKey: gasStationApiKey } : {},
         ),
@@ -379,12 +397,14 @@ export async function deploymentNewCommand(): Promise<void> {
     console.log();
 
     console.log(`Calling network::start_initial_epoch(nodes=${nodeAddresses.length}, threshold=${threshold}, epoch_duration=${epochDuration}s)...`);
+    console.log(`(Sealing step: admin's key signs as @ace, then loses signing power for @ace forever.)`);
     const aptos = makeAptos(rpcUrl, faucet, sharedNodeApiKey);
     const txn = await aptos.transaction.build.simple({
-        sender: adminAccount.accountAddress,
+        sender: AccountAddress.fromString(aceAddr),
         data: {
-            function: `${adminAddr}::network::start_initial_epoch` as `${string}::${string}::${string}`,
+            function: `${aceAddr}::network::start_initial_epoch` as `${string}::${string}::${string}`,
             functionArguments: [
+                adminAddr,
                 nodeAddresses.map(a => a.toStringLong()),
                 threshold,
                 epochDuration,
@@ -393,7 +413,7 @@ export async function deploymentNewCommand(): Promise<void> {
     });
     const resp = await aptos.signAndSubmitTransaction({ signer: adminAccount, transaction: txn });
     await aptos.waitForTransaction({ transactionHash: resp.hash, options: { checkSuccess: true } });
-    console.log(`  ✓ Initial epoch (epoch 0) live. Txn: ${resp.hash}`);
+    console.log(`  ✓ Initial epoch (epoch 0) live + sealing complete. Txn: ${resp.hash}`);
     console.log();
 
     // 9. Persist profile.
@@ -401,9 +421,10 @@ export async function deploymentNewCommand(): Promise<void> {
     const key = makeDeploymentKey(rpcUrl, adminAddr);
     const dep: TrackedDeployment = {
         rpcUrl,
-        aceAddr: adminAddr,
+        aceAddr,
         adminAddress: adminAddr,
         adminPrivateKey: `0x${adminPrivKeyHex}`,
+        bootstrapSeed,
         sharedNodeApiKey,
         gasStationApiKey,
         alias: `${network}-${tag}`,

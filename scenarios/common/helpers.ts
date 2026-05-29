@@ -3,7 +3,7 @@
 
 import * as ace from '@aptos-labs/ace-sdk';
 import { Result } from '@aptos-labs/ace-sdk';
-import { Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, AptosConfig, AuthenticationKey, Ed25519PrivateKey, Network, Serializer, createResourceAddress } from '@aptos-labs/ts-sdk';
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import {
@@ -165,7 +165,12 @@ export function rmContractsPublishScratch(scratch: ContractsPublishScratch): voi
     rmSync(scratch.tmpRoot, { recursive: true, force: true });
 }
 
-export async function publishMovePackage(packageDir: string, privateKeyHex: string, rpcUrl = LOCALNET_URL): Promise<void> {
+export async function publishMovePackage(
+    packageDir: string,
+    privateKeyHex: string,
+    rpcUrl = LOCALNET_URL,
+    senderAddr?: string,
+): Promise<void> {
     const args = [
         'move',
         'publish',
@@ -178,8 +183,43 @@ export async function publishMovePackage(packageDir: string, privateKeyHex: stri
         '--assume-yes',
         '--skip-fetch-latest-git-deps',
     ];
+    if (senderAddr) args.push('--sender-account', senderAddr);
     console.log(`  $ aptos ${args.join(' ')}`);
     await spawnExitZero('aptos', args, 'aptos move publish');
+}
+
+/** Default seed for `deployContracts` resource-account derivation. Scenarios that need a
+ *  distinct ace address (e.g. multiple deployments on the same chain) pass `opts.seed`. */
+export const DEFAULT_BOOTSTRAP_SEED = 'ace-scenario-bootstrap';
+
+/** Compute the resource account address `network` will live at, given admin + seed. */
+export function deriveAceAddr(adminAddr: AccountAddress, seed: string): string {
+    return createResourceAddress(adminAddr, seed).toStringLong();
+}
+
+/** Phase A of the sealed bootstrap: admin creates a resource account at the deterministic
+ *  derived address. `optional_auth_key` is set to admin's own auth_key so admin's private key
+ *  can sign `aptos move publish` tx's with `--sender-account <X>` during Phase B. Phase C
+ *  (`start_initial_epoch`) burns this auth_key to zero via `retrieve_resource_account_cap`.
+ *  Returns the resource account address. */
+export async function createAceResourceAccount(
+    admin: Account,
+    seed: string,
+    rpcUrl = LOCALNET_URL,
+): Promise<string> {
+    const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
+    const seedBytes = new Uint8Array(Buffer.from(seed, 'utf8'));
+    const adminAuthKey = AuthenticationKey.fromPublicKey({ publicKey: admin.publicKey });
+    const txn = await aptos.transaction.build.simple({
+        sender: admin.accountAddress,
+        data: {
+            function: '0x1::resource_account::create_resource_account',
+            functionArguments: [seedBytes, adminAuthKey.toUint8Array()],
+        },
+    });
+    const resp = await aptos.signAndSubmitTransaction({ signer: admin, transaction: txn });
+    await aptos.waitForTransaction({ transactionHash: resp.hash, options: { checkSuccess: true } });
+    return deriveAceAddr(admin.accountAddress, seed);
 }
 
 /** Hex (no `0x`) for an Ed25519-backed `Account` (e.g. `generate()` / `fromPrivateKey`). */
@@ -192,24 +232,35 @@ export function ed25519PrivateKeyHex(account: Account): string {
 }
 
 /**
- * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
- * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
+ * Sealed bootstrap (Phase A + B): create a resource account, then publish each Move package
+ * under `REPO_ROOT/contracts/<folder>` (one `aptos move publish` per folder) to that resource
+ * account. Phase C — `start_initial_epoch` — must be invoked separately by the caller to burn
+ * admin's signing path and lock upgrades behind committee voting.
+ *
+ * Returns the resource account address that became `@ace`.
  */
-export async function deployContracts(adminAccount: Account, packageFolders: string[], rpcUrl = LOCALNET_URL): Promise<void> {
-    const adminAddr = adminAccount.accountAddress.toStringLong();
+export async function deployContracts(
+    adminAccount: Account,
+    packageFolders: string[],
+    opts: { rpcUrl?: string; seed?: string } = {},
+): Promise<string> {
+    const rpcUrl = opts.rpcUrl ?? LOCALNET_URL;
+    const seed = opts.seed ?? DEFAULT_BOOTSTRAP_SEED;
+    const aceAddr = await createAceResourceAccount(adminAccount, seed, rpcUrl);
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
-    const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr);
+    const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), aceAddr);
     try {
         for (const folder of packageFolders) {
             const packageDir = path.join(scratch.contractsDir, folder);
             if (!existsSync(path.join(packageDir, 'Move.toml'))) {
                 throw new Error(`missing Move package at ${packageDir}`);
             }
-            await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
+            await publishMovePackage(packageDir, adminKeyHex, rpcUrl, aceAddr);
         }
     } finally {
         rmContractsPublishScratch(scratch);
     }
+    return aceAddr;
 }
 
 export async function fundAccount(address: AccountAddress): Promise<void> {
@@ -350,12 +401,18 @@ function parseMoveAbortCode(vmStatus: string): number | undefined {
 export async function submitTxn(
     {
         signer,
+        sender,
         entryFunction,
         args,
         rpcUrl = LOCALNET_URL,
         awaitEventType,
     }: {
         signer: Account,
+        /** Override the tx sender (default: signer's address). Use when the signing key's
+         *  auth_key matches a different account — e.g. publishing/initializing the resource
+         *  account during sealed bootstrap, where admin signs but sender is the resource
+         *  account address. */
+        sender?: AccountAddress | string,
         entryFunction: `${string}::${string}::${string}`,
         args: any[],
         rpcUrl?: string,
@@ -374,8 +431,11 @@ export async function submitTxn(
         recordsExecutionTimeMs: false,
         task: async () => {
             const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: rpcUrl }));
+            const senderAddr = sender !== undefined
+                ? (typeof sender === 'string' ? AccountAddress.fromString(sender) : sender)
+                : signer.accountAddress;
             const txn = await aptos.transaction.build.simple({
-                sender: signer.accountAddress,
+                sender: senderAddr,
                 data: {
                     function: entryFunction,
                     typeArguments: [],

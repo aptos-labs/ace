@@ -91,6 +91,16 @@ module ace::group {
 
     // ── Arithmetic ───────────────────────────────────────────────────────────
 
+    public fun identity(scheme: u8): Element {
+        if (scheme == SCHEME__BLS12381G1) {
+            Element::Bls12381G1(group_bls12381_g1::identity())
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Element::Bls12381G2(group_bls12381_g2::identity())
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     public fun element_sum(elements: &vector<Element>): Element {
         assert!(elements.length() > 0, error::invalid_argument(E_INVALID_ELEMENT_SUM));
         let scheme = element_scheme(&elements[0]);

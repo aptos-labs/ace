@@ -88,6 +88,9 @@ module ace::vss {
         state_code: u8,
         deal_time_micros: u64,
         dealer_contribution_0: Option<DealerContribution0>,
+        dealer_commitment_check_z_poly: vector<group::Scalar>,
+        dealer_commitment_check_accumulator: group::Element,
+        next_dealer_commitment_to_verify: u64,
         share_holder_acks: vector<bool>,
         dealer_contribution_1: Option<DealerContribution1>,
         /// Next position in {0, 1, ..., n} for touch() to verify from DC1.
@@ -154,6 +157,9 @@ module ace::vss {
             deal_time_micros: 0,
             state_code: STATE__DEALER_DEAL,
             dealer_contribution_0: option::none(),
+            dealer_commitment_check_z_poly: vector[],
+            dealer_commitment_check_accumulator: group::identity(scheme),
+            next_dealer_commitment_to_verify: 0,
             share_holder_acks: range(0, num_share_holders).map(|_| false),
             dealer_contribution_1: option::none(),
             next_public_key_to_verify: 0,
@@ -191,6 +197,7 @@ module ace::vss {
         let session = &mut Session[session_addr];
         assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
         assert!(session.state_code == STATE__DEALER_DEAL, error::invalid_state(E_NOT_IN_PROGRESS));
+        assert!(session.dealer_contribution_0.is_none(), error::invalid_state(E_ALREADY_CONTRIBUTED));
 
         let dc0 = dealer_contribution_0_from_bytes(payload_bytes);
         let n = session.share_holders.length();
@@ -199,14 +206,6 @@ module ace::vss {
             error::invalid_argument(E_INVALID_CONTRIBUTION),
         );
         assert!(dc0.private_share_messages.length() == n, error::invalid_argument(E_INVALID_CONTRIBUTION));
-        assert!(
-            pedersen_polynomial_commitment::degree_check(
-                &session.pcs_context,
-                &dc0.pcs_commitment,
-                session.threshold - 1,
-            ),
-            error::invalid_argument(E_INVALID_CONTRIBUTION),
-        );
 
         if (session.previous_public_key.is_some()) {
             assert!(dc0.consistency_proof.is_some(), error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF));
@@ -225,9 +224,17 @@ module ace::vss {
             );
         };
 
+        let z_poly = pedersen_polynomial_commitment::degree_check_z_poly(
+            &session.pcs_context,
+            &dc0.pcs_commitment,
+            session.threshold - 1,
+        );
+        let accumulator = pedersen_polynomial_commitment::degree_check_initial_accumulator(&session.pcs_context);
+
         session.dealer_contribution_0 = option::some(dc0);
-        session.state_code = STATE__RECIPIENT_ACK;
-        session.deal_time_micros = timestamp::now_microseconds();
+        session.dealer_commitment_check_z_poly = z_poly;
+        session.dealer_commitment_check_accumulator = accumulator;
+        session.next_dealer_commitment_to_verify = 0;
     }
 
     public entry fun on_share_holder_ack(
@@ -293,6 +300,13 @@ module ace::vss {
 
     entry fun touch(session_addr: address) {
         let session = &mut Session[session_addr];
+        if (session.state_code == STATE__DEALER_DEAL) {
+            if (session.dealer_contribution_0.is_some()) {
+                touch_dealer_commitment(session);
+            };
+            return;
+        };
+
         if (session.state_code != STATE__VERIFY_DEALER_OPENING) return;
 
         let expected_len = session.share_holders.length() + 1;
@@ -308,6 +322,39 @@ module ace::vss {
         session.next_public_key_to_verify = eval_position + 1;
         if (session.next_public_key_to_verify == expected_len) {
             session.state_code = STATE__SUCCESS;
+        };
+    }
+
+    fun touch_dealer_commitment(session: &mut Session) {
+        let dc0 = session.dealer_contribution_0.borrow();
+        let expected_len = pedersen_polynomial_commitment::degree_check_num_points(&dc0.pcs_commitment);
+        let eval_position = session.next_dealer_commitment_to_verify;
+
+        if (eval_position >= expected_len) {
+            finish_dealer_commitment_check(session);
+            return;
+        };
+
+        let accumulator = pedersen_polynomial_commitment::degree_check_step(
+            &session.pcs_context,
+            &dc0.pcs_commitment,
+            &session.dealer_commitment_check_z_poly,
+            eval_position,
+            &session.dealer_commitment_check_accumulator,
+        );
+        session.dealer_commitment_check_accumulator = accumulator;
+        session.next_dealer_commitment_to_verify = eval_position + 1;
+        if (session.next_dealer_commitment_to_verify == expected_len) {
+            finish_dealer_commitment_check(session);
+        };
+    }
+
+    fun finish_dealer_commitment_check(session: &mut Session) {
+        if (pedersen_polynomial_commitment::degree_check_accepts(&session.pcs_context, &session.dealer_commitment_check_accumulator)) {
+            session.state_code = STATE__RECIPIENT_ACK;
+            session.deal_time_micros = timestamp::now_microseconds();
+        } else {
+            session.state_code = STATE__FAILED;
         };
     }
 

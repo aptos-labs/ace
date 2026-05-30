@@ -121,6 +121,18 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         Ok(h) => println!("vss-dealer: on_dealer_contribution_0 confirmed: {}", h),
                         Err(e) => eprintln!("vss-dealer: on_dealer_contribution_0 error: {:#}", e),
                     }
+                } else if let Err(e) = rpc
+                    .submit_txn(
+                        &sk,
+                        &vk,
+                        &account_addr,
+                        &format!("{}::vss::touch", ace),
+                        &[],
+                        &[TxnArg::Address(session_addr.as_str())],
+                    )
+                    .await
+                {
+                    eprintln!("vss-dealer: touch dealer commitment error: {:#}", e);
                 }
             }
             STATE_RECIPIENT_ACK => {

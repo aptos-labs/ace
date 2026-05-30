@@ -85,6 +85,10 @@ module ace::pedersen_polynomial_commitment {
         commitment.points
     }
 
+    public fun degree_check_num_points(commitment: &Commitment): u64 {
+        commitment.points.length()
+    }
+
     public fun commitment_point(commitment: &Commitment, eval_position: u64): group::Element {
         assert!(
             valid_commitment_position(commitment, eval_position),
@@ -190,6 +194,49 @@ module ace::pedersen_polynomial_commitment {
         });
         let check = group::msm(commitment.points, scalars);
         group::element_eq(&check, &group::identity(scheme))
+    }
+
+    #[lint::allow_unsafe_randomness]
+    public fun degree_check_z_poly(context: &PublicParams, commitment: &Commitment, d: u64): vector<group::Scalar> {
+        let n = commitment.points.length();
+        assert!(n > 1, error::invalid_argument(E_INVALID_DIMENSIONS));
+        let scheme = context_scheme(context);
+        assert!(elements_have_scheme(&commitment.points, scheme), error::invalid_argument(E_INCONSISTENT_SCHEME));
+        if (d + 1 >= n) {
+            vector[]
+        } else {
+            random_poly(scheme, n - d - 1)
+        }
+    }
+
+    public fun degree_check_initial_accumulator(context: &PublicParams): group::Element {
+        group::identity(context_scheme(context))
+    }
+
+    public fun degree_check_step(
+        context: &PublicParams,
+        commitment: &Commitment,
+        z_poly: &vector<group::Scalar>,
+        eval_position: u64,
+        accumulator: &group::Element,
+    ): group::Element {
+        let n = commitment.points.length();
+        assert!(eval_position < n, error::invalid_argument(E_INVALID_EVALUATION_POSITION));
+        assert!(z_poly.length() > 0, error::invalid_argument(E_INVALID_DIMENSIONS));
+        let scheme = context_scheme(context);
+        assert!(elements_have_scheme(&commitment.points, scheme), error::invalid_argument(E_INCONSISTENT_SCHEME));
+        assert!(group::element_scheme(accumulator) == scheme, error::invalid_argument(E_INCONSISTENT_SCHEME));
+
+        let x = group::scalar_from_u64(scheme, eval_position);
+        let z_i = eval_poly(z_poly, &x);
+        let lambda_i = lagrange_denominator_inverse(scheme, eval_position, n);
+        let scalar = group::scalar_mul(&z_i, &lambda_i);
+        group::element_add(accumulator, &group::scale_element(&commitment.points[eval_position], &scalar))
+    }
+
+    public fun degree_check_accepts(context: &PublicParams, accumulator: &group::Element): bool {
+        let scheme = context_scheme(context);
+        group::element_scheme(accumulator) == scheme && group::element_eq(accumulator, &group::identity(scheme))
     }
 
     #[test_only]

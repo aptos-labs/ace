@@ -13,6 +13,7 @@ use crate::{
     crypto::{fr_from_le_bytes, fr_to_le_bytes},
     normalize_account_addr,
     pke::{pke_decrypt, Ciphertext},
+    vss_types::{opening_eval_value_p_fr, parse_private_share_opening},
     AptosRpc,
 };
 
@@ -37,10 +38,11 @@ pub async fn reconstruct_share(
     let my_addr = normalize_account_addr(my_addr);
 
     // Try DKR first; fall back to DKG.
-    match rpc.get_resource_data(&session_addr, &format!("{}::dkr::Session", ace)).await {
-        Ok(dkr_data) => {
-            reconstruct_from_dkr(rpc, ace, &dkr_data, &my_addr, pke_dk_bytes).await
-        }
+    match rpc
+        .get_resource_data(&session_addr, &format!("{}::dkr::Session", ace))
+        .await
+    {
+        Ok(dkr_data) => reconstruct_from_dkr(rpc, ace, &dkr_data, &my_addr, pke_dk_bytes).await,
         Err(_) => {
             let dkg_data = rpc
                 .get_resource_data(&session_addr, &format!("{}::dkg::Session", ace))
@@ -89,7 +91,10 @@ async fn reconstruct_from_dkg(
 
         // Derive my_idx + group_scheme on the first done session.
         if my_idx.is_none() {
-            my_idx = bcs_session.share_holders.iter().position(|h| h == &my_addr_bytes);
+            my_idx = bcs_session
+                .share_holders
+                .iter()
+                .position(|h| h == &my_addr_bytes);
             if my_idx.is_none() {
                 return Err(anyhow!(
                     "my_addr {} not found in share_holders of VSS {}",
@@ -113,10 +118,14 @@ async fn reconstruct_from_dkg(
         share_fr += decrypt_and_extract_fr(ct, pke_dk_bytes, vss_addr)?;
     }
 
-    let group_scheme = group_scheme
-        .ok_or_else(|| anyhow!("no done VSS sessions in DKG {}", session_addr))?;
+    let group_scheme =
+        group_scheme.ok_or_else(|| anyhow!("no done VSS sessions in DKG {}", session_addr))?;
 
-    Ok((fr_to_le_bytes(share_fr), session_addr.to_string(), group_scheme))
+    Ok((
+        fr_to_le_bytes(share_fr),
+        session_addr.to_string(),
+        group_scheme,
+    ))
 }
 
 /// DKR case: `keypair_id = original_session`, share = Lagrange combination at x=0 using old eval points.
@@ -136,10 +145,13 @@ async fn reconstruct_from_dkr(
     );
 
     let new_nodes: Vec<String> = parse_addr_array(&dkr_data["new_nodes"])?;
-    let my_idx = new_nodes
-        .iter()
-        .position(|n| n == my_addr)
-        .ok_or_else(|| anyhow!("my_addr {} not found in DKR new_nodes {:?}", my_addr, new_nodes))?;
+    let my_idx = new_nodes.iter().position(|n| n == my_addr).ok_or_else(|| {
+        anyhow!(
+            "my_addr {} not found in DKR new_nodes {:?}",
+            my_addr,
+            new_nodes
+        )
+    })?;
 
     let vss_sessions: Vec<String> = parse_addr_array(&dkr_data["vss_sessions"])?;
     let vss_contribution_flags: Vec<bool> = parse_bool_array(&dkr_data["vss_contribution_flags"])?;
@@ -164,7 +176,10 @@ async fn reconstruct_from_dkr(
     }
 
     // Old eval points: x_j = j+1 (1-based) for each j ∈ H.
-    let old_evals: Vec<Fr> = contributing.iter().map(|&j| Fr::from((j + 1) as u64)).collect();
+    let old_evals: Vec<Fr> = contributing
+        .iter()
+        .map(|&j| Fr::from((j + 1) as u64))
+        .collect();
 
     // Decrypt sub-share z_{j, my_idx} for each j ∈ H.
     let mut sub_shares: Vec<Fr> = Vec::with_capacity(contributing.len());
@@ -213,7 +228,11 @@ async fn reconstruct_from_dkr(
         })
         .fold(Fr::from(0u64), |acc, term| acc + term);
 
-    Ok((fr_to_le_bytes(combined_share), original_session, group_scheme))
+    Ok((
+        fr_to_le_bytes(combined_share),
+        original_session,
+        group_scheme,
+    ))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -241,20 +260,25 @@ fn parse_bool_array(v: &serde_json::Value) -> Result<Vec<bool>> {
     v.as_array()
         .ok_or_else(|| anyhow!("expected bool array, got {:?}", v))?
         .iter()
-        .map(|b| b.as_bool().ok_or_else(|| anyhow!("expected bool, got {:?}", b)))
+        .map(|b| {
+            b.as_bool()
+                .ok_or_else(|| anyhow!("expected bool, got {:?}", b))
+        })
         .collect()
 }
 
-fn decrypt_and_extract_fr(
-    ct: &Ciphertext,
-    pke_dk_bytes: &[u8],
-    context: &str,
-) -> Result<Fr> {
+fn decrypt_and_extract_fr(ct: &Ciphertext, pke_dk_bytes: &[u8], context: &str) -> Result<Fr> {
     let plaintext = pke_decrypt(pke_dk_bytes, ct)
         .map_err(|e| anyhow!("VSS {} decrypt failed: {}", context, e))?;
 
-    // Format: [group scheme][ULEB128(32)=0x20][32B Fr LE]. Scheme may be 0x00 (G1) or 0x01 (G2);
-    // Fr is the same prime field for both, so the y-bytes are interchangeable.
+    if plaintext.len() == 76 {
+        if let Ok(opening) = parse_private_share_opening(&plaintext) {
+            return opening_eval_value_p_fr(&opening);
+        }
+    }
+
+    // Legacy fallback: [group scheme][ULEB128(32)=0x20][32B Fr LE]. Fr is the
+    // same prime field for both supported groups, so the y-bytes are interchangeable.
     if plaintext.len() < 34
         || (plaintext[0] != crate::session::SCHEME_BLS12381G1
             && plaintext[0] != crate::session::SCHEME_BLS12381G2)

@@ -7,8 +7,11 @@
 use anyhow::{anyhow, Result};
 use tokio::sync::oneshot;
 use vss_common::pke::pke_decrypt;
-use vss_common::session::{STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING};
-use vss_common::vss_types::feldman_verify;
+use vss_common::session::{
+    STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
+    STATE_VERIFY_DEALER_OPENING,
+};
+use vss_common::vss_types::pedersen_verify_private_share;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
 pub const POLL_SECS: u64 = 1;
@@ -33,7 +36,11 @@ pub struct RunConfig {
 /// Exits cleanly on `STATE__SUCCESS`.
 /// Returns `Err` on `STATE__FAILED`, account not in share_holders, or unrecoverable errors.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(
+        config.rpc_url.clone(),
+        config.rpc_api_key.clone(),
+        config.rpc_gas_key.clone(),
+    );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
 
@@ -102,7 +109,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 if already_acked {
                     println!("vss-recipient: already acked, waiting for dealer to open...");
                 } else {
-                    // Decrypt and Feldman-verify share before acking.
+                    // Decrypt and Pedersen-verify the private opening before acking.
                     let bcs_session = match rpc.get_session_bcs_decoded(&ace, &session_addr).await {
                         Ok(s) => s,
                         Err(e) => {
@@ -117,26 +124,27 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             continue;
                         }
                     };
-                    let plaintext = match pke_decrypt(
-                        &dk_bytes,
-                        &dc0.private_share_messages[my_idx],
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("vss-recipient: pke_decrypt error: {:#}", e);
-                            continue;
-                        }
-                    };
-                    if let Err(e) = feldman_verify(
+                    let plaintext =
+                        match pke_decrypt(&dk_bytes, &dc0.private_share_messages[my_idx]) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                eprintln!("vss-recipient: pke_decrypt error: {:#}", e);
+                                continue;
+                            }
+                        };
+                    if let Err(e) = pedersen_verify_private_share(
                         &plaintext,
-                        &bcs_session.base_point,
+                        &bcs_session.pcs_context,
                         &dc0.pcs_commitment,
                         (my_idx + 1) as u64,
                     ) {
-                        eprintln!("vss-recipient: Feldman verification failed: {:#}", e);
+                        eprintln!(
+                            "vss-recipient: Pedersen opening verification failed: {:#}",
+                            e
+                        );
                         continue;
                     }
-                    println!("vss-recipient: Feldman verification passed, submitting on_share_holder_ack");
+                    println!("vss-recipient: Pedersen opening verification passed, submitting on_share_holder_ack");
                     let args = [TxnArg::Address(session_addr.as_str())];
                     match rpc
                         .submit_txn(

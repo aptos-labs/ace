@@ -43,6 +43,14 @@ impl BcsElement {
             BcsElement::Bls12381G2(p) => &p.point,
         }
     }
+
+    pub fn from_scheme_and_bytes(scheme: u8, bytes: Vec<u8>) -> anyhow::Result<Self> {
+        match scheme {
+            SCHEME_BLS12381G1 => Ok(BcsElement::Bls12381G1(BcsPublicPoint { point: bytes })),
+            SCHEME_BLS12381G2 => Ok(BcsElement::Bls12381G2(BcsPublicPoint { point: bytes })),
+            s => Err(anyhow!("unsupported group scheme {}", s)),
+        }
+    }
 }
 
 /// BCS mirror of `group_bls12381_{g1,g2}::PrivateScalar`. Fr is shared between G1 and G2,
@@ -72,6 +80,13 @@ impl BcsScalar {
             SCHEME_BLS12381G1 => Ok(BcsScalar::Bls12381G1(BcsPrivateScalar { scalar: bytes })),
             SCHEME_BLS12381G2 => Ok(BcsScalar::Bls12381G2(BcsPrivateScalar { scalar: bytes })),
             s => Err(anyhow!("unsupported group scheme {}", s)),
+        }
+    }
+
+    pub fn scalar_bytes(&self) -> &[u8] {
+        match self {
+            BcsScalar::Bls12381G1(s) => &s.scalar,
+            BcsScalar::Bls12381G2(s) => &s.scalar,
         }
     }
 }

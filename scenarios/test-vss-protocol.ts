@@ -33,7 +33,15 @@ async function main() {
         const recipientAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss']);
+        await deployContracts(adminAccount, [
+            'pke',
+            'worker_config',
+            'group',
+            'fiat-shamir-transform',
+            'sigma-dlog-linear',
+            'pedersen-polynomial-commitment',
+            'vss',
+        ]);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -130,9 +138,10 @@ async function main() {
                 throw `expected reconstructed scheme = ${ace.vss.SCHEME_BLS12381G2}, got ${reconstructedSecret.scheme}`;
             }
 
-            log('Verify s*B == pcsCommitment.points[0] (in G2).');
+            log('Verify s*B == result public key (in G2).');
             const computedPk = session!.basePoint.scale(reconstructedSecret);
-            const expectedPk = session!.dealerContribution0!.pcsCommitment.points[0];
+            const expectedPk = session!.resultPk;
+            if (expectedPk === undefined) throw 'VSS session has no result public key.';
             if (!computedPk.equals(expectedPk)) throw 'Reconstructed secret does not match on-chain public key (G2).';
             console.log(`Reconstructed PK (G2): ${computedPk.toHex()}`);
         } finally {

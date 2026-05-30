@@ -158,10 +158,7 @@ export class SecretShare {
 
 // ── PcsCommitment ─────────────────────────────────────────────────────────────
 
-/**
- * Feldman PCS commitment: a vector of G1 points, no scheme-byte prefix.
- * Wire format: [uleb128 t] { [uleb128(48)] [48-byte G1] } × t
- */
+/** Pedersen PCS commitment points over the ACE domain {0, 1, ..., n}. */
 export class PcsCommitment {
     constructor(readonly points: Element[]) {}
 
@@ -229,14 +226,84 @@ export class PcsCommitment {
     }
 }
 
-// ── PrivateShareMessage ───────────────────────────────────────────────────────
+// ── Pedersen PCS PublicParams / Opening ──────────────────────────────────────
 
-/** The plaintext payload encrypted to each share holder: just the share scalar. */
-export class PrivateShareMessage {
-    constructor(readonly share: SecretShare) {}
+export class PcsPublicParams {
+    constructor(readonly generatorG: Element, readonly generatorH: Element) {}
 
     serialize(serializer: Serializer): void {
-        this.share.serialize(serializer);
+        this.generatorG.serialize(serializer);
+        this.generatorH.serialize(serializer);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PcsPublicParams> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const generatorG = Element.deserialize(deserializer).unwrapOrThrow("generatorG deserialize failed");
+                const generatorH = Element.deserialize(deserializer).unwrapOrThrow("generatorH deserialize failed");
+                return new PcsPublicParams(generatorG, generatorH);
+            },
+        });
+    }
+}
+
+export class PcsOpening {
+    constructor(
+        readonly evalPosition: number,
+        readonly evalValueP: Scalar,
+        readonly evalValueR: Scalar,
+    ) {}
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU64(this.evalPosition);
+        this.evalValueP.serialize(serializer);
+        this.evalValueR.serialize(serializer);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PcsOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const evalPosition = Number(deserializer.deserializeU64());
+                const evalValueP = Scalar.deserialize(deserializer).unwrapOrThrow("evalValueP deserialize failed");
+                const evalValueR = Scalar.deserialize(deserializer).unwrapOrThrow("evalValueR deserialize failed");
+                return new PcsOpening(evalPosition, evalValueP, evalValueR);
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PcsOpening> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
+}
+
+// ── PrivateShareMessage ───────────────────────────────────────────────────────
+
+/** The plaintext payload encrypted to each share holder: a Pedersen PCS opening. */
+export class PrivateShareMessage {
+    constructor(readonly share: SecretShare, readonly opening?: PcsOpening) {}
+
+    serialize(serializer: Serializer): void {
+        if (this.opening !== undefined) {
+            this.opening.serialize(serializer);
+        } else {
+            this.share.serialize(serializer);
+        }
     }
 
     static deserialize(deserializer: Deserializer): Result<PrivateShareMessage> {
@@ -259,10 +326,18 @@ export class PrivateShareMessage {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
+                if (bytes.length === 76) {
+                    const opening = PcsOpening.fromBytes(bytes);
+                    if (opening.isOk) {
+                        const share = secretShareFromScalar(opening.okValue!.evalValueP);
+                        return new PrivateShareMessage(share, opening.okValue!);
+                    }
+                }
+
                 const deserializer = new Deserializer(bytes);
-                const obj = PrivateShareMessage.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                const share = SecretShare.deserialize(deserializer).unwrapOrThrow("legacy share deserialize failed");
                 if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return obj;
+                return new PrivateShareMessage(share);
             },
         });
     }
@@ -277,6 +352,20 @@ export class PrivateShareMessage {
             task: () => PrivateShareMessage.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
         });
     }
+}
+
+function secretShareFromScalar(scalar: Scalar): SecretShare {
+    if (scalar.scheme === SCHEME_BLS12381G1) {
+        const bytes = (scalar.inner as Bls12381G1.PrivateScalar).toBytes();
+        const inner = Bls12381G1.SecretShare.fromBytes(bytes).unwrapOrThrow("SecretShare G1 from scalar failed");
+        return new SecretShare(SCHEME_BLS12381G1, inner);
+    }
+    if (scalar.scheme === SCHEME_BLS12381G2) {
+        const bytes = (scalar.inner as Bls12381G2.PrivateScalar).toBytes();
+        const inner = Bls12381G2.SecretShare.fromBytes(bytes).unwrapOrThrow("SecretShare G2 from scalar failed");
+        return new SecretShare(SCHEME_BLS12381G2, inner);
+    }
+    throw `secretShareFromScalar: unsupported scheme ${scalar.scheme}`;
 }
 
 // ── DealerState ───────────────────────────────────────────────────────────────
@@ -352,45 +441,35 @@ export class DealerState {
     }
 }
 
-// ── ResharingDealerChallenge / ResharingDealerResponse ────────────────────────
+// ── SigmaDlogLinearProof ─────────────────────────────────────────────────────
 
-export interface SigmaDlogEqProof {
-    t0: Element;
-    t1: Element;
-    s: Scalar;
-}
+export class SigmaDlogLinearProof {
+    constructor(readonly tVals: Element[], readonly zVals: Scalar[]) {}
 
-export interface ResharingDealerChallenge {
-    expectedScaledElement: Element;
-    anotherBaseElement: Element;
-}
-
-export interface ResharingDealerResponse {
-    anotherScaledElement: Element;
-    proof: SigmaDlogEqProof;
-}
-
-function deserializeScalar(deserializer: Deserializer): Scalar {
-    const scheme = deserializer.deserializeU8();
-    if (scheme === SCHEME_BLS12381G1) {
-        const inner = Bls12381G1.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
-        return new Scalar(scheme, inner);
+    serialize(serializer: Serializer): void {
+        serializer.serializeU32AsUleb128(this.tVals.length);
+        for (const t of this.tVals) t.serialize(serializer);
+        serializer.serializeU32AsUleb128(this.zVals.length);
+        for (const z of this.zVals) z.serialize(serializer);
     }
-    if (scheme === SCHEME_BLS12381G2) {
-        const inner = Bls12381G2.PrivateScalar.deserialize(deserializer).unwrapOrThrow("Scalar deserialize failed");
-        return new Scalar(scheme, inner);
-    }
-    throw `deserializeScalar: unsupported scheme ${scheme}`;
-}
 
-function serializeScalar(serializer: Serializer, s: Scalar): void {
-    serializer.serializeU8(s.scheme);
-    if (s.scheme === SCHEME_BLS12381G1) {
-        (s.inner as Bls12381G1.PrivateScalar).serialize(serializer);
-    } else if (s.scheme === SCHEME_BLS12381G2) {
-        (s.inner as Bls12381G2.PrivateScalar).serialize(serializer);
-    } else {
-        throw `serializeScalar: unsupported scheme ${s.scheme}`;
+    static deserialize(deserializer: Deserializer): Result<SigmaDlogLinearProof> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const tLen = deserializer.deserializeUleb128AsU32();
+                const tVals: Element[] = [];
+                for (let i = 0; i < tLen; i++) {
+                    tVals.push(Element.deserialize(deserializer).unwrapOrThrow(`tVals[${i}] deserialize failed`));
+                }
+                const zLen = deserializer.deserializeUleb128AsU32();
+                const zVals: Scalar[] = [];
+                for (let i = 0; i < zLen; i++) {
+                    zVals.push(Scalar.deserialize(deserializer).unwrapOrThrow(`zVals[${i}] deserialize failed`));
+                }
+                return new SigmaDlogLinearProof(tVals, zVals);
+            },
+        });
     }
 }
 
@@ -400,21 +479,21 @@ export class DealerContribution0 {
     pcsCommitment: PcsCommitment;
     privateShareMessages: pke.Ciphertext[];
     dealerState: pke.Ciphertext | undefined;
-    resharingResponse: ResharingDealerResponse | undefined;
+    consistencyProof: SigmaDlogLinearProof | undefined;
 
-    constructor({ sharingPolyCommitment, privateShareMessages, dealerState, resharingResponse }: {
+    constructor({ sharingPolyCommitment, privateShareMessages, dealerState, consistencyProof }: {
         sharingPolyCommitment: PcsCommitment;
         privateShareMessages: pke.Ciphertext[];
         dealerState?: pke.Ciphertext;
-        resharingResponse?: ResharingDealerResponse;
+        consistencyProof?: SigmaDlogLinearProof;
     }) {
         this.pcsCommitment = sharingPolyCommitment;
         this.privateShareMessages = privateShareMessages;
         this.dealerState = dealerState ?? undefined;
-        this.resharingResponse = resharingResponse ?? undefined;
+        this.consistencyProof = consistencyProof ?? undefined;
     }
 
-    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] [Option<resharing response>] */
+    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] [Option<consistency proof>] */
     serialize(serializer: Serializer): void {
         this.pcsCommitment.serialize(serializer);
         serializer.serializeU32AsUleb128(this.privateShareMessages.length);
@@ -427,12 +506,9 @@ export class DealerContribution0 {
         } else {
             serializer.serializeU8(0);
         }
-        if (this.resharingResponse !== undefined) {
+        if (this.consistencyProof !== undefined) {
             serializer.serializeU8(1);
-            this.resharingResponse.anotherScaledElement.serialize(serializer);
-            this.resharingResponse.proof.t0.serialize(serializer);
-            this.resharingResponse.proof.t1.serialize(serializer);
-            serializeScalar(serializer, this.resharingResponse.proof.s);
+            this.consistencyProof.serialize(serializer);
         } else {
             serializer.serializeU8(0);
         }
@@ -456,18 +532,14 @@ export class DealerContribution0 {
                 } else if (dealerStateTag !== 0) {
                     throw `dealerState option tag must be 0 or 1, got ${dealerStateTag}`;
                 }
-                const resharingResponseTag = deserializer.deserializeU8();
-                let resharingResponse: ResharingDealerResponse | undefined;
-                if (resharingResponseTag === 1) {
-                    const anotherScaledElement = Element.deserialize(deserializer).unwrapOrThrow("anotherScaledElement deserialize failed");
-                    const t0 = Element.deserialize(deserializer).unwrapOrThrow("proof.t0 deserialize failed");
-                    const t1 = Element.deserialize(deserializer).unwrapOrThrow("proof.t1 deserialize failed");
-                    const s = deserializeScalar(deserializer);
-                    resharingResponse = { anotherScaledElement, proof: { t0, t1, s } };
-                } else if (resharingResponseTag !== 0) {
-                    throw `resharingResponse option tag must be 0 or 1, got ${resharingResponseTag}`;
+                const consistencyProofTag = deserializer.deserializeU8();
+                let consistencyProof: SigmaDlogLinearProof | undefined;
+                if (consistencyProofTag === 1) {
+                    consistencyProof = SigmaDlogLinearProof.deserialize(deserializer).unwrapOrThrow("consistencyProof deserialize failed");
+                } else if (consistencyProofTag !== 0) {
+                    throw `consistencyProof option tag must be 0 or 1, got ${consistencyProofTag}`;
                 }
-                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState, resharingResponse });
+                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState, consistencyProof });
             },
         });
     }
@@ -504,24 +576,32 @@ export class DealerContribution0 {
 
 // ── DealerContribution1 ───────────────────────────────────────────────────────
 
-/**
- * Dealer's open message: for each share holder (in order), either reveal the share scalar
- * (if they did not ACK) or None (if they ACK'd and already have their share privately).
- *
- * Wire format: [uleb128 n] { [u8 0] | [u8 1] [uleb128(32)] [32-byte Fr LE] } × n
- * (BCS vector<Option<Element<Fr>>>)
- */
 export class DealerContribution1 {
-    constructor(readonly sharesToReveal: (Scalar | undefined)[]) {}
+    constructor(
+        readonly sharesToReveal: (PcsOpening | undefined)[],
+        readonly publicKeys: Element[],
+        readonly publicKeyProofs: (SigmaDlogLinearProof | undefined)[],
+    ) {}
 
     serialize(serializer: Serializer): void {
         serializer.serializeU32AsUleb128(this.sharesToReveal.length);
-        for (const s of this.sharesToReveal) {
-            if (s === undefined) {
+        for (const opening of this.sharesToReveal) {
+            if (opening === undefined) {
                 serializer.serializeU8(0);
             } else {
                 serializer.serializeU8(1);
-                s.serialize(serializer);
+                opening.serialize(serializer);
+            }
+        }
+        serializer.serializeU32AsUleb128(this.publicKeys.length);
+        for (const pk of this.publicKeys) pk.serialize(serializer);
+        serializer.serializeU32AsUleb128(this.publicKeyProofs.length);
+        for (const proof of this.publicKeyProofs) {
+            if (proof === undefined) {
+                serializer.serializeU8(0);
+            } else {
+                serializer.serializeU8(1);
+                proof.serialize(serializer);
             }
         }
     }
@@ -531,27 +611,35 @@ export class DealerContribution1 {
             recordsExecutionTimeMs: false,
             task: () => {
                 const n = deserializer.deserializeUleb128AsU32();
-                const sharesToReveal: (Scalar | undefined)[] = [];
+                const sharesToReveal: (PcsOpening | undefined)[] = [];
                 for (let i = 0; i < n; i++) {
                     const tag = deserializer.deserializeU8();
                     if (tag === 0) {
                         sharesToReveal.push(undefined);
                     } else if (tag === 1) {
-                        const scheme = deserializer.deserializeU8(); // scheme/variant byte
-                        let inner: Bls12381G1.PrivateScalar | Bls12381G2.PrivateScalar;
-                        if (scheme === SCHEME_BLS12381G1) {
-                            inner = Bls12381G1.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
-                        } else if (scheme === SCHEME_BLS12381G2) {
-                            inner = Bls12381G2.PrivateScalar.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}]: deserialize failed`);
-                        } else {
-                            throw `sharesToReveal[${i}]: unsupported scheme ${scheme}`;
-                        }
-                        sharesToReveal.push(new Scalar(scheme, inner));
+                        sharesToReveal.push(PcsOpening.deserialize(deserializer).unwrapOrThrow(`sharesToReveal[${i}] deserialize failed`));
                     } else {
                         throw `sharesToReveal[${i}]: invalid option tag ${tag}`;
                     }
                 }
-                return new DealerContribution1(sharesToReveal);
+                const pkLen = deserializer.deserializeUleb128AsU32();
+                const publicKeys: Element[] = [];
+                for (let i = 0; i < pkLen; i++) {
+                    publicKeys.push(Element.deserialize(deserializer).unwrapOrThrow(`publicKeys[${i}] deserialize failed`));
+                }
+                const proofLen = deserializer.deserializeUleb128AsU32();
+                const publicKeyProofs: (SigmaDlogLinearProof | undefined)[] = [];
+                for (let i = 0; i < proofLen; i++) {
+                    const tag = deserializer.deserializeU8();
+                    if (tag === 0) {
+                        publicKeyProofs.push(undefined);
+                    } else if (tag === 1) {
+                        publicKeyProofs.push(SigmaDlogLinearProof.deserialize(deserializer).unwrapOrThrow(`publicKeyProofs[${i}] deserialize failed`));
+                    } else {
+                        throw `publicKeyProofs[${i}]: invalid option tag ${tag}`;
+                    }
+                }
+                return new DealerContribution1(sharesToReveal, publicKeys, publicKeyProofs);
             },
         });
     }
@@ -593,12 +681,16 @@ export class Session {
     shareHolders: AccountAddress[];
     threshold: number;
     basePoint: Element;
-    resharingChallenge: ResharingDealerChallenge | undefined;
+    previousPublicKey: Element | undefined;
+    pcsContext: PcsPublicParams;
     stateCode: number;
     dealTimeMicros: number;
     dealerContribution0: DealerContribution0 | undefined;
     shareHolderAcks: boolean[];
     dealerContribution1: DealerContribution1 | undefined;
+    nextPublicKeyToVerify: number;
+    publicKeys: Element[];
+    resultPk: Element | undefined;
     sharePks: Element[];
 
     private constructor(
@@ -607,24 +699,30 @@ export class Session {
             shareHolders,
             threshold,
             basePoint,
-            resharingChallenge,
+            previousPublicKey,
+            pcsContext,
             stateCode,
             dealTimeMicros,
             dealerContribution0,
             shareHolderAcks,
             dealerContribution1,
+            nextPublicKeyToVerify,
+            publicKeys,
             sharePks,
         }: {
             dealer: AccountAddress,
             shareHolders: AccountAddress[],
             threshold: number,
             basePoint: Element,
-            resharingChallenge: ResharingDealerChallenge | undefined,
+            previousPublicKey: Element | undefined,
+            pcsContext: PcsPublicParams,
             stateCode: number,
             dealTimeMicros: number,
             dealerContribution0: DealerContribution0 | undefined,
             shareHolderAcks: boolean[],
             dealerContribution1: DealerContribution1 | undefined,
+            nextPublicKeyToVerify: number,
+            publicKeys: Element[],
             sharePks: Element[],
         }
     ) {
@@ -632,12 +730,16 @@ export class Session {
         this.shareHolders = shareHolders;
         this.threshold = threshold;
         this.basePoint = basePoint;
-        this.resharingChallenge = resharingChallenge;
+        this.previousPublicKey = previousPublicKey;
+        this.pcsContext = pcsContext;
         this.stateCode = stateCode;
         this.dealTimeMicros = dealTimeMicros;
         this.dealerContribution0 = dealerContribution0;
         this.shareHolderAcks = shareHolderAcks;
         this.dealerContribution1 = dealerContribution1;
+        this.nextPublicKeyToVerify = nextPublicKeyToVerify;
+        this.publicKeys = publicKeys;
+        this.resultPk = publicKeys[0];
         this.sharePks = sharePks;
     }
 
@@ -649,13 +751,13 @@ export class Session {
         }
         serializer.serializeU64(this.threshold);
         this.basePoint.serialize(serializer);
-        if (this.resharingChallenge !== undefined) {
+        if (this.previousPublicKey !== undefined) {
             serializer.serializeU8(1);
-            this.resharingChallenge.expectedScaledElement.serialize(serializer);
-            this.resharingChallenge.anotherBaseElement.serialize(serializer);
+            this.previousPublicKey.serialize(serializer);
         } else {
             serializer.serializeU8(0);
         }
+        this.pcsContext.serialize(serializer);
         serializer.serializeU8(this.stateCode);
         serializer.serializeU64(this.dealTimeMicros);
         if (this.dealerContribution0 === undefined) {
@@ -674,8 +776,9 @@ export class Session {
             serializer.serializeU8(1);
             this.dealerContribution1.serialize(serializer);
         }
-        serializer.serializeU32AsUleb128(this.sharePks.length);
-        for (const pk of this.sharePks) pk.serialize(serializer);
+        serializer.serializeU64(this.nextPublicKeyToVerify);
+        serializer.serializeU32AsUleb128(this.publicKeys.length);
+        for (const pk of this.publicKeys) pk.serialize(serializer);
     }
 
     static deserialize(deserializer: Deserializer): Result<Session> {
@@ -690,15 +793,14 @@ export class Session {
                 }
                 const threshold = Number(deserializer.deserializeU64());
                 const basePoint = Element.deserialize(deserializer).unwrapOrThrow("basePoint deserialize failed");
-                const resharingChallengeTag = deserializer.deserializeU8();
-                let resharingChallenge: ResharingDealerChallenge | undefined;
-                if (resharingChallengeTag === 1) {
-                    const expectedScaledElement = Element.deserialize(deserializer).unwrapOrThrow("expectedScaledElement deserialize failed");
-                    const anotherBaseElement = Element.deserialize(deserializer).unwrapOrThrow("anotherBaseElement deserialize failed");
-                    resharingChallenge = { expectedScaledElement, anotherBaseElement };
-                } else if (resharingChallengeTag !== 0) {
-                    throw `resharingChallenge option tag must be 0 or 1, got ${resharingChallengeTag}`;
+                const previousPublicKeyTag = deserializer.deserializeU8();
+                let previousPublicKey: Element | undefined;
+                if (previousPublicKeyTag === 1) {
+                    previousPublicKey = Element.deserialize(deserializer).unwrapOrThrow("previousPublicKey deserialize failed");
+                } else if (previousPublicKeyTag !== 0) {
+                    throw `previousPublicKey option tag must be 0 or 1, got ${previousPublicKeyTag}`;
                 }
+                const pcsContext = PcsPublicParams.deserialize(deserializer).unwrapOrThrow("pcsContext deserialize failed");
                 const stateCode = deserializer.deserializeU8();
                 const dealTimeMicros = Number(deserializer.deserializeU64());
                 const dc0Tag = deserializer.deserializeU8();
@@ -720,22 +822,27 @@ export class Session {
                 } else if (dc1Tag !== 0) {
                     throw `dealerContribution1 option tag must be 0 or 1, got ${dc1Tag}`;
                 }
-                const sharePksLen = deserializer.deserializeUleb128AsU32();
-                const sharePks: Element[] = [];
-                for (let i = 0; i < sharePksLen; i++) {
-                    sharePks.push(Element.deserialize(deserializer).unwrapOrThrow(`sharePks[${i}] deserialize failed`));
+                const nextPublicKeyToVerify = Number(deserializer.deserializeU64());
+                const publicKeysLen = deserializer.deserializeUleb128AsU32();
+                const publicKeys: Element[] = [];
+                for (let i = 0; i < publicKeysLen; i++) {
+                    publicKeys.push(Element.deserialize(deserializer).unwrapOrThrow(`publicKeys[${i}] deserialize failed`));
                 }
+                const sharePks = publicKeys.slice(1);
                 return new Session({
                     dealer,
                     shareHolders,
                     threshold,
                     basePoint,
-                    resharingChallenge,
+                    previousPublicKey,
+                    pcsContext,
                     stateCode,
                     dealTimeMicros,
                     dealerContribution0,
                     shareHolderAcks,
                     dealerContribution1,
+                    nextPublicKeyToVerify,
+                    publicKeys,
                     sharePks,
                 });
             },

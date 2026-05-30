@@ -33,7 +33,15 @@ async function main() {
         const recipientAccounts = accounts.slice(0, numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss']);
+        await deployContracts(adminAccount, [
+            'pke',
+            'worker_config',
+            'group',
+            'fiat-shamir-transform',
+            'sigma-dlog-linear',
+            'pedersen-polynomial-commitment',
+            'vss',
+        ]);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -59,7 +67,7 @@ async function main() {
                 recipientAccounts.map(w => w.accountAddress),
                 3, // threshold
                 basePointBytes,       // base_point: vector<u8>
-                new Uint8Array(0),    // secretly_scaled_element: empty = None (not a resharing)
+                new Uint8Array(0),    // previous_public_key: empty = None (not a resharing)
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();
@@ -118,9 +126,10 @@ async function main() {
 
             const reconstructedSecret = ace.vss.reconstruct({ indexedShares: shares.map((share, i) => ({ index: i + 1, share })) }).unwrapOrThrow('Failed to reconstruct secret.');
 
-            log('Verify s*B == pcsCommitment.points[0].');
+            log('Verify s*B == result public key.');
             const computedPk = session!.basePoint.scale(reconstructedSecret);
-            const expectedPk = session!.dealerContribution0!.pcsCommitment.points[0];
+            const expectedPk = session!.resultPk;
+            if (expectedPk === undefined) throw 'VSS session has no result public key.';
             if (!computedPk.equals(expectedPk)) throw 'Reconstructed secret does not match on-chain public key.';
             console.log(`Reconstructed PK: ${computedPk.toHex()}`);
         } finally {

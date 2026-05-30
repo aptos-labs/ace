@@ -9,8 +9,9 @@ pub mod group;
 pub mod pke;
 pub mod pke_hpke_x25519_chacha20poly1305;
 pub mod session;
-pub mod sigma_dlog_eq;
 pub mod share_reconstruction;
+pub mod sigma_dlog_eq;
+pub mod sigma_dlog_linear;
 pub mod vss_types;
 
 pub use aptos::{AptosRpc, TxnArg};

@@ -22,6 +22,11 @@ import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
 
 const NUM_WORKERS = 20;
 const THRESHOLD = Math.floor(NUM_WORKERS / 2) + 1;
+const PHASE_TIMEOUT_MS = Number(process.env.LARGE_COMMITTEE_PHASE_TIMEOUT_MS ?? 900_000);
+
+if (!Number.isFinite(PHASE_TIMEOUT_MS) || PHASE_TIMEOUT_MS <= 0) {
+    throw `invalid LARGE_COMMITTEE_PHASE_TIMEOUT_MS=${process.env.LARGE_COMMITTEE_PHASE_TIMEOUT_MS}`;
+}
 
 async function main() {
     const localnetProc = await startLocalnet();
@@ -39,7 +44,7 @@ async function main() {
         log(`Large-committee smoke test: NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys.');
         for (let i = 0; i < NUM_WORKERS; i++) {
@@ -73,8 +78,8 @@ async function main() {
             await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));
         }
 
-        log('Poll until DKG epoch change completes (deadline: 5 min).');
-        const dkgDeadlineMillis = Date.now() + 300_000;
+        log(`Poll until DKG epoch change completes (deadline: ${PHASE_TIMEOUT_MS / 1000}s).`);
+        const dkgDeadlineMillis = Date.now() + PHASE_TIMEOUT_MS;
         let networkState: ace.network.State | undefined;
         while (Date.now() < dkgDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
@@ -85,7 +90,7 @@ async function main() {
             await sleep(5_000);
         }
         if (!networkState || networkState.secrets.length < 1) {
-            throw `DKG did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
+            throw `DKG did not complete within ${PHASE_TIMEOUT_MS / 1000}s (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 
         const dkgSessionAddr = networkState.secrets[0]!.currentSession;
@@ -110,8 +115,8 @@ async function main() {
             );
         }
 
-        log('Poll until epoch advances to 2 (deadline: 5 min).');
-        const dkrDeadlineMillis = Date.now() + 300_000;
+        log(`Poll until epoch advances to 2 (deadline: ${PHASE_TIMEOUT_MS / 1000}s).`);
+        const dkrDeadlineMillis = Date.now() + PHASE_TIMEOUT_MS;
         let finalState: ace.network.State | undefined;
         while (Date.now() < dkrDeadlineMillis) {
             const maybeState = await getNetworkState(adminAccount.accountAddress);
@@ -122,7 +127,7 @@ async function main() {
             await sleep(5_000);
         }
         if (!finalState || finalState.epoch !== 2) {
-            throw `Epoch change did not complete within 5 minutes (NUM_WORKERS=${NUM_WORKERS}).`;
+            throw `Epoch change did not complete within ${PHASE_TIMEOUT_MS / 1000}s (NUM_WORKERS=${NUM_WORKERS}).`;
         }
 
         const dkrSessionAddr = finalState.secrets[0]!.currentSession;

@@ -36,7 +36,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **Admin** — Controls the ACE Move package. Bootstraps the initial epoch; can propose committee changes (subject to vote). Holds no shares; cannot decrypt.
 
-- **Dealer / recipient** *(in VSS context)* — Per-VSS roles. The dealer is the single party that publishes the polynomial commitment + per-recipient share ciphertexts. Recipients receive their encrypted shares, Feldman-verify, and ACK on-chain. In DKG every committee member is a dealer in their own VSS and a recipient in everyone else's.
+- **Dealer / recipient** *(in VSS context)* — Per-VSS roles. The dealer is the single party that publishes the Pedersen polynomial commitment + per-recipient opening ciphertexts. Recipients decrypt their openings, Pedersen-verify, and ACK on-chain. In DKG every committee member is a dealer in their own VSS and a recipient in everyone else's.
 
 ---
 
@@ -56,7 +56,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **IDK share** — $s_i \cdot Q_{\text{id}}$. What worker $i$ returns over HTTP for a permitted decryption request. Lives in G2 (legacy t-IBE) or G1 (production t-IBE).
 
-- **Polynomial commitment** ($\{v_k\}_{k=0..t-1}$) — The Feldman commitment vector $v_k = a_k \cdot B$, where $\{a_k\}$ are the dealer's polynomial coefficients. Published on-chain in the dealer's first-round VSS message.
+- **Polynomial commitment** ($\{V_i\}_{i=0..n}$) — ACE's Pedersen commitment vector over evaluation positions, where $V_i = p(i)G + r(i)H$. Published on-chain in the dealer's first-round VSS message.
 
 - **Lagrange coefficient** ($\lambda_i$) — Scalar in $\mathbb{F}_r$ that interpolates a polynomial at $x = 0$ from a set of evaluations: $\lambda_i = \prod_{j \neq i} (-x_j) / (x_i - x_j)$. Used to reconstruct the master secret (DKR) or the IDK (t-IBE decrypt).
 
@@ -90,11 +90,11 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 
 - **KEM / KDF / DEM** — Key Encapsulation Mechanism / Key Derivation Function / Data Encapsulation Mechanism. The three layers of an HPKE-style construction.
 
-- **PCS** — Polynomial Commitment Scheme. ACE uses Feldman.
+- **PCS** — Polynomial Commitment Scheme. ACE uses Pedersen commitments over evaluation points, plus an on-chain low-degree check.
 
 - **BCS** — Binary Canonical Serialization (Aptos). The deterministic on-the-wire encoding used by every ACE protocol message. See [`wire-formats.md`](./wire-formats.md) §0.
 
-- **MSM** — Multi-Scalar Multiplication. On-chain operation `Σ_k c_k · P_k` over a group; used by Move to verify Feldman openings and to derive share-PKs.
+- **MSM** — Multi-Scalar Multiplication. On-chain operation `Σ_k c_k · P_k` over a group; used by Move for Pedersen degree checks, sigma-proof verification, and share-PK aggregation.
 
 ---
 
@@ -106,7 +106,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
   - **Aptos custom flow:** Arbitrary bytes the contract's `check_acl(label, encPk, payload)` will validate.
   - **Solana custom flow:** Like basic, but with `CustomFullRequestBytes` and the program's `assert_custom_acl` instruction.
 
-- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share $s_j$ rather than a fresh secret. Realized by configuring the new VSS session's base point to the parent committee's $g_\text{old}$ and verifying on-chain that the dealer's first Feldman commitment $v_0$ equals the pre-published $P_j = g_\text{old}^{s_j}$. See [`cryptography/dkr.md`](./cryptography/dkr.md) §2.
+- **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share $s_j$ rather than a fresh secret. Realized by a sigma linear-DLog proof tying the child VSS Pedersen commitment \(V_0=s_jG+r_jH\) to the parent share-PK \(P_j=s_jB\). See [`cryptography/dkr.md`](./cryptography/dkr.md) §2.
 
 ---
 

@@ -92,7 +92,7 @@ async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlowSetup> 
     log('Deploying ACE contracts...');
     await deployContracts(adminAccount, [
         'pke', 'worker_config', 'group', 'fiat-shamir-transform',
-        'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
+        'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
     ]);
     await registerWorkersOnChain(workerAccounts, encKeypairs, aceContract);
     log('Building Rust workspace...');

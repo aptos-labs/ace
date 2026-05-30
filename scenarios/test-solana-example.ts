@@ -101,7 +101,7 @@ async function bringUpAceLocalnetWithWorkers(numWorkers: number): Promise<AceLoc
     const workerAccounts = accounts.slice(0, numWorkers);
     const aceContract = adminAccount.accountAddress.toStringLong();
     log('Deploying ACE contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
     await registerWorkersOnChain(workerAccounts, encKeypairs, aceContract);
     log('Building Rust workspace...');
     await buildRustWorkspace();

@@ -341,25 +341,31 @@ Wire: `00 | 20 | 32B LE` — **34 B**.
 
 (Only one scheme defined today; the enum is over-specified for forward compatibility.)
 
-### 5.3 PCS commitment, proofs, etc.
+### 5.3 PCS commitment, openings, and proofs
 
 ```rust
+struct BcsPcsPublicParams {
+    generator_g: BcsElement,
+    generator_h: BcsElement,
+}
+
 struct BcsPcsCommitment { points: Vec<BcsElement> }
 
-struct BcsSigmaDlogEqProof {
-    t0: BcsElement,
-    t1: BcsElement,
-    s:  BcsScalar,
+struct BcsPcsOpening {
+    eval_position: u64,
+    eval_value_p: BcsScalar,
+    eval_value_r: BcsScalar,
 }
 
-struct BcsResharingDealerResponse {
-    another_scaled_element: BcsElement,
-    proof: BcsSigmaDlogEqProof,
+struct BcsPcsDegreeCheckState {
+    z_poly: Vec<BcsScalar>,
+    accumulator: BcsElement,
+    next_eval_position: u64,
 }
 
-struct BcsResharingDealerChallenge {
-    expected_scaled_element: BcsElement,
-    another_base_element:    BcsElement,
+struct BcsSigmaDlogLinearProof {
+    t_vals: Vec<BcsElement>,
+    z_vals: Vec<BcsScalar>,
 }
 ```
 
@@ -375,38 +381,48 @@ Workers read on-chain session state via `*_bcs()` view functions and decode with
 
 ```rust
 struct BcsSession {
-    dealer:                 [u8; 32],
-    share_holders:          Vec<[u8; 32]>,
-    threshold:              u64,
-    base_point:             BcsElement,
-    resharing_challenge:    Option<BcsResharingDealerChallenge>,
-    state_code:             u8,
-    deal_time_micros:       u64,
-    dealer_contribution_0:  Option<BcsDealerContribution0>,
-    share_holder_acks:      Vec<bool>,
-    dealer_contribution_1:  Option<BcsDealerContribution1>,
-    share_pks:              Vec<BcsElement>,
+    dealer:                    [u8; 32],
+    share_holders:             Vec<[u8; 32]>,
+    threshold:                 u64,
+    public_base_element:       BcsElement,
+    previous_public_key:       Option<BcsElement>,
+    pcs_context:               BcsPcsPublicParams,
+    state_code:                u8,
+    deal_time_micros:          u64,
+    dealer_contribution_0:     Option<BcsDealerContribution0>,
+    dealer_commitment_check:   BcsPcsDegreeCheckState,
+    share_holder_acks:         Vec<bool>,
+    dealer_contribution_1:     Option<BcsDealerContribution1>,
+    next_public_key_to_verify: u64,
+    public_keys:               Vec<BcsElement>,
 }
 
 struct BcsDealerContribution0 {
     pcs_commitment:         BcsPcsCommitment,
     private_share_messages: Vec<pke::Ciphertext>,    // one per holder
     dealer_state:           Option<pke::Ciphertext>,
-    resharing_response:     Option<BcsResharingDealerResponse>,
+    consistency_proof:      Option<BcsSigmaDlogLinearProof>,
 }
 
 struct BcsDealerContribution1 {
-    shares_to_reveal: Vec<Option<BcsScalar>>,        // length = n; Some for non-ackers
+    shares_to_reveal:   Vec<Option<BcsPcsOpening>>, // length = n + 1; index 0 is always None
+    public_keys:        Vec<BcsElement>,            // s_i * public_base_element over {0, ..., n}
+    public_key_proofs:  Vec<Option<BcsSigmaDlogLinearProof>>,
 }
 ```
 
 The Move-side struct is in `contracts/vss/sources/vss.move:75-104`; field order is identical.
 
 **Plaintext shape of `private_share_messages[i]`** (after PKE decrypt):
+```rust
+struct BcsPcsOpening {
+    eval_position: u64,
+    eval_value_p: BcsScalar,
+    eval_value_r: BcsScalar,
+}
 ```
-[1B group scheme] [ULEB128(32) = 0x20] [32B Fr LE]
-```
-Total 34 bytes. The leading scheme byte may be `0x00` (G1) or `0x01` (G2); Fr is the same field for both, so a worker that reconstructs across mixed-group VSS sessions still yields a valid Fr scalar. (Used by `dkr-src` when consuming an old DKG to reshare into a new group — but in practice every reshare today preserves the group.)
+
+`eval_value_p` is the share value; `eval_value_r` is the Pedersen blinding value. The holder keeps `eval_value_r` private and uses it only to verify the opening against `pcs_commitment.points[eval_position]`.
 
 ### 6.2 `vss::DealerState` plaintext
 

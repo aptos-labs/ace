@@ -1,53 +1,66 @@
 # Distributed Key Generation (DKG)
 
-DKG composes $n$ parallel VSS sessions ([`vss.md`](./vss.md)), one per committee member acting as dealer, into a single joint key. The output is the **master public key** $\mathsf{masterPk} = g^{\mathsf{MSK}}$ plus a Shamir share $s_i$ of $\mathsf{MSK}$ held by each member.
+DKG composes \(n\) parallel VSS sessions, one per committee member acting as dealer, into a single joint key. Each VSS now uses Pedersen commitments and publishes public key shares via DC1 sigma proofs or revealed openings; see [`vss.md`](./vss.md).
+
+This document uses additive notation. \(B\) is the DKG public base element and \(\mathsf{MSK}\) is the scalar master secret.
 
 ## 1. Construction
 
-Every committee member runs one VSS as dealer with a freshly sampled uniform secret $a_0^{(\mathrm{dealer})} \in_R \mathbb{F}_r$. The protocol fixes a **qualifying set** $Q$ via a Byzantine-agreement step on "which VSSs have qualified": the first agreement point at which $|Q| \geq \mathsf{threshold}$ qualified VSSs are observed, $Q$ is frozen as that set. No prior commitment binds dealers to participate before observing others' contributions.
+Each worker \(k\) starts one VSS with a degree-\((t-1)\) sharing polynomial:
 
-Once $Q$ is fixed:
+\[
+p_k(X) = a_{k,0} + a_{k,1}X + \cdots + a_{k,t-1}X^{t-1}.
+\]
 
-- The joint master secret is $\mathsf{MSK} = \sum_{i \in Q} a_0^{(i)}$ (sum over qualifying dealers' constant terms).
-- The master public key is $\mathsf{masterPk} = \prod_{i \in Q} v_0^{(i)} = g^{\mathsf{MSK}}$ (product of Feldman first commitments).
-- Each recipient $j \in [n]$ holds $s_j = \sum_{i \in Q} g_i(j+1)$ — a Shamir share of $\mathsf{MSK}$ at evaluation point $j + 1$.
-- The per-recipient public share key is $g^{s_j}$, also publicly derivable from the Feldman commitments (by the same MSM used inside each VSS, then multiplied over $Q$).
+ACE derives dealer coefficients from the dealer's PKE decryption key, with optional override only for resharing. For fresh DKG, \(a_{k,0}\) is uniform if the PKE secret key is uniform.
 
-See [`../protocols.md`](../protocols.md) for the on-chain state machine, error paths, and timeouts.
+The DKG contract waits until at least \(t\) VSS sessions complete and freezes that contributing set \(Q\). Once \(Q\) is fixed:
 
-## 2. Security properties
+\[
+\mathsf{MSK} = \sum_{k\in Q} a_{k,0},
+\qquad
+\mathsf{masterPk} = \sum_{k\in Q} a_{k,0}B.
+\]
 
-Each property below follows from the corresponding per-VSS property ([`vss.md`](./vss.md) §2) composed by the linear summation that defines $\mathsf{masterPk}$ and $s_j$. Properties 1–4 assume **static corruption** (adversary commits to the corruption set $J$ with $|J| \leq t$ before the protocol starts); property 5 is a structural bias gap. Adaptive corruption is out of scope.
+The contract computes \(\mathsf{masterPk}\) by summing `vss::result_pk()` from the contributing VSS sessions. It computes each holder's public share key by summing the corresponding VSS share public keys:
 
-**1. Correctness.** All honest parties output the same $\mathsf{masterPk}$ and contributing set $Q$, and the shares interpolate to $\log_g \mathsf{masterPk}$ via a unique polynomial $F$ of degree $t$ with $F(0) = \mathsf{MSK}$ and $F(j+1) = s_j$. — Immediate from §1: $Q$ is broadcast, $\mathsf{masterPk}$ and $s_j$ are deterministic linear functions of public Feldman commitments, and per-VSS binding pins each $g_i$ uniquely.
+\[
+s_j = \sum_{k\in Q} p_k(j+1),
+\qquad
+P_j = s_jB = \sum_{k\in Q} p_k(j+1)B.
+\]
 
-**2. Completeness.** Up to $t$ malicious dealers cannot prevent honest parties from producing a consistent output. — Per-VSS completeness gives each honest dealer's session $O(\Delta)$ termination; with $\geq t+1$ honest dealers, $|Q|$ reaches threshold from honest VSSs alone.
+The scalar share \(s_j\) is reconstructed off chain by holder \(j\), who decrypts its private opening from every contributing VSS and sums the \(p_k(j+1)\) values. The blinding values \(r_k(j+1)\) are used only to verify openings; they do not enter the DKG share.
 
-**3. Termination.** All honest parties terminate within $O(\Delta)$. — Per-VSS termination plus the deterministic composition in §1.
+See [`../protocols.md`](../protocols.md) for the on-chain state machine, timeouts, and touch-driven aggregation.
 
-**4. Secrecy.** The adversary's view is computationally simulatable from $(\mathsf{masterPk}, \{s_j : j \in J\})$. Reduces to DLog and PKE IND-CPA.
+## 2. Security Properties
 
-*Sketch.* The DKG-level simulator $\mathcal{S}$ must produce $\mathcal{A}$'s real-protocol view — chain transcript (Feldman commitments $v_k^{(i)}$ and ciphertexts), honest holders' ACKs, and the decryptable shares $\mathcal{A}$ extracts from ciphertexts addressed to corrupted holders. Two consistency constraints come from $\mathcal{S}$'s input:
+The DKG properties are inherited from the per-VSS properties plus linear composition over the contributing set \(Q\). These statements assume static corruption with at most \(t-1\) corrupted committee members. Adaptive corruption is out of scope.
 
-- **(C1)** $\prod_{i \in Q} v_0^{(i)} = \mathsf{masterPk}$.
-- **(C2)** For each $j \in J$, $\sum_{i \in Q} g_i(j+1) = s_j$.
+**Correctness.** Every successful VSS contributes a well-defined degree-\((t-1)\) polynomial \(p_k\) and public keys \(p_k(i)B\) for \(i=0,\ldots,n\). Summing those polynomials over \(Q\) gives a degree-\((t-1)\) joint polynomial:
 
-$\mathcal{S}$ proceeds as follows. (Notation: $J$ = corrupted parties, $H$ = honest dealers in $Q$, so $|H| = |Q| - |Q \cap J|$.)
+\[
+F(X)=\sum_{k\in Q}p_k(X),
+\qquad
+F(0)=\mathsf{MSK},
+\qquad
+F(j+1)=s_j.
+\]
 
-- **Reading off corrupted dealers.** For each $i \in Q \cap J$, $\mathcal{A}$ acts as dealer and publishes $(v_0^{(i)}, \dots, v_{t-1}^{(i)})$ on chain plus encrypted shares to every holder. $\mathcal{S}$ holds $\mathsf{dk}_j$ for honest $j \in [n] \setminus J$, decrypts those ciphertexts, and Lagrange-interpolates two of them to recover $g_i$ in full as a scalar polynomial. This lets $\mathcal{S}$ compute the corrupted dealers' contributions to both $\mathsf{masterPk}$ (in the exponent) and $s_j$ (in the scalar field).
-- **Sampling $|H| - 1$ honest dealers freely.** Pick any $|H| - 1$ of the honest dealers and sample each one's polynomial $g_i$ uniformly from polynomials of degree $t-1$ over $\mathbb{F}_r$, just as the real protocol does. Compute their $v_k^{(i)}$ honestly.
-- **Forcing the last honest dealer via Lagrange-in-exponent.** Call this dealer $i^\star$. Both constraints (C1) and (C2) now fully pin $i^\star$'s contributions:
-  - From (C1): $v_0^{(i^\star)} = \mathsf{masterPk} / \prod_{i \in Q \setminus \{i^\star\}} v_0^{(i)}$ (computable group element; $\mathcal{S}$ does not know its discrete log).
-  - From (C2), for each $j \in J$: $g_{i^\star}(j+1) = s_j - \sum_{i \in Q \setminus \{i^\star\}} g_i(j+1)$ (computable scalar).
-  
-  These are $|J| + 1 \leq t$ fixed evaluations of a polynomial of degree $t-1$ — one group-side ($v_0^{(i^\star)}$ at $x=0$) and $|J|$ scalar-side ($g_{i^\star}(j+1)$ for $j \in J$). The remaining commitment coefficients $v_1^{(i^\star)}, \dots, v_{t-1}^{(i^\star)}$ are then determined by **Lagrange interpolation in the exponent** (see [`vss.md`](./vss.md) §2): $\mathcal{S}$ never learns $a_k^{(i^\star)}$ as scalars, but it can publish each $v_k^{(i^\star)}$ as a deterministic group expression in the fixed-point group elements above. For honest holders' shares $g_{i^\star}(j+1)$ ($j \notin J$), $\mathcal{S}$ doesn't need a scalar — only the ciphertext to those holders.
-- **Encrypting honest-holder ciphertexts as dummies.** For any $(i, j)$ with $j \notin J$, the ciphertext $c_{i,j}$ on chain is $\mathsf{Enc}(\mathsf{ek}_j, 0)$. $\mathcal{A}$ doesn't hold $\mathsf{dk}_j$ and cannot decrypt.
-- **Signing honest ACKs.** $\mathcal{S}$ holds $\mathsf{sk}_j$ for $j \notin J$ and signs the ACK message on $\mathcal{A}$'s behalf, matching what an honest holder would produce.
+The published \(\mathsf{masterPk}\) and share public keys are exactly \(F(0)B\) and \(F(j+1)B\).
 
-**Why it matches the real distribution.** Conditional on $\mathsf{masterPk}$, the corrupted shares $\{s_j : j \in J\}$, and the corrupted dealers' contributions (publicly observable on chain), the real protocol's honest dealer polynomials are uniform over the affine subspace defined by (C1) and (C2). That subspace has dimension $|H| - 1$ in the coefficient space, with $|H| - 1$ free choices and one forced. $\mathcal{S}$ samples from exactly the same subspace by the construction above. The simulated and real views are then identical except for honest-holder ciphertexts (real share vs. dummy zero), which $\mathcal{A}$ cannot tell apart by PKE IND-CPA — a hybrid over $\leq n$ honest holders, each VSS-level hybrid via [`vss.md`](./vss.md) §2's per-VSS argument, gives total advantage at most $n^2$ times the PKE IND-CPA bound plus $n$ times the DLog bound.
+**Completeness and termination.** If at least \(t\) dealers complete their VSS sessions, the DKG can enter aggregation. Honest VSS sessions complete under synchrony and L1 liveness; the DKG's own aggregation work is deterministic and split across `touch()` calls.
 
-**5. Bounded bias on $\mathsf{masterPk}$.** $\mathsf{masterPk}$'s distribution is **not** uniform over $\mathbb{G}$: a rushing adversary controlling $k \leq t$ dealers can restrict the output to one of $\leq 2^k$ candidate values of its choosing — **at most $t$ bits of entropy loss**.
+**Secrecy.** Fewer than \(t\) corrupted holders learn fewer than \(t\) evaluations of the joint Shamir polynomial \(F\). Pedersen commitments hide the VSS commitment vectors; PKE hides honest holders' openings; the public values \(\mathsf{masterPk}\) and \(P_j\) reveal only group encodings, so scalar secrecy additionally relies on DLog in the DKG base group.
 
-*Sketch.* §1 fixes $Q$ in a single agreement step with no prior commitment binding dealers. For each controlled dealer, the adversary can adaptively decide — after observing honest dealers' $v_0$ values — whether to push that VSS to qualify in time to enter $Q$. This yields ${2^k}$ attainable values of $\mathsf{masterPk}$, from which the adversary picks the most favourable. The standard mitigation (GJKR'99 commit-then-open) eliminates the bias at the cost of an extra round; ACE does not implement it. For typical $t \in \{2, 3\}$ deployments, $\leq 3$ bits of entropy loss is not exploitable on $\sim 256$-bit DLog-hard $\log_g \mathsf{masterPk}$.
+**Public-key soundness.** The master public key and every share public key are sums of VSS public keys that were individually checked on chain, either from revealed Pedersen openings or from sigma linear-DLog proofs. A successful DKG therefore cannot publish a share public key inconsistent with the scalar share reconstructed from the same VSS messages, except by breaking the underlying VSS checks.
 
-**References.** Pedersen'91 (original DKG, bias attack later identified); Gennaro–Jarecki–Krawczyk–Rabin '99 (commit-then-open mitigation; first adaptive-secure DKG techniques); Gennaro et al. '07 (analysis of biased Pedersen-DKG under threshold applications); Canetti et al. '99 (canonical non-committing-encryption-based adaptive fix).
+**Bounded bias on \(\mathsf{masterPk}\).** The protocol still freezes \(Q\) after observing completed VSS sessions, without a prior commit-then-open round. A rushing adversary controlling \(k\leq t-1\) dealers can decide which of its own completed sessions enter \(Q\), giving it a small choice over the final public key. The standard mitigation is a GJKR-style bias-avoidance round; ACE does not implement it.
+
+## 3. References
+
+- Shamir. "How to Share a Secret." Commun. ACM 22(11), 1979.
+- Pedersen. "Non-Interactive and Information-Theoretic Secure Verifiable Secret Sharing." CRYPTO 1991.
+- Gennaro, Jarecki, Krawczyk, Rabin. "Secure Distributed Key Generation for Discrete-Log Based Cryptosystems." EUROCRYPT 1999.
+- Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren. "Verifiable Secret Sharing Simplified." IACR ePrint 2023/1196.

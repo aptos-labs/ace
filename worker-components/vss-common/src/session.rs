@@ -18,7 +18,7 @@ pub const STATE_VERIFY_DEALER_OPENING: u8 = 2;
 pub const STATE_SUCCESS: u8 = 3;
 pub const STATE_FAILED: u8 = 4;
 
-pub const ACK_WINDOW_MICROS: u64 = 5_000_000;
+pub const ACK_WINDOW_MICROS: u64 = 10_000_000;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -57,9 +57,13 @@ impl Session {
             if let Some(n) = raw.as_u64() {
                 return Ok(n);
             } else if let Some(st) = raw.as_str() {
-                return st.parse::<u64>().with_context(|| format!("parse u64 field {:?}", field));
+                return st
+                    .parse::<u64>()
+                    .with_context(|| format!("parse u64 field {:?}", field));
             }
-            raw.to_string().parse::<u64>().with_context(|| format!("parse u64 field {:?}", field))
+            raw.to_string()
+                .parse::<u64>()
+                .with_context(|| format!("parse u64 field {:?}", field))
         };
 
         let dealer = data_json
@@ -94,7 +98,8 @@ impl Session {
             .get("state_code")
             .ok_or_else(|| anyhow!("missing state_code"))?;
         let state_code: u8 = if let Some(n) = state_code_raw.as_u64() {
-            n.try_into().map_err(|_| anyhow!("state_code out of range"))?
+            n.try_into()
+                .map_err(|_| anyhow!("state_code out of range"))?
         } else if let Some(s) = state_code_raw.as_str() {
             s.parse::<u8>().with_context(|| "parse state_code")?
         } else {
@@ -158,7 +163,10 @@ impl Session {
     /// Active states where the skeleton client should keep working.
     #[inline]
     pub fn is_in_progress(&self) -> bool {
-        matches!(self.state_code, STATE_DEALER_DEAL | STATE_RECIPIENT_ACK | STATE_VERIFY_DEALER_OPENING)
+        matches!(
+            self.state_code,
+            STATE_DEALER_DEAL | STATE_RECIPIENT_ACK | STATE_VERIFY_DEALER_OPENING
+        )
     }
 }
 
@@ -167,32 +175,40 @@ impl Session {
 // Group-level mirror types (`BcsElement`, `BcsScalar`, `BcsPublicPoint`,
 // `BcsPrivateScalar`) live in `crate::group` and are re-exported above.
 
-/// BCS mirror of `vss::PcsCommitment`.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// BCS mirror of `pedersen_polynomial_commitment::PublicParams`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsPcsPublicParams {
+    pub generator_g: BcsElement,
+    pub generator_h: BcsElement,
+}
+
+/// BCS mirror of `pedersen_polynomial_commitment::Commitment`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct BcsPcsCommitment {
     pub points: Vec<BcsElement>,
 }
 
-/// BCS mirror of `sigma_dlog_eq::Proof`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BcsSigmaDlogEqProof {
-    pub t0: BcsElement,
-    pub t1: BcsElement,
-    pub s: BcsScalar,
+/// BCS mirror of `pedersen_polynomial_commitment::Opening`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsPcsOpening {
+    pub eval_position: u64,
+    pub eval_value_p: BcsScalar,
+    pub eval_value_r: BcsScalar,
 }
 
-/// BCS mirror of `vss::ResharingDealerResponse`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BcsResharingDealerResponse {
-    pub another_scaled_element: BcsElement,
-    pub proof: BcsSigmaDlogEqProof,
+/// BCS mirror of `pedersen_polynomial_commitment::DegreeCheckState`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsPcsDegreeCheckState {
+    pub z_poly: Vec<BcsScalar>,
+    pub accumulator: BcsElement,
+    pub next_eval_position: u64,
 }
 
-/// BCS mirror of `vss::ResharingDealerChallenge`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BcsResharingDealerChallenge {
-    pub expected_scaled_element: BcsElement,
-    pub another_base_element: BcsElement,
+/// BCS mirror of `sigma_dlog_linear::Proof`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsSigmaDlogLinearProof {
+    pub t_vals: Vec<BcsElement>,
+    pub z_vals: Vec<BcsScalar>,
 }
 
 /// BCS mirror of `vss::DealerContribution0`.
@@ -201,13 +217,15 @@ pub struct BcsDealerContribution0 {
     pub pcs_commitment: BcsPcsCommitment,
     pub private_share_messages: Vec<crate::pke::Ciphertext>,
     pub dealer_state: Option<crate::pke::Ciphertext>,
-    pub resharing_response: Option<BcsResharingDealerResponse>,
+    pub consistency_proof: Option<BcsSigmaDlogLinearProof>,
 }
 
 /// BCS mirror of `vss::DealerContribution1`.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsDealerContribution1 {
-    pub shares_to_reveal: Vec<Option<BcsScalar>>,
+    pub shares_to_reveal: Vec<Option<BcsPcsOpening>>,
+    pub public_keys: Vec<BcsElement>,
+    pub public_key_proofs: Vec<Option<BcsSigmaDlogLinearProof>>,
 }
 
 /// BCS mirror of `vss::Session` — used with `bcs::from_bytes` on `get_session_bcs` output.
@@ -217,13 +235,16 @@ pub struct BcsSession {
     pub share_holders: Vec<[u8; 32]>,
     pub threshold: u64,
     pub base_point: BcsElement,
-    pub resharing_challenge: Option<BcsResharingDealerChallenge>,
+    pub previous_public_key: Option<BcsElement>,
+    pub pcs_context: BcsPcsPublicParams,
     pub state_code: u8,
     pub deal_time_micros: u64,
     pub dealer_contribution_0: Option<BcsDealerContribution0>,
+    pub dealer_commitment_check: BcsPcsDegreeCheckState,
     pub share_holder_acks: Vec<bool>,
     pub dealer_contribution_1: Option<BcsDealerContribution1>,
-    pub share_pks: Vec<BcsElement>,
+    pub next_public_key_to_verify: u64,
+    pub public_keys: Vec<BcsElement>,
 }
 
 /// Check whether a Move `Option<T>` field (encoded as `{"vec": []}` or `{"vec": [value]}`)

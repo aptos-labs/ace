@@ -8,17 +8,24 @@ use anyhow::{anyhow, Result};
 use ark_bls12_381::Fr;
 use ark_ff::PrimeField;
 use tokio::sync::oneshot;
-use vss_common::crypto::{fr_from_dk_bytes, fr_to_le_bytes, group_compressed_with_base, pke_encrypt, poly_eval};
-use vss_common::sigma_dlog_eq;
-use vss_common::TxnArg;
-use vss_common::session::{
-    ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
-    STATE_VERIFY_DEALER_OPENING,
+use vss_common::crypto::{
+    fr_from_dk_bytes, fr_from_dk_bytes_with_dst, fr_to_le_bytes, group_compressed_with_base,
+    group_identity_compressed, pedersen_commit_compressed, pke_encrypt, poly_eval,
 };
-use vss_common::vss_types::{dc0_bytes, dc1_bytes, private_share_message_bytes, DealerState};
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
+use vss_common::group::BcsElement;
+use vss_common::session::{
+    BcsPcsOpening, BcsSigmaDlogLinearProof, ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED,
+    STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING,
+};
+use vss_common::sigma_dlog_linear;
+use vss_common::vss_types::{
+    dc0_bytes, dc1_bytes, opening_for_scheme, private_share_message_bytes, DealerState,
+};
+use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
 
 pub const POLL_SECS: u64 = 1;
+
+const R_COEF_DST: &[u8] = b"vss-pedersen-blinding-coef-v1/";
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -36,17 +43,21 @@ pub struct RunConfig {
     pub secret_override: Option<[u8; 32]>,
 }
 
+struct DealingData {
+    coefs_p: Vec<Fr>,
+    evals_p: Vec<Fr>,
+    evals_r: Vec<Fr>,
+    commitment_points: Vec<Vec<u8>>,
+    public_keys: Vec<Vec<u8>>,
+}
+
 /// Dealer state machine.
-///
-/// Performs real BLS12-381 Fr polynomial dealing:
-/// - STATE_DEALER_DEAL: fetches recipient enc keys, computes polynomial, encrypts shares,
-///   encrypts dealer state, builds and submits `dealer_contribution_0`.
-/// - STATE_RECIPIENT_ACK: re-derives polynomial, builds shares-to-reveal vector, submits `on_dealer_open`.
-///
-/// Exits cleanly when the session reaches `STATE__SUCCESS`.
-/// Returns `Err` on `STATE__FAILED`, wrong dealer, or unrecoverable errors.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(
+        config.rpc_url.clone(),
+        config.rpc_api_key.clone(),
+        config.rpc_gas_key.clone(),
+    );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
 
@@ -54,7 +65,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let session_addr = normalize_account_addr(&config.vss_session);
     let ace = normalize_account_addr(&config.ace_contract);
 
-    // Parse the PKE decryption key bytes (used as seed for polynomial derivation).
     let pke_dk_bytes = hex::decode(config.pke_dk_hex.trim_start_matches("0x"))
         .map_err(|e| anyhow!("invalid pke_dk_hex: {}", e))?;
 
@@ -67,7 +77,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        // Wait for next poll tick or shutdown — first tick fires immediately.
         tokio::select! {
             _ = &mut shutdown_rx => {
                 println!("vss-dealer: shutdown signal received, exiting.");
@@ -112,6 +121,18 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         Ok(h) => println!("vss-dealer: on_dealer_contribution_0 confirmed: {}", h),
                         Err(e) => eprintln!("vss-dealer: on_dealer_contribution_0 error: {:#}", e),
                     }
+                } else if let Err(e) = rpc
+                    .submit_txn(
+                        &sk,
+                        &vk,
+                        &account_addr,
+                        &format!("{}::vss::touch", ace),
+                        &[],
+                        &[TxnArg::Address(session_addr.as_str())],
+                    )
+                    .await
+                {
+                    eprintln!("vss-dealer: touch dealer commitment error: {:#}", e);
                 }
             }
             STATE_RECIPIENT_ACK => {
@@ -119,7 +140,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     Ok(ts) => ts,
                     Err(e) => {
                         eprintln!("vss-dealer: get_ledger_timestamp_micros error: {:#}", e);
-                        0 // will fail the gate below; retry next poll
+                        0
                     }
                 };
                 let open_after = session.deal_time_micros + ACK_WINDOW_MICROS;
@@ -154,11 +175,17 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 }
             }
             STATE_VERIFY_DEALER_OPENING => {
-                if let Err(e) = rpc.submit_txn(
-                    &sk, &vk, &account_addr,
-                    &format!("{}::vss::touch", ace), &[],
-                    &[vss_common::TxnArg::Address(session_addr.as_str())],
-                ).await {
+                if let Err(e) = rpc
+                    .submit_txn(
+                        &sk,
+                        &vk,
+                        &account_addr,
+                        &format!("{}::vss::touch", ace),
+                        &[],
+                        &[TxnArg::Address(session_addr.as_str())],
+                    )
+                    .await
+                {
                     eprintln!("vss-dealer: touch error: {:#}", e);
                 }
             }
@@ -176,7 +203,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     }
 }
 
-/// Fetch enc keys, build polynomial, encrypt shares + dealer state, submit dc0.
 async fn build_and_submit_dc0(
     rpc: &AptosRpc,
     sk: &ed25519_dalek::SigningKey,
@@ -191,115 +217,87 @@ async fn build_and_submit_dc0(
     let n = session.share_holders.len();
     let threshold = session.threshold as usize;
 
-    // Derive polynomial coefficients. coefs[0] = secret = f(0).
-    // If secret_override is provided (e.g. DKR dealer using their DKG share), use it for coefs[0].
-    // All other coefficients are derived deterministically from the DK.
-    //
-    // SECURITY HYPOTHESIS (docs/cryptography/vss.md §2): coefs[0] MUST be sampled
-    // uniformly from Fr. The §2 modified secrecy argument reduces an adversary's chance of
-    // recovering coefs[0] to DLog hardness + PKE IND-CPA, but the reduction's game samples
-    // s ←$ Fr — a non-uniform secret breaks the reduction's distribution argument and
-    // (because Feldman is non-hiding) v_0 = g^{coefs[0]} would expose a low-entropy secret
-    // to brute force. Both call paths below satisfy uniformity:
-    //   - `fr_from_dk_bytes(pke_dk_bytes, 0)`: derived from a freshly-generated PKE
-    //     decryption key (uniform Fr at node init).
-    //   - `secret_override`: documented contract is "a DKG/DKR share" — a Lagrange
-    //     evaluation of a uniform-random DKG polynomial, itself uniform in Fr.
-    // Do NOT call this dealer with a structured, low-entropy, or attacker-influenceable secret.
-    let coefs: Vec<Fr> = {
-        let secret = if let Some(s) = secret_override {
-            Fr::from_le_bytes_mod_order(&s)
-        } else {
-            fr_from_dk_bytes(pke_dk_bytes, 0)
-        };
-        let mut v = vec![secret];
-        for i in 1..threshold {
-            v.push(fr_from_dk_bytes(pke_dk_bytes, i));
-        }
-        v
-    };
-
-    // Fetch the BCS session to get the actual base_point for the Feldman commitment.
-    let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await
+    let bcs_session = rpc
+        .get_session_bcs_decoded(ace, session_addr)
+        .await
         .map_err(|e| anyhow!("failed to fetch BCS session: {}", e))?;
     let scheme = bcs_session.base_point.scheme();
-    let base_point_bytes: Vec<u8> = bcs_session.base_point.point_bytes().to_vec();
+    let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
+    let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
+    let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
 
-    // Fetch each recipient's encryption key.
+    let dealing = build_dealing_data(
+        scheme,
+        n,
+        threshold,
+        pke_dk_bytes,
+        secret_override,
+        &base_point_bytes,
+        &generator_g_bytes,
+        &generator_h_bytes,
+    )?;
+
     let mut enc_keys = Vec::with_capacity(n);
     for holder_addr in &session.share_holders {
-        let ek = rpc.get_pke_enc_key_bcs(ace, holder_addr).await
+        let ek = rpc
+            .get_pke_enc_key_bcs(ace, holder_addr)
+            .await
             .map_err(|e| anyhow!("failed to fetch enc key for {}: {}", holder_addr, e))?;
         enc_keys.push(ek);
     }
 
-    // Build per-recipient encrypted share messages.
-    // Holder at index i (0-based) gets share y = f(i+1) (1-indexed evaluation point).
     let share_ciphertexts: Vec<vss_common::pke::Ciphertext> = (0..n)
         .map(|i| -> Result<vss_common::pke::Ciphertext> {
-            let x_fr = Fr::from((i + 1) as u64);
-            let y_fr = poly_eval(&coefs, x_fr);
-            let y_bytes = fr_to_le_bytes(y_fr);
-
-            let plaintext = private_share_message_bytes(scheme, &y_bytes)?;
+            let eval_position = (i + 1) as u64;
+            let y_bytes = fr_to_le_bytes(dealing.evals_p[i + 1]);
+            let r_bytes = fr_to_le_bytes(dealing.evals_r[i + 1]);
+            let plaintext = private_share_message_bytes(scheme, eval_position, &y_bytes, &r_bytes)?;
             Ok(pke_encrypt(&enc_keys[i], &plaintext))
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Encrypt dealer state with enc_keys[0] (dealer = share_holders[0]).
     let dealer_state = DealerState::bls12381_fr(
         n as u64,
-        coefs.iter().map(|c| fr_to_le_bytes(*c)).collect(),
+        dealing.coefs_p.iter().map(|c| fr_to_le_bytes(*c)).collect(),
     );
     let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
 
-    // Build Feldman PCS commitment: v_k = coefs[k] * base_point for k = 0..threshold.
-    // Use the session's actual base_point (not necessarily group::generator).
-    let commitment_v_values: Vec<Vec<u8>> = coefs.iter()
-        .map(|c| group_compressed_with_base(scheme, *c, &base_point_bytes))
-        .collect::<Result<Vec<_>>>()?;
-
-    // Build optional resharing response if the session has a resharing challenge.
-    let resharing_resp = if let Some(challenge) = &bcs_session.resharing_challenge {
-        let chain_id = rpc.get_chain_id().await
-            .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
-        if challenge.another_base_element.scheme() != scheme {
-            return Err(anyhow!(
-                "resharing_challenge scheme mismatch (base={}, another_base={})",
+    let consistency_proof = if let Some(previous_public_key) = &bcs_session.previous_public_key {
+        Some(
+            prove_public_key_binding(
+                rpc,
+                ace,
+                session_addr,
                 scheme,
-                challenge.another_base_element.scheme()
-            ));
-        }
-
-        let ace_hex = ace.trim_start_matches("0x");
-        let ace_raw = hex::decode(ace_hex)?;
-        let mut ace_bytes = [0u8; 32];
-        let start = 32usize.saturating_sub(ace_raw.len());
-        ace_bytes[start..].copy_from_slice(&ace_raw);
-
-        let b1_bytes = challenge.another_base_element.point_bytes();
-        let commitment_p0 = &commitment_v_values[0];
-
-        let (p1, t0, t1, s_proof) = sigma_dlog_eq::prove(
-            scheme, chain_id, &ace_bytes, &base_point_bytes, commitment_p0, b1_bytes, coefs[0],
-        )?;
-        Some((p1, t0, t1, s_proof))
+                b"vss::dc0-consistency",
+                0,
+                &base_point_bytes,
+                &generator_g_bytes,
+                &generator_h_bytes,
+                previous_public_key.point_bytes(),
+                &dealing.commitment_points[0],
+                dealing.evals_p[0],
+                dealing.evals_r[0],
+            )
+            .await?,
+        )
     } else {
         None
     };
 
     let payload = dc0_bytes(
         scheme,
-        &commitment_v_values,
+        &dealing.commitment_points,
         &share_ciphertexts,
         &dealer_state_ct,
-        resharing_resp
-            .as_ref()
-            .map(|(p1, t0, t1, s)| (p1.as_slice(), t0.as_slice(), t1.as_slice(), s)),
+        consistency_proof,
     )?;
     println!(
         "vss-dealer: dc0 payload {} bytes, {} shares, threshold {} (scheme={})",
-        payload.len(), n, threshold, scheme
+        payload.len(),
+        n,
+        threshold,
+        scheme
     );
 
     let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
@@ -314,11 +312,6 @@ async fn build_and_submit_dc0(
     .await
 }
 
-
-/// Re-derive polynomial, build shares-to-reveal vector, submit dc1.
-///
-/// For each holder: if they acked, put None (they already have their share);
-/// if they did not ack, reveal their share scalar publicly.
 async fn build_and_submit_dc1(
     rpc: &AptosRpc,
     sk: &ed25519_dalek::SigningKey,
@@ -333,42 +326,94 @@ async fn build_and_submit_dc1(
     let n = session.share_holders.len();
     let threshold = session.threshold as usize;
 
-    // Look up the session's group scheme.
-    let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await
+    let bcs_session = rpc
+        .get_session_bcs_decoded(ace, session_addr)
+        .await
         .map_err(|e| anyhow!("failed to fetch BCS session: {}", e))?;
     let scheme = bcs_session.base_point.scheme();
+    let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
+    let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
+    let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
 
-    // Re-derive the same polynomial (must match DC0 exactly).
-    // SECURITY HYPOTHESIS on coefs[0]: see the dealing path above (vss.md §2).
-    let coefs: Vec<Fr> = {
-        let secret = if let Some(s) = secret_override {
-            Fr::from_le_bytes_mod_order(&s)
+    let dealing = build_dealing_data(
+        scheme,
+        n,
+        threshold,
+        pke_dk_bytes,
+        secret_override,
+        &base_point_bytes,
+        &generator_g_bytes,
+        &generator_h_bytes,
+    )?;
+
+    let mut shares_to_reveal: Vec<Option<BcsPcsOpening>> = vec![None];
+    let mut public_key_proofs: Vec<Option<BcsSigmaDlogLinearProof>> = Vec::with_capacity(n + 1);
+    public_key_proofs.push(Some(
+        prove_public_key_binding(
+            rpc,
+            ace,
+            session_addr,
+            scheme,
+            b"vss::dc1-public-key",
+            0,
+            &base_point_bytes,
+            &generator_g_bytes,
+            &generator_h_bytes,
+            &dealing.public_keys[0],
+            &dealing.commitment_points[0],
+            dealing.evals_p[0],
+            dealing.evals_r[0],
+        )
+        .await?,
+    ));
+
+    for i in 0..n {
+        let eval_position = (i + 1) as u64;
+        let acked = session.share_holder_acks.get(i).copied().unwrap_or(false);
+        if acked {
+            shares_to_reveal.push(None);
+            public_key_proofs.push(Some(
+                prove_public_key_binding(
+                    rpc,
+                    ace,
+                    session_addr,
+                    scheme,
+                    b"vss::dc1-public-key",
+                    eval_position,
+                    &base_point_bytes,
+                    &generator_g_bytes,
+                    &generator_h_bytes,
+                    &dealing.public_keys[i + 1],
+                    &dealing.commitment_points[i + 1],
+                    dealing.evals_p[i + 1],
+                    dealing.evals_r[i + 1],
+                )
+                .await?,
+            ));
         } else {
-            fr_from_dk_bytes(pke_dk_bytes, 0)
-        };
-        let mut v = vec![secret];
-        for i in 1..threshold {
-            v.push(fr_from_dk_bytes(pke_dk_bytes, i));
+            let y_bytes = fr_to_le_bytes(dealing.evals_p[i + 1]);
+            let r_bytes = fr_to_le_bytes(dealing.evals_r[i + 1]);
+            shares_to_reveal.push(Some(opening_for_scheme(
+                scheme,
+                eval_position,
+                &y_bytes,
+                &r_bytes,
+            )?));
+            public_key_proofs.push(None);
         }
-        v
-    };
+    }
 
-    // Build shares-to-reveal: None if holder acked, Some(y_bytes) if not acked.
-    let shares_to_reveal: Vec<Option<[u8; 32]>> = (0..n)
-        .map(|i| {
-            let acked = session.share_holder_acks.get(i).copied().unwrap_or(false);
-            if acked {
-                None
-            } else {
-                let x_fr = Fr::from((i + 1) as u64);
-                let y_fr = poly_eval(&coefs, x_fr);
-                Some(fr_to_le_bytes(y_fr))
-            }
-        })
-        .collect();
-
-    let payload = dc1_bytes(scheme, &shares_to_reveal)?;
-    println!("vss-dealer: dc1 payload {} bytes (scheme={})", payload.len(), scheme);
+    let payload = dc1_bytes(
+        scheme,
+        &shares_to_reveal,
+        &dealing.public_keys,
+        &public_key_proofs,
+    )?;
+    println!(
+        "vss-dealer: dc1 payload {} bytes (scheme={})",
+        payload.len(),
+        scheme
+    );
 
     let args = [TxnArg::Address(session_addr), TxnArg::Bytes(&payload)];
     rpc.submit_txn(
@@ -380,4 +425,127 @@ async fn build_and_submit_dc1(
         &args,
     )
     .await
+}
+
+fn build_dealing_data(
+    scheme: u8,
+    n: usize,
+    threshold: usize,
+    pke_dk_bytes: &[u8],
+    secret_override: Option<[u8; 32]>,
+    public_base_bytes: &[u8],
+    generator_g_bytes: &[u8],
+    generator_h_bytes: &[u8],
+) -> Result<DealingData> {
+    let (coefs_p, coefs_r) = derive_polynomials(threshold, pke_dk_bytes, secret_override);
+    let mut evals_p = Vec::with_capacity(n + 1);
+    let mut evals_r = Vec::with_capacity(n + 1);
+    let mut commitment_points = Vec::with_capacity(n + 1);
+    let mut public_keys = Vec::with_capacity(n + 1);
+
+    for i in 0..=n {
+        let x = Fr::from(i as u64);
+        let p_i = poly_eval(&coefs_p, x);
+        let r_i = poly_eval(&coefs_r, x);
+        evals_p.push(p_i);
+        evals_r.push(r_i);
+        commitment_points.push(pedersen_commit_compressed(
+            scheme,
+            p_i,
+            r_i,
+            generator_g_bytes,
+            generator_h_bytes,
+        )?);
+        public_keys.push(group_compressed_with_base(scheme, p_i, public_base_bytes)?);
+    }
+
+    Ok(DealingData {
+        coefs_p,
+        evals_p,
+        evals_r,
+        commitment_points,
+        public_keys,
+    })
+}
+
+fn derive_polynomials(
+    threshold: usize,
+    pke_dk_bytes: &[u8],
+    secret_override: Option<[u8; 32]>,
+) -> (Vec<Fr>, Vec<Fr>) {
+    let secret = if let Some(s) = secret_override {
+        Fr::from_le_bytes_mod_order(&s)
+    } else {
+        fr_from_dk_bytes(pke_dk_bytes, 0)
+    };
+    let mut coefs_p = vec![secret];
+    for i in 1..threshold {
+        coefs_p.push(fr_from_dk_bytes(pke_dk_bytes, i));
+    }
+
+    let coefs_r = (0..threshold)
+        .map(|i| fr_from_dk_bytes_with_dst(R_COEF_DST, pke_dk_bytes, i))
+        .collect();
+    (coefs_p, coefs_r)
+}
+
+async fn prove_public_key_binding(
+    rpc: &AptosRpc,
+    ace: &str,
+    session_addr: &str,
+    scheme: u8,
+    purpose: &[u8],
+    eval_position: u64,
+    public_base_bytes: &[u8],
+    generator_g_bytes: &[u8],
+    generator_h_bytes: &[u8],
+    public_key_bytes: &[u8],
+    commitment_point_bytes: &[u8],
+    p_i: Fr,
+    r_i: Fr,
+) -> Result<BcsSigmaDlogLinearProof> {
+    let chain_id = rpc
+        .get_chain_id()
+        .await
+        .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
+    let ace_addr = addr_to_bytes(ace)?;
+    let session_addr = addr_to_bytes(session_addr)?;
+    let identity = group_identity_compressed(scheme)?;
+
+    let b_vals = vec![
+        element_for_scheme(scheme, public_base_bytes)?,
+        element_for_scheme(scheme, &identity)?,
+        element_for_scheme(scheme, generator_g_bytes)?,
+        element_for_scheme(scheme, generator_h_bytes)?,
+    ];
+    let p_vals = vec![
+        element_for_scheme(scheme, public_key_bytes)?,
+        element_for_scheme(scheme, commitment_point_bytes)?,
+    ];
+    sigma_dlog_linear::prove_vss(
+        scheme,
+        chain_id,
+        &ace_addr,
+        &session_addr,
+        purpose,
+        eval_position,
+        &b_vals,
+        &p_vals,
+        &[p_i, r_i],
+    )
+}
+
+fn element_for_scheme(scheme: u8, bytes: &[u8]) -> Result<BcsElement> {
+    BcsElement::from_scheme_and_bytes(scheme, bytes.to_vec())
+}
+
+fn addr_to_bytes(addr: &str) -> Result<[u8; 32]> {
+    let raw = hex::decode(addr.trim_start_matches("0x"))
+        .map_err(|e| anyhow!("address decode '{}': {}", addr, e))?;
+    if raw.len() > 32 {
+        return Err(anyhow!("address too long: {}", addr));
+    }
+    let mut out = [0u8; 32];
+    out[32 - raw.len()..].copy_from_slice(&raw);
+    Ok(out)
 }

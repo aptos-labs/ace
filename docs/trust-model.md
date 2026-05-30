@@ -66,13 +66,13 @@ For Solana: the program instruction binds `keypair_id`, `epoch`, `enc_pk` (ephem
 
 > **A VSS dealer that publishes inconsistent shares (one polynomial encrypted to recipient `i`, a different polynomial committed in `pcs_commitment`) is detected.**
 
-Recipients run Feldman verification (`worker-components/vss-common/src/vss_types.rs::feldman_verify`) before ACKing. A failed verification leads to the recipient *not* ACKing within `ACK_WINDOW_MICROS = 10s`; the dealer must then publicly reveal the share (via `on_dealer_open`), and Move re-runs Feldman verification on-chain (`vss::touch`) before promoting the session to `STATE__SUCCESS`.
+Recipients run Pedersen opening verification (`worker-components/vss-common/src/vss_types.rs::pedersen_verify_private_share`) before ACKing. A failed verification leads to the recipient *not* ACKing within `ACK_WINDOW_MICROS = 10s`; the dealer must then publicly reveal the opening (via `on_dealer_open`), and Move verifies that opening on-chain before accepting the corresponding public share key.
 
 ### Claim 5: No silent reshare from unknown source
 
 > **A DKR dealer cannot reshare a secret it does not actually hold a share of.**
 
-The resharing-VSS uses the parent committee's pre-published share-PK $P_j = g_\text{old}^{s_j}$ as a binding target: the on-chain handler verifies that the dealer's first Feldman commitment $v_0$ equals $P_j$. This forces the dealer's polynomial constant term to equal the known share $s_j$ regardless of dealer behaviour.
+The resharing-VSS uses the parent committee's pre-published share-PK $P_j = s_jB$ as a binding target. The dealer must prove knowledge of $(s_j,r_j)$ such that $s_jB=P_j$ and $s_jG+r_jH=V_0$, where $V_0$ is the Pedersen commitment at position 0. This forces the dealer's polynomial constant term to equal the known share $s_j$ without revealing the Pedersen blinding value.
 
 ---
 
@@ -152,7 +152,7 @@ Out of scope for the protocol-level trust model:
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | RFC 9180 base-mode security: GapDH on X25519, HKDF-SHA256, ChaCha20-Poly1305 IND-CCA | PKE scheme 1 *(production)* |
 | BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md))* |
 | BFIBE-BLS12381-ShortSig-AEAD | BDH on BLS12-381 + ROM, ChaCha20-Poly1305 IND-CCA | t-IBE scheme 1 *(production)* |
-| Feldman PCS | DLog on BLS12-381 (binding) | VSS share verification |
+| Pedersen PCS + sigma linear-DLog | DLog on BLS12-381, unknown log relation between PCS generators, Fiat-Shamir ROM | VSS opening verification and public-key binding |
 | Ed25519 | EUF-CMA (RFC 8032) | ProofOfPermission (Aptos) |
 | Aptos chain | BFT honest 2/3 supermajority | Truth of view-function results |
 | Solana chain | BFT honest 2/3 supermajority | Truth of `simulateTransaction` and account-state queries |
@@ -199,4 +199,3 @@ This means:
 - A maliciously-upgraded contract that broadens `check_permission` retroactively decrypts all prior content bound to that contract.
 
 **Defense.** Apps SHOULD deploy `check_permission` as part of an immutable / governance-locked module. Aptos's package upgrade policies (`upgrade_policy: arbitrary` vs `compatible` vs `immutable`) are the primary control here. Auditors of an ACE-using application MUST check the upgrade policy on the access-control contract.
-

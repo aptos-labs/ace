@@ -293,7 +293,7 @@ pnpm dev node default <alias>             # set the default node profile
 
 # Admin (deployment) side
 pnpm dev deployment new                   # full deployment wizard (requires tagged clean commit)
-pnpm dev deployment update-contracts      # republish all 11 packages at NEXT_RELEASE version
+pnpm dev deployment update-contracts      # republish all packages at NEXT_RELEASE version
 pnpm dev deployment edit                  # edit RPC URL, API keys, alias of a deployment profile
 pnpm dev deployment ls                    # list deployment profiles
 pnpm dev deployment delete <alias>        # delete a deployment profile (local-only)

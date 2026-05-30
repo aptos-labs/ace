@@ -101,7 +101,8 @@ module ace::dkg {
         session_bcs: vector<u8>,
     }
 
-    public fun touch(session_addr: address) acquires Session, SignerStore {
+    #[lint::allow_unsafe_randomness]
+    public fun touch(session_addr: address) {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.state == STATE__START_VSSS) {
             let idx = session.vss_sessions.length();
@@ -158,7 +159,7 @@ module ace::dkg {
         });
     }
 
-    public fun cancel(caller: &signer, session_addr: address) acquires Session {
+    public fun cancel(caller: &signer, session_addr: address) {
         let session = borrow_global_mut<Session>(session_addr);
         if (session.caller != address_of(caller)) {
             abort error::permission_denied(E_ONLY_CALLER_CAN_DO_THIS);
@@ -176,13 +177,13 @@ module ace::dkg {
         borrow_global<Session>(session_addr).state == STATE__FAIL
     }
 
-    public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64, vector<group::Element>) acquires Session {
+    public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64, vector<group::Element>) {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
         (session.public_base_element, *session.secretly_scaled_element.borrow(), session.workers, session.threshold, session.share_pks)
     }
 
-    public fun share_pks(session_addr: address): vector<group::Element> acquires Session {
+    public fun share_pks(session_addr: address): vector<group::Element> {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
         session.share_pks
@@ -190,7 +191,7 @@ module ace::dkg {
 
     /// Returns (vss_sessions, done_flags) for the DKG session.
     /// Used by DKR to compute per-worker share verification keys.
-    public fun vss_sessions_and_done_flags(session_addr: address): (vector<address>, vector<bool>) acquires Session {
+    public fun vss_sessions_and_done_flags(session_addr: address): (vector<address>, vector<bool>) {
         let session = borrow_global<Session>(session_addr);
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
         (session.vss_sessions, session.done_flags)
@@ -208,11 +209,12 @@ module ace::dkg {
     }
 
     #[view]
-    public fun get_session_bcs(session_addr: address): vector<u8> acquires Session {
+    public fun get_session_bcs(session_addr: address): vector<u8> {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
-    entry fun touch_entry(session_addr: address) acquires Session, SignerStore {
+    #[randomness]
+    entry fun touch_entry(session_addr: address) {
         touch(session_addr);
     }
 }

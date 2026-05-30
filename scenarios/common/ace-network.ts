@@ -37,7 +37,7 @@ import { buildRustWorkspace, spawnNetworkNodeMaybeSplit } from './network-client
  *  full set; mirrors what every access-failure scenario has historically
  *  duplicated inline. */
 export const ACE_CONTRACTS: readonly string[] = [
-    'pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq',
+    'pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment',
     'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
 ];
 

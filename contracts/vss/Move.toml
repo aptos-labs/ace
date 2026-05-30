@@ -18,8 +18,11 @@ local = "../pke"
 [dependencies.FiatShamirTransform]
 local = "../fiat-shamir-transform"
 
-[dependencies.SigmaDLogEq]
-local = "../sigma-dlog-eq"
+[dependencies.SigmaDLogLinear]
+local = "../sigma-dlog-linear"
+
+[dependencies.PedersenPolynomialCommitment]
+local = "../pedersen-polynomial-commitment"
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

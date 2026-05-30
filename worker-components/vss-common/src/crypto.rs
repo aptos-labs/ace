@@ -7,7 +7,7 @@
 
 use ark_bls12_381::Fr;
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::PrimeField;
+use ark_ff::{PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use curve25519_dalek::{ristretto::CompressedRistretto, RistrettoPoint, Scalar};
 use rand::rngs::OsRng;
@@ -137,7 +137,11 @@ pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertex
             // seed is now 33 bytes, matching TypeScript's `elgamalPtxt.toBytes()`
 
             let otp = kdf(&seed, b"OTP/ELGAMAL_OTP_RISTRETTO255", plaintext.len());
-            let sym_ciph: Vec<u8> = otp.iter().zip(plaintext.iter()).map(|(a, b)| a ^ b).collect();
+            let sym_ciph: Vec<u8> = otp
+                .iter()
+                .zip(plaintext.iter())
+                .map(|(a, b)| a ^ b)
+                .collect();
 
             let hmac_key_vec = kdf(&seed, b"HMAC/ELGAMAL_OTP_RISTRETTO255", 32);
             let hmac_key: [u8; 32] = hmac_key_vec.try_into().expect("kdf produced 32 bytes");
@@ -164,7 +168,8 @@ pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertex
 /// Matches TypeScript `numberToBytesLE(scalar, 32)`.
 pub fn fr_to_le_bytes(f: Fr) -> [u8; 32] {
     let mut bytes = [0u8; 32];
-    f.serialize_uncompressed(&mut bytes[..]).expect("Fr serialize failed");
+    f.serialize_uncompressed(&mut bytes[..])
+        .expect("Fr serialize failed");
     bytes
 }
 
@@ -173,8 +178,13 @@ pub fn fr_to_le_bytes(f: Fr) -> [u8; 32] {
 /// Uses SHA3-256("vss-coef-v1/" || dk_bytes || LE64(idx)) reduced mod Fr.
 /// Deterministic: same dk + idx always gives the same coefficient.
 pub fn fr_from_dk_bytes(dk: &[u8], idx: usize) -> Fr {
+    fr_from_dk_bytes_with_dst(b"vss-coef-v1/", dk, idx)
+}
+
+/// Domain-separated variant of `fr_from_dk_bytes`.
+pub fn fr_from_dk_bytes_with_dst(dst: &[u8], dk: &[u8], idx: usize) -> Fr {
     let mut hasher = Sha3_256::new();
-    hasher.update(b"vss-coef-v1/");
+    hasher.update(dst);
     hasher.update(dk);
     hasher.update((idx as u64).to_le_bytes());
     let hash: [u8; 32] = hasher.finalize().into();
@@ -200,10 +210,10 @@ pub fn poly_eval(coefs: &[Fr], x: Fr) -> Fr {
 /// Compute the compressed 48-byte BLS12-381 G1 point `scalar * G1::generator`.
 /// Matches TypeScript `bls12_381.G1.ProjectivePoint.BASE.multiply(scalar).toBytes()`.
 pub fn g1_compressed(scalar: Fr) -> [u8; 48] {
-    let pt: ark_bls12_381::G1Affine =
-        (ark_bls12_381::G1Affine::generator() * scalar).into_affine();
+    let pt: ark_bls12_381::G1Affine = (ark_bls12_381::G1Affine::generator() * scalar).into_affine();
     let mut bytes = [0u8; 48];
-    pt.serialize_compressed(&mut bytes[..]).expect("G1 serialize failed");
+    pt.serialize_compressed(&mut bytes[..])
+        .expect("G1 serialize failed");
     bytes
 }
 
@@ -215,7 +225,8 @@ pub fn g1_compressed_with_base(scalar: Fr, base_point_bytes: &[u8]) -> anyhow::R
         .map_err(|e| anyhow::anyhow!("base_point deserialize: {}", e))?;
     let pt: ark_bls12_381::G1Affine = (base * scalar).into_affine();
     let mut bytes = [0u8; 48];
-    pt.serialize_compressed(&mut bytes[..]).expect("G1 serialize failed");
+    pt.serialize_compressed(&mut bytes[..])
+        .expect("G1 serialize failed");
     Ok(bytes)
 }
 
@@ -226,7 +237,8 @@ pub fn g2_compressed_with_base(scalar: Fr, base_point_bytes: &[u8]) -> anyhow::R
         .map_err(|e| anyhow::anyhow!("base_point G2 deserialize: {}", e))?;
     let pt: ark_bls12_381::G2Affine = (base * scalar).into_affine();
     let mut bytes = [0u8; 96];
-    pt.serialize_compressed(&mut bytes[..]).expect("G2 serialize failed");
+    pt.serialize_compressed(&mut bytes[..])
+        .expect("G2 serialize failed");
     Ok(bytes)
 }
 
@@ -246,4 +258,123 @@ pub fn group_compressed_with_base(
         }
         s => Err(anyhow::anyhow!("unsupported group scheme {}", s)),
     }
+}
+
+pub fn group_identity_compressed(scheme: u8) -> anyhow::Result<Vec<u8>> {
+    use ark_serialize::CanonicalSerialize;
+
+    match scheme {
+        crate::session::SCHEME_BLS12381G1 => {
+            let pt: ark_bls12_381::G1Affine = ark_bls12_381::G1Projective::zero().into_affine();
+            let mut bytes = vec![0u8; 48];
+            pt.serialize_compressed(&mut bytes[..])
+                .expect("G1 serialize failed");
+            Ok(bytes)
+        }
+        crate::session::SCHEME_BLS12381G2 => {
+            let pt: ark_bls12_381::G2Affine = ark_bls12_381::G2Projective::zero().into_affine();
+            let mut bytes = vec![0u8; 96];
+            pt.serialize_compressed(&mut bytes[..])
+                .expect("G2 serialize failed");
+            Ok(bytes)
+        }
+        s => Err(anyhow::anyhow!("unsupported group scheme {}", s)),
+    }
+}
+
+pub fn group_add_compressed(
+    scheme: u8,
+    lhs_bytes: &[u8],
+    rhs_bytes: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+
+    match scheme {
+        crate::session::SCHEME_BLS12381G1 => {
+            let lhs = ark_bls12_381::G1Affine::deserialize_compressed(lhs_bytes)
+                .map_err(|e| anyhow::anyhow!("lhs G1 deserialize: {}", e))?;
+            let rhs = ark_bls12_381::G1Affine::deserialize_compressed(rhs_bytes)
+                .map_err(|e| anyhow::anyhow!("rhs G1 deserialize: {}", e))?;
+            let sum: ark_bls12_381::G1Affine = (lhs + rhs).into_affine();
+            let mut bytes = vec![0u8; 48];
+            sum.serialize_compressed(&mut bytes[..])
+                .expect("G1 serialize failed");
+            Ok(bytes)
+        }
+        crate::session::SCHEME_BLS12381G2 => {
+            let lhs = ark_bls12_381::G2Affine::deserialize_compressed(lhs_bytes)
+                .map_err(|e| anyhow::anyhow!("lhs G2 deserialize: {}", e))?;
+            let rhs = ark_bls12_381::G2Affine::deserialize_compressed(rhs_bytes)
+                .map_err(|e| anyhow::anyhow!("rhs G2 deserialize: {}", e))?;
+            let sum: ark_bls12_381::G2Affine = (lhs + rhs).into_affine();
+            let mut bytes = vec![0u8; 96];
+            sum.serialize_compressed(&mut bytes[..])
+                .expect("G2 serialize failed");
+            Ok(bytes)
+        }
+        s => Err(anyhow::anyhow!("unsupported group scheme {}", s)),
+    }
+}
+
+pub fn group_msm_compressed(
+    scheme: u8,
+    point_bytes: &[Vec<u8>],
+    scalars: &[Fr],
+) -> anyhow::Result<Vec<u8>> {
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+
+    if point_bytes.len() != scalars.len() {
+        return Err(anyhow::anyhow!(
+            "group_msm_compressed: points length {} != scalars length {}",
+            point_bytes.len(),
+            scalars.len()
+        ));
+    }
+    if point_bytes.is_empty() {
+        return Err(anyhow::anyhow!("group_msm_compressed: empty input"));
+    }
+
+    match scheme {
+        crate::session::SCHEME_BLS12381G1 => {
+            let mut acc = ark_bls12_381::G1Projective::zero();
+            for (pt_bytes, scalar) in point_bytes.iter().zip(scalars.iter()) {
+                let pt = ark_bls12_381::G1Affine::deserialize_compressed(pt_bytes.as_slice())
+                    .map_err(|e| anyhow::anyhow!("G1 deserialize: {}", e))?;
+                acc += pt * *scalar;
+            }
+            let affine: ark_bls12_381::G1Affine = acc.into_affine();
+            let mut bytes = vec![0u8; 48];
+            affine
+                .serialize_compressed(&mut bytes[..])
+                .expect("G1 serialize failed");
+            Ok(bytes)
+        }
+        crate::session::SCHEME_BLS12381G2 => {
+            let mut acc = ark_bls12_381::G2Projective::zero();
+            for (pt_bytes, scalar) in point_bytes.iter().zip(scalars.iter()) {
+                let pt = ark_bls12_381::G2Affine::deserialize_compressed(pt_bytes.as_slice())
+                    .map_err(|e| anyhow::anyhow!("G2 deserialize: {}", e))?;
+                acc += pt * *scalar;
+            }
+            let affine: ark_bls12_381::G2Affine = acc.into_affine();
+            let mut bytes = vec![0u8; 96];
+            affine
+                .serialize_compressed(&mut bytes[..])
+                .expect("G2 serialize failed");
+            Ok(bytes)
+        }
+        s => Err(anyhow::anyhow!("unsupported group scheme {}", s)),
+    }
+}
+
+pub fn pedersen_commit_compressed(
+    scheme: u8,
+    p: Fr,
+    r: Fr,
+    generator_g_bytes: &[u8],
+    generator_h_bytes: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let p_g = group_compressed_with_base(scheme, p, generator_g_bytes)?;
+    let r_h = group_compressed_with_base(scheme, r, generator_h_bytes)?;
+    group_add_compressed(scheme, &p_g, &r_h)
 }

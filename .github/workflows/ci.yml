@@ -95,6 +95,7 @@ jobs:
           aptos move test --package-dir contracts/vss
           aptos move test --package-dir contracts/sigma-dlog-linear
           aptos move test --package-dir contracts/pedersen-polynomial-commitment
+          aptos move test --package-dir contracts/network
 
   solana-example:
     name: scenario / solana-example

@@ -57,7 +57,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock, Semaphore};
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc};
+use vss_common::{
+    normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
+};
 
 use crate::secrets::{LocalSecrets, RemoteSecrets, SecretsProvider, ShareEntry};
 
@@ -427,7 +429,11 @@ async fn run_with_maintainer(
             }
         };
 
-        let in_cur_nodes = state.cur_nodes.iter().any(|n| addr_bytes_to_string(n) == account_addr);
+        let cur_node_idx = state
+            .cur_nodes
+            .iter()
+            .position(|n| addr_bytes_to_string(n) == account_addr);
+        let in_cur_nodes = cur_node_idx.is_some();
 
         let now_micros = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -439,7 +445,11 @@ async fn run_with_maintainer(
             .proposals
             .iter()
             .any(|p| p.as_ref().is_some_and(|pv| pv.voting_passed));
-        if state.epoch_change_info.is_some() || epoch_timed_out || has_approved_proposal {
+        if (state.epoch_change_info.is_some() || epoch_timed_out || has_approved_proposal)
+            && cur_node_idx
+                .map(|idx| should_submit_rotating_touch(idx, state.cur_nodes.len()))
+                .unwrap_or(false)
+        {
             if let Err(e) = rpc
                 .submit_txn(
                     &sk,

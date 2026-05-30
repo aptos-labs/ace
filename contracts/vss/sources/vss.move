@@ -320,17 +320,11 @@ module ace::vss {
 
     fun touch_dealer_commitment(session: &mut Session) {
         let dc0 = session.dealer_contribution_0.borrow();
-        if (pedersen_polynomial_commitment::degree_check_finished(&dc0.pcs_commitment, &session.dealer_commitment_check)) {
-            finish_dealer_commitment_check(session);
-            return;
-        };
-
-        pedersen_polynomial_commitment::degree_check_touch(
+        if (pedersen_polynomial_commitment::degree_check_touch(
             &session.pcs_context,
             &dc0.pcs_commitment,
             &mut session.dealer_commitment_check,
-        );
-        if (pedersen_polynomial_commitment::degree_check_finished(&dc0.pcs_commitment, &session.dealer_commitment_check)) {
+        )) {
             finish_dealer_commitment_check(session);
         };
     }

@@ -263,10 +263,10 @@ struct Session {
           │     vss::new_session(dealer = current_nodes[idx],
           │                      share_holders = new_nodes,
           │                      threshold = new_threshold,
-          │                      base_point = public_base_element,
-          │                      secretly_scaled_element = Some(src_share_pks[idx]))
-          │     # ↑ this becomes the resharing challenge; dealer must prove they
-          │     #   know the secret behind src_share_pks[idx]
+          │                      public_base_element = public_base_element,
+          │                      previous_public_key = Some(src_share_pks[idx]))
+          │     # ↑ this becomes the resharing binding target; dealer must prove
+          │     #   p(0) maps to src_share_pks[idx] and opens V_0.
           │   when idx == n_curr:
           ▼
    ┌──────────────────────────────┐

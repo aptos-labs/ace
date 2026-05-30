@@ -39,7 +39,7 @@ async function main() {
         log(`Large-committee smoke test: NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys.');
         for (let i = 0; i < NUM_WORKERS; i++) {

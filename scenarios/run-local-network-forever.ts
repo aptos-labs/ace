@@ -80,7 +80,7 @@ async function main() {
 
     // ── Deploy contracts ─────────────────────────────────────────────────────
     log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-eq', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 19000;

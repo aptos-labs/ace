@@ -12,7 +12,7 @@ This document describes the protocols ACE runs (sub-protocols + roles + the off-
 
 ACE runs four orchestration sub-protocols plus one request/response flow. Each is described below at the conceptual level; the state-machine realizations are §2 onward.
 
-- **VSS — Verifiable Secret Sharing** (single-dealer building block). One designated *dealer* commits to a secret-bearing polynomial of degree $t-1$ and distributes Feldman-verifiable shares to $n$ designated *recipients*. After a synchrony window, the dealer publicly reveals shares for any recipient who failed to acknowledge. Outputs: a public commitment vector and per-recipient share-PKs that anyone can verify on-chain. Used as a primitive by DKG and DKR.
+- **VSS — Verifiable Secret Sharing** (single-dealer building block). One designated *dealer* commits to a secret-bearing polynomial of degree $t-1$ and distributes Pedersen-opened shares to $n$ designated *recipients*. After a synchrony window, the dealer publicly reveals openings for any recipient who failed to acknowledge. Outputs: a public commitment vector and per-recipient share-PKs that anyone can verify on-chain. Used as a primitive by DKG and DKR.
 
 - **DKG — Distributed Key Generation.** Each member of the committee runs one VSS as dealer (and is a recipient in all $n$ VSS sessions). The joint master secret $s$ is the sum of the constant terms of the $\geq t$ contributing dealer polynomials; nobody ever holds $s$ in the clear. Each committee member ends up holding a Shamir share of $s$. Outputs: the master public key $\mathsf{mpk}$ on-chain, and one share per committee member off-chain (re-derivable from the on-chain VSS messages by that member).
 
@@ -38,7 +38,7 @@ ACE runs four orchestration sub-protocols plus one request/response flow. Each i
 ACE's sub-protocols are realized as Move state machines. This is a common pattern: **off-chain workers follow on-chain orchestration.** A few notes on why and what it costs:
 
 - **Tamper-resistant transcript.** A round-based protocol like VSS / DKG / DKR needs every honest party to see the same messages and the same state at the same logical time. The chain provides this for free — every `vss::new_session(...)`, `vss::on_dealer_contribution_0(...)`, `on_share_holder_ack(...)` is a totally-ordered, BFT-agreed-upon, immutable record. ACE doesn't need a separate broadcast or BA primitive.
-- **State-as-instruction.** Workers don't run their own copy of the protocol logic and try to reach consensus. Instead, each worker periodically reads the on-chain state and acts on whatever the contract says it should do next: "I'm in `STATE__RECIPIENT_ACK` and my Feldman check passed → submit `on_share_holder_ack`". The contract is the single source of truth for "what step are we at".
+- **State-as-instruction.** Workers don't run their own copy of the protocol logic and try to reach consensus. Instead, each worker periodically reads the on-chain state and acts on whatever the contract says it should do next: "I'm in `STATE__RECIPIENT_ACK` and my Pedersen opening check passed → submit `on_share_holder_ack`". The contract is the single source of truth for "what step are we at".
 - **Move's gas budget forces incremental progress.** A single Move transaction has bounded gas. Some on-chain steps (like deriving $n$ share-PKs by MSM after DC1, or computing Lagrange coefficients in DKR) don't fit in one txn. The state machines split this work over multiple `touch()` calls — anyone can `touch()`, each call ratchets state forward by one increment, the protocol completes when enough `touch()`es have happened. This is a realization detail; it doesn't affect security.
 - **Clocks come from the chain.** `aptos_framework::timestamp::now_microseconds` gives every observer a consistent monotonic clock. Synchrony-bounded steps (e.g., the 10-second VSS ACK window) are enforced by comparing the chain's view of "now" against a recorded time, not by local wall-clock. A liveness halt of the chain stalls the timer too — a *liveness* concern, not a *safety* concern.
 
@@ -62,27 +62,28 @@ The cost: a small per-transaction gas footprint for every protocol step, and a d
 
 ## 2. VSS — Verifiable Secret Sharing (single dealer)
 
-A single dealer commits to a degree-`t-1` polynomial over `Fr` and distributes Feldman-verifiable shares to `n` recipients. Used as a building block by DKG and DKR.
+A single dealer commits to a degree-`t-1` polynomial over `Fr` with Pedersen polynomial commitments and distributes privately-opened shares to `n` recipients. Used as a building block by DKG and DKR.
 
-The state machine below implements §5 / Algorithm 1 of [Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren — "Verifiable Secret Sharing Simplified", IACR ePrint 2023/1196](https://eprint.iacr.org/2023/1196), with the crypto-relevant implementation choices enumerated in [`cryptography/vss.md`](./cryptography/vss.md) §1.1 (Feldman PCS in place of generic `PC`, PKE-as-private-channel, the chain as broadcast channel, on-chain ACK, selective reveal as `Option<BcsScalar>` vector, resharing-dealer challenge for DKR).
+The state machine below implements §5 / Algorithm 1 of [Das, Xiang, Tomescu, Spiegelman, Pinkas, Ren — "Verifiable Secret Sharing Simplified", IACR ePrint 2023/1196](https://eprint.iacr.org/2023/1196), with the crypto-relevant implementation choices enumerated in [`cryptography/vss.md`](./cryptography/vss.md) §1.1 (Pedersen PCS, PKE-as-private-channel, the chain as broadcast channel, on-chain ACK, selective reveal as `Option<Opening>` vector, and a sigma linear-DLog proof tying reshared `p(0)` to the previous public key).
 
 ### 2.1 Session struct (abridged)
-
-`contracts/vss/sources/vss.move:89-104`
 
 ```move
 struct Session {
     dealer: address,
     share_holders: vector<address>,
     threshold: u64,
-    public_base_element: group::Element,            // basePoint for the Feldman commitment
-    resharing_challenge: Option<ResharingDealerChallenge>,  // present only for DKR-spawned VSS
+    public_base_element: group::Element,            // base B; output is p(0) * B
+    previous_public_key: Option<group::Element>,    // present only for resharing
+    pcs_context: pedersen_polynomial_commitment::PublicParams,
     state_code: u8,
     deal_time_micros: u64,                          // set when DC0 arrives
     dealer_contribution_0: Option<DealerContribution0>,
+    dealer_commitment_check: pedersen_polynomial_commitment::DegreeCheckState,
     share_holder_acks: vector<bool>,                // length = n
     dealer_contribution_1: Option<DealerContribution1>,
-    share_pks: vector<group::Element>,              // computed during VERIFY_DEALER_OPENING
+    next_public_key_to_verify: u64,
+    public_keys: vector<group::Element>,            // p(i) * B over positions {0, ..., n}
 }
 ```
 
@@ -93,30 +94,34 @@ struct Session {
    │  STATE__DEALER_DEAL  │ ← new_session_entry()
    └──────────┬───────────┘
               │ on_dealer_contribution_0(payload)
-              │   • verifies resharing-challenge equality if present (v_0 = P_j)
-              │   • records deal_time_micros
+              │   • verifies DC0 consistency proof if previous_public_key is present
+              │   • starts Pedersen PCS degree check
+              │
+              │ touch()  (called repeatedly; advances degree check)
+              │   • moves to RECIPIENT_ACK once the commitment degree check passes
               ▼
    ┌────────────────────────────┐
    │   STATE__RECIPIENT_ACK     │
    └──────┬─────────────────────┘
-          │ on_share_holder_ack()  ← each recipient who Feldman-verifies
+          │ on_share_holder_ack()  ← each recipient who Pedersen-verifies
           │ (toggles their ack flag; no state change)
           │
           │ on_dealer_open(payload)  ← after ACK_WINDOW_MICROS = 10s
           │   • requires ≥ threshold acks
-          │   • requires every non-acker has a revealed share in payload
+          │   • requires every non-acker has a revealed opening in payload
+          │   • records public keys and sigma proofs/openings for later verification
           ▼
    ┌──────────────────────────────────────┐
    │ STATE__VERIFY_DEALER_OPENING         │
    └──────┬───────────────────────────────┘
-          │ touch()  (called repeatedly; one share_pk per call)
+          │ touch()  (called repeatedly; one public key per call)
           │   for j in 0..n:
-          │     if share_holder_acks[j]: derive share_pk[j] via on-chain MSM
-          │     else: validate revealed share against MSM, then derive share_pk[j]
-          │   when all n done:
+          │     if j == 0 or holder j ACKed: verify sigma proof for public_keys[j]
+          │     else: verify revealed Pedersen opening and derive public_keys[j]
+          │   when all n+1 positions done:
           ▼
    ┌──────────────────────┐
-   │   STATE__SUCCESS     │     ← share_pks fully populated
+   │   STATE__SUCCESS     │     ← public_keys fully populated
    └──────────────────────┘
 ```
 
@@ -126,16 +131,16 @@ struct Session {
 
 | Function | Caller | Pre-state | Post-state | Notes |
 |----------|--------|-----------|------------|-------|
-| `new_session_entry(dealer, share_holders, threshold, base_point, secretly_scaled_element)` | any | n/a | `DEALER_DEAL` | All share_holders must have a registered `pke_enc_key`. `secretly_scaled_element=None` for fresh DKG; `Some(s · basePoint_old)` for DKR (becomes the resharing challenge's `expected_scaled_element`). |
-| `on_dealer_contribution_0(session_addr, payload)` | session.dealer only | `DEALER_DEAL` | `RECIPIENT_ACK` | Aborts if the resharing-challenge group equality $v_0 = P_j$ fails. |
+| `new_session_entry(dealer, share_holders, threshold, public_base_element, previous_public_key)` | any | n/a | `DEALER_DEAL` | All share_holders must have a registered `pke_enc_key`. `previous_public_key=None` for fresh DKG; `Some(s · B)` for resharing. |
+| `on_dealer_contribution_0(session_addr, payload)` | session.dealer only | `DEALER_DEAL` | `DEALER_DEAL` | Stores DC0 and starts the touch-driven Pedersen degree check. Aborts if resharing is expected and the DC0 consistency proof is missing or invalid. |
 | `on_share_holder_ack(session_addr)` | any holder in `share_holders` | `RECIPIENT_ACK` | (same) | Toggles `share_holder_acks[idx] = true`. |
-| `on_dealer_open(session_addr, payload)` | session.dealer only | `RECIPIENT_ACK`, `now ≥ deal_time_micros + 10s`, `acks ≥ threshold`, every holder either acked or revealed | `VERIFY_DEALER_OPENING` | Reveals scalar shares for every non-acker. |
-| `touch(session_addr)` | any | `VERIFY_DEALER_OPENING` | `VERIFY_DEALER_OPENING` (loop) or `SUCCESS` | Computes one `share_pk` per call (gas budget). |
+| `on_dealer_open(session_addr, payload)` | session.dealer only | `RECIPIENT_ACK`, `now ≥ deal_time_micros + 10s`, `acks ≥ threshold`, every holder either acked or revealed | `VERIFY_DEALER_OPENING` | Reveals Pedersen openings for every non-acker. |
+| `touch(session_addr)` | any | `DEALER_DEAL` or `VERIFY_DEALER_OPENING` | next state when finished | Advances either the DC0 degree check or one DC1 public-key verification per call. |
 
 ### 2.4 Failure modes and operator response
 
 - **Dealer never sends DC0.** Session stuck in `DEALER_DEAL`. The composing protocol (DKG / DKR) tolerates this — only `t` of `n` VSS need to complete. The owning DKG `touch` will see this VSS not in `STATE__SUCCESS` and skip it.
-- **Recipient cannot decrypt the share message** (PKE decryption fails or Feldman verification fails). Recipient MUST NOT call `on_share_holder_ack`. After the 10s window, dealer opens the share publicly; if the publicly-revealed share also fails on-chain Feldman verification, `on_dealer_open` aborts with `E_INVALID_SHARE` and the VSS session is unrecoverable. (Composing protocol then proceeds without this VSS.)
+- **Recipient cannot decrypt the share message** (PKE decryption fails or Pedersen opening verification fails). Recipient MUST NOT call `on_share_holder_ack`. After the 10s window, dealer opens the share publicly; if the publicly-revealed opening also fails on-chain Pedersen verification, `on_dealer_open` aborts with `E_INVALID_REVEALED_SHARE` and the VSS session is unrecoverable. (Composing protocol then proceeds without this VSS.)
 - **`< threshold` recipients ack within the window.** `on_dealer_open` aborts with `E_NOT_ENOUGH_ACKS`. The composing protocol skips this VSS.
 
 ---
@@ -205,8 +210,8 @@ Plus `STATE__FAIL` reached only via `cancel(caller, ...)` (`dkg.move:161-167`).
 
 Each worker monitors `network::state_view_v0_bcs`, sees DKG sessions where it is in `workers`, and runs the matching dealer + recipient roles concurrently:
 
-- **Dealer role** (`worker-components/vss-dealer/src/lib.rs`): builds `DealerContribution0` (commitments + per-recipient ciphertexts + dealer state ciphertext); after `ACK_WINDOW_MICROS`, builds `DealerContribution1` revealing shares of non-ackers.
-- **Recipient role** (`worker-components/vss-recipient/src/lib.rs`): for each VSS where the worker is a holder, fetches DC0 from the chain, decrypts its share, runs Feldman verification, calls `on_share_holder_ack` if good.
+- **Dealer role** (`worker-components/vss-dealer/src/lib.rs`): builds `DealerContribution0` (commitments + per-recipient ciphertexts + dealer state ciphertext); after `ACK_WINDOW_MICROS`, builds `DealerContribution1` revealing openings for non-ackers.
+- **Recipient role** (`worker-components/vss-recipient/src/lib.rs`): for each VSS where the worker is a holder, fetches DC0 from the chain, decrypts its share opening, runs Pedersen verification, calls `on_share_holder_ack` if good.
 - **Touch role** (`worker-components/dkg-worker/src/lib.rs`): periodically calls `dkg::touch` to drive the state machine.
 
 ### 3.4 Output
@@ -299,7 +304,7 @@ The reshared master_pk is unchanged: `secretly_scaled_element` is copied from th
 
 ### 4.3 Worker behavior
 
-Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer whose first Feldman commitment $v_0$ **must** equal the pre-published $P_j$ — the parent session's `src_share_pks[j]`. The on-chain `element_eq` check at `vss.move:201` forces the dealer's polynomial constant term `a_0` to equal `s_j` regardless of dealer behaviour; non-constant coefficients are still derived deterministically from `pke_dk`.
+Same three roles as DKG (dealer / recipient / touch) but each old-committee worker is also a dealer whose Pedersen commitment at position 0 is tied by sigma proof to the pre-published $P_j$ — the parent session's `src_share_pks[j]`. The on-chain consistency proof check forces the dealer's polynomial constant term `a_0` to equal `s_j` regardless of dealer behaviour.
 
 ---
 

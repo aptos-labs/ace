@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * `ace deployment update-contracts` — republish all 11 ACE Move packages under the
+ * `ace deployment update-contracts` — republish all ACE Move packages under the
  * resolved deployment profile.
  *
  * Version selection (in order):

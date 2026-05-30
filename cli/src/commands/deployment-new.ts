@@ -10,7 +10,7 @@
  *   3. Generate (or import) the admin keypair.
  *   4. Fund the admin (manual prompt for testnet/mainnet, faucet for dev/local).
  *   5. Optional Geomi inputs (shared-node API key, gas-station API key).
- *   6. Deploy all 11 ACE Move packages at the version from `<repo>/NEXT_RELEASE`.
+ *   6. Deploy all ACE Move packages at the version from `<repo>/NEXT_RELEASE`.
  *   7. Print operator-onboarding blob; wait for operators to register.
  *   8. Collect committee + threshold + epoch duration; call `network::start_initial_epoch`.
  *   9. Persist the deployment profile to `~/.ace/config.json`.

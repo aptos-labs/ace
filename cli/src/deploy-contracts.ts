@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Helpers for publishing the 11 ACE Move packages to a chain.
+ * Helpers for publishing the 12 ACE Move packages to a chain.
  *
  * Used by `ace deployment new` (initial deploy) and `ace deployment update-contracts`
  * (republish). The functions are independent copies of the logic in
@@ -39,7 +39,8 @@ export const ACE_CONTRACT_PACKAGES: readonly string[] = [
     'worker_config',
     'group',
     'fiat-shamir-transform',
-    'sigma-dlog-eq',
+    'sigma-dlog-linear',
+    'pedersen-polynomial-commitment',
     'vss',
     'dkg',
     'dkr',
@@ -148,7 +149,7 @@ export function ed25519PrivateKeyHex(account: Account): string {
 }
 
 /**
- * Publish the canonical 11 ACE packages (or any subset) under `REPO_ROOT/contracts/<folder>` in order.
+ * Publish the canonical 12 ACE packages (or any subset) under `REPO_ROOT/contracts/<folder>` in order.
  *
  * If `versionStr` is provided, every `Move.toml`'s `version = "..."` line is rewritten to that value
  * before publishing (the shipped values are placeholders).

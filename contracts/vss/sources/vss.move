@@ -88,9 +88,7 @@ module ace::vss {
         state_code: u8,
         deal_time_micros: u64,
         dealer_contribution_0: Option<DealerContribution0>,
-        dealer_commitment_check_z_poly: vector<group::Scalar>,
-        dealer_commitment_check_accumulator: group::Element,
-        next_dealer_commitment_to_verify: u64,
+        dealer_commitment_check: pedersen_polynomial_commitment::DegreeCheckState,
         share_holder_acks: vector<bool>,
         dealer_contribution_1: Option<DealerContribution1>,
         /// Next position in {0, 1, ..., n} for touch() to verify from DC1.
@@ -157,9 +155,7 @@ module ace::vss {
             deal_time_micros: 0,
             state_code: STATE__DEALER_DEAL,
             dealer_contribution_0: option::none(),
-            dealer_commitment_check_z_poly: vector[],
-            dealer_commitment_check_accumulator: group::identity(scheme),
-            next_dealer_commitment_to_verify: 0,
+            dealer_commitment_check: pedersen_polynomial_commitment::empty_degree_check_state(&pcs_context),
             share_holder_acks: range(0, num_share_holders).map(|_| false),
             dealer_contribution_1: option::none(),
             next_public_key_to_verify: 0,
@@ -224,17 +220,14 @@ module ace::vss {
             );
         };
 
-        let z_poly = pedersen_polynomial_commitment::degree_check_z_poly(
+        let dealer_commitment_check = pedersen_polynomial_commitment::degree_check_start(
             &session.pcs_context,
             &dc0.pcs_commitment,
             session.threshold - 1,
         );
-        let accumulator = pedersen_polynomial_commitment::degree_check_initial_accumulator(&session.pcs_context);
 
         session.dealer_contribution_0 = option::some(dc0);
-        session.dealer_commitment_check_z_poly = z_poly;
-        session.dealer_commitment_check_accumulator = accumulator;
-        session.next_dealer_commitment_to_verify = 0;
+        session.dealer_commitment_check = dealer_commitment_check;
     }
 
     public entry fun on_share_holder_ack(
@@ -327,30 +320,24 @@ module ace::vss {
 
     fun touch_dealer_commitment(session: &mut Session) {
         let dc0 = session.dealer_contribution_0.borrow();
-        let expected_len = pedersen_polynomial_commitment::degree_check_num_points(&dc0.pcs_commitment);
-        let eval_position = session.next_dealer_commitment_to_verify;
-
-        if (eval_position >= expected_len) {
+        if (pedersen_polynomial_commitment::degree_check_finished(&dc0.pcs_commitment, &session.dealer_commitment_check)) {
             finish_dealer_commitment_check(session);
             return;
         };
 
-        let accumulator = pedersen_polynomial_commitment::degree_check_step(
+        pedersen_polynomial_commitment::degree_check_touch(
             &session.pcs_context,
             &dc0.pcs_commitment,
-            &session.dealer_commitment_check_z_poly,
-            eval_position,
-            &session.dealer_commitment_check_accumulator,
+            &mut session.dealer_commitment_check,
         );
-        session.dealer_commitment_check_accumulator = accumulator;
-        session.next_dealer_commitment_to_verify = eval_position + 1;
-        if (session.next_dealer_commitment_to_verify == expected_len) {
+        if (pedersen_polynomial_commitment::degree_check_finished(&dc0.pcs_commitment, &session.dealer_commitment_check)) {
             finish_dealer_commitment_check(session);
         };
     }
 
     fun finish_dealer_commitment_check(session: &mut Session) {
-        if (pedersen_polynomial_commitment::degree_check_accepts(&session.pcs_context, &session.dealer_commitment_check_accumulator)) {
+        let dc0 = session.dealer_contribution_0.borrow();
+        if (pedersen_polynomial_commitment::degree_check_accepts(&session.pcs_context, &dc0.pcs_commitment, &session.dealer_commitment_check)) {
             session.state_code = STATE__RECIPIENT_ACK;
             session.deal_time_micros = timestamp::now_microseconds();
         } else {

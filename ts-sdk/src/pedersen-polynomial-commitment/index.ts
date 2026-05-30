@@ -139,3 +139,34 @@ export class Opening {
         });
     }
 }
+
+export class DegreeCheckState {
+    constructor(
+        readonly zPoly: Scalar[],
+        readonly accumulator: Element,
+        readonly nextEvalPosition: number,
+    ) {}
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU32AsUleb128(this.zPoly.length);
+        for (const z of this.zPoly) z.serialize(serializer);
+        this.accumulator.serialize(serializer);
+        serializer.serializeU64(this.nextEvalPosition);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<DegreeCheckState> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const zLen = deserializer.deserializeUleb128AsU32();
+                const zPoly: Scalar[] = [];
+                for (let i = 0; i < zLen; i++) {
+                    zPoly.push(Scalar.deserialize(deserializer).unwrapOrThrow(`zPoly[${i}] deserialize failed`));
+                }
+                const accumulator = Element.deserialize(deserializer).unwrapOrThrow("accumulator deserialize failed");
+                const nextEvalPosition = Number(deserializer.deserializeU64());
+                return new DegreeCheckState(zPoly, accumulator, nextEvalPosition);
+            },
+        });
+    }
+}

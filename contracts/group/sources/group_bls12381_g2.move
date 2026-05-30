@@ -101,6 +101,12 @@ module ace::group_bls12381_g2 {
         from_inner_scalar(&crypto_algebra::from_u64(x))
     }
 
+    public fun scalar_from_lsb_bytes(bytes: vector<u8>): PrivateScalar {
+        assert!(bytes.length() == FR_SCALAR_BYTES, E_INVALID);
+        let scalar = crypto_algebra::deserialize<Fr, FormatFrLsb>(&bytes).destroy_some();
+        from_inner_scalar(&scalar)
+    }
+
     public fun deserialize_private_scalar(stream: &mut BCSStream): PrivateScalar {
         let scalar = deserialize_fr_scalar(stream);
         from_inner_scalar(&scalar)

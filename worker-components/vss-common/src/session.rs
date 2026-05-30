@@ -196,6 +196,14 @@ pub struct BcsPcsOpening {
     pub eval_value_r: BcsScalar,
 }
 
+/// BCS mirror of `pedersen_polynomial_commitment::DegreeCheckState`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsPcsDegreeCheckState {
+    pub z_poly: Vec<BcsScalar>,
+    pub accumulator: BcsElement,
+    pub next_eval_position: u64,
+}
+
 /// BCS mirror of `sigma_dlog_linear::Proof`.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct BcsSigmaDlogLinearProof {
@@ -232,9 +240,7 @@ pub struct BcsSession {
     pub state_code: u8,
     pub deal_time_micros: u64,
     pub dealer_contribution_0: Option<BcsDealerContribution0>,
-    pub dealer_commitment_check_z_poly: Vec<BcsScalar>,
-    pub dealer_commitment_check_accumulator: BcsElement,
-    pub next_dealer_commitment_to_verify: u64,
+    pub dealer_commitment_check: BcsPcsDegreeCheckState,
     pub share_holder_acks: Vec<bool>,
     pub dealer_contribution_1: Option<BcsDealerContribution1>,
     pub next_public_key_to_verify: u64,

@@ -9,6 +9,7 @@ import * as Bls12381G2 from "../group/bls12381g2";
 import * as pke from "../pke";
 import {
     Commitment as PcsCommitment,
+    DegreeCheckState as PcsDegreeCheckState,
     Opening as PcsOpening,
     PublicParams as PcsPublicParams,
 } from "../pedersen-polynomial-commitment";
@@ -16,7 +17,7 @@ import { Proof as SigmaDlogLinearProof } from "../sigma-dlog-linear";
 import { Scalar, Element, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
 
 export { Scalar as PrivateScalar, Element as PublicPoint, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
-export { PcsCommitment, PcsOpening, PcsPublicParams, SigmaDlogLinearProof };
+export { PcsCommitment, PcsDegreeCheckState, PcsOpening, PcsPublicParams, SigmaDlogLinearProof };
 
 // Bls12381G1's Fr-only types (PrivateScalar / SecretShare / DealerState) are byte-for-byte
 // identical to Bls12381G2's; we keep separate inner classes per scheme so the dispatch is
@@ -517,9 +518,7 @@ export class Session {
     stateCode: number;
     dealTimeMicros: number;
     dealerContribution0: DealerContribution0 | undefined;
-    dealerCommitmentCheckZPoly: Scalar[];
-    dealerCommitmentCheckAccumulator: Element;
-    nextDealerCommitmentToVerify: number;
+    dealerCommitmentCheck: PcsDegreeCheckState;
     shareHolderAcks: boolean[];
     dealerContribution1: DealerContribution1 | undefined;
     nextPublicKeyToVerify: number;
@@ -538,9 +537,7 @@ export class Session {
             stateCode,
             dealTimeMicros,
             dealerContribution0,
-            dealerCommitmentCheckZPoly,
-            dealerCommitmentCheckAccumulator,
-            nextDealerCommitmentToVerify,
+            dealerCommitmentCheck,
             shareHolderAcks,
             dealerContribution1,
             nextPublicKeyToVerify,
@@ -556,9 +553,7 @@ export class Session {
             stateCode: number,
             dealTimeMicros: number,
             dealerContribution0: DealerContribution0 | undefined,
-            dealerCommitmentCheckZPoly: Scalar[],
-            dealerCommitmentCheckAccumulator: Element,
-            nextDealerCommitmentToVerify: number,
+            dealerCommitmentCheck: PcsDegreeCheckState,
             shareHolderAcks: boolean[],
             dealerContribution1: DealerContribution1 | undefined,
             nextPublicKeyToVerify: number,
@@ -575,9 +570,7 @@ export class Session {
         this.stateCode = stateCode;
         this.dealTimeMicros = dealTimeMicros;
         this.dealerContribution0 = dealerContribution0;
-        this.dealerCommitmentCheckZPoly = dealerCommitmentCheckZPoly;
-        this.dealerCommitmentCheckAccumulator = dealerCommitmentCheckAccumulator;
-        this.nextDealerCommitmentToVerify = nextDealerCommitmentToVerify;
+        this.dealerCommitmentCheck = dealerCommitmentCheck;
         this.shareHolderAcks = shareHolderAcks;
         this.dealerContribution1 = dealerContribution1;
         this.nextPublicKeyToVerify = nextPublicKeyToVerify;
@@ -609,10 +602,7 @@ export class Session {
             serializer.serializeU8(1);
             this.dealerContribution0.serialize(serializer);
         }
-        serializer.serializeU32AsUleb128(this.dealerCommitmentCheckZPoly.length);
-        for (const z of this.dealerCommitmentCheckZPoly) z.serialize(serializer);
-        this.dealerCommitmentCheckAccumulator.serialize(serializer);
-        serializer.serializeU64(this.nextDealerCommitmentToVerify);
+        this.dealerCommitmentCheck.serialize(serializer);
         serializer.serializeU32AsUleb128(this.shareHolderAcks.length);
         for (const ack of this.shareHolderAcks) {
             serializer.serializeBool(ack);
@@ -657,13 +647,7 @@ export class Session {
                 } else if (dc0Tag !== 0) {
                     throw `dealerContribution0 option tag must be 0 or 1, got ${dc0Tag}`;
                 }
-                const zPolyLen = deserializer.deserializeUleb128AsU32();
-                const dealerCommitmentCheckZPoly: Scalar[] = [];
-                for (let i = 0; i < zPolyLen; i++) {
-                    dealerCommitmentCheckZPoly.push(Scalar.deserialize(deserializer).unwrapOrThrow(`dealerCommitmentCheckZPoly[${i}] deserialize failed`));
-                }
-                const dealerCommitmentCheckAccumulator = Element.deserialize(deserializer).unwrapOrThrow("dealerCommitmentCheckAccumulator deserialize failed");
-                const nextDealerCommitmentToVerify = Number(deserializer.deserializeU64());
+                const dealerCommitmentCheck = PcsDegreeCheckState.deserialize(deserializer).unwrapOrThrow("dealerCommitmentCheck deserialize failed");
                 const acksLen = deserializer.deserializeUleb128AsU32();
                 const shareHolderAcks: boolean[] = [];
                 for (let i = 0; i < acksLen; i++) {
@@ -693,9 +677,7 @@ export class Session {
                     stateCode,
                     dealTimeMicros,
                     dealerContribution0,
-                    dealerCommitmentCheckZPoly,
-                    dealerCommitmentCheckAccumulator,
-                    nextDealerCommitmentToVerify,
+                    dealerCommitmentCheck,
                     shareHolderAcks,
                     dealerContribution1,
                     nextPublicKeyToVerify,

@@ -246,6 +246,16 @@ module ace::group {
         }
     }
 
+    public fun scalar_from_lsb_bytes(scheme: u8, bytes: vector<u8>): Scalar {
+        if (scheme == SCHEME__BLS12381G1) {
+            Scalar::Bls12381G1(group_bls12381_g1::scalar_from_lsb_bytes(bytes))
+        } else if (scheme == SCHEME__BLS12381G2) {
+            Scalar::Bls12381G2(group_bls12381_g2::scalar_from_lsb_bytes(bytes))
+        } else {
+            abort error::invalid_argument(E_UNSUPPORTED_SCHEME)
+        }
+    }
+
     public fun msm(elements: vector<Element>, scalars: vector<Scalar>): Element {
         let size = elements.length();
         assert!(size == scalars.length(), error::invalid_argument(E_INVALID_MSM));

@@ -16,14 +16,15 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use vss_common::{
     crypto::{fr_from_le_bytes, fr_to_le_bytes},
-    normalize_account_addr,
+    normalize_account_addr, parse_ed25519_signing_key_hex,
     pke::pke_decrypt,
-    parse_ed25519_signing_key_hex,
-    reconstruct_share,
-    AptosRpc,
-    TxnArg,
+    reconstruct_share, should_submit_rotating_touch, AptosRpc, TxnArg,
 };
 
+const STATE_START_VSSS: u8 = 0;
+const STATE_VSS_IN_PROGRESS: u8 = 1;
+const STATE_CALC_LAGRANGE_COEFFS: u8 = 2;
+const STATE_AGGREGATE_SHARE_PKS: u8 = 3;
 const STATE_DONE: u8 = 4;
 const STATE_FAIL: u8 = 5;
 
@@ -88,7 +89,13 @@ fn parse_dkr_session_data(data: &Value) -> Result<DkrSession> {
         _ => return Err(anyhow!("missing or invalid state_code in DKR session")),
     };
 
-    Ok(DkrSession { original_session, previous_session, current_nodes, vss_sessions, state_code })
+    Ok(DkrSession {
+        original_session,
+        previous_session,
+        current_nodes,
+        vss_sessions,
+        state_code,
+    })
 }
 
 /// Reconstruct the old committee member's DKG share by summing decrypted sub-shares
@@ -145,32 +152,43 @@ async fn reconstruct_dkg_share(
             continue; // Skip non-contributing VSS sessions.
         }
 
-        let bcs_session = rpc.get_session_bcs_decoded(ace, vss_addr).await
+        let bcs_session = rpc
+            .get_session_bcs_decoded(ace, vss_addr)
+            .await
             .map_err(|e| anyhow!("failed to BCS-decode DKG VSS session {}: {}", vss_addr, e))?;
 
         // Find my position in share_holders on the first done session.
         if my_dkg_idx.is_none() {
-            my_dkg_idx = bcs_session.share_holders.iter().position(|h| h == &my_addr_bytes);
+            my_dkg_idx = bcs_session
+                .share_holders
+                .iter()
+                .position(|h| h == &my_addr_bytes);
             if my_dkg_idx.is_none() {
                 return Err(anyhow!(
                     "my_addr {} not found in share_holders of DKG VSS {}",
-                    my_addr, vss_addr
+                    my_addr,
+                    vss_addr
                 ));
             }
         }
         let idx = my_dkg_idx.unwrap();
 
-        let dc0 = bcs_session
-            .dealer_contribution_0
-            .ok_or_else(|| anyhow!("DKG VSS session {} (done_flags[{}]=true) has no DC0", vss_addr, k))?;
+        let dc0 = bcs_session.dealer_contribution_0.ok_or_else(|| {
+            anyhow!(
+                "DKG VSS session {} (done_flags[{}]=true) has no DC0",
+                vss_addr,
+                k
+            )
+        })?;
 
-        let ct = dc0
-            .private_share_messages
-            .get(idx)
-            .ok_or_else(|| anyhow!(
+        let ct = dc0.private_share_messages.get(idx).ok_or_else(|| {
+            anyhow!(
                 "DKG VSS session {} has only {} share messages, need index {}",
-                vss_addr, dc0.private_share_messages.len(), idx
-            ))?;
+                vss_addr,
+                dc0.private_share_messages.len(),
+                idx
+            )
+        })?;
 
         let plaintext = pke_decrypt(pke_dk_bytes, ct)
             .map_err(|e| anyhow!("DKG VSS session {} decryption failed: {}", vss_addr, e))?;
@@ -185,7 +203,8 @@ async fn reconstruct_dkg_share(
         {
             return Err(anyhow!(
                 "DKG VSS session {} invalid share message format (len={}, prefix={:02x} {:02x})",
-                vss_addr, plaintext.len(),
+                vss_addr,
+                plaintext.len(),
                 plaintext.get(0).copied().unwrap_or(0xff),
                 plaintext.get(1).copied().unwrap_or(0xff),
             ));
@@ -198,14 +217,21 @@ async fn reconstruct_dkg_share(
     }
 
     if my_dkg_idx.is_none() {
-        return Err(anyhow!("no done VSS sessions in DKG {}", original_dkg_session));
+        return Err(anyhow!(
+            "no done VSS sessions in DKG {}",
+            original_dkg_session
+        ));
     }
 
     Ok(fr_to_le_bytes(dkg_share_fr))
 }
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(
+        config.rpc_url.clone(),
+        config.rpc_api_key.clone(),
+        config.rpc_gas_key.clone(),
+    );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
@@ -229,7 +255,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         .ok_or_else(|| anyhow!("account {} not found in DKR current_nodes", account_addr))?;
 
     // Reconstruct share immediately — previous_session is always DONE when dkr::new_session runs.
-    println!("dkr-src: reconstructing share from previous session={}", session.previous_session);
+    println!(
+        "dkr-src: reconstructing share from previous session={}",
+        session.previous_session
+    );
     let (dkg_share_bytes, _, _) = reconstruct_share(
         &rpc,
         &ace,
@@ -238,7 +267,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         &pke_dk_bytes,
     )
     .await?;
-    println!("dkr-src: share reconstructed successfully (my_src_idx={})", my_src_idx);
+    println!(
+        "dkr-src: share reconstructed successfully (my_src_idx={})",
+        my_src_idx
+    );
 
     // Dealer is spawned once vss_sessions[my_src_idx] appears on-chain (lazy VSS fan-out).
     let mut dealer_shutdown_tx: Option<oneshot::Sender<()>> = None;
@@ -256,19 +288,61 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             _ = interval.tick() => {}
         }
 
-        // touch advances START_VSSS (one VSS per call) and later other DKR states.
-        if let Err(e) = rpc.submit_txn(
-            &sk, &vk, &account_addr,
-            &format!("{}::dkr::touch_entry", ace), &[],
-            &[TxnArg::Address(&dkr_session_addr)],
-        ).await {
-            eprintln!("dkr-src: touch_entry error: {:#}", e);
+        let mut session = match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("dkr-src: poll error: {:#}", e);
+                continue;
+            }
+        };
+
+        if session.state_code == STATE_DONE {
+            println!("dkr-src: DKR session reached DONE.");
+            if let Some(tx) = dealer_shutdown_tx {
+                let _ = tx.send(());
+            }
+            return Ok(());
+        }
+        if session.state_code >= STATE_FAIL {
+            if let Some(tx) = dealer_shutdown_tx {
+                let _ = tx.send(());
+            }
+            return Err(anyhow!(
+                "dkr-src: DKR session failed (state_code={})",
+                session.state_code
+            ));
         }
 
-        let session = match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
-            Ok(s) => s,
-            Err(e) => { eprintln!("dkr-src: poll error: {:#}", e); continue; }
+        let should_touch = match session.state_code {
+            STATE_START_VSSS | STATE_CALC_LAGRANGE_COEFFS | STATE_AGGREGATE_SHARE_PKS => true,
+            STATE_VSS_IN_PROGRESS => {
+                should_submit_rotating_touch(my_src_idx, session.current_nodes.len())
+            }
+            _ => true,
         };
+        if should_touch {
+            if let Err(e) = rpc
+                .submit_txn(
+                    &sk,
+                    &vk,
+                    &account_addr,
+                    &format!("{}::dkr::touch_entry", ace),
+                    &[],
+                    &[TxnArg::Address(&dkr_session_addr)],
+                )
+                .await
+            {
+                eprintln!("dkr-src: touch_entry error: {:#}", e);
+            }
+
+            session = match fetch_dkr_session(&rpc, &ace, &dkr_session_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("dkr-src: poll error: {:#}", e);
+                    continue;
+                }
+            };
+        }
 
         // Spawn dealer for vss_sessions[my_src_idx] once it appears.
         if dealer_shutdown_tx.is_none() && session.vss_sessions.len() > my_src_idx {
@@ -285,7 +359,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 account_sk_hex: config.account_sk_hex.clone(),
                 secret_override: Some(dkg_share_bytes),
             };
-            println!("dkr-src: spawning dealer for vss_sessions[{}]={}", my_src_idx, session.vss_sessions[my_src_idx]);
+            println!(
+                "dkr-src: spawning dealer for vss_sessions[{}]={}",
+                my_src_idx, session.vss_sessions[my_src_idx]
+            );
             tokio::spawn(async move {
                 if let Err(e) = vss_dealer::run(dealer_cfg, rx).await {
                     eprintln!("dkr-src: dealer sub-task error: {:#}", e);
@@ -293,15 +370,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             });
         }
 
-        if session.state_code == STATE_DONE {
-            println!("dkr-src: DKR session reached DONE.");
-            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
-            return Ok(());
-        }
-        if session.state_code >= STATE_FAIL {
-            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
-            return Err(anyhow!("dkr-src: DKR session failed (state_code={})", session.state_code));
-        }
-        println!("dkr-src: DKR in progress (state_code={}, vss_sessions={})", session.state_code, session.vss_sessions.len());
+        println!(
+            "dkr-src: DKR in progress (state_code={}, vss_sessions={})",
+            session.state_code,
+            session.vss_sessions.len()
+        );
     }
 }

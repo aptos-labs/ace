@@ -4,7 +4,7 @@
 //! Programmatic API for the epoch-change **next committee** side of a single
 //! on-chain `ace::epoch_change::Session`, identified by `epoch_change_session`.
 //!
-//! 1. Submits `epoch_change::touch(session_addr)` on each tick. Only reads
+//! 1. Submits paced `epoch_change::touch(session_addr)` calls. Only reads
 //!    `ace::epoch_change::Session` at `RunConfig::epoch_change_session` — not `network::State`.
 //! 2. Drives the session (`START_DKRS`, `START_DKGS`, then `AWAIT` → `DONE`), same liveness as
 //!    `epoch-change-cur` for the shared `touch` entry.
@@ -21,7 +21,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::oneshot;
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
+use vss_common::{
+    normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
+    TxnArg,
+};
 
 const STATE_DONE: u8 = 3;
 
@@ -82,7 +85,11 @@ fn parse_session(data: &Value) -> Result<EpochChangeSession> {
     let state_code: u8 = match &data["state_code"] {
         Value::Number(n) => n.as_u64().unwrap_or(0) as u8,
         Value::String(s) => s.parse().unwrap_or(0),
-        _ => return Err(anyhow!("missing or invalid state_code in epoch_change::Session")),
+        _ => {
+            return Err(anyhow!(
+                "missing or invalid state_code in epoch_change::Session"
+            ))
+        }
     };
 
     Ok(EpochChangeSession {
@@ -140,21 +147,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             _ = interval.tick() => {}
         }
 
-        if let Err(e) = rpc
-            .submit_txn(
-                &sk,
-                &vk,
-                &account_addr,
-                &format!("{}::epoch_change::touch", ace),
-                &[],
-                &[TxnArg::Address(&session_addr)],
-            )
-            .await
-        {
-            eprintln!("epoch-change-nxt: touch error: {:#}", e);
-        }
-
-        let session = match fetch_epoch_change_session(&rpc, &ace, &session_addr).await {
+        let mut session = match fetch_epoch_change_session(&rpc, &ace, &session_addr).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("epoch-change-nxt: fetch session error: {:#}", e);
@@ -169,10 +162,38 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             return Ok(());
         }
 
-        let in_nxt = session.nxt_nodes.iter().any(|n| n == &account_addr);
+        let my_nxt_idx = session.nxt_nodes.iter().position(|n| n == &account_addr);
+        if my_nxt_idx
+            .map(|idx| should_submit_rotating_touch(idx, session.nxt_nodes.len()))
+            .unwrap_or(false)
+        {
+            if let Err(e) = rpc
+                .submit_txn(
+                    &sk,
+                    &vk,
+                    &account_addr,
+                    &format!("{}::epoch_change::touch", ace),
+                    &[],
+                    &[TxnArg::Address(&session_addr)],
+                )
+                .await
+            {
+                eprintln!("epoch-change-nxt: touch error: {:#}", e);
+            }
+
+            session = match fetch_epoch_change_session(&rpc, &ace, &session_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("epoch-change-nxt: fetch session error: {:#}", e);
+                    continue;
+                }
+            };
+        }
+
+        let in_nxt = my_nxt_idx.is_some();
         if !in_nxt {
             eprintln!(
-                "epoch-change-nxt: account {} is not in nxt_nodes; only submitting touch, no dkr-dst/dkg.",
+                "epoch-change-nxt: account {} is not in nxt_nodes; no dkr-dst/dkg.",
                 account_addr
             );
             if !dkr_dst_tasks.is_empty() {
@@ -251,10 +272,16 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             let label = dkg.clone();
             tokio::spawn(async move {
                 if let Err(e) = dkg_worker::run(cfg, rx).await {
-                    eprintln!("epoch-change-nxt: dkg-worker error for dkg={} : {:#}", label, e);
+                    eprintln!(
+                        "epoch-change-nxt: dkg-worker error for dkg={} : {:#}",
+                        label, e
+                    );
                 }
             });
-            println!("epoch-change-nxt: started dkg-worker for dkg_session={}", dkg);
+            println!(
+                "epoch-change-nxt: started dkg-worker for dkg_session={}",
+                dkg
+            );
         }
         for k in dkg_tasks
             .keys()

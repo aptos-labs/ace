@@ -47,3 +47,42 @@ pub fn normalize_account_addr(s: &str) -> String {
     let hex = t.strip_prefix("0x").unwrap_or(&t);
     format!("0x{:0>64}", hex)
 }
+
+/// Returns true for one rotating committee slot per wall-clock second.
+///
+/// Maintenance clients use this to avoid every worker submitting the same no-op
+/// touch transaction while an on-chain session is waiting on sub-sessions.
+pub fn should_submit_rotating_touch(my_idx: usize, n: usize) -> bool {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    rotating_touch_slot_for_second(my_idx, n, now_secs)
+}
+
+pub fn rotating_touch_slot_for_second(my_idx: usize, n: usize, unix_secs: u64) -> bool {
+    n == 0 || (my_idx < n && (n == 1 || unix_secs % (n as u64) == my_idx as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rotating_touch_slot_for_second;
+
+    #[test]
+    fn rotating_touch_slot_selects_one_committee_member() {
+        let n = 5;
+        for second in 0..20 {
+            let selected = (0..n)
+                .filter(|idx| rotating_touch_slot_for_second(*idx, n, second))
+                .count();
+            assert_eq!(selected, 1);
+        }
+    }
+
+    #[test]
+    fn rotating_touch_slot_handles_empty_or_singleton_committees() {
+        assert!(rotating_touch_slot_for_second(0, 0, 42));
+        assert!(rotating_touch_slot_for_second(0, 1, 42));
+        assert!(!rotating_touch_slot_for_second(1, 1, 42));
+    }
+}

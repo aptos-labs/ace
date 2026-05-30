@@ -12,8 +12,14 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
+use vss_common::{
+    normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
+    TxnArg,
+};
 
+const STATE_START_VSSS: u8 = 0;
+const STATE_VSS_IN_PROGRESS: u8 = 1;
+const STATE_AGGREGATE_SHARE_PKS: u8 = 2;
 const STATE_DONE: u8 = 3;
 const STATE_FAIL: u8 = 4;
 
@@ -66,11 +72,19 @@ fn parse_dkg_session_data(data: &Value) -> Result<DkgSession> {
         _ => return Err(anyhow!("missing or invalid state field in DKG session")),
     };
 
-    Ok(DkgSession { workers, vss_sessions, state })
+    Ok(DkgSession {
+        workers,
+        vss_sessions,
+        state,
+    })
 }
 
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    let rpc = AptosRpc::new_with_gas_key(config.rpc_url.clone(), config.rpc_api_key.clone(), config.rpc_gas_key.clone());
+    let rpc = AptosRpc::new_with_gas_key(
+        config.rpc_url.clone(),
+        config.rpc_api_key.clone(),
+        config.rpc_gas_key.clone(),
+    );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
@@ -111,19 +125,68 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             _ = interval.tick() => {}
         }
 
-        // touch advances START_VSSS (one VSS per call) and later finalises the DKG.
-        if let Err(e) = rpc.submit_txn(
-            &sk, &vk, &account_addr,
-            &format!("{}::dkg::touch_entry", ace), &[],
-            &[TxnArg::Address(&dkg_session_addr)],
-        ).await {
-            eprintln!("dkg-worker: touch_entry error: {:#}", e);
+        let mut session = match fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("dkg-worker: poll error: {:#}", e);
+                continue;
+            }
+        };
+
+        if session.state == STATE_DONE {
+            println!("dkg-worker: DKG session reached DONE.");
+            if let Some(tx) = dealer_shutdown_tx {
+                let _ = tx.send(());
+            }
+            for (_, tx) in recipient_shutdown_txs {
+                let _ = tx.send(());
+            }
+            return Ok(());
+        }
+        if session.state >= STATE_FAIL {
+            if let Some(tx) = dealer_shutdown_tx {
+                let _ = tx.send(());
+            }
+            for (_, tx) in recipient_shutdown_txs {
+                let _ = tx.send(());
+            }
+            return Err(anyhow!(
+                "dkg-worker: DKG session failed (state={})",
+                session.state
+            ));
         }
 
-        let session = match fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await {
-            Ok(s) => s,
-            Err(e) => { eprintln!("dkg-worker: poll error: {:#}", e); continue; }
+        // Fan-out and aggregation states need multiple useful touches. While VSS
+        // sub-sessions are running, one rotating worker is enough to detect when
+        // threshold completion has been reached.
+        let should_touch = match session.state {
+            STATE_START_VSSS | STATE_AGGREGATE_SHARE_PKS => true,
+            STATE_VSS_IN_PROGRESS => should_submit_rotating_touch(my_idx, n),
+            _ => true,
         };
+        if should_touch {
+            if let Err(e) = rpc
+                .submit_txn(
+                    &sk,
+                    &vk,
+                    &account_addr,
+                    &format!("{}::dkg::touch_entry", ace),
+                    &[],
+                    &[TxnArg::Address(&dkg_session_addr)],
+                )
+                .await
+            {
+                eprintln!("dkg-worker: touch_entry error: {:#}", e);
+            }
+
+            session = match fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("dkg-worker: poll error: {:#}", e);
+                    continue;
+                }
+            };
+        }
 
         // Spawn dealer for vss_sessions[my_idx] as soon as it appears.
         if dealer_shutdown_tx.is_none() && session.vss_sessions.len() > my_idx {
@@ -140,7 +203,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 account_sk_hex: config.account_sk_hex.clone(),
                 secret_override: None,
             };
-            println!("dkg-worker: spawning dealer for vss_sessions[{}]={}", my_idx, session.vss_sessions[my_idx]);
+            println!(
+                "dkg-worker: spawning dealer for vss_sessions[{}]={}",
+                my_idx, session.vss_sessions[my_idx]
+            );
             tokio::spawn(async move {
                 if let Err(e) = vss_dealer::run(dealer_cfg, rx).await {
                     eprintln!("dkg-worker: dealer sub-task error: {:#}", e);
@@ -165,25 +231,24 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 account_addr: account_addr.clone(),
                 account_sk_hex: config.account_sk_hex.clone(),
             };
-            println!("dkg-worker: spawning recipient for vss_sessions[{}]={}", j, vss_addr);
+            println!(
+                "dkg-worker: spawning recipient for vss_sessions[{}]={}",
+                j, vss_addr
+            );
             tokio::spawn(async move {
                 if let Err(e) = vss_recipient::run(rcfg, rx).await {
-                    eprintln!("dkg-worker: recipient sub-task (vss_idx={}) error: {:#}", j, e);
+                    eprintln!(
+                        "dkg-worker: recipient sub-task (vss_idx={}) error: {:#}",
+                        j, e
+                    );
                 }
             });
         }
 
-        if session.state == STATE_DONE {
-            println!("dkg-worker: DKG session reached DONE.");
-            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
-            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
-            return Ok(());
-        }
-        if session.state >= STATE_FAIL {
-            if let Some(tx) = dealer_shutdown_tx { let _ = tx.send(()); }
-            for (_, tx) in recipient_shutdown_txs { let _ = tx.send(()); }
-            return Err(anyhow!("dkg-worker: DKG session failed (state={})", session.state));
-        }
-        println!("dkg-worker: DKG in progress (state={}, vss_sessions={})", session.state, session.vss_sessions.len());
+        println!(
+            "dkg-worker: DKG in progress (state={}, vss_sessions={})",
+            session.state,
+            session.vss_sessions.len()
+        );
     }
 }

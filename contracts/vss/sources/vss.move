@@ -312,32 +312,32 @@ module ace::vss {
     }
 
     public fun completed(session_addr: address): bool {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         session.state_code == STATE__SUCCESS
     }
 
     public fun result_pk(session_addr: address): group::Element {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.public_keys[0]
     }
 
     /// Returns the Pedersen PCS commitment points for a completed VSS session.
     public fun pcs_commitment_points(session_addr: address): vector<group::Element> {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         pedersen_polynomial_commitment::commitment_points(&session.dealer_contribution_0.borrow().pcs_commitment)
     }
 
     /// Returns the per-holder share public keys for a completed VSS session.
     public fun share_pks(session_addr: address): vector<group::Element> {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         range(1, session.public_keys.length()).map(|i| session.public_keys[i])
     }
 
     public fun ack_vec(session_addr: address): vector<u8> {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         session.share_holder_acks.map(|ack| if (ack) 1 else 0)
     }

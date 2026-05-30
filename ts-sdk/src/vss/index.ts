@@ -7,9 +7,16 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import * as Bls12381G1 from "../group/bls12381g1";
 import * as Bls12381G2 from "../group/bls12381g2";
 import * as pke from "../pke";
+import {
+    Commitment as PcsCommitment,
+    Opening as PcsOpening,
+    PublicParams as PcsPublicParams,
+} from "../pedersen-polynomial-commitment";
+import { Proof as SigmaDlogLinearProof } from "../sigma-dlog-linear";
 import { Scalar, Element, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
 
 export { Scalar as PrivateScalar, Element as PublicPoint, SCHEME_BLS12381G1, SCHEME_BLS12381G2 } from "../group";
+export { PcsCommitment, PcsOpening, PcsPublicParams, SigmaDlogLinearProof };
 
 // Bls12381G1's Fr-only types (PrivateScalar / SecretShare / DealerState) are byte-for-byte
 // identical to Bls12381G2's; we keep separate inner classes per scheme so the dispatch is
@@ -156,162 +163,26 @@ export class SecretShare {
     }
 }
 
-// ── PcsCommitment ─────────────────────────────────────────────────────────────
-
-/** Pedersen PCS commitment points over the ACE domain {0, 1, ..., n}. */
-export class PcsCommitment {
-    constructor(readonly points: Element[]) {}
-
-    static fromBls12381G1(innerPoints: Bls12381G1.PcsCommitment): PcsCommitment {
-        return new PcsCommitment(
-            innerPoints.vValues.map((pt) => Element.fromBls12381G1(new Bls12381G1.PublicPoint(pt)))
-        );
-    }
-
-    static fromBls12381G2(innerPoints: Bls12381G2.PcsCommitment): PcsCommitment {
-        return new PcsCommitment(
-            innerPoints.vValues.map((pt) => Element.fromBls12381G2(new Bls12381G2.PublicPoint(pt)))
-        );
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU32AsUleb128(this.points.length);
-        for (const pt of this.points) {
-            pt.serialize(serializer); // writes [u8 scheme][uleb128(48)][48B]
-        }
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PcsCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const len = deserializer.deserializeUleb128AsU32();
-                const points: Element[] = [];
-                for (let i = 0; i < len; i++) {
-                    const pt = Element.deserialize(deserializer).unwrapOrThrow(`point[${i}] deserialize failed`);
-                    points.push(pt);
-                }
-                return new PcsCommitment(points);
-            },
-        });
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<PcsCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = PcsCommitment.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return obj;
-            },
-        });
-    }
-
-    toHex(): string {
-        return bytesToHex(this.toBytes());
-    }
-
-    static fromHex(hex: string): Result<PcsCommitment> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => PcsCommitment.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
-        });
-    }
-}
-
-// ── Pedersen PCS PublicParams / Opening ──────────────────────────────────────
-
-export class PcsPublicParams {
-    constructor(readonly generatorG: Element, readonly generatorH: Element) {}
-
-    serialize(serializer: Serializer): void {
-        this.generatorG.serialize(serializer);
-        this.generatorH.serialize(serializer);
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PcsPublicParams> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const generatorG = Element.deserialize(deserializer).unwrapOrThrow("generatorG deserialize failed");
-                const generatorH = Element.deserialize(deserializer).unwrapOrThrow("generatorH deserialize failed");
-                return new PcsPublicParams(generatorG, generatorH);
-            },
-        });
-    }
-}
-
-export class PcsOpening {
-    constructor(
-        readonly evalPosition: number,
-        readonly evalValueP: Scalar,
-        readonly evalValueR: Scalar,
-    ) {}
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU64(this.evalPosition);
-        this.evalValueP.serialize(serializer);
-        this.evalValueR.serialize(serializer);
-    }
-
-    static deserialize(deserializer: Deserializer): Result<PcsOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const evalPosition = Number(deserializer.deserializeU64());
-                const evalValueP = Scalar.deserialize(deserializer).unwrapOrThrow("evalValueP deserialize failed");
-                const evalValueR = Scalar.deserialize(deserializer).unwrapOrThrow("evalValueR deserialize failed");
-                return new PcsOpening(evalPosition, evalValueP, evalValueR);
-            },
-        });
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-
-    static fromBytes(bytes: Uint8Array): Result<PcsOpening> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const deserializer = new Deserializer(bytes);
-                const obj = PcsOpening.deserialize(deserializer).unwrapOrThrow("deserialize failed");
-                if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return obj;
-            },
-        });
-    }
-}
-
 // ── PrivateShareMessage ───────────────────────────────────────────────────────
 
 /** The plaintext payload encrypted to each share holder: a Pedersen PCS opening. */
 export class PrivateShareMessage {
-    constructor(readonly share: SecretShare, readonly opening?: PcsOpening) {}
+    constructor(readonly opening: PcsOpening) {}
+
+    get share(): SecretShare {
+        return secretShareFromScalar(this.opening.evalValueP);
+    }
 
     serialize(serializer: Serializer): void {
-        if (this.opening !== undefined) {
-            this.opening.serialize(serializer);
-        } else {
-            this.share.serialize(serializer);
-        }
+        this.opening.serialize(serializer);
     }
 
     static deserialize(deserializer: Deserializer): Result<PrivateShareMessage> {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
-                const share = SecretShare.deserialize(deserializer).unwrapOrThrow("share deserialize failed");
-                return new PrivateShareMessage(share);
+                const opening = PcsOpening.deserialize(deserializer).unwrapOrThrow("opening deserialize failed");
+                return new PrivateShareMessage(opening);
             },
         });
     }
@@ -326,18 +197,10 @@ export class PrivateShareMessage {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => {
-                if (bytes.length === 76) {
-                    const opening = PcsOpening.fromBytes(bytes);
-                    if (opening.isOk) {
-                        const share = secretShareFromScalar(opening.okValue!.evalValueP);
-                        return new PrivateShareMessage(share, opening.okValue!);
-                    }
-                }
-
                 const deserializer = new Deserializer(bytes);
-                const share = SecretShare.deserialize(deserializer).unwrapOrThrow("legacy share deserialize failed");
+                const msg = PrivateShareMessage.deserialize(deserializer).unwrapOrThrow("deserialize failed");
                 if (deserializer.remaining() !== 0) throw "trailing bytes";
-                return new PrivateShareMessage(share);
+                return msg;
             },
         });
     }
@@ -437,38 +300,6 @@ export class DealerState {
         return Result.capture({
             recordsExecutionTimeMs: false,
             task: () => DealerState.fromBytes(hexToBytes(hex)).unwrapOrThrow("deserialization failed"),
-        });
-    }
-}
-
-// ── SigmaDlogLinearProof ─────────────────────────────────────────────────────
-
-export class SigmaDlogLinearProof {
-    constructor(readonly tVals: Element[], readonly zVals: Scalar[]) {}
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU32AsUleb128(this.tVals.length);
-        for (const t of this.tVals) t.serialize(serializer);
-        serializer.serializeU32AsUleb128(this.zVals.length);
-        for (const z of this.zVals) z.serialize(serializer);
-    }
-
-    static deserialize(deserializer: Deserializer): Result<SigmaDlogLinearProof> {
-        return Result.capture({
-            recordsExecutionTimeMs: false,
-            task: () => {
-                const tLen = deserializer.deserializeUleb128AsU32();
-                const tVals: Element[] = [];
-                for (let i = 0; i < tLen; i++) {
-                    tVals.push(Element.deserialize(deserializer).unwrapOrThrow(`tVals[${i}] deserialize failed`));
-                }
-                const zLen = deserializer.deserializeUleb128AsU32();
-                const zVals: Scalar[] = [];
-                for (let i = 0; i < zLen; i++) {
-                    zVals.push(Scalar.deserialize(deserializer).unwrapOrThrow(`zVals[${i}] deserialize failed`));
-                }
-                return new SigmaDlogLinearProof(tVals, zVals);
-            },
         });
     }
 }

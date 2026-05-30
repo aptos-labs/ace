@@ -7,6 +7,10 @@ export * as group from "./group";
 // Shamir secret sharing
 export * as vss from "./vss";
 
+export * as pedersenPolynomialCommitment from "./pedersen-polynomial-commitment";
+
+export * as sigmaDlogLinear from "./sigma-dlog-linear";
+
 export * as dkg from "./dkg";
 
 export * as dkr from "./dkr";

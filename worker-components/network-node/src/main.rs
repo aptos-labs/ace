@@ -13,6 +13,8 @@
 //!   flags — they are not needed.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Deserialize;
+use std::env;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use vss_common::AptosRpc;
@@ -105,6 +107,83 @@ struct RunArgs {
     solana_devnet_rpc: String,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvConfig {
+    account_sk: Option<String>,
+    pke_dk: Option<String>,
+    deployment_api_key: Option<String>,
+    deployment_gas_key: Option<String>,
+    aptos_mainnet_api_key: Option<String>,
+    aptos_testnet_api_key: Option<String>,
+    aptos_localnet_api_key: Option<String>,
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+fn config_from_env() -> EnvConfig {
+    match env_nonempty("ACE_CONFIG_JSON") {
+        Some(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("network-node: invalid ACE_CONFIG_JSON: {}", e);
+            std::process::exit(2);
+        }),
+        None => EnvConfig::default(),
+    }
+}
+
+fn option_or_env_or_config(
+    v: Option<String>,
+    env_name: &str,
+    config_value: Option<String>,
+) -> Option<String> {
+    v.or_else(|| env_nonempty(env_name)).or(config_value)
+}
+
+fn string_or_env_or_config(v: String, env_name: &str, config_value: Option<String>) -> String {
+    if v.is_empty() {
+        env_nonempty(env_name).or(config_value).unwrap_or_default()
+    } else {
+        v
+    }
+}
+
+impl RunArgs {
+    fn apply_env_fallbacks(mut self) -> Self {
+        let cfg = config_from_env();
+        self.ace_deployment_apikey = option_or_env_or_config(
+            self.ace_deployment_apikey,
+            "ACE_DEPLOYMENT_APIKEY",
+            cfg.deployment_api_key.clone(),
+        );
+        self.ace_deployment_gaskey = option_or_env_or_config(
+            self.ace_deployment_gaskey,
+            "ACE_DEPLOYMENT_GASKEY",
+            cfg.deployment_gas_key.clone(),
+        );
+        self.account_sk =
+            string_or_env_or_config(self.account_sk, "ACE_ACCOUNT_SK", cfg.account_sk.clone());
+        self.pke_dk = string_or_env_or_config(self.pke_dk, "ACE_PKE_DK", cfg.pke_dk.clone());
+        self.aptos_mainnet_apikey = option_or_env_or_config(
+            self.aptos_mainnet_apikey,
+            "ACE_APTOS_MAINNET_APIKEY",
+            cfg.aptos_mainnet_api_key.clone(),
+        );
+        self.aptos_testnet_apikey = option_or_env_or_config(
+            self.aptos_testnet_apikey,
+            "ACE_APTOS_TESTNET_APIKEY",
+            cfg.aptos_testnet_api_key.clone(),
+        );
+        self.aptos_localnet_apikey = option_or_env_or_config(
+            self.aptos_localnet_apikey,
+            "ACE_APTOS_LOCALNET_APIKEY",
+            cfg.aptos_localnet_api_key.clone(),
+        );
+        self
+    }
+}
+
 fn require<T>(label: &str, v: Option<T>) -> T {
     v.unwrap_or_else(|| {
         eprintln!("network-node: missing required flag --{}", label);
@@ -114,7 +193,10 @@ fn require<T>(label: &str, v: Option<T>) -> T {
 
 fn require_str(label: &str, v: &str) -> String {
     if v.is_empty() {
-        eprintln!("network-node: missing required flag --{}", label);
+        eprintln!(
+            "network-node: missing required flag --{} (or matching ACE_CONFIG_JSON / ACE_* env var)",
+            label
+        );
         std::process::exit(2);
     }
     v.to_string()
@@ -161,6 +243,7 @@ async fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Run(args) => {
+            let args = args.apply_env_fallbacks();
             let mode = match args.mode {
                 CliMode::Monolith => network_node::Mode::Monolith {
                     maintainer: build_maintainer_config(&args),

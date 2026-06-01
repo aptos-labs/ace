@@ -4,7 +4,17 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { ChainRpcOverrides, TrackedNode } from './config.js';
-import { DEFAULT_CONTAINER_CONCURRENCY, DEFAULT_VPC_EGRESS, DEFAULT_VPC_NETWORK, DEFAULT_VPC_SUBNET, rpcUrlsNeedVpcEgress } from './onboarding.js';
+import {
+    DEFAULT_CONTAINER_CONCURRENCY,
+    DEFAULT_VPC_EGRESS,
+    DEFAULT_VPC_NETWORK,
+    DEFAULT_VPC_SUBNET,
+    GCP_CONFIG_ENV,
+    GCP_SECRET_ENV,
+    gcpConfigSecretId,
+    gcpSecretId,
+    rpcUrlsNeedVpcEgress,
+} from './onboarding.js';
 
 const execAsync = promisify(exec);
 
@@ -42,6 +52,8 @@ interface ParsedArgs {
     vpcEgress?: string;
     /** Cloud Run only. `spec.template.spec.containerConcurrency`. */
     containerConcurrency?: number;
+    /** Cloud Run only. Env var name -> Secret Manager secret ref, e.g. `secret-name:latest`. */
+    secretEnv: Record<string, string>;
 }
 
 // CLI flag → TrackedNode.chainRpc key. Matches `chainRpcArgs()` in onboarding.ts
@@ -64,8 +76,14 @@ const CHAIN_RPC_SECRET: Partial<Record<keyof ChainRpcOverrides, boolean>> = {
     aptosLocalnetApikey: true,
 };
 
+const CHAIN_RPC_SECRET_ENVS: Partial<Record<keyof ChainRpcOverrides, string>> = {
+    aptosMainnetApikey:  GCP_SECRET_ENV.aptosMainnetApiKey,
+    aptosTestnetApikey:  GCP_SECRET_ENV.aptosTestnetApiKey,
+    aptosLocalnetApikey: GCP_SECRET_ENV.aptosLocalnetApiKey,
+};
+
 function parseNodeArgs(args: string[]): ParsedArgs {
-    const p: ParsedArgs = { chainRpc: {} };
+    const p: ParsedArgs = { chainRpc: {}, secretEnv: {} };
     for (const arg of args) {
         const m = arg.match(/^--([^=]+)=([\s\S]*)$/);
         if (!m) continue;
@@ -110,6 +128,14 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
     if (!container) throw new Error('No container in service spec');
     const parsed = parseNodeArgs((container.args as string[]) ?? []);
     parsed.image = ((container.image as string) ?? '').replace(/^docker\.io\//, '');
+    for (const env of (container.env ?? []) as any[]) {
+        const name = env?.name;
+        const secretKeyRef = env?.valueFrom?.secretKeyRef;
+        if (typeof name === 'string' && typeof secretKeyRef?.name === 'string') {
+            const key = typeof secretKeyRef.key === 'string' ? secretKeyRef.key : undefined;
+            parsed.secretEnv[name] = key ? `${secretKeyRef.name}:${key}` : secretKeyRef.name;
+        }
+    }
     // VPC config: stored in template annotations on the running revision.
     // `network-interfaces` is a JSON array (Direct VPC egress); `vpc-access-connector`
     // is the legacy connector path. We only emit Direct VPC egress in gcpDeployCmd,
@@ -170,11 +196,68 @@ function makeAdder(rows: DiffRow[], service?: 'maintainer' | 'handler'): Adder {
 }
 
 /** Per-chain-RPC override rows. Always read from `running` since only worker code (mono or handler) has them. */
-function addChainRpcRows(add: Adder, profileRpc: ChainRpcOverrides, running: ParsedArgs): void {
+function addChainRpcRows(
+    add: Adder,
+    profileRpc: ChainRpcOverrides,
+    running: ParsedArgs,
+    gcpSecretPrefix?: string,
+): void {
     for (const [flag, key] of Object.entries(CHAIN_RPC_FLAGS)) {
         const p = profileRpc[key];
+        const envName = CHAIN_RPC_SECRET_ENVS[key];
+        if (envName && gcpSecretPrefix) {
+            addGcpSecretRow(add, flag, gcpSecretPrefix, envName, p, running, running.chainRpc[key]);
+            continue;
+        }
         const r = running.chainRpc[key];
         if (p || r) add(flag, p, r, CHAIN_RPC_SECRET[key] ?? false);
+    }
+}
+
+function secretRefName(ref?: string): string | undefined {
+    return ref?.replace(/:.*$/, '');
+}
+
+function addGcpSecretRow(
+    add: Adder,
+    field: string,
+    secretPrefix: string | undefined,
+    envName: string,
+    profileValue: string | undefined,
+    running: ParsedArgs,
+    runningArgValue?: string,
+): void {
+    const configActual = secretRefName(running.secretEnv[GCP_CONFIG_ENV]);
+    if (configActual && profileValue) {
+        const expected = secretPrefix ? gcpConfigSecretId(secretPrefix) : undefined;
+        add(field, expected, configActual, true);
+        return;
+    }
+
+    const legacyActual = secretRefName(running.secretEnv[envName]);
+    if (legacyActual) {
+        const expected = secretPrefix && profileValue ? gcpSecretId(secretPrefix, envName) : undefined;
+        add(field, expected, legacyActual, true);
+    } else if (profileValue || runningArgValue) {
+        // Backward compatibility for Cloud Run services deployed before secrets
+        // moved from --args into Secret Manager.
+        add(field, profileValue, runningArgValue, true);
+    }
+}
+
+function addSecretRow(
+    add: Adder,
+    field: string,
+    profileValue: string | undefined,
+    runningArgValue: string | undefined,
+    running: ParsedArgs,
+    gcpSecretPrefix: string | undefined,
+    envName: string,
+): void {
+    if (gcpSecretPrefix) {
+        addGcpSecretRow(add, field, gcpSecretPrefix, envName, profileValue, running, runningArgValue);
+    } else if (profileValue || runningArgValue) {
+        add(field, profileValue, runningArgValue, true);
     }
 }
 
@@ -200,16 +283,17 @@ function addVpcRows(
 function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     const rows: DiffRow[] = [];
     const add = makeAdder(rows);
+    const gcpSecretPrefix = node.platform === 'gcp' ? node.gcp?.serviceName : undefined;
     add('api',          node.nodeRpcUrl ?? node.rpcUrl, running.api);
     add('addr',         node.aceAddr,                   running.addr);
-    if (node.rpcApiKey     || running.apikey)    add('apikey',    node.rpcApiKey,     running.apikey,     true);
-    if (node.gasStationKey || running.gaskey)    add('gaskey',    node.gasStationKey, running.gaskey,     true);
+    addSecretRow(add, 'apikey', node.rpcApiKey, running.apikey, running, gcpSecretPrefix, GCP_SECRET_ENV.deploymentApiKey);
+    addSecretRow(add, 'gaskey', node.gasStationKey, running.gaskey, running, gcpSecretPrefix, GCP_SECRET_ENV.deploymentGasKey);
     add('account-addr', node.accountAddr, running.accountAddr);
-    if (node.accountSk || running.accountSk)     add('account-sk', node.accountSk,    running.accountSk,  true);
-    if (node.pkeDk     || running.pkeDk)         add('pke-dk',    node.pkeDk,         running.pkeDk,      true);
+    addSecretRow(add, 'account-sk', node.accountSk, running.accountSk, running, gcpSecretPrefix, GCP_SECRET_ENV.accountSk);
+    addSecretRow(add, 'pke-dk', node.pkeDk, running.pkeDk, running, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     if (node.image     || running.image)         add('image',     node.image,         running.image);
 
-    addChainRpcRows(add, node.chainRpc ?? {}, running);
+    addChainRpcRows(add, node.chainRpc ?? {}, running, gcpSecretPrefix);
 
     if (node.platform === 'gcp') {
         const expectedVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
@@ -236,19 +320,20 @@ function computeDiffMicroservices(
     const rows: DiffRow[] = [];
     const addM = makeAdder(rows, 'maintainer');
     const addH = makeAdder(rows, 'handler');
+    const gcpSecretPrefix = node.platform === 'gcp' ? node.gcp?.maintainerServiceName : undefined;
 
     addM('api',  node.nodeRpcUrl ?? node.rpcUrl, maintainer.api);
     addM('addr', node.aceAddr,                   maintainer.addr);
-    if (node.rpcApiKey     || maintainer.apikey)    addM('apikey',    node.rpcApiKey,     maintainer.apikey,    true);
-    if (node.gasStationKey || maintainer.gaskey)    addM('gaskey',    node.gasStationKey, maintainer.gaskey,    true);
+    addSecretRow(addM, 'apikey', node.rpcApiKey, maintainer.apikey, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.deploymentApiKey);
+    addSecretRow(addM, 'gaskey', node.gasStationKey, maintainer.gaskey, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.deploymentGasKey);
     addM('account-addr', node.accountAddr, maintainer.accountAddr);
-    if (node.accountSk || maintainer.accountSk)     addM('account-sk', node.accountSk,    maintainer.accountSk, true);
-    if (node.pkeDk     || maintainer.pkeDk)         addM('pke-dk',    node.pkeDk,         maintainer.pkeDk,     true);
+    addSecretRow(addM, 'account-sk', node.accountSk, maintainer.accountSk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.accountSk);
+    addSecretRow(addM, 'pke-dk', node.pkeDk, maintainer.pkeDk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     if (node.image     || maintainer.image)         addM('image',     node.image,         maintainer.image);
 
-    if (node.pkeDk || handler.pkeDk)                addH('pke-dk',    node.pkeDk,         handler.pkeDk,        true);
+    addSecretRow(addH, 'pke-dk', node.pkeDk, handler.pkeDk, handler, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     if (node.image || handler.image)                addH('image',     node.image,         handler.image);
-    addChainRpcRows(addH, node.chainRpc ?? {}, handler);
+    addChainRpcRows(addH, node.chainRpc ?? {}, handler, gcpSecretPrefix);
 
     const expectedMaintVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
     addVpcRows(addM, maintainer, {

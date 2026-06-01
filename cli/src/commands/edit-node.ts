@@ -186,9 +186,9 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                 nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
             );
         console.log('Re-deploy command:\n');
-        console.log(cmd);
+        console.log(cmd.display);
         console.log();
-        await maybeAutoRun(cmd, gcloudReady(), 'Apply this now?');
+        await maybeAutoRun(cmd.run, gcloudReady(), 'Apply this now?', cmd.env);
     } else if (node.platform === 'docker' && updatedNode.docker) {
         const cmd = [
             `docker rm -f ${updatedNode.docker.containerName} &&`,

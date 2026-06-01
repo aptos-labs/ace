@@ -114,19 +114,133 @@ export const DEFAULT_VPC_EGRESS = 'private-ranges-only';
  */
 export const DEFAULT_CONTAINER_CONCURRENCY = 1000;
 
+export const GCP_SECRET_ENV = {
+    accountSk:            'ACE_ACCOUNT_SK',
+    pkeDk:                'ACE_PKE_DK',
+    deploymentApiKey:     'ACE_DEPLOYMENT_APIKEY',
+    deploymentGasKey:     'ACE_DEPLOYMENT_GASKEY',
+    aptosMainnetApiKey:   'ACE_APTOS_MAINNET_APIKEY',
+    aptosTestnetApiKey:   'ACE_APTOS_TESTNET_APIKEY',
+    aptosLocalnetApiKey:  'ACE_APTOS_LOCALNET_APIKEY',
+} as const;
+
+export const GCP_CONFIG_ENV = 'ACE_CONFIG_JSON';
+
+export interface GcpDeployScript {
+    /** Script printed to the terminal. It references secret env vars but never contains secret values. */
+    display: string;
+    /** Script passed to `bash -c` for auto-run. Same text as display; values arrive via `env`. */
+    run: string;
+    /** Secret values supplied to auto-run only. */
+    env: Record<string, string>;
+}
+
+interface SecretBinding {
+    envName: string;
+    secretName: string;
+    value: string;
+}
+
+function shellQuote(v: string): string {
+    return `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
+export function gcpConfigSecretId(prefix: string): string {
+    return `${prefix}-config`;
+}
+
+export function gcpSecretId(prefix: string, envName: string): string {
+    const suffix = envName
+        .toLowerCase()
+        .replace(/^ace_/, '')
+        .replace(/_/g, '-');
+    return `${prefix}-${suffix}`;
+}
+
+function runtimeConfigJson(
+    node: { accountSk: string; pkeDk: string },
+    rpcApiKey?: string,
+    gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): string {
+    const cfg = {
+        accountSk:            node.accountSk,
+        pkeDk:                node.pkeDk,
+        ...(rpcApiKey                  ? { deploymentApiKey:    rpcApiKey }                  : {}),
+        ...(gasStationKey              ? { deploymentGasKey:    gasStationKey }              : {}),
+        ...(chainRpc?.aptosMainnetApikey  ? { aptosMainnetApiKey:  chainRpc.aptosMainnetApikey }  : {}),
+        ...(chainRpc?.aptosTestnetApikey  ? { aptosTestnetApiKey:  chainRpc.aptosTestnetApikey }  : {}),
+        ...(chainRpc?.aptosLocalnetApikey ? { aptosLocalnetApiKey: chainRpc.aptosLocalnetApikey } : {}),
+    };
+    return JSON.stringify(cfg);
+}
+
+function configBinding(
+    prefix: string,
+    node: { accountSk: string; pkeDk: string },
+    rpcApiKey?: string,
+    gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): SecretBinding {
+    return {
+        envName:    GCP_CONFIG_ENV,
+        secretName: gcpConfigSecretId(prefix),
+        value:      runtimeConfigJson(node, rpcApiKey, gasStationKey, chainRpc),
+    };
+}
+
+function cloudRunSecretSetup(project: string, bindings: SecretBinding[]): string[] {
+    if (bindings.length === 0) return [];
+    return [
+        `# Store runtime config in Secret Manager. Auto-run supplies this env var`,
+        `# from the local ACE profile without printing its value. For manual runs,`,
+        `# export ${GCP_CONFIG_ENV} first.`,
+        `RUN_SA="$(gcloud projects describe ${shellQuote(project)} --format='value(projectNumber)')-compute@developer.gserviceaccount.com"`,
+        `ensure_secret_version() {`,
+        `  local secret_name="$1"`,
+        `  local env_name="$2"`,
+        `  if [ -z "\${!env_name:-}" ]; then`,
+        `    echo "Missing $env_name; export it before running this script." >&2`,
+        `    exit 1`,
+        `  fi`,
+        `  gcloud secrets describe "$secret_name" --project ${shellQuote(project)} >/dev/null 2>&1 || \\`,
+        `    gcloud secrets create "$secret_name" --project ${shellQuote(project)} --replication-policy=automatic >/dev/null`,
+        `  gcloud secrets add-iam-policy-binding "$secret_name" --project ${shellQuote(project)} \\`,
+        `    --member "serviceAccount:$RUN_SA" --role roles/secretmanager.secretAccessor --quiet >/dev/null`,
+        `  printf '%s' "\${!env_name}" | \\`,
+        `    gcloud secrets versions add "$secret_name" --project ${shellQuote(project)} --data-file=- >/dev/null`,
+        `}`,
+        ...bindings.map(b => `ensure_secret_version ${shellQuote(b.secretName)} ${shellQuote(b.envName)}`),
+        ``,
+    ];
+}
+
+function cloudRunSecretFlags(bindings: SecretBinding[]): string[] {
+    if (bindings.length === 0) return [];
+    return [
+        `  --service-account=\${RUN_SA}`,
+        `  --set-secrets=${bindings.map(b => `${b.envName}=${b.secretName}:latest`).join(',')}`,
+    ];
+}
+
+function secretEnv(bindings: SecretBinding[]): Record<string, string> {
+    return Object.fromEntries(bindings.map(b => [b.envName, b.value]));
+}
+
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
-): string {
-    const args = nodeRunArgs(node, rpcUrl, aceAddr, rpcApiKey, gasStationKey, chainRpc);
+): GcpDeployScript {
+    const secretBindings = [configBinding(serviceName, node, rpcApiKey, gasStationKey, chainRpc)];
+    const args = nodeRunArgs(node, rpcUrl, aceAddr, undefined, undefined, chainRpc, { includeSecrets: false });
     const vpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
         `  --network=${DEFAULT_VPC_NETWORK}`,
         `  --subnet=${DEFAULT_VPC_SUBNET}`,
         `  --vpc-egress=${DEFAULT_VPC_EGRESS}`,
     ] : [];
-    return [
+    const deploy = [
         `gcloud run deploy ${serviceName}`,
         `  --image docker.io/${image}`,
         `  --project ${project}`,
@@ -135,9 +249,17 @@ export function gcpDeployCmd(
         `  --min-instances 1`,
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
+        ...cloudRunSecretFlags(secretBindings),
         ...vpcLines,
         `  --args "${args.join(',')}"`,
     ].join(' \\\n');
+    const script = [
+        `set -e`,
+        ``,
+        ...cloudRunSecretSetup(project, secretBindings),
+        deploy,
+    ].join('\n');
+    return { display: script, run: script, env: secretEnv(secretBindings) };
 }
 
 /**
@@ -174,7 +296,7 @@ export function gcpDeployCmdMicroservices(
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
-): string {
+): GcpDeployScript {
     // Maintainer's VPC needs follow the chain-RPC rule (it only talks to the
     // chain). Handler ALWAYS needs VPC egress so it can reach the Maintainer's
     // internal-only *.run.app URL.
@@ -189,25 +311,29 @@ export function gcpDeployCmdMicroservices(
         `  --vpc-egress=all-traffic`,
     ];
 
+    const configSecret = configBinding(
+        cfg.maintainerServiceName,
+        node,
+        rpcApiKey,
+        gasStationKey,
+        chainRpc,
+    );
+    const secretBindings = [configSecret];
+
     const maintainerArgs = [
         'run',
         '--mode=maintainer',
         `--ace-deployment-api=${rpcUrl}`,
         `--ace-deployment-addr=${aceAddr}`,
-        ...(rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
-        ...(gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
         `--account-addr=${node.accountAddr}`,
-        `--account-sk=${node.accountSk}`,
-        `--pke-dk=${node.pkeDk}`,
         `--port=8080`,
     ];
     // Handler args use a shell variable for --maintainer-url; the deploy line
     // below interpolates $MAINT_URL after capture.
     const handlerArgsBeforeUrl = ['run', '--mode=handler'];
     const handlerArgsAfterUrl = [
-        `--pke-dk=${node.pkeDk}`,
         `--port=8080`,
-        ...chainRpcArgs(chainRpc),
+        ...chainRpcArgs(chainRpc, { includeSecrets: false }),
     ];
 
     const maintainerDeploy = [
@@ -221,6 +347,7 @@ export function gcpDeployCmdMicroservices(
         `  --max-instances 1`,
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
+        ...cloudRunSecretFlags(secretBindings),
         ...maintainerVpcLines,
         `  --args "${maintainerArgs.join(',')}"`,
     ].join(' \\\n');
@@ -235,13 +362,15 @@ export function gcpDeployCmdMicroservices(
         `  --max-instances ${cfg.handlerMaxInstances}`,
         `  --no-cpu-throttling`,
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
+        ...cloudRunSecretFlags(secretBindings),
         ...handlerVpcLines,
         `  --args "${handlerArgsBeforeUrl.join(',')},--maintainer-url=\${MAINT_URL}/secrets,${handlerArgsAfterUrl.join(',')}"`,
     ].join(' \\\n');
 
-    return [
+    const script = [
         `set -e`,
         ``,
+        ...cloudRunSecretSetup(cfg.project, secretBindings),
         `# 1. Deploy the Maintainer (internal-only, pinned at min=max=1).`,
         `#    Reachable only via VPC; unauthenticated within the VPC.`,
         maintainerDeploy,
@@ -257,6 +386,7 @@ export function gcpDeployCmdMicroservices(
         `#    to the Maintainer is recognized as same-project internal traffic.`,
         handlerDeploy,
     ].join('\n');
+    return { display: script, run: script, env: secretEnv(secretBindings) };
 }
 
 export function dockerRunCmd(
@@ -339,31 +469,33 @@ function nodeRunArgs(
     node: { accountAddr: string; accountSk: string; pkeDk: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
+    opts: { includeSecrets?: boolean } = {},
 ): string[] {
+    const includeSecrets = opts.includeSecrets ?? true;
     return [
         'run',
         `--ace-deployment-api=${rpcUrl}`,
         `--ace-deployment-addr=${aceAddr}`,
-        ...(rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
-        ...(gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
+        ...(includeSecrets && rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
+        ...(includeSecrets && gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
         `--account-addr=${node.accountAddr}`,
-        `--account-sk=${node.accountSk}`,
-        `--pke-dk=${node.pkeDk}`,
+        ...(includeSecrets ? [`--account-sk=${node.accountSk}`, `--pke-dk=${node.pkeDk}`] : []),
         '--port=8080',
-        ...chainRpcArgs(chainRpc),
+        ...chainRpcArgs(chainRpc, { includeSecrets }),
     ];
 }
 
-function chainRpcArgs(r?: ChainRpcOverrides): string[] {
+function chainRpcArgs(r?: ChainRpcOverrides, opts: { includeSecrets?: boolean } = {}): string[] {
     if (!r) return [];
+    const includeSecrets = opts.includeSecrets ?? true;
     const f = (flag: string, val?: string) => val ? [`${flag}${val}`] : [];
     return [
         ...f('--aptos-mainnet-api=',       r.aptosMainnetApi),
-        ...f('--aptos-mainnet-apikey=',    r.aptosMainnetApikey),
+        ...(includeSecrets ? f('--aptos-mainnet-apikey=',    r.aptosMainnetApikey) : []),
         ...f('--aptos-testnet-api=',       r.aptosTestnetApi),
-        ...f('--aptos-testnet-apikey=',    r.aptosTestnetApikey),
+        ...(includeSecrets ? f('--aptos-testnet-apikey=',    r.aptosTestnetApikey) : []),
         ...f('--aptos-localnet-api=',      r.aptosLocalnetApi),
-        ...f('--aptos-localnet-apikey=',   r.aptosLocalnetApikey),
+        ...(includeSecrets ? f('--aptos-localnet-apikey=',   r.aptosLocalnetApikey) : []),
         ...f('--solana-mainnet-beta-rpc=', r.solanaMainnetBetaRpc),
         ...f('--solana-testnet-rpc=',      r.solanaTestnetRpc),
         ...f('--solana-devnet-rpc=',       r.solanaDevnetRpc),
@@ -522,9 +654,9 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         const cmd = gcpDeployCmd(parsed.serviceName!, image!, parsed.project!, parsed.region!,
             profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
         console.log('\nDeploy command:\n');
-        console.log(cmd);
+        console.log(cmd.display);
         console.log();
-        const ran = await maybeAutoRun(cmd, gcloudReady(), 'Run this now?');
+        const ran = await maybeAutoRun(cmd.run, gcloudReady(), 'Run this now?', cmd.env);
         const defaultEndpoint = ran
             ? captureCloudRunUrl(parsed.serviceName!, parsed.project!, parsed.region!)
             : undefined;
@@ -548,9 +680,9 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
             image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
         console.log('\nDeploy script:\n');
-        console.log(cmd);
+        console.log(cmd.display);
         console.log();
-        const ran = await maybeAutoRun(cmd, gcloudReady(), 'Run this script now?');
+        const ran = await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env);
         const defaultEndpoint = ran
             ? captureCloudRunUrl(parsed.handlerServiceName!, parsed.project!, parsed.region!)
             : undefined;

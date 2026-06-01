@@ -48,8 +48,11 @@ export function dockerReady(): PreflightResult {
 }
 
 /** Run a shell script via `bash -c`, streaming output to the user's terminal. */
-function runShellScript(script: string): boolean {
-    const res = spawnSync('bash', ['-c', script], { stdio: 'inherit' });
+function runShellScript(script: string, env?: Record<string, string>): boolean {
+    const res = spawnSync('bash', ['-c', script], {
+        stdio: 'inherit',
+        env: env ? { ...process.env, ...env } : process.env,
+    });
     return res.status === 0;
 }
 
@@ -62,6 +65,7 @@ export async function maybeAutoRun(
     script: string,
     preflight: PreflightResult,
     promptMsg: string,
+    env?: Record<string, string>,
 ): Promise<boolean> {
     if (!preflight.ok) {
         console.log(`${D}(auto-run unavailable: ${preflight.reason}; run the command above when ready)${R}\n`);
@@ -69,7 +73,7 @@ export async function maybeAutoRun(
     }
     const ok = await confirm({ message: promptMsg, default: true });
     if (!ok) return false;
-    const success = runShellScript(script);
+    const success = runShellScript(script, env);
     if (!success) {
         console.log(`\n${D}(auto-run reported a non-zero exit; re-run the command above by hand if needed)${R}\n`);
     }

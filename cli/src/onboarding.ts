@@ -13,13 +13,14 @@ import {
     loadConfig, makeNodeKey,
     type TrackedNode, type ChainRpcOverrides, type LocalConfig, type Mode,
 } from './config.js';
+import { resolveDeployment } from './resolve-profile.js';
 import { logFilePath, spawnLocalNode } from './local-process.js';
 import { buildFromEditor } from './editor.js';
 import {
     pickScheme, modeOf, platformOf, generateTemplate, parseTemplate, defaultsFor,
-    type Scheme, type TemplateInputs,
+    type Scheme, type TemplateInputs, type ParsedNodeForm,
 } from './node-schemes.js';
-import { gcloudReady, dockerReady, maybeAutoRun, captureCloudRunUrl } from './auto-deploy.js';
+import { gcloudReady, dockerReady, maybeAutoRun, runDeployScript, captureCloudRunUrl } from './auto-deploy.js';
 
 const LOGROTATE_DIR   = path.join(homedir(), '.ace', 'logrotate');
 const LOGROTATE_STATE = path.join(LOGROTATE_DIR, 'logrotate.state');
@@ -55,6 +56,64 @@ const CHAIN_DEFAULTS = {
     solanaTestnet:     'https://api.testnet.solana.com',
     solanaDevnet:      'https://api.devnet.solana.com',
 } as const;
+
+const CHAIN_RPC_KEYS = [
+    'aptosMainnetApi',
+    'aptosMainnetApikey',
+    'aptosTestnetApi',
+    'aptosTestnetApikey',
+    'aptosLocalnetApi',
+    'aptosLocalnetApikey',
+    'solanaMainnetBetaRpc',
+    'solanaTestnetRpc',
+    'solanaDevnetRpc',
+] as const satisfies readonly (keyof ChainRpcOverrides)[];
+
+export interface NodeNewOptions {
+    nonInteractive?: boolean;
+    yes?: boolean;
+    json?: boolean;
+    deployment?: string;
+    deploymentBlob?: string;
+    rpcUrl?: string;
+    aceAddr?: string;
+    rpcApiKey?: string;
+    gasStationKey?: string;
+    platform?: string;
+    mode?: string;
+    alias?: string;
+    image?: string;
+    project?: string;
+    region?: string;
+    serviceName?: string;
+    maintainerServiceName?: string;
+    handlerServiceName?: string;
+    handlerMaxInstances?: string;
+    endpoint?: string;
+    chainRpcJson?: string;
+}
+
+export function isNonInteractiveNodeNew(opts: NodeNewOptions): boolean {
+    return !!(
+        opts.nonInteractive ||
+        opts.deployment ||
+        opts.deploymentBlob ||
+        opts.rpcUrl ||
+        opts.aceAddr ||
+        opts.platform ||
+        opts.mode ||
+        opts.alias ||
+        opts.image ||
+        opts.project ||
+        opts.region ||
+        opts.serviceName ||
+        opts.maintainerServiceName ||
+        opts.handlerServiceName ||
+        opts.handlerMaxInstances ||
+        opts.endpoint ||
+        opts.chainRpcJson
+    );
+}
 
 function defaultGcpProject(): string | undefined {
     try {
@@ -544,6 +603,143 @@ interface NetworkDetails {
     gasStationKey?: string;
 }
 
+function nonEmpty(v: string | undefined): string | undefined {
+    const s = v?.trim();
+    return s ? s : undefined;
+}
+
+function parseDeploymentBlob(raw: string): NetworkDetails {
+    let parsed: Record<string, unknown>;
+    try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch (e) {
+        throw new Error(`--deployment-blob is not valid JSON: ${(e as Error).message}`);
+    }
+    if (typeof parsed.rpcUrl !== 'string' || typeof parsed.aceAddr !== 'string') {
+        throw new Error('--deployment-blob must include string fields "rpcUrl" and "aceAddr".');
+    }
+    return {
+        rpcUrl:        parsed.rpcUrl,
+        aceAddr:       parsed.aceAddr,
+        rpcApiKey:     typeof parsed.rpcApiKey === 'string' ? parsed.rpcApiKey : undefined,
+        gasStationKey: typeof parsed.gasStationKey === 'string' ? parsed.gasStationKey : undefined,
+    };
+}
+
+function networkDetailsFromOptions(opts: NodeNewOptions): NetworkDetails {
+    let base: Partial<NetworkDetails> = {};
+    if (opts.deploymentBlob) {
+        base = parseDeploymentBlob(opts.deploymentBlob);
+    } else if (opts.deployment || (!opts.rpcUrl || !opts.aceAddr)) {
+        const { deployment } = resolveDeployment(opts.deployment);
+        base = {
+            rpcUrl:        deployment.rpcUrl,
+            aceAddr:       deployment.aceAddr,
+            rpcApiKey:     deployment.sharedNodeApiKey,
+            gasStationKey: deployment.gasStationApiKey,
+        };
+    }
+
+    const rpcUrl = nonEmpty(opts.rpcUrl) ?? base.rpcUrl;
+    const aceAddr = nonEmpty(opts.aceAddr) ?? base.aceAddr;
+    if (!rpcUrl) throw new Error('Missing deployment RPC URL. Pass --deployment, --deployment-blob, or --rpc-url.');
+    if (!aceAddr) throw new Error('Missing ACE contract address. Pass --deployment, --deployment-blob, or --ace-addr.');
+    return {
+        rpcUrl,
+        aceAddr,
+        rpcApiKey:     nonEmpty(opts.rpcApiKey) ?? base.rpcApiKey,
+        gasStationKey: nonEmpty(opts.gasStationKey) ?? base.gasStationKey,
+    };
+}
+
+function parseChainRpcJson(raw: string | undefined): ChainRpcOverrides | undefined {
+    if (!raw) return undefined;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (e) {
+        throw new Error(`--chain-rpc-json is not valid JSON: ${(e as Error).message}`);
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('--chain-rpc-json must be a JSON object.');
+    }
+    const out: ChainRpcOverrides = {};
+    const doc = parsed as Record<string, unknown>;
+    for (const [k, v] of Object.entries(doc)) {
+        if (!CHAIN_RPC_KEYS.includes(k as keyof ChainRpcOverrides)) {
+            throw new Error(`Unknown --chain-rpc-json key "${k}". Allowed: ${CHAIN_RPC_KEYS.join(', ')}.`);
+        }
+        if (typeof v !== 'string') {
+            throw new Error(`--chain-rpc-json key "${k}" must be a string.`);
+        }
+        if (v) (out as Record<string, string>)[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parsePositiveInt(v: string | undefined, label: string, fallback: number): number {
+    if (v === undefined || v === '') return fallback;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`${label} must be a positive integer.`);
+    }
+    return n;
+}
+
+function requireParsedString(v: string | undefined, label: string): string {
+    if (!v) throw new Error(`Missing ${label}.`);
+    return v;
+}
+
+function schemeFromOptions(opts: NodeNewOptions, isLocalnet: boolean): Scheme {
+    const platform = opts.platform ?? 'gcp';
+    if (platform !== 'gcp') {
+        throw new Error('Non-interactive node new currently supports only --platform gcp.');
+    }
+    if (isLocalnet) {
+        throw new Error('GCP Cloud Run is unavailable for localnet deployments.');
+    }
+    const mode = opts.mode ?? 'microservices';
+    if (mode === 'microservices') return 'gcp-cloudrun-microservices';
+    if (mode === 'monolith') return 'gcp-cloudrun-monolith';
+    throw new Error('--mode must be "microservices" or "monolith".');
+}
+
+function parsedFormFromOptions(
+    opts: NodeNewOptions,
+    scheme: Scheme,
+    defaults: ReturnType<typeof defaultsFor>,
+    net: NetworkDetails,
+): ParsedNodeForm {
+    const common = {
+        alias:         nonEmpty(opts.alias),
+        image:         nonEmpty(opts.image) ?? defaults.image,
+        rpcApiKey:     nonEmpty(opts.rpcApiKey) ?? net.rpcApiKey,
+        gasStationKey: nonEmpty(opts.gasStationKey) ?? net.gasStationKey,
+        chainRpc:      parseChainRpcJson(opts.chainRpcJson),
+    };
+    if (scheme === 'gcp-cloudrun-monolith') {
+        return {
+            ...common,
+            project:     nonEmpty(opts.project) ?? defaults.project,
+            region:      nonEmpty(opts.region) ?? defaults.region,
+            serviceName: nonEmpty(opts.serviceName) ?? defaults.serviceName,
+        };
+    }
+    return {
+        ...common,
+        project:                nonEmpty(opts.project) ?? defaults.project,
+        region:                 nonEmpty(opts.region) ?? defaults.region,
+        maintainerServiceName:  nonEmpty(opts.maintainerServiceName) ?? defaults.maintainerServiceName,
+        handlerServiceName:     nonEmpty(opts.handlerServiceName) ?? defaults.handlerServiceName,
+        handlerMaxInstances:    parsePositiveInt(
+            opts.handlerMaxInstances,
+            '--handler-max-instances',
+            defaults.handlerMaxInstances ?? 10,
+        ),
+    };
+}
+
 async function probeEndpoint(url: string): Promise<boolean> {
     try {
         await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
@@ -570,6 +766,24 @@ async function promptEndpoint(message: string, defaultValue?: string): Promise<s
     }
 }
 
+async function endpointFromOptions(
+    opts: NodeNewOptions,
+    label: string,
+    capturedEndpoint?: string,
+): Promise<string> {
+    const endpoint = nonEmpty(opts.endpoint) ?? capturedEndpoint;
+    if (!endpoint) {
+        throw new Error(`Could not determine ${label} endpoint. Pass --endpoint or run with --yes so the CLI can deploy and discover it.`);
+    }
+    process.stderr.write(`  Checking ${label} endpoint reachability...`);
+    if (await probeEndpoint(endpoint)) {
+        process.stderr.write(' ✓\n');
+        return endpoint;
+    }
+    process.stderr.write(' ✗\n');
+    throw new Error(`${label} endpoint is not reachable: ${endpoint}`);
+}
+
 /** Best-effort lookup of the latest aptoslabs/ace-node tag from Docker Hub. */
 async function latestImageTag(): Promise<string> {
     try {
@@ -591,8 +805,9 @@ function suggestPort(existing: Record<string, TrackedNode>): string {
 }
 
 /** Full guided wizard for adding a new node you control. */
-export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedNode }> {
+export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nodeKey: string; node: TrackedNode }> {
     const existingConfig = loadConfig();
+    const nonInteractive = isNonInteractiveNodeNew(options);
     console.log('\n  ACE Node Setup\n');
 
     console.log('Generating node keys...\n');
@@ -600,17 +815,21 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     console.log(`  Account address : ${profile.accountAddr}`);
     console.log(`  PKE enc key     : ${profile.pkeEk}\n`);
 
-    const net: NetworkDetails = await promptNetworkDetails();
+    const net: NetworkDetails = nonInteractive
+        ? networkDetailsFromOptions(options)
+        : await promptNetworkDetails();
 
     const isLocalnet = /localhost|127\.0\.0\.1/.test(net.rpcUrl);
-    const scheme = await pickScheme({ isLocalnet });
+    const scheme = nonInteractive
+        ? schemeFromOptions(options, isLocalnet)
+        : await pickScheme({ isLocalnet });
     if (!scheme) {
         throw new Error('Cancelled (no scheme picked).');
     }
     const mode: Mode = modeOf(scheme);
     const platform = platformOf(scheme);
 
-    const fallbackImage = await latestImageTag();
+    const fallbackImage = options.image ?? await latestImageTag();
 
     const t: TemplateInputs = {
         identity: { accountAddr: profile.accountAddr, pkeEk: profile.pkeEk! },
@@ -628,11 +847,13 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         }),
     };
 
-    const parsed = await buildFromEditor(
-        generateTemplate(scheme, t),
-        c => parseTemplate(scheme, c),
-        { fileTag: 'node-new', acceptUnmodified: true },
-    );
+    const parsed = nonInteractive
+        ? parsedFormFromOptions(options, scheme, t.defaults, net)
+        : await buildFromEditor(
+            generateTemplate(scheme, t),
+            c => parseTemplate(scheme, c),
+            { fileTag: 'node-new', acceptUnmodified: true },
+        );
     if (!parsed) {
         throw new Error('Cancelled (no changes saved).');
     }
@@ -643,6 +864,15 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     const gasStationKey  = parsed.gasStationKey ?? net.gasStationKey;
     const chainRpc       = parsed.chainRpc ?? {};
     const nodeRpcUrl     = t.blob.nodeRpcUrl;
+    const deployRunOpts  = { stdout: options.json ? 'stderr' : 'inherit' } as const;
+    const network        = detectAptosNetwork(net.rpcUrl);
+
+    if (nonInteractive && !gasStationKey && (network === 'testnet' || network === 'mainnet')) {
+        throw new Error(
+            'Non-interactive node new requires a gas station key for testnet/mainnet because it generates a fresh account. ' +
+            'Pass --gas-station-key or use a deployment profile with gasStationApiKey.',
+        );
+    }
 
     let endpoint:  string;
     let gcpCfg:    TrackedNode['gcp'];
@@ -650,43 +880,59 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
     let localCfg:  LocalConfig | undefined;
 
     if (scheme === 'gcp-cloudrun-monolith') {
-        gcpCfg = { project: parsed.project!, region: parsed.region!, serviceName: parsed.serviceName! };
-        const cmd = gcpDeployCmd(parsed.serviceName!, image!, parsed.project!, parsed.region!,
+        const project = requireParsedString(parsed.project, 'GCP project');
+        const region = requireParsedString(parsed.region, 'Cloud Run region');
+        const serviceName = requireParsedString(parsed.serviceName, 'Cloud Run service name');
+        gcpCfg = { project, region, serviceName };
+        const cmd = gcpDeployCmd(serviceName, image!, project, region,
             profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
         console.log('\nDeploy command:\n');
         console.log(cmd.display);
         console.log();
-        const ran = await maybeAutoRun(cmd.run, gcloudReady(), 'Run this now?', cmd.env);
+        const ran = nonInteractive
+            ? (options.yes ? runDeployScript(cmd.run, gcloudReady(), cmd.env, deployRunOpts) : false)
+            : await maybeAutoRun(cmd.run, gcloudReady(), 'Run this now?', cmd.env, { yes: options.yes });
         const defaultEndpoint = ran
-            ? captureCloudRunUrl(parsed.serviceName!, parsed.project!, parsed.region!)
+            ? captureCloudRunUrl(serviceName, project, region)
             : undefined;
-        endpoint = await promptEndpoint('Cloud Run service URL', defaultEndpoint);
+        endpoint = nonInteractive
+            ? await endpointFromOptions(options, 'Cloud Run service', defaultEndpoint)
+            : await promptEndpoint('Cloud Run service URL', defaultEndpoint);
     } else if (scheme === 'gcp-cloudrun-microservices') {
+        const project = requireParsedString(parsed.project, 'GCP project');
+        const region = requireParsedString(parsed.region, 'Cloud Run region');
+        const maintainerServiceName = requireParsedString(parsed.maintainerServiceName, 'Maintainer service name');
+        const handlerServiceName = requireParsedString(parsed.handlerServiceName, 'Handler service name');
+        const handlerMaxInstances = parsed.handlerMaxInstances ?? 10;
         gcpCfg = {
-            project:                parsed.project!,
-            region:                 parsed.region!,
-            maintainerServiceName:  parsed.maintainerServiceName!,
-            handlerServiceName:     parsed.handlerServiceName!,
-            handlerMaxInstances:    parsed.handlerMaxInstances!,
+            project,
+            region,
+            maintainerServiceName,
+            handlerServiceName,
+            handlerMaxInstances,
         };
         const cmd = gcpDeployCmdMicroservices(
             {
-                project:                parsed.project!,
-                region:                 parsed.region!,
-                maintainerServiceName:  parsed.maintainerServiceName!,
-                handlerServiceName:     parsed.handlerServiceName!,
-                handlerMaxInstances:    parsed.handlerMaxInstances!,
+                project,
+                region,
+                maintainerServiceName,
+                handlerServiceName,
+                handlerMaxInstances,
             },
             image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
         console.log('\nDeploy script:\n');
         console.log(cmd.display);
         console.log();
-        const ran = await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env);
+        const ran = nonInteractive
+            ? (options.yes ? runDeployScript(cmd.run, gcloudReady(), cmd.env, deployRunOpts) : false)
+            : await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env, { yes: options.yes });
         const defaultEndpoint = ran
-            ? captureCloudRunUrl(parsed.handlerServiceName!, parsed.project!, parsed.region!)
+            ? captureCloudRunUrl(handlerServiceName, project, region)
             : undefined;
-        endpoint = await promptEndpoint('Handler service URL', defaultEndpoint);
+        endpoint = nonInteractive
+            ? await endpointFromOptions(options, 'Handler service', defaultEndpoint)
+            : await promptEndpoint('Handler service URL', defaultEndpoint);
     } else if (scheme === 'docker-monolith') {
         dockerCfg = { containerName: parsed.containerName!, port: parsed.port! };
         const cmd = dockerRunCmd(parsed.containerName!, image!, parsed.port!,
@@ -694,7 +940,7 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         console.log('\nStart command:\n');
         console.log(cmd);
         console.log();
-        await maybeAutoRun(cmd, dockerReady(), 'Run this now?');
+        await maybeAutoRun(cmd, dockerReady(), 'Run this now?', undefined, { yes: options.yes });
         const defaultEndpoint = isLocalnet ? `http://localhost:${parsed.port}` : undefined;
         endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
     } else {
@@ -719,11 +965,11 @@ export async function runOnboarding(): Promise<{ nodeKey: string; node: TrackedN
         endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
     }
 
-    await ensureAccountFunded(net.rpcUrl, profile.accountAddr, net.rpcApiKey, net.gasStationKey);
+    await ensureAccountFunded(net.rpcUrl, profile.accountAddr, rpcApiKey, gasStationKey);
 
     console.log('\nRegistering on-chain...\n');
     await registerOnChain(
-        { ...profile, rpcUrl: net.rpcUrl, aceAddr: net.aceAddr, rpcApiKey: net.rpcApiKey, gasStationKey: net.gasStationKey },
+        { ...profile, rpcUrl: net.rpcUrl, aceAddr: net.aceAddr, rpcApiKey, gasStationKey },
         endpoint,
     );
 

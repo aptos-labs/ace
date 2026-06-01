@@ -48,12 +48,34 @@ export function dockerReady(): PreflightResult {
 }
 
 /** Run a shell script via `bash -c`, streaming output to the user's terminal. */
-function runShellScript(script: string, env?: Record<string, string>): boolean {
+function runShellScript(
+    script: string,
+    env?: Record<string, string>,
+    opts: { stdout?: 'inherit' | 'stderr' } = {},
+): boolean {
     const res = spawnSync('bash', ['-c', script], {
-        stdio: 'inherit',
+        stdio: opts.stdout === 'stderr'
+            ? ['inherit', process.stderr, process.stderr]
+            : 'inherit',
         env: env ? { ...process.env, ...env } : process.env,
     });
     return res.status === 0;
+}
+
+export function runDeployScript(
+    script: string,
+    preflight: PreflightResult,
+    env?: Record<string, string>,
+    opts: { stdout?: 'inherit' | 'stderr' } = {},
+): boolean {
+    if (!preflight.ok) {
+        throw new Error(`auto-run unavailable: ${preflight.reason}`);
+    }
+    const success = runShellScript(script, env, opts);
+    if (!success) {
+        throw new Error('auto-run reported a non-zero exit');
+    }
+    return true;
 }
 
 /**
@@ -66,7 +88,9 @@ export async function maybeAutoRun(
     preflight: PreflightResult,
     promptMsg: string,
     env?: Record<string, string>,
+    opts: { yes?: boolean } = {},
 ): Promise<boolean> {
+    if (opts.yes) return runDeployScript(script, preflight, env);
     if (!preflight.ok) {
         console.log(`${D}(auto-run unavailable: ${preflight.reason}; run the command above when ready)${R}\n`);
         return false;

@@ -3,7 +3,7 @@
 
 import { Command } from 'commander';
 import { confirm } from '@inquirer/prompts';
-import { runOnboarding } from './onboarding.js';
+import { isNonInteractiveNodeNew, runOnboarding, type NodeNewOptions } from './onboarding.js';
 import { loadConfig, saveConfig } from './config.js';
 import { formatError } from './format-error.js';
 import { networkStatusCommand } from './commands/network-status.js';
@@ -116,15 +116,44 @@ const nodeCmd = program.command('node').description('Manage and operate ACE work
 
 nodeCmd
     .command('new')
-    .description('Set up a new ACE node (guided wizard)')
-    .action(async () => {
+    .description('Set up a new ACE node')
+    .option('--non-interactive', 'Run without prompts (currently supports GCP only)')
+    .option('-y, --yes', 'Skip deploy confirmation and apply the generated Cloud Run deploy script')
+    .option('--json', 'Print final machine-readable node metadata as JSON')
+    .option('--set-default', 'Set the new node as the default node profile')
+    .option('-d, --deployment <alias>', 'Deployment profile alias to use (defaults to default/single deployment in non-interactive mode)')
+    .option('--deployment-blob <json>', 'Deployment blob JSON with rpcUrl, aceAddr, and optional rpcApiKey/gasStationKey')
+    .option('--rpc-url <url>', 'Deployment RPC URL')
+    .option('--ace-addr <addr>', 'ACE contract address')
+    .option('--rpc-api-key <key>', 'Deployment RPC API key')
+    .option('--gas-station-key <key>', 'Gas station API key')
+    .option('--platform <platform>', 'Deployment platform (non-interactive currently supports gcp)')
+    .option('--mode <mode>', 'GCP mode: microservices or monolith (default: microservices)')
+    .option('--alias <alias>', 'Node profile alias')
+    .option('--image <image>', 'Worker image, e.g. aptoslabs/ace-node:3.1.0')
+    .option('--project <id>', 'GCP project ID')
+    .option('--region <region>', 'Cloud Run region')
+    .option('--service-name <name>', 'Cloud Run service name for monolith mode')
+    .option('--maintainer-service-name <name>', 'Cloud Run Maintainer service name for microservices mode')
+    .option('--handler-service-name <name>', 'Cloud Run Handler service name for microservices mode')
+    .option('--handler-max-instances <n>', 'Cloud Run Handler max instances for microservices mode')
+    .option('--endpoint <url>', 'Node endpoint to register (required if not applying deploy with --yes)')
+    .option('--chain-rpc-json <json>', 'JSON object of chain RPC overrides, e.g. {"aptosTestnetApi":"http://10.0.0.1:8080/v1"}')
+    .action(async (opts: NodeNewOptions & { json?: boolean; setDefault?: boolean }) => {
         try {
             const config = loadConfig();
-            const { nodeKey, node } = await runOnboarding();
+            const nonInteractive = isNonInteractiveNodeNew(opts);
+            if (opts.json && !nonInteractive) {
+                throw new Error('--json requires non-interactive node new flags (for example --non-interactive --platform gcp).');
+            }
+            const run = () => runOnboarding(opts);
+            const { nodeKey, node } = opts.json
+                ? await withConsoleLogToStderr(run)
+                : await run();
             config.nodes[nodeKey] = node;
-            if (!config.defaultNode) {
+            if (!config.defaultNode || opts.setDefault) {
                 config.defaultNode = nodeKey;
-            } else if (config.defaultNode !== nodeKey) {
+            } else if (!nonInteractive && config.defaultNode !== nodeKey) {
                 const currentDefault = config.nodes[config.defaultNode];
                 const currentLabel = currentDefault?.alias ?? config.defaultNode;
                 const setDefault = await confirm({
@@ -134,7 +163,21 @@ nodeCmd
                 if (setDefault) config.defaultNode = nodeKey;
             }
             saveConfig(config);
-            console.log(`\n✓ New node profile saved.\n`);
+            if (opts.json) {
+                console.log(JSON.stringify({
+                    nodeKey,
+                    alias:       node.alias,
+                    accountAddr: node.accountAddr,
+                    pkeEk:       node.pkeEk,
+                    endpoint:    node.endpoint,
+                    platform:    node.platform,
+                    mode:        node.mode,
+                    image:       node.image,
+                    gcp:         node.gcp,
+                }, null, 2));
+            } else {
+                console.log(`\n✓ New node profile saved.\n`);
+            }
         } catch (e) {
             exitOnError(e);
         }
@@ -362,4 +405,14 @@ function exitOnError(e: unknown): never {
     if ((e as { name?: string })?.name === 'ExitPromptError') process.exit(0);
     process.stderr.write(`\nError: ${formatError(e)}\n`);
     process.exit(1);
+}
+
+async function withConsoleLogToStderr<T>(fn: () => Promise<T>): Promise<T> {
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => console.error(...args);
+    try {
+        return await fn();
+    } finally {
+        console.log = originalLog;
+    }
 }

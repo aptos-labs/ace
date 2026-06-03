@@ -69,6 +69,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 | [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
 | [`examples/shelby-explorer-acl-aptos`](./examples/shelby-explorer-acl-aptos) | ACE ACL module from Shelby Explorer (allowlist / time-lock / pay-to-download) |
 | [`examples/pay-to-download-solana`](./examples/pay-to-download-solana) | Pay-to-download example on Solana |
+| [`examples/anonymous-member-vault`](./examples/anonymous-member-vault) | Anonymous member-only decryption with a ZK membership proof |
 | [`examples/zk-kyc`](./examples/zk-kyc) | Age-gated decryption with Groth16 ZK proofs |
 
 ---

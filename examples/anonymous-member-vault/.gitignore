@@ -1,0 +1,10 @@
+data/*
+!data/.gitkeep
+circuit/*_js/
+circuit/*.r1cs
+circuit/*.sym
+circuit/*.zkey
+circuit/*.ptau
+circuit/vk.json
+circuit/package-lock.json
+node_modules/

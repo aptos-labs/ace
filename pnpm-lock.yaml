@@ -48,6 +48,31 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
+  examples/anonymous-member-vault:
+    dependencies:
+      '@aptos-labs/ace-sdk':
+        specifier: workspace:*
+        version: link:../../ts-sdk
+      '@aptos-labs/ts-sdk':
+        specifier: ^5.2.0
+        version: 5.2.1(got@11.8.6)
+      circomlibjs:
+        specifier: ^0.1.7
+        version: 0.1.7(bufferutil@4.1.0)(utf-8-validate@5.0.10)
+      snarkjs:
+        specifier: ^0.7.5
+        version: 0.7.6
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.30
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   examples/pay-to-download-solana:
     dependencies:
       '@aptos-labs/ace-sdk':

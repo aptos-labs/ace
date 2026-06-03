@@ -1,0 +1,27 @@
+{
+  "name": "anonymous-member-vault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anonymous member-only decryption example for ACE custom flow",
+  "type": "module",
+  "scripts": {
+    "setup-circuit": "cd circuit && ./setup.sh",
+    "1-create-group": "tsx scripts/1-create-group.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-encrypt": "tsx scripts/3-encrypt.ts",
+    "4-decrypt-as-member": "tsx scripts/4-decrypt-as-member.ts",
+    "5-try-non-member": "tsx scripts/5-try-non-member.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

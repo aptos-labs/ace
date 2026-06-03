@@ -1,0 +1,24 @@
+{
+  "name": "shelby-s3-aptos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shelby S3 example: encrypted upload with bearer access-token sharing via ACE basic flow",
+  "type": "module",
+  "scripts": {
+    "1-setup": "tsx scripts/1-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-upload-and-mint-token": "tsx scripts/3-upload-and-mint-token.ts",
+    "4-try-stranger": "tsx scripts/4-try-stranger.ts",
+    "5-decrypt-with-token": "tsx scripts/5-decrypt-with-token.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

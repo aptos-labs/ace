@@ -68,6 +68,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 | [`scenarios`](./scenarios) | Local network setup scripts |
 | [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
 | [`examples/shelby-explorer-acl-aptos`](./examples/shelby-explorer-acl-aptos) | ACE ACL module from Shelby Explorer (allowlist / time-lock / pay-to-download) |
+| [`examples/shelby-s3-aptos`](./examples/shelby-s3-aptos) | Shelby S3 encrypted upload with bearer access-token sharing |
 | [`examples/pay-to-download-solana`](./examples/pay-to-download-solana) | Pay-to-download example on Solana |
 | [`examples/zk-kyc`](./examples/zk-kyc) | Age-gated decryption with Groth16 ZK proofs |
 
@@ -315,6 +316,7 @@ pnpm dev deployment default <alias>       # set the default deployment profile
 |---------|------|-------|-------------|
 | [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — a minimal pay-to-download marketplace; demonstrates per-item domain-binding. One faucet click for Alice and go. |
 | [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
+| [shelby-s3-aptos](./examples/shelby-s3-aptos) | Basic | Aptos | Shelby S3-style encrypted upload with a bearer access token: token private key signs the decrypt request; token address hits the allowlist. |
 | [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
 | [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |
 

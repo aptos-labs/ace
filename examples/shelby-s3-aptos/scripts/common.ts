@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as readline from 'readline';
+import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 // Default: the public ACE testnet preview. Replace these constants if you want
@@ -47,12 +49,15 @@ export interface ConfigFile {
 export interface UploadFile {
     fileId: string;
     ownerAddress: string;
+    tokenNonce: string;
     tokenAddress: string;
     ciphertextHex: string;
 }
 
 export interface AccessTokenFile extends AccountFile {
     kind: 'ed25519-private-key';
+    derivedFrom: 'owner-signature';
+    nonce: string;
     scope: string;
 }
 
@@ -70,6 +75,38 @@ export function writeJson(filePath: string, data: unknown): void {
 
 export function privateKeyHex(account: { privateKey: { toUint8Array(): Uint8Array } }): string {
     return '0x' + Buffer.from(account.privateKey.toUint8Array()).toString('hex');
+}
+
+export function accessTokenSeedMessage(ownerAddress: string, fileId: string, tokenNonce: string): string {
+    return [
+        'shelby-s3/access-token/v1',
+        `owner=${ownerAddress}`,
+        `file_id=${fileId}`,
+        `nonce=${tokenNonce}`,
+    ].join('\n');
+}
+
+export function deriveAccessTokenAccount(
+    owner: {
+        accountAddress: { toStringLong(): string };
+        sign(message: Uint8Array): { toUint8Array(): Uint8Array };
+    },
+    fileId: string,
+    tokenNonce: string,
+): { account: Account; privateKeyHex: string; seedMessage: string } {
+    const seedMessage = accessTokenSeedMessage(owner.accountAddress.toStringLong(), fileId, tokenNonce);
+    const ownerSignature = owner.sign(new TextEncoder().encode(seedMessage)).toUint8Array();
+    const tokenSeed = createHash('sha256')
+        .update('shelby-s3/derived-token-key/v1')
+        .update(ownerSignature)
+        .digest();
+    const tokenPrivateKeyHex = '0x' + tokenSeed.toString('hex');
+
+    return {
+        account: Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(tokenPrivateKeyHex) }),
+        privateKeyHex: tokenPrivateKeyHex,
+        seedMessage,
+    };
 }
 
 export function log(...args: unknown[]): void {

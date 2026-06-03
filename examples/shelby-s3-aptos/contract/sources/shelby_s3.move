@@ -5,8 +5,9 @@
 ///
 /// Files are encrypted before upload. Each encrypted file is registered under
 /// its ACE domain/file id with an owner and an allowlist of reader addresses.
-/// A "pre-signed access token" is represented as a fresh Ed25519 private key;
-/// its derived Aptos address is added to the file allowlist at upload time.
+/// A "pre-signed access token" is represented as an owner-derived Ed25519
+/// private key; its derived Aptos address is added to the file allowlist at
+/// upload time.
 module admin::shelby_s3 {
     use std::error;
     use std::signer::address_of;

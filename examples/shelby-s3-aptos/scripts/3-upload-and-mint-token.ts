@@ -6,9 +6,12 @@
  *
  * "Uploading to Shelby S3" is represented by writing the ciphertext to
  * data/upload.json. The important ACE part is that the same file id is used as
- * the encryption domain and as the Move registry key.
+ * the encryption domain and as the Move registry key. The token is derived from
+ * an owner signature over a file-scoped nonce, so the owner can recreate it
+ * later without storing a random private key forever.
  */
 
+import { randomBytes } from 'crypto';
 import {
     Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network,
 } from '@aptos-labs/ts-sdk';
@@ -17,7 +20,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ACCESS_TOKEN_FILE, AccessTokenFile, AccountFile, CONFIG_FILE, ConfigFile, DEMO_FILE,
     OWNER_FILE, SHELBY_ACE_DEPLOYMENT, SHELBY_CHAIN_ID, SHELBY_KEYPAIR_ID, UPLOAD_FILE,
-    ensureDataDir, log, privateKeyHex, readJson, writeJson,
+    deriveAccessTokenAccount, ensureDataDir, log, readJson, writeJson,
 } from './common.js';
 
 async function main() {
@@ -28,9 +31,10 @@ async function main() {
     const owner = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(ownerFile.privateKeyHex) });
     const appContractAddr = AccountAddress.fromString(cfg.appContractAddr);
 
-    const tokenAccount = Account.generate();
+    const tokenNonce = randomBytes(16).toString('hex');
+    const { account: tokenAccount, privateKeyHex: tokenPrivateKeyHex, seedMessage } =
+        deriveAccessTokenAccount(owner, DEMO_FILE.fileId, tokenNonce);
     const tokenAddress = tokenAccount.accountAddress.toStringLong();
-    const tokenPrivateKeyHex = privateKeyHex(tokenAccount);
 
     const domain = new TextEncoder().encode(DEMO_FILE.fileId);
     log(`Encrypting "${DEMO_FILE.fileId}" before Shelby upload...`);
@@ -67,12 +71,15 @@ async function main() {
     writeJson(UPLOAD_FILE, {
         fileId: DEMO_FILE.fileId,
         ownerAddress: owner.accountAddress.toStringLong(),
+        tokenNonce,
         tokenAddress,
         ciphertextHex: Buffer.from(ciphertext).toString('hex'),
     });
 
     const token: AccessTokenFile = {
         kind: 'ed25519-private-key',
+        derivedFrom: 'owner-signature',
+        nonce: tokenNonce,
         scope: DEMO_FILE.fileId,
         address: tokenAddress,
         privateKeyHex: tokenPrivateKeyHex,
@@ -81,6 +88,8 @@ async function main() {
 
     log(`Saved Shelby upload metadata to ${UPLOAD_FILE}`);
     log(`Saved bearer token to ${ACCESS_TOKEN_FILE}`);
+    log('Token derivation seed signed by owner:');
+    console.log(seedMessage);
     log('');
     log('Private share token:');
     log(`  ${tokenPrivateKeyHex}`);

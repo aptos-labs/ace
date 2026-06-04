@@ -56,12 +56,14 @@ use solana::SolanaContractId;
 ///   1 = Custom   (V1; legacy)
 ///   2 = BasicV2  (carries tibe_scheme)
 ///   3 = CustomV2 (carries tibe_scheme)
+///   4 = ThresholdVrf
 #[derive(Serialize, Deserialize)]
 pub enum RequestForDecryptionKey {
     Basic(BasicFlowRequest),
     Custom(CustomFlowRequest),
     BasicV2(BasicFlowRequestV2),
     CustomV2(CustomFlowRequestV2),
+    ThresholdVrf(ThresholdVrfRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
@@ -112,6 +114,23 @@ pub struct CustomFlowRequestV2 {
     pub enc_pk: EncryptionKey,
     pub proof: CustomFlowProof,
     pub tibe_scheme: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ThresholdVrfRequestPayload {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub label: Vec<u8>,
+    pub account_address: [u8; 32],
+    pub response_enc_key: EncryptionKey,
+}
+
+pub type AptosAccountSignatureProof = AptosProofOfPermission;
+
+#[derive(Serialize, Deserialize)]
+pub struct ThresholdVrfRequest {
+    pub payload: ThresholdVrfRequestPayload,
+    pub auth_proof: AptosAccountSignatureProof,
 }
 
 #[derive(Serialize, Deserialize)]

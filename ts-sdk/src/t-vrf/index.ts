@@ -8,11 +8,12 @@ import {
     Serializer,
     Signature,
 } from "@aptos-labs/ts-sdk";
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 
 import * as pke from "../pke";
 import {
     AceDeployment,
+    createAptos,
     fetchNetworkState,
     NetworkState,
 } from "../_internal/common";
@@ -134,6 +135,58 @@ export class ThresholdVrfRequest {
     }
 }
 
+class ThresholdVrfWorkerRequest {
+    static readonly SCHEME_THRESHOLD_VRF = 4;
+
+    request: ThresholdVrfRequest;
+
+    constructor(request: ThresholdVrfRequest) {
+        this.request = request;
+    }
+
+    serialize(serializer: Serializer): void {
+        serializer.serializeU8(ThresholdVrfWorkerRequest.SCHEME_THRESHOLD_VRF);
+        this.request.serialize(serializer);
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+}
+
+async function fetchCurrentNodeInfos(
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
+    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+
+    return Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+        const addrStr = nodeAddr.toStringLong();
+        const [[endpoint], [ekHex]] = await Promise.all([
+            aptos.view({
+                payload: {
+                    function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [addrStr],
+                },
+            }),
+            aptos.view({
+                payload: {
+                    function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [addrStr],
+                },
+            }),
+        ]);
+        const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, "")))
+            .unwrapOrThrow(`ACE.tVRF: parse pke enc key for ${addrStr}`);
+        return { nodeAddr: addrStr, endpoint: endpoint as string, nodeEncKey };
+    }));
+}
+
 export class DerivationSession {
     aceDeployment: AceDeployment;
     keypairId: AccountAddress;
@@ -195,8 +248,48 @@ export class DerivationSession {
             signature: args.signature,
             fullMessage: args.fullMessage ?? this.message,
         });
-        const requestBytes = new ThresholdVrfRequest({ payload: this.payload, authProof }).toBytes();
+        const requestBytes = new ThresholdVrfWorkerRequest(
+            new ThresholdVrfRequest({ payload: this.payload, authProof }),
+        ).toBytes();
         if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");
-        throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
+
+        const networkState = this.networkState;
+        if (networkState === undefined) {
+            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: missing network state");
+        }
+        const nodeInfos = await fetchCurrentNodeInfos(this.aceDeployment, networkState);
+        const workerErrors: string[] = [];
+        let sawNotImplemented = false;
+
+        await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }) => {
+            try {
+                const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
+                const ctrl = new AbortController();
+                const tid = setTimeout(() => ctrl.abort(), 8000);
+                let resp: Response;
+                try {
+                    resp = await fetch(endpoint, { method: "POST", body: encReqHex, signal: ctrl.signal });
+                } finally {
+                    clearTimeout(tid);
+                }
+                if (!resp.ok) {
+                    const body = await resp.text().catch(() => "");
+                    const detail = body.trim().slice(0, 120);
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status}${detail ? ` - ${detail}` : ""}`);
+                    if (resp.status === 501) sawNotImplemented = true;
+                    workerErrors.push(`${nodeAddr}: HTTP ${resp.status}${detail ? ` ${detail}` : ""}`);
+                    return;
+                }
+                workerErrors.push(`${nodeAddr}: unexpected successful response before tVRF response handling exists`);
+            } catch (e) {
+                console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
+                workerErrors.push(`${nodeAddr}: ${e}`);
+            }
+        }));
+
+        if (sawNotImplemented) {
+            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
+        }
+        throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: no worker returned a tVRF response (${workerErrors.join("; ")})`);
     }
 }

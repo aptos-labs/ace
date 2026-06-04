@@ -120,6 +120,7 @@ pub struct CustomFlowRequestV2 {
 pub struct ThresholdVrfRequestPayload {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
+    pub chain_id: u8,
     pub label: Vec<u8>,
     pub account_address: [u8; 32],
     pub response_enc_key: EncryptionKey,
@@ -252,6 +253,31 @@ impl DecryptionRequestPayload {
     }
 }
 
+const THRESHOLD_VRF_PURPOSE: &str = "ace.threshold-vrf.derive.v1";
+
+impl ThresholdVrfRequestPayload {
+    /// Canonical human-readable form the owner signs for tVRF derivation.
+    /// Mirrors TS-SDK `ThresholdVrfRequestPayload.toPrettyMessage()` byte-for-byte.
+    pub fn to_pretty_message(&self) -> Result<String> {
+        let response_ek_bytes = bcs::to_bytes(&self.response_enc_key).map_err(|e| {
+            anyhow!(
+                "ThresholdVrfRequestPayload::to_pretty_message: serialize response_enc_key: {}",
+                e
+            )
+        })?;
+        Ok(format!(
+            "ACE Threshold VRF Derive Request\npurpose: {}\nkeypairId: 0x{}\nepoch: {}\nchainId: {}\nlabel: 0x{}\naccountAddress: 0x{}\nresponseEncKey: {}",
+            THRESHOLD_VRF_PURPOSE,
+            hex::encode(self.keypair_id),
+            self.epoch,
+            self.chain_id,
+            hex::encode(&self.label),
+            hex::encode(self.account_address),
+            hex::encode(response_ek_bytes),
+        ))
+    }
+}
+
 impl ContractId {
     /// Mirrors TS-SDK `ContractID.toPrettyMessage(indent)` in
     /// `ts-sdk/src/_internal/common.ts:108-113`. Returns the inner block
@@ -330,6 +356,17 @@ pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) 
             proof.tag_name()
         )),
     }
+}
+
+/// Verify a threshold-VRF derivation request: the account proof must sign the
+/// tVRF transcript, the proof account must match the requested account address,
+/// and the supplied public key must still be the on-chain auth key for that
+/// account.
+pub async fn verify_threshold_vrf(
+    req: &ThresholdVrfRequest,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    aptos::verify_threshold_vrf_aptos(req, chain_rpc).await
 }
 
 #[cfg(test)]

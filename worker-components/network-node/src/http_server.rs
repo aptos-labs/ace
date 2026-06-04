@@ -6,7 +6,8 @@
 //! Request body:  hex-encoded PKE ciphertext (encrypted to this node's registered key) whose
 //!                plaintext is a BCS [`verify::RequestForDecryptionKey`].
 //! Response body: hex-encoded PKE ciphertext (encrypted to the client's key) whose
-//!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare`.
+//!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare` for
+//!                decryption flows, or a BCS `ThresholdVrfShare` for tVRF.
 //!
 //! Adding a new request flow or chain is a one-arm change in `verify::RequestForDecryptionKey`
 //! and a matching arm here — no manual byte-walking, no per-scheme size tables.
@@ -182,7 +183,6 @@ enum Reason {
     NotFound,
     ServiceUnavailable,
     TooManyRequests,
-    NotImplemented,
     Internal,
 }
 
@@ -194,7 +194,6 @@ impl Reason {
             Reason::NotFound => "not_found",
             Reason::ServiceUnavailable => "service_unavailable",
             Reason::TooManyRequests => "too_many_requests",
-            Reason::NotImplemented => "not_implemented",
             Reason::Internal => "internal",
         }
     }
@@ -205,7 +204,6 @@ impl Reason {
             Reason::NotFound => StatusCode::NOT_FOUND,
             Reason::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Reason::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
-            Reason::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Reason::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -393,10 +391,7 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
             ctx.epoch = Some(req.payload.epoch);
             ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.response_enc_key);
-            Outcome::Rejected {
-                reason: Reason::NotImplemented,
-                detail: Some("threshold VRF worker handler is not implemented yet".to_string()),
-            }
+            handle_threshold_vrf(state, &snapshot, req, ctx).await
         }
     }
 }
@@ -470,6 +465,70 @@ async fn handle_custom_flow(
         &req.enc_pk,
         client_tibe_scheme,
     );
+    ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+    outcome
+}
+
+async fn handle_threshold_vrf(
+    state: &AppState,
+    snapshot: &crate::secrets::Snapshot,
+    req: ThresholdVrfRequest,
+    ctx: &mut RequestContext,
+) -> Outcome {
+    let pfn_start = Instant::now();
+    let verify_result = verify::verify_threshold_vrf(&req, &state.chain_rpc).await;
+    ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
+    if let Err(e) = verify_result {
+        return Outcome::Rejected {
+            reason: Reason::Forbidden,
+            detail: Some(format!("{:#}", e)),
+        };
+    }
+
+    let keypair_id = keypair_id_str(&req.payload.keypair_id);
+    let extract_start = Instant::now();
+    let entry = match snapshot.lookup(&keypair_id, req.payload.epoch) {
+        Some(v) => v,
+        None => {
+            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+            return Outcome::Rejected {
+                reason: Reason::NotFound,
+                detail: Some(format!(
+                    "no share for keypair_id={} epoch={}",
+                    keypair_id, req.payload.epoch
+                )),
+            };
+        }
+    };
+
+    let share_bytes = match crate::crypto::partial_derive_threshold_vrf_share(
+        &req.payload.keypair_id,
+        req.payload.chain_id,
+        &req.payload.account_address,
+        &req.payload.label,
+        &entry.scalar_le32,
+        entry.eval_point,
+        entry.group_scheme,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+            return Outcome::Rejected {
+                reason: Reason::Internal,
+                detail: Some(format!("partial_derive_threshold_vrf_share: {:#}", e)),
+            };
+        }
+    };
+    let resp_ct = pke_encrypt(&req.payload.response_enc_key, &share_bytes);
+    let outcome = match bcs::to_bytes(&resp_ct) {
+        Ok(b) => Outcome::Ok {
+            share_hex: hex::encode(b),
+        },
+        Err(e) => Outcome::Rejected {
+            reason: Reason::Internal,
+            detail: Some(format!("bcs encode response: {}", e)),
+        },
+    };
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
     outcome
 }

@@ -4,6 +4,7 @@
 import {
     AccountAddress,
     AccountPublicKey,
+    Deserializer,
     PublicKey,
     Serializer,
     Signature,
@@ -11,6 +12,7 @@ import {
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 
 import * as pke from "../pke";
+import * as group from "../group";
 import {
     AceDeployment,
     createAptos,
@@ -32,6 +34,7 @@ export interface RequestToSignArgs {
 export class ThresholdVrfRequestPayload {
     keypairId: AccountAddress;
     epoch: number;
+    chainId: number;
     label: Uint8Array;
     accountAddress: AccountAddress;
     responseEncKey: pke.EncryptionKey;
@@ -39,12 +42,14 @@ export class ThresholdVrfRequestPayload {
     constructor(args: {
         keypairId: AccountAddress,
         epoch: number,
+        chainId: number,
         label: Uint8Array,
         accountAddress: AccountAddress,
         responseEncKey: pke.EncryptionKey,
     }) {
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
+        this.chainId = args.chainId;
         this.label = args.label;
         this.accountAddress = args.accountAddress;
         this.responseEncKey = args.responseEncKey;
@@ -53,6 +58,7 @@ export class ThresholdVrfRequestPayload {
     serialize(serializer: Serializer): void {
         this.keypairId.serialize(serializer);
         serializer.serializeU64(BigInt(this.epoch));
+        serializer.serializeU8(this.chainId);
         serializer.serializeBytes(this.label);
         this.accountAddress.serialize(serializer);
         this.responseEncKey.serialize(serializer);
@@ -70,6 +76,7 @@ export class ThresholdVrfRequestPayload {
             `purpose: ${PURPOSE}`,
             `keypairId: ${this.keypairId.toStringLong()}`,
             `epoch: ${this.epoch}`,
+            `chainId: ${this.chainId}`,
             `label: 0x${bytesToHex(this.label)}`,
             `accountAddress: ${this.accountAddress.toStringLong()}`,
             `responseEncKey: ${this.responseEncKey.toHex()}`,
@@ -133,6 +140,32 @@ export class ThresholdVrfRequest {
         const serializer = new Serializer();
         this.serialize(serializer);
         return serializer.toUint8Array();
+    }
+}
+
+export class ThresholdVrfShare {
+    evalPoint: number;
+    share: group.Element;
+
+    constructor(args: { evalPoint: number, share: group.Element }) {
+        this.evalPoint = args.evalPoint;
+        this.share = args.share;
+    }
+
+    static deserialize(deserializer: Deserializer): ThresholdVrfShare {
+        const evalPoint = Number(deserializer.deserializeU64());
+        const share = group.Element.deserialize(deserializer)
+            .unwrapOrThrow("ThresholdVrfShare.deserialize: parse share");
+        return new ThresholdVrfShare({ evalPoint, share });
+    }
+
+    static fromBytes(bytes: Uint8Array): ThresholdVrfShare {
+        const deserializer = new Deserializer(bytes);
+        const share = ThresholdVrfShare.deserialize(deserializer);
+        if (deserializer.remaining() !== 0) {
+            throw new Error("ThresholdVrfShare.fromBytes: trailing bytes");
+        }
+        return share;
     }
 }
 
@@ -204,6 +237,7 @@ export class DerivationSession {
         const payload = new ThresholdVrfRequestPayload({
             keypairId: this.keypairId,
             epoch: networkState.epoch,
+            chainId: await createAptos(this.aceDeployment.apiEndpoint).getChainId(),
             label: this.label,
             accountAddress: this.accountAddress,
             responseEncKey: this.responseEncryptionKey,
@@ -240,6 +274,7 @@ export class DerivationSession {
         const nodeInfos = await fetchCurrentNodeInfos(this.aceDeployment, networkState);
         const workerErrors: string[] = [];
         let sawNotImplemented = false;
+        const shares: ThresholdVrfShare[] = [];
 
         await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }) => {
             try {
@@ -260,7 +295,30 @@ export class DerivationSession {
                     workerErrors.push(`${nodeAddr}: HTTP ${resp.status}${detail ? ` ${detail}` : ""}`);
                     return;
                 }
-                workerErrors.push(`${nodeAddr}: unexpected successful response before tVRF response handling exists`);
+                const hexText = (await resp.text()).trim();
+                const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                if (respCt === null) {
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                    workerErrors.push(`${nodeAddr}: response ciphertext parse failed`);
+                    return;
+                }
+                const shareBytes = (await pke.decrypt({
+                    decryptionKey: this.responseDecryptionKey,
+                    ciphertext: respCt,
+                })).okValue ?? null;
+                if (shareBytes === null) {
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                    workerErrors.push(`${nodeAddr}: response decryption failed`);
+                    return;
+                }
+                try {
+                    const share = ThresholdVrfShare.fromBytes(shareBytes);
+                    shares.push(share);
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): OK`);
+                } catch (e) {
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share parse failed - ${e}`);
+                    workerErrors.push(`${nodeAddr}: share parse failed`);
+                }
             } catch (e) {
                 console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
                 workerErrors.push(`${nodeAddr}: ${e}`);
@@ -269,6 +327,9 @@ export class DerivationSession {
 
         if (sawNotImplemented) {
             throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
+        }
+        if (shares.length >= networkState.curThreshold) {
+            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF reconstruction is not implemented yet");
         }
         throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: no worker returned a tVRF response (${workerErrors.join("; ")})`);
     }

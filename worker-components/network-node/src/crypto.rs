@@ -27,12 +27,14 @@ use ark_ec::{
 use ark_ff::{field_hashers::DefaultFieldHasher, BigInteger, PrimeField};
 use ark_serialize::CanonicalSerialize;
 use sha2::Sha256;
+use vss_common::group::{BcsElement, BcsPublicPoint, SCHEME_BLS12381G2};
 
 pub const SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC: u8 = 0;
 pub const SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD: u8 = 1;
 
 const DST_HASH_TO_G2_SHORTPK: &[u8] = b"BONEH_FRANKLIN_BLS12381_SHORT_PK/HASH_ID_TO_CURVE";
 const DST_HASH_TO_G1_SHORTSIG: &[u8] = b"BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE";
+const DST_THRESHOLD_VRF_G1: &[u8] = b"ACE_THRESHOLD_VRF_BLS12381G1/HASH_TO_CURVE/v1";
 
 type G2Hasher =
     MapToCurveBasedHasher<G2Projective, DefaultFieldHasher<Sha256, 128>, WBMap<ark_bls12_381::g2::Config>>;
@@ -150,6 +152,76 @@ pub fn partial_extract_idk_share(
     Ok(hex::encode(&out))
 }
 
+#[derive(serde::Serialize)]
+struct ThresholdVrfInput<'a> {
+    keypair_id: &'a [u8; 32],
+    chain_id: u8,
+    account_address: &'a [u8; 32],
+    label: &'a [u8],
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ThresholdVrfShareWire {
+    eval_point: u64,
+    share: BcsElement,
+}
+
+/// Compute this worker's threshold-VRF share and return the BCS bytes consumed
+/// by `ts-sdk/src/t-vrf/index.ts::ThresholdVrfShare`.
+///
+/// The DKG public commitments live in G2; the VRF share itself is in G1 so the
+/// client can verify `e(share_i, G2) == e(H_to_G1(input), P_i)`.
+pub fn partial_derive_threshold_vrf_share(
+    keypair_id: &[u8; 32],
+    chain_id: u8,
+    account_address: &[u8; 32],
+    label: &[u8],
+    scalar_le32: &[u8; 32],
+    eval_point: u64,
+    group_scheme: u8,
+) -> Result<Vec<u8>> {
+    if group_scheme != SCHEME_BLS12381G2 {
+        return Err(anyhow!(
+            "partial_derive_threshold_vrf_share: threshold VRF requires BLS12-381 G2 DKG shares, got group scheme {}",
+            group_scheme
+        ));
+    }
+
+    let input = ThresholdVrfInput {
+        keypair_id,
+        chain_id,
+        account_address,
+        label,
+    };
+    let input_bytes = bcs::to_bytes(&input)
+        .map_err(|e| anyhow!("partial_derive_threshold_vrf_share: encode input: {}", e))?;
+    let scalar_fr = Fr::from_le_bytes_mod_order(scalar_le32);
+    let h2c = G1Hasher::new(DST_THRESHOLD_VRF_G1)
+        .map_err(|e| anyhow!("threshold VRF G1Hasher::new: {:?}", e))?;
+    let id_proj: G1Projective = h2c
+        .hash(&input_bytes)
+        .map_err(|e| anyhow!("threshold VRF hash input to G1: {:?}", e))?
+        .into();
+    let result = (id_proj * scalar_fr).into_affine();
+    let mut point = Vec::with_capacity(48);
+    result
+        .serialize_compressed(&mut point)
+        .map_err(|e| anyhow!("threshold VRF G1 serialize_compressed: {:?}", e))?;
+    if point.len() != 48 {
+        return Err(anyhow!(
+            "threshold VRF G1 compressed must be 48 bytes, got {}",
+            point.len()
+        ));
+    }
+
+    let share = ThresholdVrfShareWire {
+        eval_point,
+        share: BcsElement::Bls12381G1(BcsPublicPoint { point }),
+    };
+    bcs::to_bytes(&share)
+        .map_err(|e| anyhow!("partial_derive_threshold_vrf_share: encode share: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +278,23 @@ mod tests {
             SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
         );
         assert!(tibe_scheme_for_group(0xff).is_err());
+    }
+
+    #[test]
+    fn threshold_vrf_share_is_eval_point_plus_g1_element() {
+        let share = partial_derive_threshold_vrf_share(
+            &[0xab; 32],
+            4,
+            &[0xcd; 32],
+            b"label-1",
+            &[1u8; 32],
+            42,
+            SCHEME_BLS12381G2,
+        )
+        .unwrap();
+        let decoded: ThresholdVrfShareWire = bcs::from_bytes(&share).unwrap();
+        assert_eq!(decoded.eval_point, 42);
+        assert_eq!(decoded.share.scheme(), vss_common::group::SCHEME_BLS12381G1);
+        assert_eq!(decoded.share.point_bytes().len(), 48);
     }
 }

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::ChainRpcConfig;
-use super::BasicFlowRequest;
+use super::{BasicFlowRequest, ThresholdVrfRequest};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -389,6 +389,83 @@ pub(super) async fn verify_aptos(
             sig.tag_name(),
         )),
     }
+}
+
+pub(super) async fn verify_threshold_vrf_aptos(
+    req: &ThresholdVrfRequest,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    match (&req.auth_proof.public_key, &req.auth_proof.signature) {
+        (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
+            verify_threshold_vrf_ed25519(req, pk_bytes, sig_bytes, chain_rpc).await
+        }
+        (pk, sig) => Err(anyhow!(
+            "verify_threshold_vrf_aptos: unsupported pk/sig scheme for threshold VRF ({}, {})",
+            pk.tag_name(),
+            sig.tag_name(),
+        )),
+    }
+}
+
+async fn verify_threshold_vrf_ed25519(
+    req: &ThresholdVrfRequest,
+    pk_bytes: &[u8; 32],
+    sig_bytes: &[u8; 64],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    use ed25519_dalek::Verifier;
+
+    let proof = &req.auth_proof;
+    if proof.user_addr != req.payload.account_address {
+        return Err(anyhow!(
+            "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
+        ));
+    }
+
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
+        .map_err(|e| anyhow!("verify_threshold_vrf_aptos: invalid Ed25519 pubkey: {}", e))?;
+    let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
+
+    let pretty_msg = req.payload.to_pretty_message()?;
+    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    let full_msg = &proof.full_message;
+    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+        return Err(anyhow!(
+            "verify_threshold_vrf_aptos: fullMessage does not contain expected threshold VRF request content"
+        ));
+    }
+
+    let msg_bytes: Vec<u8> = if is_valid_hex(full_msg) {
+        let stripped = full_msg.strip_prefix("0x").unwrap_or(full_msg.as_str());
+        hex::decode(stripped)
+            .map_err(|e| anyhow!("verify_threshold_vrf_aptos: hex decode fullMessage: {}", e))?
+    } else {
+        full_msg.as_bytes().to_vec()
+    };
+    vk.verify(&msg_bytes, &sig).map_err(|e| {
+        anyhow!(
+            "verify_threshold_vrf_aptos: Ed25519 verification failed: {}",
+            e
+        )
+    })?;
+
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(req.payload.chain_id)?;
+    let computed = vss_common::compute_account_address(&vk);
+    let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
+    let account = rpc
+        .get_account(&user_addr_str)
+        .await
+        .map_err(|e| anyhow!("checkAuthKey: get_account {}: {}", user_addr_str, e))?;
+    let onchain = hex::decode(account.authentication_key.trim_start_matches("0x"))
+        .map_err(|e| anyhow!("checkAuthKey: parse onchain auth key: {}", e))?;
+    if onchain.as_slice() != computed.as_ref() {
+        return Err(anyhow!(
+            "checkAuthKey: threshold VRF Ed25519 auth key mismatch for {}",
+            user_addr_str
+        ));
+    }
+
+    Ok(())
 }
 
 // ── Shared helpers (used by ed25519 + keyless) ──────────────────────────────

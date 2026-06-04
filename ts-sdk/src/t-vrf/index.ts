@@ -16,6 +16,7 @@ import {
     createAptos,
     fetchNetworkState,
     NetworkState,
+    RequestForDecryptionKey,
 } from "../_internal/common";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 
@@ -135,27 +136,6 @@ export class ThresholdVrfRequest {
     }
 }
 
-class ThresholdVrfWorkerRequest {
-    static readonly SCHEME_THRESHOLD_VRF = 4;
-
-    request: ThresholdVrfRequest;
-
-    constructor(request: ThresholdVrfRequest) {
-        this.request = request;
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeU8(ThresholdVrfWorkerRequest.SCHEME_THRESHOLD_VRF);
-        this.request.serialize(serializer);
-    }
-
-    toBytes(): Uint8Array {
-        const serializer = new Serializer();
-        this.serialize(serializer);
-        return serializer.toUint8Array();
-    }
-}
-
 async function fetchCurrentNodeInfos(
     aceDeployment: AceDeployment,
     networkState: NetworkState,
@@ -248,7 +228,7 @@ export class DerivationSession {
             signature: args.signature,
             fullMessage: args.fullMessage ?? this.message,
         });
-        const requestBytes = new ThresholdVrfWorkerRequest(
+        const requestBytes = RequestForDecryptionKey.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),
         ).toBytes();
         if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");

@@ -575,26 +575,34 @@ export class BasicFlowRequestV2 {
 //   1 = Custom   (V1, legacy)
 //   2 = BasicV2  (carries tibe_scheme so the handler doesn't have to guess)
 //   3 = CustomV2 (carries tibe_scheme)
+//   4 = ThresholdVrf
 //
 // V1 stays for backwards compat with older workers. V2 is the correct shape:
 // a t-IBE scheme is a *property of the ciphertext*, not derivable from the
 // keypair's group alone (multiple t-IBE schemes can sit over the same group).
 
+interface SerializableWorkerRequest {
+    serialize(serializer: Serializer): void;
+}
+
+// TODO(tVRF): rename this outer worker request envelope once it is no longer
+// decryption-only. The wire shape already matches the worker-side Rust enum.
 export class RequestForDecryptionKey {
     static readonly SCHEME_BASIC_FLOW = 0;
     static readonly SCHEME_CUSTOM_FLOW = 1;
     static readonly SCHEME_BASIC_FLOW_V2 = 2;
     static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
+    static readonly SCHEME_THRESHOLD_VRF = 4;
 
     scheme: number;
     /** The scheme-specific request body. `scheme` discriminates which class
-     *  instance lives here; all four envelope types share a `serialize(s)`
+     *  instance lives here; all envelope types share a `serialize(s)`
      *  method so the outer enum just delegates polymorphically. */
-    private inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2;
+    private inner: SerializableWorkerRequest;
 
     private constructor(
         scheme: number,
-        inner: BasicFlowRequest | BasicFlowRequestV2 | CustomFlowRequest | CustomFlowRequestV2,
+        inner: SerializableWorkerRequest,
     ) {
         this.scheme = scheme;
         this.inner = inner;
@@ -640,6 +648,13 @@ export class RequestForDecryptionKey {
                 proof: customRequest.proof,
                 tibeScheme,
             }),
+        );
+    }
+
+    static newThresholdVrf(request: SerializableWorkerRequest): RequestForDecryptionKey {
+        return new RequestForDecryptionKey(
+            RequestForDecryptionKey.SCHEME_THRESHOLD_VRF,
+            request,
         );
     }
 

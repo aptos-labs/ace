@@ -13,6 +13,7 @@ import {
     Signature,
     WebAuthnSignature,
 } from "@aptos-labs/ts-sdk";
+import { bls12_381 } from "@noble/curves/bls12-381";
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { sha3_256 } from "@noble/hashes/sha3";
@@ -23,13 +24,16 @@ import * as group from "../group";
 import {
     AceDeployment,
     createAptos,
+    fetchCurrentSessionPks,
     fetchNetworkState,
     NetworkState,
     RequestForDecryptionKey,
 } from "../_internal/common";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
+import { frInv, frMod, frMul } from "../group/bls12381fr";
 
 export const PURPOSE = "ace.threshold-vrf.derive.v1";
+const DST_THRESHOLD_VRF_G1 = new TextEncoder().encode("ACE_THRESHOLD_VRF_BLS12381G1/HASH_TO_CURVE/v1");
 
 export interface RequestToSignArgs {
     aceDeployment: AceDeployment;
@@ -97,6 +101,15 @@ export class ThresholdVrfRequestPayload {
         preimage.set(seed, 0);
         preimage.set(body, seed.length);
         return sha3_256(preimage);
+    }
+
+    toVrfInputBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.keypairId.serialize(serializer);
+        serializer.serializeU8(this.chainId);
+        this.accountAddress.serialize(serializer);
+        serializer.serializeBytes(this.label);
+        return serializer.toUint8Array();
     }
 }
 
@@ -216,6 +229,85 @@ async function fetchCurrentNodeInfos(
     }));
 }
 
+function verifyThresholdVrfShare(args: {
+    share: ThresholdVrfShare,
+    sdkIdx: number,
+    sessionPks: { basePoint: group.Element, sharePks: group.Element[] },
+    vrfInput: Uint8Array,
+    nodeAddr: string,
+    endpoint: string,
+}): boolean {
+    const { share, sdkIdx, sessionPks, vrfInput, nodeAddr, endpoint } = args;
+    const expectedEval = sdkIdx + 1;
+    if (share.evalPoint !== expectedEval) {
+        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): evalPoint mismatch (got ${share.evalPoint}, expected ${expectedEval})`);
+        return false;
+    }
+    if (share.share.scheme !== group.SCHEME_BLS12381G1) {
+        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share scheme mismatch (got ${share.share.scheme}, expected G1)`);
+        return false;
+    }
+    if (sessionPks.basePoint.scheme !== group.SCHEME_BLS12381G2) {
+        throw new Error(`ACE.tVRF: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
+    }
+    const sharePk = sessionPks.sharePks[sdkIdx];
+    if (sharePk === undefined) {
+        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): missing sharePk at SDK index ${sdkIdx}`);
+        return false;
+    }
+    if (sharePk.scheme !== group.SCHEME_BLS12381G2) {
+        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): sharePk scheme mismatch (got ${sharePk.scheme}, expected G2)`);
+        return false;
+    }
+
+    const shareInner = share.share.inner as group.bls12381G1.PublicPoint;
+    const basePointInner = sessionPks.basePoint.inner as group.bls12381G2.PublicPoint;
+    const sharePkInner = sharePk.inner as group.bls12381G2.PublicPoint;
+    const inputPoint = bls12_381.G1.hashToCurve(vrfInput, { DST: DST_THRESHOLD_VRF_G1 });
+    const lhs = bls12_381.pairing(shareInner.pt as any, basePointInner.pt as any);
+    const rhs = bls12_381.pairing(inputPoint as any, sharePkInner.pt as any);
+    if (!bls12_381.fields.Fp12.eql(lhs, rhs)) {
+        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share failed pairing verification`);
+        return false;
+    }
+    return true;
+}
+
+function reconstructThresholdVrf(shares: ThresholdVrfShare[]): Uint8Array {
+    if (shares.length === 0) {
+        throw new Error("ACE.tVRF.reconstructThresholdVrf: no shares");
+    }
+    const xs = shares.map((s) => frMod(BigInt(s.evalPoint)));
+    for (let i = 0; i < xs.length; i++) {
+        for (let j = i + 1; j < xs.length; j++) {
+            if (xs[i] === xs[j]) throw new Error("ACE.tVRF.reconstructThresholdVrf: duplicate evalPoint");
+        }
+    }
+
+    let full: any | null = null;
+    for (let i = 0; i < shares.length; i++) {
+        let lambda = 1n;
+        for (let j = 0; j < shares.length; j++) {
+            if (i === j) continue;
+            lambda = frMul(lambda, frMul(frMod(-xs[j]), frInv(frMod(xs[i] - xs[j]))));
+        }
+        if (lambda === 0n) continue;
+        const point = (shares[i].share.inner as group.bls12381G1.PublicPoint).pt as any;
+        const scaled = point.multiply(lambda);
+        full = full === null ? scaled : full.add(scaled);
+    }
+    if (full === null) {
+        throw new Error("ACE.tVRF.reconstructThresholdVrf: all Lagrange coefficients were zero");
+    }
+
+    const pointBytes = new group.bls12381G1.PublicPoint(full).rawBytes();
+    const seed = sha3_256(new TextEncoder().encode("ACE::ThresholdVrfOutput"));
+    const preimage = new Uint8Array(seed.length + pointBytes.length);
+    preimage.set(seed, 0);
+    preimage.set(pointBytes, seed.length);
+    return sha3_256(preimage);
+}
+
 export class DerivationSession {
     aceDeployment: AceDeployment;
     keypairId: AccountAddress;
@@ -300,12 +392,22 @@ export class DerivationSession {
         if (networkState === undefined) {
             throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: missing network state");
         }
-        const nodeInfos = await fetchCurrentNodeInfos(this.aceDeployment, networkState);
+        const [nodeInfos, sessionPks] = await Promise.all([
+            fetchCurrentNodeInfos(this.aceDeployment, networkState),
+            fetchCurrentSessionPks(this.aceDeployment, networkState, this.keypairId),
+        ]);
+        if (sessionPks.sharePks.length !== networkState.curNodes.length) {
+            throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: sharePks length ${sessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`);
+        }
+        if (sessionPks.basePoint.scheme !== group.SCHEME_BLS12381G2) {
+            throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
+        }
+        const vrfInput = this.payload.toVrfInputBytes();
         const workerErrors: string[] = [];
         let sawNotImplemented = false;
         const shares: ThresholdVrfShare[] = [];
 
-        await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }) => {
+        await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => {
             try {
                 const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
                 const ctrl = new AbortController();
@@ -342,6 +444,10 @@ export class DerivationSession {
                 }
                 try {
                     const share = ThresholdVrfShare.fromBytes(shareBytes);
+                    if (!verifyThresholdVrfShare({ share, sdkIdx, sessionPks, vrfInput, nodeAddr, endpoint })) {
+                        workerErrors.push(`${nodeAddr}: invalid tVRF share`);
+                        return;
+                    }
                     shares.push(share);
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): OK`);
                 } catch (e) {
@@ -358,9 +464,9 @@ export class DerivationSession {
             throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
         }
         if (shares.length >= networkState.curThreshold) {
-            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF reconstruction is not implemented yet");
+            return reconstructThresholdVrf(shares.slice(0, networkState.curThreshold));
         }
-        throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: no worker returned a tVRF response (${workerErrors.join("; ")})`);
+        throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: need ${networkState.curThreshold} valid shares, got ${shares.length} (${workerErrors.join("; ")})`);
     }
 
     async deriveWithWebAuthnAssertion(args: {

@@ -7,8 +7,8 @@
  * This follows the same shape as the other scenarios: start localnet, deploy
  * ACE contracts, register/spawn workers, run DKG, then drive the SDK API that
  * hits the Rust user request handler. Workers return encrypted tVRF shares;
- * the scenario currently pins the next explicit TODO boundary at TS-side share
- * reconstruction.
+ * the SDK verifies them against on-chain G2 share commitments, reconstructs
+ * the threshold VRF value, and returns domain-separated random bytes.
  *
  * Desired SDK shape:
  *
@@ -76,21 +76,28 @@ async function main() {
         assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
         console.log(msg);
 
-        step(3, 'Call future tVRF derive API');
-        try {
-            await session.deriveWithSignature({
-                pubKey: owner.publicKey,
-                signature: owner.sign(msg),
-            });
-            throw new Error('tVRF derive unexpectedly succeeded before reconstruction exists');
-        } catch (err) {
-            const msg = String(err);
-            assert(
-                msg.includes('threshold VRF reconstruction is not implemented yet'),
-                `expected tVRF reconstruction boundary, got: ${msg}`,
-            );
-            log('tVRF workers returned shares; TS reconstruction remains TODO.');
-        }
+        step(3, 'Derive tVRF random bytes');
+        const derived = await session.deriveWithSignature({
+            pubKey: owner.publicKey,
+            signature: owner.sign(msg),
+        });
+        assert(derived.length === 32, `tVRF output should be 32 bytes, got ${derived.length}`);
+        console.log(`  randomBytes: 0x${Buffer.from(derived).toString('hex')}`);
+
+        step(4, 'Repeat derivation with a fresh response key and the same label');
+        const repeatSession = await ACE.tVRF.DerivationSession.create({
+            aceDeployment: ace.aceDeployment,
+            keypairId,
+            label,
+            accountAddress: owner.accountAddress,
+        });
+        const repeatMsg = await repeatSession.getRequestToSign();
+        const repeat = await repeatSession.deriveWithSignature({
+            pubKey: owner.publicKey,
+            signature: owner.sign(repeatMsg),
+        });
+        assert(Buffer.from(repeat).equals(Buffer.from(derived)), 'same tVRF input should derive the same random bytes');
+        log('tVRF shares verified, reconstructed, and deterministically hashed to random bytes.');
     } catch (err) {
         console.error('\nTest failed:', err);
         exitCode = 1;

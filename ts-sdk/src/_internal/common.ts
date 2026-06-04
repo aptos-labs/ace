@@ -763,7 +763,7 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
  * The discriminator `currentSession === keypairId` distinguishes the initial DKG (no DKR yet)
  * from subsequent DKR sessions.
  */
-async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
+export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
     const aptos = createAptos(aceDeployment.apiEndpoint);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const keypairIdStr = keypairId.toStringLong();

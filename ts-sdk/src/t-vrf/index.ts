@@ -24,7 +24,6 @@ export interface RequestToSignArgs {
     keypairId: AccountAddress;
     label: Uint8Array;
     accountAddress: AccountAddress;
-    expiresAtUnixMs?: number;
 }
 
 export interface DeriveWithSignatureArgs {
@@ -39,7 +38,6 @@ export class ThresholdVrfRequestPayload {
     label: Uint8Array;
     accountAddress: AccountAddress;
     responseEncKey: pke.EncryptionKey;
-    expiresAtUnixMs: number;
 
     constructor(args: {
         keypairId: AccountAddress,
@@ -47,14 +45,12 @@ export class ThresholdVrfRequestPayload {
         label: Uint8Array,
         accountAddress: AccountAddress,
         responseEncKey: pke.EncryptionKey,
-        expiresAtUnixMs: number,
     }) {
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
         this.label = args.label;
         this.accountAddress = args.accountAddress;
         this.responseEncKey = args.responseEncKey;
-        this.expiresAtUnixMs = args.expiresAtUnixMs;
     }
 
     serialize(serializer: Serializer): void {
@@ -63,7 +59,6 @@ export class ThresholdVrfRequestPayload {
         serializer.serializeBytes(this.label);
         this.accountAddress.serialize(serializer);
         this.responseEncKey.serialize(serializer);
-        serializer.serializeU64(BigInt(this.expiresAtUnixMs));
     }
 
     toBytes(): Uint8Array {
@@ -81,7 +76,6 @@ export class ThresholdVrfRequestPayload {
             `label: 0x${bytesToHex(this.label)}`,
             `accountAddress: ${this.accountAddress.toStringLong()}`,
             `responseEncKey: ${this.responseEncKey.toHex()}`,
-            `expiresAtUnixMs: ${this.expiresAtUnixMs}`,
         ].join("\n");
     }
 }
@@ -112,7 +106,6 @@ export class DerivationSession {
     keypairId: AccountAddress;
     label: Uint8Array;
     accountAddress: AccountAddress;
-    expiresAtUnixMs: number;
     responseEncryptionKey: pke.EncryptionKey;
     responseDecryptionKey: pke.DecryptionKey;
     networkState: NetworkState | undefined;
@@ -122,13 +115,11 @@ export class DerivationSession {
     private constructor(args: RequestToSignArgs & {
         responseEncryptionKey: pke.EncryptionKey,
         responseDecryptionKey: pke.DecryptionKey,
-        expiresAtUnixMs: number,
     }) {
         this.aceDeployment = args.aceDeployment;
         this.keypairId = args.keypairId;
         this.label = args.label;
         this.accountAddress = args.accountAddress;
-        this.expiresAtUnixMs = args.expiresAtUnixMs;
         this.responseEncryptionKey = args.responseEncryptionKey;
         this.responseDecryptionKey = args.responseDecryptionKey;
     }
@@ -139,7 +130,6 @@ export class DerivationSession {
             ...args,
             responseEncryptionKey: encryptionKey,
             responseDecryptionKey: decryptionKey,
-            expiresAtUnixMs: args.expiresAtUnixMs ?? Date.now() + 5 * 60_000,
         });
     }
 
@@ -151,7 +141,6 @@ export class DerivationSession {
             label: this.label,
             accountAddress: this.accountAddress,
             responseEncKey: this.responseEncryptionKey,
-            expiresAtUnixMs: this.expiresAtUnixMs,
         });
         this.networkState = networkState;
         this.payload = payload;

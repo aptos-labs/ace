@@ -27,7 +27,17 @@
 
 import * as ACE from '@aptos-labs/ace-sdk';
 
-import { fundAccount, cleanupScenario, assert, log } from './common/helpers';
+import {
+    fundAccount,
+    cleanupScenario,
+    assert,
+    getNetworkState,
+    log,
+    proposeAndApprove,
+    serializeCommitteeChangeProposal,
+    sleep,
+    waitFor,
+} from './common/helpers';
 import { setupAceOnLocalnet, SetupAceOnLocalnetResult } from './common/ace-network';
 
 const TOTAL_WORKERS = 3;
@@ -36,6 +46,13 @@ const THRESHOLD = 2;
 
 function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
+}
+
+function transcriptField(msg: string, field: string): string {
+    const prefix = `${field}: `;
+    const line = msg.split('\n').find(l => l.startsWith(prefix));
+    if (!line) throw new Error(`missing transcript field: ${field}`);
+    return line.slice(prefix.length);
 }
 
 async function main() {
@@ -74,6 +91,7 @@ async function main() {
         assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
         assert(msg.includes('chainId:'), 'transcript binds chain id');
         assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
+        const firstResponseEncKey = transcriptField(msg, 'responseEncKey');
         console.log(msg);
 
         step(3, 'Derive tVRF random bytes');
@@ -84,7 +102,29 @@ async function main() {
         assert(derived.length === 32, `tVRF output should be 32 bytes, got ${derived.length}`);
         console.log(`  randomBytes: 0x${Buffer.from(derived).toString('hex')}`);
 
-        step(4, 'Repeat derivation with a fresh response key and the same label');
+        step(4, 'Advance one epoch while retaining the same tVRF keypair');
+        const stateBeforeEpochChange = (await getNetworkState(ace.adminAccountAddress))
+            .unwrapOrThrow('state read failed before epoch change');
+        const targetEpoch = stateBeforeEpochChange.epoch + 1;
+        const approvers = COMMITTEE.slice(0, THRESHOLD).map(i => ace.workerAccounts[i]!);
+        await proposeAndApprove(
+            approvers[0]!,
+            approvers,
+            actors.adminAddr,
+            serializeCommitteeChangeProposal(
+                COMMITTEE.map(i => ace.workerAccounts[i]!.accountAddress),
+                THRESHOLD,
+            ),
+        );
+        await waitFor(`epoch ${targetEpoch}`, async () => {
+            const stateResult = await getNetworkState(ace.adminAccountAddress);
+            if (!stateResult.isOk) return false;
+            return stateResult.okValue!.epoch === targetEpoch;
+        }, 120_000);
+        console.log(`  Epoch advanced to ${targetEpoch}`);
+        await sleep(30000);
+
+        step(5, 'Repeat derivation in the next epoch with a fresh response key and the same label');
         const repeatSession = await ACE.tVRF.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
@@ -92,6 +132,11 @@ async function main() {
             accountAddress: owner.accountAddress,
         });
         const repeatMsg = await repeatSession.getRequestToSign();
+        assert(
+            transcriptField(repeatMsg, 'responseEncKey') !== firstResponseEncKey,
+            'repeat session uses a fresh response encryption key',
+        );
+        assert(repeatMsg.includes(`epoch: ${targetEpoch}`), 'repeat transcript binds the next epoch');
         const repeat = await repeatSession.deriveWithSignature({
             pubKey: owner.publicKey,
             signature: owner.sign(repeatMsg),

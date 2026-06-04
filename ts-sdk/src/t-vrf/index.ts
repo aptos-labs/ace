@@ -27,15 +27,7 @@ export interface RequestToSignArgs {
     expiresAtUnixMs?: number;
 }
 
-export interface RequestToSignResult extends RequestToSignArgs {
-    networkState: NetworkState;
-    payload: ThresholdVrfRequestPayload;
-    message: string;
-    responseEncryptionKey: pke.EncryptionKey;
-    responseDecryptionKey: pke.DecryptionKey;
-}
-
-export interface DeriveArgs extends RequestToSignResult {
+export interface DeriveWithSignatureArgs {
     pubKey: PublicKey;
     signature: Signature;
     fullMessage?: string;
@@ -115,45 +107,70 @@ export class ThresholdVrfRequest {
     }
 }
 
-export async function requestToSign(args: RequestToSignArgs): Promise<RequestToSignResult> {
-    const networkState = await fetchNetworkState(args.aceDeployment);
-    const { encryptionKey, decryptionKey } = await pke.keygen();
-    const payload = new ThresholdVrfRequestPayload({
-        keypairId: args.keypairId,
-        epoch: networkState.epoch,
-        label: args.label,
-        accountAddress: args.accountAddress,
-        responseEncKey: encryptionKey,
-        expiresAtUnixMs: args.expiresAtUnixMs ?? Date.now() + 5 * 60_000,
-    });
-    return {
-        ...args,
-        networkState,
-        payload,
-        message: payload.toPrettyMessage(),
-        responseEncryptionKey: encryptionKey,
-        responseDecryptionKey: decryptionKey,
-    };
+export class DerivationSession {
+    aceDeployment: AceDeployment;
+    keypairId: AccountAddress;
+    label: Uint8Array;
+    accountAddress: AccountAddress;
+    expiresAtUnixMs: number;
+    responseEncryptionKey: pke.EncryptionKey;
+    responseDecryptionKey: pke.DecryptionKey;
+    networkState: NetworkState | undefined;
+    payload: ThresholdVrfRequestPayload | undefined;
+    message: string | undefined;
+
+    private constructor(args: RequestToSignArgs & {
+        responseEncryptionKey: pke.EncryptionKey,
+        responseDecryptionKey: pke.DecryptionKey,
+        expiresAtUnixMs: number,
+    }) {
+        this.aceDeployment = args.aceDeployment;
+        this.keypairId = args.keypairId;
+        this.label = args.label;
+        this.accountAddress = args.accountAddress;
+        this.expiresAtUnixMs = args.expiresAtUnixMs;
+        this.responseEncryptionKey = args.responseEncryptionKey;
+        this.responseDecryptionKey = args.responseDecryptionKey;
+    }
+
+    static async create(args: RequestToSignArgs): Promise<DerivationSession> {
+        const { encryptionKey, decryptionKey } = await pke.keygen();
+        return new DerivationSession({
+            ...args,
+            responseEncryptionKey: encryptionKey,
+            responseDecryptionKey: decryptionKey,
+            expiresAtUnixMs: args.expiresAtUnixMs ?? Date.now() + 5 * 60_000,
+        });
+    }
+
+    async getRequestToSign(): Promise<string> {
+        const networkState = await fetchNetworkState(this.aceDeployment);
+        const payload = new ThresholdVrfRequestPayload({
+            keypairId: this.keypairId,
+            epoch: networkState.epoch,
+            label: this.label,
+            accountAddress: this.accountAddress,
+            responseEncKey: this.responseEncryptionKey,
+            expiresAtUnixMs: this.expiresAtUnixMs,
+        });
+        this.networkState = networkState;
+        this.payload = payload;
+        this.message = payload.toPrettyMessage();
+        return this.message;
+    }
+
+    async deriveWithSignature(args: DeriveWithSignatureArgs): Promise<Uint8Array> {
+        if (this.payload === undefined || this.message === undefined) {
+            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: call getRequestToSign() first");
+        }
+        const proof = ProofOfPermission.createAptos({
+            userAddr: this.accountAddress,
+            publicKey: args.pubKey,
+            signature: args.signature,
+            fullMessage: args.fullMessage ?? this.message,
+        });
+        const requestBytes = new ThresholdVrfRequest({ payload: this.payload, proof }).toBytes();
+        if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");
+        throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
+    }
 }
-
-export async function derive(args: DeriveArgs): Promise<Uint8Array> {
-    const proof = ProofOfPermission.createAptos({
-        userAddr: args.accountAddress,
-        publicKey: args.pubKey,
-        signature: args.signature,
-        fullMessage: args.fullMessage ?? args.message,
-    });
-    const requestBytes = new ThresholdVrfRequest({ payload: args.payload, proof }).toBytes();
-    if (requestBytes.length === 0) throw new Error("ACE.tVRF.derive: empty request");
-    throw new Error("ACE.tVRF.derive: threshold VRF worker handler is not implemented yet");
-}
-
-export type TVRFFunction = ((args: DeriveArgs) => Promise<Uint8Array>) & {
-    requestToSign: typeof requestToSign;
-    derive: typeof derive;
-};
-
-export const tVRF: TVRFFunction = Object.assign(
-    (args: DeriveArgs) => derive(args),
-    { requestToSign, derive },
-);

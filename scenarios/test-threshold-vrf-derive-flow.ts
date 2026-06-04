@@ -12,16 +12,16 @@
  *
  * Desired SDK shape:
  *
- *   const req = await ACE.tVRF.requestToSign({
+ *   const session = await ACE.tVRF.DerivationSession.create({
  *       aceDeployment,
  *       keypairId,
  *       label,
  *       accountAddress,
  *   });
- *   const derivedBytes = await ACE.tVRF({
- *       ...req,
+ *   const msg = await session.getRequestToSign();
+ *   const derivedBytes = await session.deriveWithSignature({
  *       pubKey: account.publicKey,
- *       signature: account.sign(req.message),
+ *       signature: account.sign(msg),
  *   });
  */
 
@@ -74,26 +74,26 @@ async function main() {
         console.log(`  blob id:  ${blobId}`);
 
         step(2, 'Ask TS SDK for the canonical tVRF request to sign');
-        const req = await ACE.tVRF.requestToSign({
+        const session = await ACE.tVRF.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
             label,
             accountAddress: owner.accountAddress,
         });
-        assert(req.message.includes('ACE Threshold VRF Derive Request'), 'requestToSign returns tVRF transcript');
-        assert(req.message.includes(keypairId.toStringLong()), 'transcript binds keypair id');
-        assert(req.message.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
-        assert(req.message.includes('responseEncKey:'), 'transcript binds response encryption key');
-        console.log(req.message);
+        const msg = await session.getRequestToSign();
+        assert(msg.includes('ACE Threshold VRF Derive Request'), 'getRequestToSign returns tVRF transcript');
+        assert(msg.includes(keypairId.toStringLong()), 'transcript binds keypair id');
+        assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
+        assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
+        console.log(msg);
 
         step(3, 'Call future tVRF derive API');
         try {
-            await ACE.tVRF({
-                ...req,
+            await session.deriveWithSignature({
                 pubKey: owner.publicKey,
-                signature: owner.sign(req.message),
+                signature: owner.sign(msg),
             });
-            throw new Error('ACE.tVRF unexpectedly succeeded before Rust handler exists');
+            throw new Error('tVRF derive unexpectedly succeeded before Rust handler exists');
         } catch (err) {
             const msg = String(err);
             assert(

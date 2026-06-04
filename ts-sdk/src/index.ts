@@ -32,7 +32,7 @@ export { knownDeployments } from "./known-deployments";
 // Aptos flows
 export * as AptosBasicFlow from "./aptos/basic-flow";
 export * as AptosCustomFlow from "./aptos/custom-flow";
-export { tVRF } from "./t-vrf";
+export * as tVRF from "./t-vrf";
 
 // Solana flows
 export * as SolanaBasicFlow from "./solana/basic-flow";

@@ -24,11 +24,21 @@ pub mod multi_ed25519;
 pub mod multi_key;
 
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use k256::ecdsa::{
+    signature::hazmat::PrehashVerifier, Signature as K256Signature,
+    VerifyingKey as K256VerifyingKey,
+};
+use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use sha3::Sha3_256;
 
 use crate::ChainRpcConfig;
-use super::{BasicFlowRequest, ThresholdVrfRequest};
+use super::{
+    BasicFlowRequest, DecryptionRequestPayload, ThresholdVrfRequest, ThresholdVrfRequestPayload,
+};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -395,62 +405,417 @@ pub(super) async fn verify_threshold_vrf_aptos(
     req: &ThresholdVrfRequest,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    match (&req.auth_proof.public_key, &req.auth_proof.signature) {
-        (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
-            verify_threshold_vrf_ed25519(req, pk_bytes, sig_bytes, chain_rpc).await
-        }
-        (pk, sig) => Err(anyhow!(
-            "verify_threshold_vrf_aptos: unsupported pk/sig scheme for threshold VRF ({}, {})",
-            pk.tag_name(),
-            sig.tag_name(),
-        )),
-    }
-}
-
-async fn verify_threshold_vrf_ed25519(
-    req: &ThresholdVrfRequest,
-    pk_bytes: &[u8; 32],
-    sig_bytes: &[u8; 64],
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    use ed25519_dalek::Verifier;
-
     let proof = &req.auth_proof;
     if proof.user_addr != req.payload.account_address {
         return Err(anyhow!(
             "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
         ));
     }
+    verify_aptos_account_proof(&req.payload, req.payload.chain_id, proof, chain_rpc).await
+}
 
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
-        .map_err(|e| anyhow!("verify_threshold_vrf_aptos: invalid Ed25519 pubkey: {}", e))?;
-    let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
+pub(super) trait AptosPayloadBinding {
+    fn to_pretty_message(&self) -> Result<String>;
+    fn to_webauthn_challenge(&self) -> Result<[u8; 32]>;
+}
 
-    let pretty_msg = req.payload.to_pretty_message()?;
+impl AptosPayloadBinding for DecryptionRequestPayload {
+    fn to_pretty_message(&self) -> Result<String> {
+        DecryptionRequestPayload::to_pretty_message(self)
+    }
+
+    fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        DecryptionRequestPayload::to_webauthn_challenge(self)
+    }
+}
+
+impl AptosPayloadBinding for ThresholdVrfRequestPayload {
+    fn to_pretty_message(&self) -> Result<String> {
+        ThresholdVrfRequestPayload::to_pretty_message(self)
+    }
+
+    fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        ThresholdVrfRequestPayload::to_webauthn_challenge(self)
+    }
+}
+
+async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    match (&proof.public_key, &proof.signature) {
+        (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
+            let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes).map_err(|e| {
+                anyhow!("verify_aptos_account_proof: invalid Ed25519 pubkey: {}", e)
+            })?;
+            let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
+            verify_ed25519_signature(payload, proof, &vk, &sig, "verify_aptos_account_proof")?;
+            let computed = vss_common::compute_account_address(&vk);
+            let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+            check_auth_key_bytes(proof, computed.as_ref(), "ed25519", rpc).await
+        }
+        (AptosPublicKeyMaterial::Any(any_pk), AptosSignatureMaterial::Any(any_sig)) => {
+            verify_any_account_proof(payload, chain_id, proof, any_pk, any_sig, chain_rpc).await
+        }
+        (AptosPublicKeyMaterial::MultiEd25519(pk), AptosSignatureMaterial::MultiEd25519(sig)) => {
+            verify_multi_ed25519_account_proof(payload, chain_id, proof, pk, sig, chain_rpc).await
+        }
+        (AptosPublicKeyMaterial::MultiKey(mk), AptosSignatureMaterial::MultiKey(ms)) => {
+            verify_multi_key_account_proof(payload, chain_id, proof, mk, ms, chain_rpc).await
+        }
+        (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
+            verify_keyless_signature(payload, chain_id, proof, pk, sig, chain_rpc).await?;
+            let computed = aptos_keyless_common::keyless_account_authentication_key(pk);
+            let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+            check_auth_key_bytes(proof, computed.as_ref(), "keyless", rpc).await
+        }
+        (AptosPublicKeyMaterial::FederatedKeyless(fpk), AptosSignatureMaterial::Keyless(sig)) => {
+            verify_federated_keyless_signature(payload, chain_id, proof, fpk, sig, chain_rpc)
+                .await?;
+            let computed = aptos_keyless_common::federated_keyless_account_authentication_key(fpk);
+            let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+            check_auth_key_bytes(proof, computed.as_ref(), "federated_keyless", rpc).await
+        }
+        (pk, sig) => Err(anyhow!(
+            "verify_aptos_account_proof: pk/sig scheme mismatch ({} pk vs {} sig)",
+            pk.tag_name(),
+            sig.tag_name(),
+        )),
+    }
+}
+
+async fn verify_any_account_proof<P: AptosPayloadBinding + Sync>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    any_pk: &any::AnyPublicKeyInner,
+    any_sig: &any::AnySignatureInner,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    verify_any_signature_only(payload, chain_id, proof, any_pk, any_sig, chain_rpc).await?;
+    let computed = any::authentication_key(any_pk);
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await
+}
+
+async fn verify_multi_ed25519_account_proof<P: AptosPayloadBinding + Sync>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    pk: &multi_ed25519::MultiEd25519PublicKeyInner,
+    sig: &multi_ed25519::MultiEd25519SignatureInner,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    multi_ed25519::validate(pk, sig)?;
+
+    let positions = multi_ed25519::bitmap_iter_ones(&sig.bitmap).zip(sig.signatures.iter());
+    let position_futs: Vec<_> = positions
+        .map(|(pos, sig_bytes)| {
+            let pk_bytes = &pk.public_keys[pos];
+            async move {
+                let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes).map_err(|e| {
+                    anyhow!(
+                        "multi_ed25519 account proof: invalid Ed25519 pubkey at position {}: {}",
+                        pos,
+                        e
+                    )
+                })?;
+                let ed_sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
+                verify_ed25519_signature(
+                    payload,
+                    proof,
+                    &vk,
+                    &ed_sig,
+                    "multi_ed25519 account proof",
+                )
+            }
+        })
+        .collect();
+    futures::future::try_join_all(position_futs).await?;
+
+    let computed = multi_ed25519::authentication_key(pk);
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    check_auth_key_bytes(proof, &computed, "multi_ed25519", rpc).await
+}
+
+async fn verify_multi_key_account_proof<P: AptosPayloadBinding + Sync>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    mk: &multi_key::MultiKeyInner,
+    ms: &multi_key::MultiKeySigInner,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    multi_key::validate(mk, ms)?;
+
+    let positions = multi_key::bitmap_iter_ones(&ms.bitmap).zip(ms.signatures.iter());
+    let position_futs: Vec<_> =
+        positions
+            .map(|(pos, sig)| {
+                let pk = &mk.public_keys[pos];
+                async move {
+                    verify_any_signature_only(payload, chain_id, proof, pk, sig, chain_rpc).await
+                }
+            })
+            .collect();
+    futures::future::try_join_all(position_futs).await?;
+
+    let computed = multi_key::authentication_key(mk);
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    check_auth_key_bytes(proof, &computed, "multi_key", rpc).await
+}
+
+async fn verify_any_signature_only<P: AptosPayloadBinding + Sync>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    any_pk: &any::AnyPublicKeyInner,
+    any_sig: &any::AnySignatureInner,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    match (any_pk, any_sig) {
+        (any::AnyPublicKeyInner::Ed25519(pk_bytes), any::AnySignatureInner::Ed25519(sig_bytes)) => {
+            let pk_arr: [u8; 32] = pk_bytes.as_slice().try_into().map_err(|_| {
+                anyhow!(
+                    "verify_any_signature_only: Ed25519 pk must be 32 bytes, got {}",
+                    pk_bytes.len()
+                )
+            })?;
+            let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
+                anyhow!(
+                    "verify_any_signature_only: Ed25519 sig must be 64 bytes, got {}",
+                    sig_bytes.len()
+                )
+            })?;
+            let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
+                .map_err(|e| anyhow!("verify_any_signature_only: invalid Ed25519 pubkey: {}", e))?;
+            let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+            verify_ed25519_signature(payload, proof, &vk, &sig, "verify_any_signature_only")
+        }
+        (
+            any::AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes),
+            any::AnySignatureInner::Secp256k1Ecdsa(sig_bytes),
+        ) => {
+            if sig_bytes.len() != 64 {
+                return Err(anyhow!(
+                    "verify_any_signature_only: Secp256k1 sig must be 64 bytes, got {}",
+                    sig_bytes.len()
+                ));
+            }
+            let vk = K256VerifyingKey::from_sec1_bytes(pk_bytes).map_err(|e| {
+                anyhow!("verify_any_signature_only: invalid Secp256k1 pubkey: {}", e)
+            })?;
+            let sig = K256Signature::from_slice(sig_bytes).map_err(|e| {
+                anyhow!(
+                    "verify_any_signature_only: invalid Secp256k1 signature: {}",
+                    e
+                )
+            })?;
+            if sig.normalize_s().is_some() {
+                return Err(anyhow!(
+                    "verify_any_signature_only: Secp256k1 signature has high s (malleable)"
+                ));
+            }
+            verify_secp256k1_signature(payload, proof, &vk, &sig, "verify_any_signature_only")
+        }
+        (any::AnyPublicKeyInner::Keyless(pk), any::AnySignatureInner::Keyless(sig)) => {
+            verify_keyless_signature(payload, chain_id, proof, pk, sig, chain_rpc).await
+        }
+        (any::AnyPublicKeyInner::FederatedKeyless(fpk), any::AnySignatureInner::Keyless(sig)) => {
+            verify_federated_keyless_signature(payload, chain_id, proof, fpk, sig, chain_rpc).await
+        }
+        (
+            any::AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes),
+            any::AnySignatureInner::WebAuthn(assertion),
+        ) => verify_webauthn_signature(payload, pk_bytes, assertion),
+        (pk, sig) => Err(anyhow!(
+            "verify_any_signature_only: invalid pk/sig pairing ({} pk vs {} sig)",
+            pk.tag_name(),
+            sig.tag_name(),
+        )),
+    }
+}
+
+fn verify_ed25519_signature<P: AptosPayloadBinding>(
+    payload: &P,
+    proof: &AptosProofOfPermission,
+    vk: &ed25519_dalek::VerifyingKey,
+    sig: &ed25519_dalek::Signature,
+    context: &str,
+) -> Result<()> {
+    use ed25519_dalek::Verifier;
+
+    let msg_bytes = signed_message_bytes(payload, proof, context)?;
+    vk.verify(&msg_bytes, sig)
+        .map_err(|e| anyhow!("{}: Ed25519 verification failed: {}", context, e))
+}
+
+fn verify_secp256k1_signature<P: AptosPayloadBinding>(
+    payload: &P,
+    proof: &AptosProofOfPermission,
+    vk: &K256VerifyingKey,
+    sig: &K256Signature,
+    context: &str,
+) -> Result<()> {
+    let msg_bytes = signed_message_bytes(payload, proof, context)?;
+    let prehash: [u8; 32] = Sha3_256::digest(&msg_bytes).into();
+    vk.verify_prehash(&prehash, sig)
+        .map_err(|e| anyhow!("{}: Secp256k1 ECDSA verification failed: {}", context, e))
+}
+
+fn verify_webauthn_signature<P: AptosPayloadBinding>(
+    payload: &P,
+    pk_bytes: &[u8],
+    assertion: &any::WebAuthnAssertion,
+) -> Result<()> {
+    let any::AssertionSignature::Secp256r1Ecdsa(sig_bytes) = &assertion.signature;
+    if sig_bytes.len() != 64 {
+        return Err(anyhow!(
+            "verify_webauthn_signature: sig must be 64 bytes, got {}",
+            sig_bytes.len()
+        ));
+    }
+    let vk = P256VerifyingKey::from_sec1_bytes(pk_bytes)
+        .map_err(|e| anyhow!("verify_webauthn_signature: invalid Secp256r1 pubkey: {}", e))?;
+    let sig = P256Signature::from_slice(sig_bytes).map_err(|e| {
+        anyhow!(
+            "verify_webauthn_signature: invalid Secp256r1 signature: {}",
+            e
+        )
+    })?;
+    if sig.normalize_s().is_some() {
+        return Err(anyhow!(
+            "verify_webauthn_signature: Secp256r1 signature has high s (malleable)"
+        ));
+    }
+
+    let expected_challenge = payload.to_webauthn_challenge()?;
+    let cdj: serde_json::Value = serde_json::from_slice(&assertion.client_data_json)
+        .map_err(|e| anyhow!("verify_webauthn_signature: parse client_data_json: {}", e))?;
+    let challenge_str = cdj
+        .get("challenge")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow!("verify_webauthn_signature: clientDataJSON missing `challenge` string")
+        })?;
+    let actual_challenge = URL_SAFE_NO_PAD.decode(challenge_str).map_err(|e| {
+        anyhow!(
+            "verify_webauthn_signature: base64url-decode challenge: {}",
+            e
+        )
+    })?;
+    if actual_challenge != expected_challenge {
+        return Err(anyhow!(
+            "verify_webauthn_signature: clientDataJSON.challenge does not bind to this request payload"
+        ));
+    }
+
+    let cdj_hash = Sha256::digest(&assertion.client_data_json);
+    let mut ecdsa_preimage =
+        Vec::with_capacity(assertion.authenticator_data.len() + cdj_hash.len());
+    ecdsa_preimage.extend_from_slice(&assertion.authenticator_data);
+    ecdsa_preimage.extend_from_slice(&cdj_hash);
+    let prehash: [u8; 32] = Sha256::digest(&ecdsa_preimage).into();
+    vk.verify_prehash(&prehash, &sig).map_err(|e| {
+        anyhow!(
+            "verify_webauthn_signature: P-256 ECDSA verification failed: {}",
+            e
+        )
+    })
+}
+
+async fn verify_keyless_signature<P: AptosPayloadBinding>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    pk: &aptos_keyless_common::KeylessPublicKey,
+    sig: &aptos_keyless_common::KeylessSignature,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let msg_bytes = signed_message_bytes(payload, proof, "verify_keyless_signature")?;
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
+        .map_err(|e| anyhow!("verify_keyless_signature: parse jwt_header_json: {}", e))?;
+    let (jwk_res, vk_res, cfg_res) = tokio::join!(
+        keyless::fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
+        keyless::fetch_groth16_vk(rpc),
+        keyless::fetch_configuration(rpc),
+    );
+    let jwk = jwk_res?;
+    let vk = vk_res?;
+    let cfg = cfg_res?;
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("verify_keyless_signature: system clock: {}", e))?
+        .as_secs();
+    aptos_keyless_common::verify_signature(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+        .map_err(|e| anyhow!("verify_keyless_signature: {}", e))
+}
+
+async fn verify_federated_keyless_signature<P: AptosPayloadBinding>(
+    payload: &P,
+    chain_id: u8,
+    proof: &AptosProofOfPermission,
+    fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
+    sig: &aptos_keyless_common::KeylessSignature,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let msg_bytes = signed_message_bytes(payload, proof, "verify_federated_keyless_signature")?;
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
+    let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
+        .map_err(|e| {
+            anyhow!(
+                "verify_federated_keyless_signature: parse jwt_header_json: {}",
+                e
+            )
+        })?;
+    let (jwk_res, vk_res, cfg_res) = tokio::join!(
+        federated_keyless::fetch_jwk_with_federated_fallback(rpc, fpk, &header.kid),
+        keyless::fetch_groth16_vk(rpc),
+        keyless::fetch_configuration(rpc),
+    );
+    let jwk = jwk_res?;
+    let vk = vk_res?;
+    let cfg = cfg_res?;
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("verify_federated_keyless_signature: system clock: {}", e))?
+        .as_secs();
+    aptos_keyless_common::verify_signature(&fpk.pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+        .map_err(|e| anyhow!("verify_federated_keyless_signature: {}", e))
+}
+
+fn signed_message_bytes<P: AptosPayloadBinding>(
+    payload: &P,
+    proof: &AptosProofOfPermission,
+    context: &str,
+) -> Result<Vec<u8>> {
+    let pretty_msg = payload.to_pretty_message()?;
     let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
     let full_msg = &proof.full_message;
     if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
         return Err(anyhow!(
-            "verify_threshold_vrf_aptos: fullMessage does not contain expected threshold VRF request content"
+            "{}: fullMessage does not contain expected request content",
+            context
         ));
     }
 
-    let msg_bytes: Vec<u8> = if is_valid_hex(full_msg) {
+    if is_valid_hex(full_msg) {
         let stripped = full_msg.strip_prefix("0x").unwrap_or(full_msg.as_str());
-        hex::decode(stripped)
-            .map_err(|e| anyhow!("verify_threshold_vrf_aptos: hex decode fullMessage: {}", e))?
+        hex::decode(stripped).map_err(|e| anyhow!("{}: hex decode fullMessage: {}", context, e))
     } else {
-        full_msg.as_bytes().to_vec()
-    };
-    vk.verify(&msg_bytes, &sig).map_err(|e| {
-        anyhow!(
-            "verify_threshold_vrf_aptos: Ed25519 verification failed: {}",
-            e
-        )
-    })?;
+        Ok(full_msg.as_bytes().to_vec())
+    }
+}
 
-    let rpc = chain_rpc.aptos_rpc_for_chain_id(req.payload.chain_id)?;
-    let computed = vss_common::compute_account_address(&vk);
+async fn check_auth_key_bytes(
+    proof: &AptosProofOfPermission,
+    computed: &[u8],
+    label: &str,
+    rpc: &vss_common::AptosRpc,
+) -> Result<()> {
     let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
     let account = rpc
         .get_account(&user_addr_str)
@@ -458,13 +823,13 @@ async fn verify_threshold_vrf_ed25519(
         .map_err(|e| anyhow!("checkAuthKey: get_account {}: {}", user_addr_str, e))?;
     let onchain = hex::decode(account.authentication_key.trim_start_matches("0x"))
         .map_err(|e| anyhow!("checkAuthKey: parse onchain auth key: {}", e))?;
-    if onchain.as_slice() != computed.as_ref() {
+    if onchain.as_slice() != computed {
         return Err(anyhow!(
-            "checkAuthKey: threshold VRF Ed25519 auth key mismatch for {}",
+            "checkAuthKey: {} auth key mismatch for {}",
+            label,
             user_addr_str
         ));
     }
-
     Ok(())
 }
 

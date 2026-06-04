@@ -276,6 +276,27 @@ impl ThresholdVrfRequestPayload {
             hex::encode(response_ek_bytes),
         ))
     }
+
+    /// 32-byte WebAuthn challenge bytes for this payload:
+    ///
+    ///   `SHA3-256( SHA3-256(b"ACE::ThresholdVrfRequestPayload") || BCS(self) )`
+    ///
+    /// Mirrors the decryption payload's passkey binding, with a tVRF-specific
+    /// domain separator so a WebAuthn assertion cannot cross flow types.
+    pub fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        use sha3::{Digest, Sha3_256};
+        let seed: [u8; 32] = Sha3_256::digest(b"ACE::ThresholdVrfRequestPayload").into();
+        let body = bcs::to_bytes(self).map_err(|e| {
+            anyhow!(
+                "ThresholdVrfRequestPayload::to_webauthn_challenge: BCS encode: {}",
+                e
+            )
+        })?;
+        let mut h = Sha3_256::new();
+        h.update(seed);
+        h.update(&body);
+        Ok(h.finalize().into())
+    }
 }
 
 impl ContractId {

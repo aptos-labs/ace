@@ -120,7 +120,7 @@ pub(super) async fn verify_signature_only(
 
 /// Matches the on-chain VM behaviour: try `0x1::jwks::PatchedJWKs` first; on
 /// miss, fall back to `0x1::jwks::FederatedJWKs` at `fpk.jwk_addr`.
-async fn fetch_jwk_with_federated_fallback(
+pub(super) async fn fetch_jwk_with_federated_fallback(
     rpc: &vss_common::AptosRpc,
     fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
     kid: &str,

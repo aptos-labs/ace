@@ -4,11 +4,18 @@
 import {
     AccountAddress,
     AccountPublicKey,
+    AnyPublicKey,
+    AnySignature,
     Deserializer,
     PublicKey,
+    Secp256r1PublicKey,
     Serializer,
     Signature,
+    WebAuthnSignature,
 } from "@aptos-labs/ts-sdk";
+import { p256 } from "@noble/curves/p256";
+import { sha256 } from "@noble/hashes/sha256";
+import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 
 import * as pke from "../pke";
@@ -81,6 +88,15 @@ export class ThresholdVrfRequestPayload {
             `accountAddress: ${this.accountAddress.toStringLong()}`,
             `responseEncKey: ${this.responseEncKey.toHex()}`,
         ].join("\n");
+    }
+
+    toWebAuthnChallenge(): Uint8Array {
+        const seed = sha3_256(new TextEncoder().encode("ACE::ThresholdVrfRequestPayload"));
+        const body = this.toBytes();
+        const preimage = new Uint8Array(seed.length + body.length);
+        preimage.set(seed, 0);
+        preimage.set(body, seed.length);
+        return sha3_256(preimage);
     }
 }
 
@@ -232,12 +248,15 @@ export class DerivationSession {
         });
     }
 
-    async getRequestToSign(): Promise<string> {
-        const networkState = await fetchNetworkState(this.aceDeployment);
+    private async refreshPayload(): Promise<ThresholdVrfRequestPayload> {
+        const [networkState, chainId] = await Promise.all([
+            fetchNetworkState(this.aceDeployment),
+            createAptos(this.aceDeployment.apiEndpoint).getChainId(),
+        ]);
         const payload = new ThresholdVrfRequestPayload({
             keypairId: this.keypairId,
             epoch: networkState.epoch,
-            chainId: await createAptos(this.aceDeployment.apiEndpoint).getChainId(),
+            chainId,
             label: this.label,
             accountAddress: this.accountAddress,
             responseEncKey: this.responseEncryptionKey,
@@ -245,7 +264,17 @@ export class DerivationSession {
         this.networkState = networkState;
         this.payload = payload;
         this.message = payload.toPrettyMessage();
-        return this.message;
+        return payload;
+    }
+
+    async getRequestToSign(): Promise<string> {
+        const payload = await this.refreshPayload();
+        return payload.toPrettyMessage();
+    }
+
+    async getRequestToSignForWebAuthn(): Promise<Uint8Array> {
+        const payload = await this.refreshPayload();
+        return payload.toWebAuthnChallenge();
     }
 
     async deriveWithSignature(args: {
@@ -333,4 +362,36 @@ export class DerivationSession {
         }
         throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: no worker returned a tVRF response (${workerErrors.join("; ")})`);
     }
+
+    async deriveWithWebAuthnAssertion(args: {
+        pubKey: Secp256r1PublicKey;
+        authenticatorData: Uint8Array;
+        clientDataJSON: Uint8Array;
+        signature: Uint8Array;
+    }): Promise<Uint8Array> {
+        if (this.payload === undefined || this.message === undefined) {
+            throw new Error("ACE.tVRF.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
+        }
+
+        const sigRs = derEcdsaToRawLowS(args.signature);
+        const cdjHash = sha256(args.clientDataJSON);
+        const preimage = new Uint8Array(args.authenticatorData.length + cdjHash.length);
+        preimage.set(args.authenticatorData, 0);
+        preimage.set(cdjHash, args.authenticatorData.length);
+
+        return this.deriveWithSignature({
+            pubKey: new AnyPublicKey(args.pubKey),
+            signature: new AnySignature(new WebAuthnSignature(
+                sigRs,
+                args.authenticatorData,
+                args.clientDataJSON,
+            )),
+            fullMessage: bytesToHex(preimage),
+        });
+    }
+}
+
+function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
+    const sig = p256.Signature.fromDER(der).normalizeS();
+    return sig.toCompactRawBytes();
 }

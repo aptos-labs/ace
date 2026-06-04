@@ -3,6 +3,7 @@
 
 import {
     AccountAddress,
+    AccountPublicKey,
     PublicKey,
     Serializer,
     Signature,
@@ -14,8 +15,8 @@ import {
     AceDeployment,
     fetchNetworkState,
     NetworkState,
-    ProofOfPermission,
 } from "../_internal/common";
+import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 
 export const PURPOSE = "ace.threshold-vrf.derive.v1";
 
@@ -24,12 +25,6 @@ export interface RequestToSignArgs {
     keypairId: AccountAddress;
     label: Uint8Array;
     accountAddress: AccountAddress;
-}
-
-export interface DeriveWithSignatureArgs {
-    pubKey: PublicKey;
-    signature: Signature;
-    fullMessage?: string;
 }
 
 export class ThresholdVrfRequestPayload {
@@ -80,18 +75,56 @@ export class ThresholdVrfRequestPayload {
     }
 }
 
+export class AptosAccountSignatureProof {
+    userAddr: AccountAddress;
+    publicKeyScheme: number;
+    publicKey: AccountPublicKey;
+    signatureScheme: number;
+    signature: Signature;
+    fullMessage: string;
+
+    constructor(args: {
+        userAddr: AccountAddress,
+        publicKey: PublicKey,
+        signature: Signature,
+        fullMessage: string,
+    }) {
+        this.userAddr = args.userAddr;
+        this.publicKey = args.publicKey as AccountPublicKey;
+        this.signature = args.signature;
+        this.fullMessage = args.fullMessage;
+        this.publicKeyScheme = getPublicKeyScheme(args.publicKey);
+        this.signatureScheme = getSignatureScheme(args.signature);
+    }
+
+    serialize(serializer: Serializer): void {
+        this.userAddr.serialize(serializer);
+        serializer.serializeU8(this.publicKeyScheme);
+        serializer.serialize(this.publicKey);
+        serializer.serializeU8(this.signatureScheme);
+        serializer.serialize(this.signature);
+        serializer.serializeStr(this.fullMessage);
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+}
+
 export class ThresholdVrfRequest {
     payload: ThresholdVrfRequestPayload;
-    proof: ProofOfPermission;
+    authProof: AptosAccountSignatureProof;
 
-    constructor(args: { payload: ThresholdVrfRequestPayload, proof: ProofOfPermission }) {
+    constructor(args: { payload: ThresholdVrfRequestPayload, authProof: AptosAccountSignatureProof }) {
         this.payload = args.payload;
-        this.proof = args.proof;
+        this.authProof = args.authProof;
     }
 
     serialize(serializer: Serializer): void {
         this.payload.serialize(serializer);
-        this.proof.serialize(serializer);
+        this.authProof.serialize(serializer);
     }
 
     toBytes(): Uint8Array {
@@ -148,17 +181,21 @@ export class DerivationSession {
         return this.message;
     }
 
-    async deriveWithSignature(args: DeriveWithSignatureArgs): Promise<Uint8Array> {
+    async deriveWithSignature(args: {
+        pubKey: PublicKey;
+        signature: Signature;
+        fullMessage?: string;
+    }): Promise<Uint8Array> {
         if (this.payload === undefined || this.message === undefined) {
             throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: call getRequestToSign() first");
         }
-        const proof = ProofOfPermission.createAptos({
+        const authProof = new AptosAccountSignatureProof({
             userAddr: this.accountAddress,
             publicKey: args.pubKey,
             signature: args.signature,
             fullMessage: args.fullMessage ?? this.message,
         });
-        const requestBytes = new ThresholdVrfRequest({ payload: this.payload, proof }).toBytes();
+        const requestBytes = new ThresholdVrfRequest({ payload: this.payload, authProof }).toBytes();
         if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");
         throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
     }

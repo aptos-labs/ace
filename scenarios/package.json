@@ -11,6 +11,7 @@
     "test-dkg-protocol-g1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkg-protocol-g1.ts",
     "test-dkr-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol.ts",
     "test-dkr-protocol-g1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol-g1.ts",
+    "test-threshold-vrf-derive-flow": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-threshold-vrf-derive-flow.ts",
     "test-network-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol.ts",
     "test-network-protocol-shortpk": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol-shortpk.ts",
     "full-happy-path": "pnpm --filter @aptos-labs/ace-sdk build && tsx full-happy-path.ts",

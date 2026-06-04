@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Threshold-VRF derive flow scenario for Shelby S3 bearer-token minting.
+ * Threshold-VRF derive flow scenario.
  *
  * This follows the same shape as the other scenarios: start localnet, deploy
  * ACE contracts, register/spawn workers, run DKG, then drive the SDK API that
@@ -38,15 +38,6 @@ function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
 }
 
-function shelbyS3Label(ownerAddr: string, blobId: string, tokenNonce: string): Uint8Array {
-    return new TextEncoder().encode([
-        'shelby-s3/access-token/v1',
-        `owner=${ownerAddr}`,
-        `blob_id=${blobId}`,
-        `token_nonce=${tokenNonce}`,
-    ].join('\n'));
-}
-
 async function main() {
     let scenario: SetupAceOnLocalnetResult | undefined;
     let exitCode = 0;
@@ -65,13 +56,11 @@ async function main() {
         const owner = actors.alice;
         const keypairId = keypairIds[0]!;
 
-        step(1, 'Build Shelby S3 tVRF label');
-        const blobId = 'shelby-s3://alice-bucket/contracts/acquisition-plan.txt';
-        const tokenNonce = 'token-0001';
-        const label = shelbyS3Label(owner.accountAddress.toStringLong(), blobId, tokenNonce);
+        step(1, 'Build tVRF label');
+        const label = new TextEncoder().encode('label-1');
         console.log(`  owner:    ${owner.accountAddress.toStringLong()}`);
         console.log(`  keypair:  ${keypairId.toStringLong()}`);
-        console.log(`  blob id:  ${blobId}`);
+        console.log('  label:    label-1');
 
         step(2, 'Ask TS SDK for the canonical tVRF request to sign');
         const session = await ACE.tVRF.DerivationSession.create({

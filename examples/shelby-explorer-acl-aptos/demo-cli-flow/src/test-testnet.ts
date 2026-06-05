@@ -223,7 +223,6 @@ async function main() {
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        functionName: "on_ace_decryption_request",
         domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
     })).unwrapOrThrow("encryption failed");
@@ -257,7 +256,6 @@ async function main() {
             chainId,
             moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
             moduleName: "access_control",
-            functionName: "on_ace_decryption_request",
             domain: textEncoder.encode(fullBlobName),
             ciphertext,
         });

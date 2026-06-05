@@ -209,7 +209,6 @@ interface Ctx {
     aceDeployment: ACE.AceDeployment;
     moduleAddr: AccountAddress;
     moduleName: string;
-    functionName: string;
     keypair0Id: AccountAddress;
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
@@ -234,7 +233,6 @@ async function makeSession(
         chainId: CHAIN_ID,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        functionName: ctx.functionName,
         domain: overrides.domain ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });
@@ -339,7 +337,7 @@ async function main(): Promise<void> {
         );
         const ctx: Ctx = {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
-            moduleName: 'access_control', functionName: 'on_ace_decryption_request',
+            moduleName: 'access_control',
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
             pingCiph, bob, charlie: actors.charlie,
         };

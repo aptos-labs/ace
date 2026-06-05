@@ -471,16 +471,12 @@ SDK                                    Workers (n in committee, threshold t)
 (3) User signs `pretty(payload)`
     with their Ed25519 account
 
-(4) Build BasicFlowRequestV2 =
+(4) Build BasicDecryptionRequest =
     { payload-fields ||
       AptosProofOfPermission { userAddr,
         pk_scheme=0, pubkey, sig_scheme=0,
         sig, fullMessage } ||
       tibe_scheme }
-    (V1 BasicFlowRequest — same shape minus
-    `tibe_scheme` — is still accepted from older
-    clients; the worker then derives the scheme
-    via tibe_scheme_for_group(share.group_scheme).)
 
 (5) PKE-encrypt that BCS body to each
     worker's registered enc_key.
@@ -488,8 +484,8 @@ SDK                                    Workers (n in committee, threshold t)
 (6) HTTP POST /  hex-encoded ciphertext
     in parallel to ALL committee workers.
                                        (7) PKE-decrypt with worker's pke_dk
-                                       (8) bcs::from_bytes::<RequestForDecryptionKey>
-                                           → BasicFlowRequestV2 (or V1)
+                                       (8) bcs::from_bytes::<WorkerRequest>
+                                           → BasicDecryptionRequest
                                        (9) verify_basic:
                                            a. verifySig: fullMessage contains
                                               (or hex-contains) pretty(payload),
@@ -497,12 +493,12 @@ SDK                                    Workers (n in committee, threshold t)
                                            b. checkAuthKey: SHA3-256(pk||0x00) ==
                                               on-chain authentication_key for userAddr
                                               (a + RPC call)
-                                           c. checkPermission: view-call
-                                              {moduleAddr}::{moduleName}::{functionName}
-                                              (label, encPk, userAddr) → expects true
+                                           c. view-call
+                                              {moduleAddr}::{moduleName}::on_ace_decryption_request
+                                              (label, userAddr, origin) → expects true
                                        (10) Look up cached share for (keypairId, epoch)
                                             → (scalar_le32, group_scheme)
-                                            V2: assert t_ibe_scheme_group(tibe_scheme)
+                                            assert t_ibe_scheme_group(tibe_scheme)
                                                 == share.group_scheme
                                        (11) eval_point := my position in cur_nodes + 1
                                        (12) Compute idk_share = scalar · hashToCurve(identity)
@@ -527,7 +523,7 @@ Steps 1-2 and 5-16 are identical. Steps 3-4 and 9 differ:
 
 3'. User builds a Solana txn that calls a known program-id with instruction data containing `build_full_request_bytes(keypair_id, epoch, encKey, label)` (`ace-anchor-kit/src/lib.rs:28-36`). They sign that txn but do NOT submit it to the chain. The ACL program is a no-op happy-path; the txn is structurally valid + recently-blockhash-bound but never lands.
 
-4'. Build BasicFlowRequestV2 with `SolanaProofOfPermission { inner_scheme, txn_bytes }` plus `tibe_scheme`.
+4'. Build `BasicDecryptionRequest` with `SolanaProofOfPermission { inner_scheme, txn_bytes }` plus `tibe_scheme`.
 
 9'. `verify_solana`:
 - Parses the Solana txn (legacy or versioned).
@@ -539,9 +535,9 @@ The Solana ACL program is responsible for asserting access (e.g. that a payment 
 
 ### 8.4 Decrypt — custom flow (Aptos)
 
-Steps 1-2 are identical. Step 3 differs: instead of an Ed25519 signature, the user supplies a `payload: Vec<u8>` that the contract's `check_acl(label, encPk, payload) -> bool` will verify.
+Steps 1-2 are identical. Step 3 differs: instead of an Ed25519 signature, the user supplies a `payload: Vec<u8>` that the contract's `on_ace_decryption_request_custom_flow(label, encPk, payload) -> bool` will verify.
 
-The `CustomFlowRequestV2` carries `CustomFlowProof::Aptos(payload)` plus `tibe_scheme` (V1 `CustomFlowRequest` is the same minus `tibe_scheme` and is still accepted). The worker view-calls `check_acl(label, encPk, payload)` on the chain via the configured RPC.
+The `CustomDecryptionRequest` carries `CustomFlowProof::Aptos(payload)` plus `tibe_scheme`. The worker view-calls `on_ace_decryption_request_custom_flow(label, encPk, payload)` on the chain via the configured RPC.
 
 A typical use: payload is a Groth16 ZK proof bound to `encPk` so a captured proof cannot be reused with a different ephemeral keypair.
 

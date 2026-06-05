@@ -9,7 +9,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 - **`keypair_id`** — On-chain Aptos address of the **DKG session** that established a particular master secret. Acts as a stable identifier for the `(mpk, master_secret)` pair throughout its lifetime, including across DKR-based reshares: the new DKR session generates fresh share-PKs and updates which committee holds the secret, but the `keypair_id` remains the original DKG's address. Used by the SDK, app contracts, and t-IBE encryption identity. *(Used everywhere.)*
 
 - **`contract_id`** — Application-defined tuple identifying the access-control contract that gates decryption.
-  - **Aptos:** `(chain_id: u8, module_addr: address, module_name: string, function_name: string)`. The view function called as `{module_addr}::{module_name}::{function_name}(...)`.
+  - **Aptos:** `(chain_id: u8, module_addr: address, module_name: string)`. ACE calls fixed hook names inside this module for each flow.
   - **Solana:** `(known_chain_name: string, program_id: bytes)`. The Anchor program whose instruction the proof-of-permission must call.
 
 - **`label`** *(also: app-specific label)* — Application-chosen bytes that scope a ciphertext within a `(keypair_id, contract_id)`. Two different labels bound to the same `(keypair_id, contract_id)` produce independent ciphertexts; the contract's view function receives `label` and uses it to look up access records (e.g. "who paid for blob X"). *Wire-format note: the basic-flow request struct names this field `domain` for historical reasons; the Move side has always called it `label`. The spec docs use `label` throughout.*
@@ -103,7 +103,7 @@ Definitions of terms and symbols used across all ACE specification documents. Wh
 - **Proof-of-permission** — The user-supplied evidence a worker uses to decide whether to release its IDK share.
   - **Aptos basic flow:** Ed25519 signature over a pretty-printed `DecryptionRequestPayload` covering `(keypair_id, epoch, contract_id, label, ephemeralEncKey)`.
   - **Solana basic flow:** A structurally-valid (but unsubmitted) Solana transaction calling the configured Anchor program with instruction data containing `FullRequestBytes`. The worker validates structure + simulates with `sigVerify=true`.
-  - **Aptos custom flow:** Arbitrary bytes the contract's `check_acl(label, encPk, payload)` will validate.
+  - **Aptos custom flow:** Arbitrary bytes the contract's `on_ace_decryption_request_custom_flow(label, encPk, payload)` will validate.
   - **Solana custom flow:** Like basic, but with `CustomFullRequestBytes` and the program's `assert_custom_acl` instruction.
 
 - **Resharing-dealer challenge** — The binding that forces a DKR dealer to reshare a *specific* known share $s_j$ rather than a fresh secret. Realized by a sigma linear-DLog proof tying the child VSS Pedersen commitment \(V_0=s_jG+r_jH\) to the parent share-PK \(P_j=s_jB\). See [`cryptography/dkr.md`](./cryptography/dkr.md) §2.

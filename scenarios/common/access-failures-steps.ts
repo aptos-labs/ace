@@ -45,7 +45,6 @@ export interface AccessFailureContext {
     chainId: number;
     moduleAddr: AccountAddress;
     moduleName: string;
-    functionName: string;
     /** The keypair that Alice actually encrypted with. */
     keypair0Id: AccountAddress;
     /** A second, valid-but-different keypair — Step A tries to decrypt the
@@ -104,7 +103,6 @@ async function makeSession(
         chainId: ctx.chainId,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        functionName: ctx.functionName,
         domain: overrides.domain ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });

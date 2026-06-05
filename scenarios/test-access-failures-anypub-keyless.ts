@@ -78,7 +78,6 @@ async function main(): Promise<void> {
         const ctx = {
             aceDeployment: ace.aceDeployment, chainId: CHAIN_ID,
             moduleAddr: ace.adminAccountAddress, moduleName: 'access_control',
-            functionName: 'on_ace_decryption_request',
             keypair0Id, keypair1Id, correctDomain, wrongDomain, pingCiph,
             bob, bobLabel: 'AnyPublicKey<Keyless>', charlie: actors.charlie,
             // Flip the wire to pk_scheme=1 / sig_scheme=1 / inner variant tag 3

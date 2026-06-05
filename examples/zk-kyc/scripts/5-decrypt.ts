@@ -13,7 +13,7 @@
  *    happens: the proof asserts that the holder has a valid credential and is
  *    18 or older, WITHOUT revealing the actual age.
  * 5. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
- *    ACE workers call `kyc_verifier::check_acl` on-chain; if the proof
+ *    ACE workers call `kyc_verifier::on_ace_decryption_request_custom_flow` on-chain; if the proof
  *    verifies, they release their key shares.
  * 6. Reconstructs the threshold key and decrypts the ciphertext.
  */
@@ -34,7 +34,6 @@ interface Config {
     keypairId: string;
     chainId: number;
     moduleName: string;
-    functionName: string;
 }
 
 interface ProviderKey {
@@ -75,7 +74,7 @@ async function main() {
     const [p0, p1, p2] = packEncPk(encPk);
 
     const circuitInput = {
-        // Public inputs (also verified on-chain by check_acl)
+        // Public inputs (also verified on-chain by the ACE custom-flow hook)
         pk_provider_ax: providerKey.public_ax,
         pk_provider_ay: providerKey.public_ay,
         enc_pk_p0: p0.toString(),
@@ -137,7 +136,6 @@ async function main() {
         chainId:      cfg.chainId,
         moduleAddr,
         moduleName:   cfg.moduleName,
-        functionName: cfg.functionName,
     });
 
     console.log('');

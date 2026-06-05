@@ -44,8 +44,8 @@ App developer                 End user                      Operators (n workers
                               (4) Submit decryption request
                                   (signature or ZK proof)
                                                             (5) Each worker simulates
-                                                                check_permission /
-                                                                check_acl on-chain;
+                                                                the fixed ACE hook
+                                                                on-chain;
                                                                 if true, returns an
                                                                 encrypted key share
 
@@ -86,7 +86,7 @@ ACE supports two flows depending on what your contract needs to verify:
 
 ACE's basic flow supports every cryptographic signature scheme the upstream `@aptos-labs/ts-sdk` produces — legacy Ed25519, `SingleKey` (Ed25519, Secp256k1, Secp256r1+WebAuthn passkeys, Keyless, FederatedKeyless), legacy `MultiEd25519`, and modern `MultiKey` K-of-N. If your users hold any of these, point them at the basic flow.
 
-Aptos's Account Abstraction (AA, `Scheme::Abstraction = 4`) and Derivable AA (DAA, `Scheme::DeriveDomainAbstraction = 5`) authenticate via a Move `authenticate(signer, AbstractionAuthData): signer` function rather than a cryptographic primitive — they have no "public key" the SDK can plug into a basic-flow `(pk_scheme, sig_scheme)` pair. AA-authenticated dapps should route through the **custom flow**: your `check_acl` view plays the same role as `authenticate` and can re-run the same credential check on the `payload` bytes (after binding `payload` to the request via `label` / `enc_pk`).
+Aptos's Account Abstraction (AA, `Scheme::Abstraction = 4`) and Derivable AA (DAA, `Scheme::DeriveDomainAbstraction = 5`) authenticate via a Move `authenticate(signer, AbstractionAuthData): signer` function rather than a cryptographic primitive — they have no "public key" the SDK can plug into a basic-flow `(pk_scheme, sig_scheme)` pair. AA-authenticated dapps should route through the **custom flow**: your `on_ace_decryption_request_custom_flow` view plays the same role as `authenticate` and can re-run the same credential check on the `payload` bytes (after binding `payload` to the request via `label` / `enc_pk`).
 
 ### The Contract Interface
 
@@ -96,22 +96,22 @@ This is the most important part. Your view function is the sole access gate — 
 
 ```move
 #[view]
-public fun check_permission(
+public fun on_ace_decryption_request(
     label: vector<u8>,     // the domain the ciphertext was encrypted under
-    enc_pk: vector<u8>,    // requestor's ephemeral public key for this session
-    user_addr: address,    // Aptos address that signed the decryption request
+    account: address,      // Aptos address that signed the decryption request
+    origin: String,        // dapp origin extracted from the signed wallet/WebAuthn message
 ): bool
 ```
 
 - `label` identifies what is being decrypted — it equals the `domain` bytes you passed to `encrypt`. Use it to look up your access records.
-- `user_addr` is who is asking. Check your payment table, allowlist, etc. against this.
-- `enc_pk` is the requestor's session key. Most contracts ignore it; it is there if you need to bind external proofs to a specific session (see Custom Flow).
+- `account` is who is asking. Check your payment table, allowlist, etc. against this.
+- `origin` is the dapp origin ACE extracted from the wallet/WebAuthn signed message. Check it when your contract is meant to serve only specific application domains.
 
 **Custom Flow** — fixed signature, three parameters:
 
 ```move
 #[view]
-public fun check_acl(
+public fun on_ace_decryption_request_custom_flow(
     label: vector<u8>,     // the domain the ciphertext was encrypted under
     enc_pk: vector<u8>,    // requestor's ephemeral public key for this session
     payload: vector<u8>,   // arbitrary bytes submitted by the requestor
@@ -121,7 +121,7 @@ public fun check_acl(
 - `label` and `enc_pk` are the same as above.
 - `payload` is whatever the requestor sends — a Groth16 proof, a Merkle proof, a signed attestation, etc. Your contract is fully responsible for deserializing and verifying it. A ZK proof should bind to `enc_pk` so that a captured proof cannot be replayed by a different requestor.
 
-The function name can be anything — you pass it to the SDK at encrypt/decrypt time.
+Aptos hook names are fixed by ACE. Basic flow uses `on_ace_decryption_request`; custom flow uses `on_ace_decryption_request_custom_flow`.
 
 ### SDK Usage
 
@@ -150,7 +150,6 @@ const ciphertext = (await ACE.AptosBasicFlow.encrypt({   // or AptosCustomFlow.e
     chainId: 1,
     moduleAddr: AccountAddress.fromString("0xcafe"),
     moduleName: "album_store",
-    functionName: "check_permission",
     domain: new TextEncoder().encode("album-001"),        // becomes `label` in your contract
     plaintext: albumData,
 })).unwrapOrThrow("encryption failed");
@@ -167,16 +166,23 @@ const session = ACE.AptosBasicFlow.DecryptionSession.create({
     chainId: 1,
     moduleAddr: AccountAddress.fromString("0xcafe"),
     moduleName: "album_store",
-    functionName: "check_permission",
     domain: new TextEncoder().encode("album-001"),
     ciphertext,
 });
 
 const messageToSign = await session.getRequestToSign();
+const { signature, fullMessage } = await wallet.signMessage({
+    message: messageToSign,
+    nonce: crypto.randomUUID(),
+    application: true,
+    chainId: 1,
+    address: bob.accountAddress,
+});
 const plaintext = (await session.decryptWithProof({
     userAddr: bob.accountAddress,
     publicKey: bob.publicKey,
-    signature: bob.sign(messageToSign),
+    signature,
+    fullMessage,
 })).unwrapOrThrow("decryption failed");
 ```
 
@@ -202,7 +208,6 @@ const plaintext = await ACE.AptosCustomFlow.decrypt({
     chainId: 1,
     moduleAddr: AccountAddress.fromString("0xcafe"),
     moduleName: "my_verifier",
-    functionName: "check_acl",
 });
 ```
 

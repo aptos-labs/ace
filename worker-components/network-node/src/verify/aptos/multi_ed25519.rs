@@ -52,7 +52,7 @@ use anyhow::{anyhow, Result};
 use sha3::{Digest, Sha3_256};
 
 use super::super::BasicFlowRequest;
-use super::{check_permission, AptosContractId, AptosProofOfPermission};
+use super::{check_basic_ace_hook, AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
 // `Scheme::MultiEd25519 = 1` — final suffix byte in the MultiEd25519
@@ -346,7 +346,7 @@ pub(super) async fn verify(
     let (sig_res, auth_res, perm_res) = tokio::join!(
         futures::future::try_join_all(position_futs),
         check_multi_ed25519_auth_key(proof, pk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     sig_res?;
     auth_res?;

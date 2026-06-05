@@ -37,7 +37,7 @@
 //! 5. On-chain `authentication_key` at `userAddr` must match
 //!    `SHA3-256( BCS(AnyPublicKey::Secp256r1Ecdsa(pk)) || 0x02 )` — the
 //!    standard SingleKey derivation handled by [`super::authentication_key`].
-//! 6. Call the dapp's `check_permission(user_addr, domain)` view function.
+//! 6. Call the app's fixed `on_ace_decryption_request(label, account, origin)` hook.
 
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -45,7 +45,7 @@ use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use super::super::super::BasicFlowRequest;
-use super::super::{check_permission, AptosContractId, AptosProofOfPermission};
+use super::super::{check_basic_ace_hook, AptosContractId, AptosProofOfPermission};
 use super::{authentication_key, AnyPublicKeyInner, WebAuthnAssertion, AssertionSignature};
 use crate::ChainRpcConfig;
 
@@ -88,7 +88,7 @@ pub(super) async fn verify(
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, any_pk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;
@@ -186,4 +186,3 @@ async fn check_auth_key(
     }
     Ok(())
 }
-

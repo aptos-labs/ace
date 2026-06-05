@@ -151,7 +151,6 @@ async function main() {
         keypairId: aceConfig.keypairId,
         chainId: CHAIN_ID,
         moduleName: 'kyc_verifier',
-        functionName: 'check_acl',
     };
     const configPath = path.join(DATA_DIR, 'config.json');
     writeJson(configPath, config);

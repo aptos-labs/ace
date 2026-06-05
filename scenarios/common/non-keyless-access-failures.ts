@@ -27,7 +27,6 @@ export interface NonKeylessAccessFailureContext {
     aceDeployment: ACE.AceDeployment;
     moduleAddr: AccountAddress;
     moduleName: string;
-    functionName: string;
     /** The keypair Alice actually encrypted PING under. */
     keypair0Id: AccountAddress;
     correctDomain: Uint8Array;
@@ -64,7 +63,6 @@ async function makeSession(
         chainId: CHAIN_ID,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        functionName: ctx.functionName,
         domain: overrides.domain ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });

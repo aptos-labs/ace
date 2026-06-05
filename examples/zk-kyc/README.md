@@ -30,8 +30,8 @@ proof shows they hold a valid credential attesting to age ≥ 18, without reveal
 their exact age.
 
 ### ACE Workers (infrastructure)
-A threshold-decryption network that enforces the policy.  Before releasing a key share,
-each worker simulates the app's `check_acl` view function on-chain.  No single worker can
+A threshold-decryption network that enforces the policy. Before releasing a key share,
+each worker simulates the app's `on_ace_decryption_request_custom_flow` view function on-chain. No single worker can
 decrypt alone; the user needs a threshold of workers to accept the proof.
 
 ---
@@ -134,7 +134,7 @@ pnpm 2-deploy-contract
 
 - Creates a fresh admin account and funds it via the localnet faucet.
 - Deploys `kyc_verifier.move`, which contains the Groth16 pairing check and the
-  `check_acl(label, enc_pk, payload)` hook that ACE workers call.
+  `on_ace_decryption_request_custom_flow(label, enc_pk, payload)` hook that ACE workers call.
 - Calls `initialize` with the verification key and the provider's public key.
 - Writes `data/config.json` for use by the remaining scripts.
 
@@ -162,7 +162,7 @@ signature to `data/credential.json`.
 ### Step 4 — App: encrypt a secret under the age policy
 
 > *The protocol publishes some gated content.  It uses ACE to encrypt the plaintext so
-> that only someone who can pass the `check_acl` check — i.e. only a user with a valid
+> that only someone who can pass the ACE custom-flow hook — i.e. only a user with a valid
 > age credential showing 18+ — can obtain the decryption key.*
 
 ```bash
@@ -195,7 +195,7 @@ What happens under the hood:
 3. Calls `snarkjs.groth16.fullProve` with the circuit inputs — the ZK prover runs
    locally in Node.js and produces a Groth16 proof in ~2 seconds.
 4. Encodes the proof as a 256-byte payload and calls `AptosCustomFlow.decrypt`.
-5. Each ACE worker simulates `kyc_verifier::check_acl` on-chain (BN254 pairing check).
+5. Each ACE worker simulates `kyc_verifier::on_ace_decryption_request_custom_flow` on-chain (BN254 pairing check).
    If the proof is valid, the worker releases its key share.
 6. Once a threshold of shares is collected, the threshold key is reconstructed and the
    ciphertext is decrypted.
@@ -284,7 +284,7 @@ zk-kyc/
 │   └── setup.sh            ← one-command: circuit → proving key + vk.json
 ├── contract/
 │   └── sources/
-│       └── kyc_verifier.move  ← on-chain Groth16 verifier + check_acl hook
+│       └── kyc_verifier.move  ← on-chain Groth16 verifier + ACE custom-flow hook
 ├── scripts/
 │   ├── common.ts           ← shared helpers (byte encoding, packing)
 │   ├── 1-provider-setup.ts ← generate KYC provider Baby JubJub keypair

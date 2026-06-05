@@ -288,7 +288,6 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            functionName: 'on_ace_decryption_request',
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
@@ -326,7 +325,6 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                functionName: 'on_ace_decryption_request',
                 domain: pingDomain,
                 ciphertext: pingCiph,
             });
@@ -421,7 +419,6 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            functionName: 'on_ace_decryption_request',
             domain: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
         });
@@ -456,7 +453,6 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                functionName: 'on_ace_decryption_request',
                 domain: pongDomain,
                 ciphertext: pongCiph,
             });

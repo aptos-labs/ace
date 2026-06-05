@@ -23,10 +23,10 @@ This version of ACE is a **permissioned protocol**. Operators are explicitly adm
 
 | Actor | What they hold | What they're trusted for |
 |-------|----------------|--------------------------|
-| **App developer** | The Move/Anchor access-control contract; the encryption key (public) | Writing a contract whose `check_permission` / `check_acl` view function returns `true` only for legitimate decryption requests. **Their contract is the access gate; ACE just enforces what the contract says.** |
+| **App developer** | The Move/Anchor access-control contract; the encryption key (public) | Writing a contract whose ACE hook view function returns `true` only for legitimate decryption requests. **Their contract is the access gate; ACE just enforces what the contract says.** |
 | **End user (encrypter)** | The plaintext; the contract address it's bound to | Choosing the right contract + app-specific label for their privacy goal. |
 | **End user (decrypter)** | A valid permission predicate (signature / ZK proof / Solana txn) | Constructing a request the contract will accept. |
-| **Operator** | One Ed25519 account-signing key + one PKE decryption key + one Shamir share of every active master secret per epoch | Running a worker that (a) participates honestly in DKG/DKR, (b) only releases IDK shares to requests that pass on-chain `check_permission`/`check_acl`, (c) cooperates in epoch transitions. |
+| **Operator** | One Ed25519 account-signing key + one PKE decryption key + one Shamir share of every active master secret per epoch | Running a worker that (a) participates honestly in DKG/DKR, (b) only releases IDK shares to requests that pass the on-chain ACE hook, (c) cooperates in epoch transitions. |
 | **Admin** | Permissions to deploy the ACE contract, propose committee changes, and trigger initial epoch | Bootstrapping; admitting/rotating operators; setting `epoch_duration_micros`. |
 | **RPC provider** | API endpoint(s) the worker queries to verify proofs | **In production: trusted to return correct view-function results and correct chain state.** This is the weakest link in the trust chain — covered below. |
 | **Aptos validators / Solana validators** | The chain itself | Truth about contract state. ACE reduces its security to the chain's. |
@@ -50,7 +50,7 @@ A coalition of size `t-1` learns at most `t-1` Lagrange-shares of the master sec
 
 ### Claim 2: Permission-gated decryption
 
-> **A worker only releases an IDK share for a `(keypair_id, epoch, identity)` triple if the on-chain `check_permission` (basic flow) or `check_acl` (custom flow) view function returns `true` for that exact request.**
+> **A worker only releases an IDK share for a `(keypair_id, epoch, identity)` triple if the fixed on-chain ACE hook returns `true` for that exact request.**
 
 Enforced by `worker-components/network-node/src/verify.rs::verify_basic` / `verify_custom`. For Aptos, this means a successful Aptos view-function call returning literal `true`. For Solana, this means a successful `simulateTransaction` with `sigVerify=true` against a known-program-id instruction whose embedded request bytes match.
 
@@ -82,11 +82,11 @@ The §2 claims are organized by security guarantee; this section organizes the s
 
 | Adversary class | Can | Cannot |
 |-----------------|-----|--------|
-| **Decrypter (single user)** | Submit any proof-of-permission to all workers; choose any ephemeral encryption key. | Recover the master secret. Force a worker to release a share for a request the on-chain `check_permission` / `check_acl` rejects. Replay a signed message across `(keypair_id, epoch, contract_id, label, ephemeralEncKey)` tuples — the signature binds all five. Replay a captured Solana proof-txn — `simulateTransaction` checks against current account state and a recent blockhash. |
-| **Single malicious operator** | Refuse to serve; return a wrong share (SDK detects via on-chain share-PK pairing check and discards); withhold their dealer contribution (protocol completes from $\geq t$ other dealers); see request metadata they handle. | Decrypt anything alone. Pollute the master public key (DKG/DKR-protected). Cause a false positive on `check_permission` for any other worker (each verifies independently on-chain). |
+| **Decrypter (single user)** | Submit any proof-of-permission to all workers; choose any ephemeral encryption key. | Recover the master secret. Force a worker to release a share for a request the on-chain ACE hook rejects. Replay a signed message across `(keypair_id, epoch, contract_id, label, ephemeralEncKey)` tuples — the signature binds all five. Replay a captured Solana proof-txn — `simulateTransaction` checks against current account state and a recent blockhash. |
+| **Single malicious operator** | Refuse to serve; return a wrong share (SDK detects via on-chain share-PK pairing check and discards); withhold their dealer contribution (protocol completes from $\geq t$ other dealers); see request metadata they handle. | Decrypt anything alone. Pollute the master public key (DKG/DKR-protected). Cause a false positive on the on-chain ACE hook for any other worker (each verifies independently on-chain). |
 | **$t-1$ malicious-operator coalition** | All of the above in aggregate. Stall any decryption by collective refusal. Stall DKG/DKR by collective non-dealing (but the protocol completes if $\geq t$ honest workers deal). Stall an epoch transition if they form a recipient-blocking majority of the next committee. | Decrypt any ciphertext. Forge a master public key. Inject false-positive shares (SDK pairing-check rejects them, regardless of source). |
 | **$t$ malicious-operator coalition** | **Trust assumption broken.** Reconstruct any master secret they hold shares for; decrypt every ciphertext bound to those `keypair_id`s. With admin collusion, push a committee-change proposal admitting more colluders. | — *(no protocol-level defense; mitigated only operationally — committee composition, organizational diversity)* |
-| **Admin** | Deploy / upgrade the ACE contract (a malicious upgrade can change `check_permission` semantics or add an exfiltrating view — the upgrade policy on Aptos is the critical control). Propose committee changes (subject to vote). Set `epoch_duration_micros` ($\geq 30\,\text{s}$). | Decrypt anything (holds no shares). Bypass the voting threshold (admin proposals also require committee votes). Freeze the protocol — any committee member can also propose; auto-rotation triggers on epoch-duration expiry. |
+| **Admin** | Deploy / upgrade the ACE contract (a malicious upgrade can change ACE hook semantics or add an exfiltrating view — the upgrade policy on Aptos is the critical control). Propose committee changes (subject to vote). Set `epoch_duration_micros` ($\geq 30\,\text{s}$). | Decrypt anything (holds no shares). Bypass the voting threshold (admin proposals also require committee votes). Freeze the protocol — any committee member can also propose; auto-rotation triggers on epoch-duration expiry. |
 | **RPC provider** | Return arbitrary view-function results, arbitrary chain state (e.g., forged `authentication_key`), arbitrary `simulateTransaction` results — to whichever worker queries them. **Thinnest part of the trust model.** | — *(defense is "run your own fullnode" or trust one you trust; light-client verification, fraud proofs, and multi-RPC quorum are out of scope.)* |
 
 ---
@@ -190,12 +190,12 @@ Recommended operator practices (not enforced):
 ## 7. On-chain "contract is truth" caveat
 
 The ACE worker treats the on-chain view-function result as gospel. Specifically:
-- The worker calls `{moduleAddr}::{moduleName}::{functionName}(label, encPk, userAddr)` (basic flow Aptos) or `{moduleAddr}::{moduleName}::{functionName}(label, encPk, payload)` (custom flow Aptos), via the configured RPC.
+- The worker calls `{moduleAddr}::{moduleName}::on_ace_decryption_request(label, account, origin)` (basic flow Aptos) or `{moduleAddr}::{moduleName}::on_ace_decryption_request_custom_flow(label, encPk, payload)` (custom flow Aptos), via the configured RPC.
 - A `bool == true` response → the worker releases its share.
 - The worker does **not** sandbox, fuzz, or verify the view function semantically.
 
 This means:
-- A buggy `check_permission` is a security hole the protocol cannot mitigate.
-- A maliciously-upgraded contract that broadens `check_permission` retroactively decrypts all prior content bound to that contract.
+- A buggy ACE hook is a security hole the protocol cannot mitigate.
+- A maliciously-upgraded contract that broadens the ACE hook retroactively decrypts all prior content bound to that contract.
 
-**Defense.** Apps SHOULD deploy `check_permission` as part of an immutable / governance-locked module. Aptos's package upgrade policies (`upgrade_policy: arbitrary` vs `compatible` vs `immutable`) are the primary control here. Auditors of an ACE-using application MUST check the upgrade policy on the access-control contract.
+**Defense.** Apps SHOULD deploy ACE hooks as part of an immutable / governance-locked module. Aptos's package upgrade policies (`upgrade_policy: arbitrary` vs `compatible` vs `immutable`) are the primary control here. Auditors of an ACE-using application MUST check the upgrade policy on the access-control contract.

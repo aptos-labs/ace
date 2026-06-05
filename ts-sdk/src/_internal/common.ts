@@ -40,8 +40,8 @@ export class ContractID {
         this.inner = inner;
     }
 
-    static newAptos({ chainId, moduleAddr, moduleName, functionName }: { chainId: number, moduleAddr: AccountAddress, moduleName: string, functionName: string }) {
-        return new ContractID(ContractID.SCHEME_APTOS, new AptosContractID(chainId, moduleAddr, moduleName, functionName));
+    static newAptos({ chainId, moduleAddr, moduleName }: { chainId: number, moduleAddr: AccountAddress, moduleName: string }) {
+        return new ContractID(ContractID.SCHEME_APTOS, new AptosContractID(chainId, moduleAddr, moduleName));
     }
 
     static newSolana({ knownChainName, programId }: { knownChainName: string, programId: string }) {
@@ -421,11 +421,11 @@ export class CustomFlowProof {
 //
 // Unlike the basic flow, the user does not sign anything — the proof is an
 // opaque `CustomFlowProof` payload (typically a Groth16 ZK proof) that the
-// dapp's `check_acl` view function validates. No "bytes the wallet signs"
+// dapp's `on_ace_decryption_request_custom_flow` view function validates. No
+// "bytes the wallet signs"
 // concept here, so no nested payload type; the 6 fields sit flat in the
 // envelope, mirroring `CustomFlowRequest` in
-// `worker-components/network-node/src/verify/mod.rs`. V2 adds a trailing
-// `tibeScheme` byte.
+// `worker-components/network-node/src/verify/mod.rs`.
 
 export class CustomFlowRequest {
     keypairId: AccountAddress;
@@ -467,7 +467,7 @@ export class CustomFlowRequest {
     }
 }
 
-export class CustomFlowRequestV2 {
+export class CustomDecryptionRequest {
     keypairId: AccountAddress;
     epoch: number;
     contractId: ContractID;
@@ -512,37 +512,13 @@ export class CustomFlowRequestV2 {
     }
 }
 
-// ── Basic-flow envelope ───────────────────────────────────────────────────────
+// ── Worker request envelope ───────────────────────────────────────────────────
 //
-// Named handle for the body of a `RequestForDecryptionKey::Basic` /
-// `RequestForDecryptionKey::BasicV2` arm. Mirrors the worker-side Rust types
-// `BasicFlowRequest` and `BasicFlowRequestV2` in `worker-components/network-node/
-// src/verify/mod.rs` — same field order, BCS-identical wire shape. V1 and V2
-// share the inner `DecryptionRequestPayload` + `ProofOfPermission`; V2 also
-// carries a trailing `tibeScheme` byte.
+// These classes mirror the worker-side Rust request structs in
+// `worker-components/network-node/src/verify/mod.rs`. Discriminants are now
+// 3.x-only: the decryption requests always carry `tibeScheme`.
 
-export class BasicFlowRequest {
-    request: DecryptionRequestPayload;
-    proof: ProofOfPermission;
-
-    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission }) {
-        this.request = args.request;
-        this.proof = args.proof;
-    }
-
-    serialize(s: Serializer): void {
-        this.request.serialize(s);
-        this.proof.serialize(s);
-    }
-
-    toBytes(): Uint8Array {
-        const s = new Serializer();
-        this.serialize(s);
-        return s.toUint8Array();
-    }
-}
-
-export class BasicFlowRequestV2 {
+export class BasicDecryptionRequest {
     request: DecryptionRequestPayload;
     proof: ProofOfPermission;
     /** Client-asserted t-IBE scheme the share should be formatted for. The
@@ -568,31 +544,21 @@ export class BasicFlowRequestV2 {
     }
 }
 
-// ── RequestForDecryptionKey (outer enum with scheme byte) ─────────────────────
+// ── WorkerRequest (outer enum with scheme byte) ───────────────────────────────
 //
 // Discriminants must match the worker-side Rust enum order:
-//   0 = Basic    (V1, legacy)
-//   1 = Custom   (V1, legacy)
-//   2 = BasicV2  (carries tibe_scheme so the handler doesn't have to guess)
-//   3 = CustomV2 (carries tibe_scheme)
-//   4 = ThresholdVrf
-//
-// V1 stays for backwards compat with older workers. V2 is the correct shape:
-// a t-IBE scheme is a *property of the ciphertext*, not derivable from the
-// keypair's group alone (multiple t-IBE schemes can sit over the same group).
+//   0 = BasicDecryption
+//   1 = CustomDecryption
+//   2 = ThresholdVrf
 
 interface SerializableWorkerRequest {
     serialize(serializer: Serializer): void;
 }
 
-// TODO(tVRF): rename this outer worker request envelope once it is no longer
-// decryption-only. The wire shape already matches the worker-side Rust enum.
-export class RequestForDecryptionKey {
-    static readonly SCHEME_BASIC_FLOW = 0;
-    static readonly SCHEME_CUSTOM_FLOW = 1;
-    static readonly SCHEME_BASIC_FLOW_V2 = 2;
-    static readonly SCHEME_CUSTOM_FLOW_V2 = 3;
-    static readonly SCHEME_THRESHOLD_VRF = 4;
+export class WorkerRequest {
+    static readonly SCHEME_BASIC_DECRYPTION = 0;
+    static readonly SCHEME_CUSTOM_DECRYPTION = 1;
+    static readonly SCHEME_THRESHOLD_VRF = 2;
 
     scheme: number;
     /** The scheme-specific request body. `scheme` discriminates which class
@@ -608,38 +574,24 @@ export class RequestForDecryptionKey {
         this.inner = inner;
     }
 
-    static newBasicFlow(request: DecryptionRequestPayload, proof: ProofOfPermission): RequestForDecryptionKey {
-        return new RequestForDecryptionKey(
-            RequestForDecryptionKey.SCHEME_BASIC_FLOW,
-            new BasicFlowRequest({ request, proof }),
-        );
-    }
-
-    static newCustomFlow(customRequest: CustomFlowRequest): RequestForDecryptionKey {
-        return new RequestForDecryptionKey(
-            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW,
-            customRequest,
-        );
-    }
-
-    static newBasicFlowV2(
+    static newBasicDecryption(
         request: DecryptionRequestPayload,
         proof: ProofOfPermission,
         tibeScheme: number,
-    ): RequestForDecryptionKey {
-        return new RequestForDecryptionKey(
-            RequestForDecryptionKey.SCHEME_BASIC_FLOW_V2,
-            new BasicFlowRequestV2({ request, proof, tibeScheme }),
+    ): WorkerRequest {
+        return new WorkerRequest(
+            WorkerRequest.SCHEME_BASIC_DECRYPTION,
+            new BasicDecryptionRequest({ request, proof, tibeScheme }),
         );
     }
 
-    static newCustomFlowV2(
+    static newCustomDecryption(
         customRequest: CustomFlowRequest,
         tibeScheme: number,
-    ): RequestForDecryptionKey {
-        return new RequestForDecryptionKey(
-            RequestForDecryptionKey.SCHEME_CUSTOM_FLOW_V2,
-            new CustomFlowRequestV2({
+    ): WorkerRequest {
+        return new WorkerRequest(
+            WorkerRequest.SCHEME_CUSTOM_DECRYPTION,
+            new CustomDecryptionRequest({
                 keypairId: customRequest.keypairId,
                 epoch: customRequest.epoch,
                 contractId: customRequest.contractId,
@@ -651,9 +603,9 @@ export class RequestForDecryptionKey {
         );
     }
 
-    static newThresholdVrf(request: SerializableWorkerRequest): RequestForDecryptionKey {
-        return new RequestForDecryptionKey(
-            RequestForDecryptionKey.SCHEME_THRESHOLD_VRF,
+    static newThresholdVrf(request: SerializableWorkerRequest): WorkerRequest {
+        return new WorkerRequest(
+            WorkerRequest.SCHEME_THRESHOLD_VRF,
             request,
         );
     }
@@ -849,7 +801,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
             // scheme tag); the caller never has to re-supply it.
             const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
                 .unwrapOrThrow('ACE.decryptCore: parse ciphertext for scheme').scheme;
-            const reqBytes = RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newBasicDecryption(request, proof, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -955,7 +907,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
 
             const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
                 .unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext for scheme').scheme;
-            const reqBytes = RequestForDecryptionKey.newCustomFlowV2(customRequest, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newCustomDecryption(customRequest, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -1065,7 +1017,7 @@ export async function buildPerNodeRequestCore({
 
             const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
                 .unwrapOrThrow('ACE.buildPerNodeRequest: parse ciphertext for scheme').scheme;
-            const reqBytes = RequestForDecryptionKey.newBasicFlowV2(request, proof, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newBasicDecryption(request, proof, tibeScheme).toBytes();
             const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
             return { encReqHex, epoch: Number(networkState.epoch), sdkIdx };
         },

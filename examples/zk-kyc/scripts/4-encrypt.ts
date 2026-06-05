@@ -7,7 +7,7 @@
  * Encrypts a plaintext under the KYC ACL policy using ACE.
  * Anyone can encrypt; only a holder with a valid KYC credential can decrypt.
  *
- * The encryption uses the `kyc_verifier::check_acl` function as the ACE contract
+ * The encryption uses the `kyc_verifier` module as the ACE contract
  * identity, so the ACE network will only release the decryption key share to a
  * caller who presents a valid ZK proof.
  *
@@ -26,7 +26,6 @@ interface Config {
     keypairId: string;
     chainId: number;
     moduleName: string;
-    functionName: string;
 }
 
 const LABEL = new TextEncoder().encode('kyc-demo');
@@ -56,7 +55,6 @@ async function main() {
         chainId: cfg.chainId,
         moduleAddr,
         moduleName: cfg.moduleName,
-        functionName: cfg.functionName,
         domain: LABEL,
         plaintext: PLAINTEXT,
     });

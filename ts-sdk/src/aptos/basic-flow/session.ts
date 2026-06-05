@@ -37,7 +37,7 @@ export class DecryptionSession {
     networkState: NetworkState | undefined;
 
     private constructor({
-        aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName, domain, ciphertext,
+        aceDeployment, keypairId, chainId, moduleAddr, moduleName, domain, ciphertext,
         ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
@@ -45,15 +45,13 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        functionName?: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
         this.aceDeployment = aceDeployment;
-        if (functionName === undefined) functionName = 'on_ace_decryption_request';
-        const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
+        const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
         this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
         this.ciphertext = ciphertext;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
@@ -66,7 +64,6 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        functionName?: string,
         domain: Uint8Array,
         ciphertext: Uint8Array,
     }): Promise<DecryptionSession> {
@@ -80,8 +77,8 @@ export class DecryptionSession {
 
     /**
      * Returns the UTF-8 pretty-printed `DecryptionRequestPayload` string that
-     * the signer is expected to sign over. Use this for account types whose
-     * signature scheme digests the message string directly:
+     * the wallet fullMessage must cover. Use this for account types whose
+     * signature scheme digests the wallet fullMessage directly:
      *
      *   - bare Ed25519              (`pk_scheme=0`)
      *   - bare Keyless              (`pk_scheme=4`)
@@ -124,9 +121,8 @@ export class DecryptionSession {
         userAddr: AccountAddress,
         publicKey: PublicKey,
         signature: Signature,
-        fullMessage?: string,
+        fullMessage: string,
     }): Promise<Result<Uint8Array>> {
-        if (fullMessage === undefined) fullMessage = this.request!.toPrettyMessage();
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
         return decryptCore({
             aceDeployment: this.aceDeployment,
@@ -232,10 +228,9 @@ export class DecryptionSession {
         userAddr: AccountAddress,
         publicKey: PublicKey,
         signature: Signature,
-        fullMessage?: string,
+        fullMessage: string,
         targetEndpoint: string,
     }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
-        if (fullMessage === undefined) fullMessage = this.request!.toPrettyMessage();
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
         return buildPerNodeRequestCore({
             aceDeployment: this.aceDeployment,

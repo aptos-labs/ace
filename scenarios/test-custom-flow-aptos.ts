@@ -232,7 +232,7 @@ async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<Cus
     });
     const encResult = await ACE.AptosCustomFlow.encrypt({
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr,
-        moduleName: 'check_acl_demo', functionName: 'check_acl',
+        moduleName: 'check_acl_demo',
         domain: label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
     });
     assert(encResult.isOk, `encrypt failed: ${encResult.errValue}`);
@@ -245,7 +245,7 @@ async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<Cus
             encPk: callerKeyPair.encryptionKey.toBytes(),
             encSk: callerKeyPair.decryptionKey.toBytes(),
             aceDeployment, chainId: CHAIN_ID, moduleAddr: adminAddr,
-            moduleName: 'check_acl_demo', functionName: 'check_acl',
+            moduleName: 'check_acl_demo',
         },
     };
 }
@@ -275,7 +275,7 @@ async function runCustomFlowTestCases(setup: AptosCustomFlowSetup): Promise<void
             keypairId: AccountAddress.fromString('0x' + 'ab'.repeat(32)) },
         'bad keypair_id',
     );
-    // Step C: wrong label → on-chain check_acl returns false → HTTP 403.
+    // Step C: wrong label → on-chain custom-flow hook returns false → HTTP 403.
     log('Step C: decrypt with wrong label (should fail)...');
     await expectCustomFlowDecryptFails(
         { ...f.baseArgs, label: new TextEncoder().encode('different-content'),

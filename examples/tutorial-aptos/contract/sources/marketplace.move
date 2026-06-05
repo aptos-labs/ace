@@ -5,11 +5,12 @@
 ///
 /// The admin lists items at fixed APT prices. A buyer pays the price in a
 /// single transaction and is added to the item's buyer list. ACE workers
-/// invoke `check_permission(user, item_name)` before releasing key shares,
+/// invoke `on_ace_decryption_request(item_name, user, origin)` before releasing key shares,
 /// so a buyer can decrypt only the items they have actually paid for.
 module admin::marketplace {
     use std::error;
     use std::signer::address_of;
+    use std::string::String;
     use std::vector;
     use aptos_std::table;
     use aptos_std::table::Table;
@@ -50,7 +51,7 @@ module admin::marketplace {
     }
 
     /// Pay the item's price in APT to the admin, then join its buyer list.
-    /// After this, `check_permission(buyer, name)` returns true.
+    /// After this, `on_ace_decryption_request(name, buyer, origin)` returns true.
     public entry fun buy(buyer: &signer, name: vector<u8>) acquires Catalog {
         let catalog = borrow_global_mut<Catalog>(@admin);
         assert!(catalog.items.contains(name), error::invalid_argument(E_ITEM_NOT_FOUND));
@@ -64,12 +65,16 @@ module admin::marketplace {
 
     #[view]
     /// The hook ACE workers call before releasing a decryption key share.
-    /// Returns true iff `user` is the admin or has bought item `domain`.
-    public fun check_permission(user: address, domain: vector<u8>): bool acquires Catalog {
-        if (user == @admin) return true;
+    /// Returns true iff `account` is the admin or has bought item `label`.
+    public fun on_ace_decryption_request(
+        label: vector<u8>,
+        account: address,
+        _origin: String,
+    ): bool acquires Catalog {
+        if (account == @admin) return true;
         let catalog = borrow_global<Catalog>(@admin);
-        if (!catalog.items.contains(domain)) return false;
-        let item = catalog.items.borrow(domain);
-        item.buyers.contains(&user)
+        if (!catalog.items.contains(label)) return false;
+        let item = catalog.items.borrow(label);
+        item.buyers.contains(&account)
     }
 }

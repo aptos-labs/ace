@@ -80,7 +80,7 @@ async fn start_mock_server() -> SocketAddr {
 ///   - calls the mock server (slow — this is where tasks pile up)
 ///   - runs BLS extraction after the await returns
 async fn simulate_request(client: &reqwest::Client, url: &str) {
-    // Typical wire sizes from a real RequestForDecryptionKey:
+    // Typical wire sizes from a real WorkerRequest:
     //   outer PKE ciphertext  ≈ 200 B
     //   decrypted payload     ≈ 340 B  (32 keypair_id + 8 epoch + 64 FDD + 96 proof + 67 enc_key)
     //   FDD slice             ≈  64 B

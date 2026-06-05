@@ -33,7 +33,7 @@ use tokio::sync::RwLock;
 /// Modeled as a tagged enum even though there's only one variant today —
 /// it lets us evolve the shape (add fields, change structure, retire old
 /// variants) without breaking handlers on a different release. Cheap
-/// forward-compat insurance, mirrors the `RequestForDecryptionKey` pattern
+/// forward-compat insurance, mirrors the `WorkerRequest` pattern
 /// on the request side.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "schema")]

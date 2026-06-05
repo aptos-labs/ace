@@ -7,8 +7,8 @@
 ///   - The Groth16 verification key (from circuit/vk.json after setup.sh).
 ///   - The KYC provider's Baby JubJub public key.
 ///
-/// ACE workers call `check_acl(label, enc_pk, payload)` as a view function
-/// before releasing a decryption key share.  `payload` is 288 bytes:
+/// ACE workers call `on_ace_decryption_request_custom_flow(label, enc_pk, payload)`
+/// as a view function before releasing a decryption key share. `payload` is 288 bytes:
 ///   proof (256B): pi_a 64B || pi_b 128B || pi_c 64B
 ///   nullifier (32B): Poseidon(sig_s) as a little-endian BN254 Fr scalar
 ///
@@ -45,7 +45,7 @@ module admin::kyc_verifier {
     const IC_COUNT: u64 = 7;
 
     struct VerificationKey has key {
-        // Groth16 VK stored as raw bytes; deserialized on every check_acl call.
+        // Groth16 VK stored as raw bytes; deserialized on every ACE hook call.
         // G1 uncompressed = x_le32 || y_le32 (64 bytes)
         // G2 uncompressed = x0_le32 || x1_le32 || y0_le32 || y1_le32 (128 bytes)
         vk_alpha_g1: vector<u8>,   // 64 bytes
@@ -91,7 +91,7 @@ module admin::kyc_verifier {
     // prover holds a KYC credential showing age >= 18, bound to enc_pk.
     // label is verified by ACE itself and is ignored here.
     #[view]
-    public fun check_acl(
+    public fun on_ace_decryption_request_custom_flow(
         _label: vector<u8>,
         enc_pk:  vector<u8>,
         payload: vector<u8>,

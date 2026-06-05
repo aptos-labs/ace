@@ -28,7 +28,7 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 use super::{
-    check_permission, find_rsa_jwk_in_jwks_resource, is_valid_hex, AptosContractId,
+    check_basic_ace_hook, find_rsa_jwk_in_jwks_resource, is_valid_hex, AptosContractId,
     AptosProofOfPermission,
 };
 use crate::ChainRpcConfig;
@@ -46,7 +46,7 @@ pub(super) async fn verify(
     let (sig_res, auth_res, perm_res) = tokio::join!(
         verify_signature_only(req, contract, proof, pk, sig, chain_rpc),
         check_auth_key(proof, pk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     sig_res?;
     auth_res?;
@@ -94,7 +94,7 @@ pub(super) async fn verify_signature_only(
     };
 
     // 2. Fetch chain-side inputs in parallel. The single-key wrapper
-    //    `verify` runs this concurrently with check_auth_key + check_permission,
+    //    `verify` runs this concurrently with check_auth_key + check_basic_ace_hook,
     //    so net parallelism is the same 5-RPC fan-out as pre-refactor.
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)

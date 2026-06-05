@@ -8,7 +8,7 @@
  * per day), so rather than asking the dev to fund a second account, Alice
  * sends Bob ~0.2 APT directly — enough to cover one item's price plus gas in
  * step 5. Bob then attempts to decrypt song-1 without having bought it; ACE
- * workers each simulate `marketplace::check_permission(bob, "song-1.mp3")`,
+ * workers each simulate `marketplace::on_ace_decryption_request("song-1.mp3", bob, origin)`,
  * which returns false, so no key share is released.
  */
 
@@ -19,7 +19,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 
 import {
     ALICE_FILE, AccountFile, BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogFile, ConfigFile, ITEMS,
-    ensureDataDir, log, readJson, writeJson,
+    buildAptosWalletFullMessage, ensureDataDir, log, readJson, writeJson,
     TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
 } from './common.js';
 
@@ -70,15 +70,21 @@ async function main() {
         chainId,
         moduleAddr: appContractAddr,
         moduleName: 'marketplace',
-        functionName: 'check_permission',
         domain,
         ciphertext,
     });
     const msgToSign = await session.getRequestToSign();
+    const fullMessage = buildAptosWalletFullMessage({
+        accountAddress: bob.accountAddress,
+        chainId,
+        message: msgToSign,
+        nonce: 'tutorial-step-4',
+    });
     const result = await session.decryptWithProof({
         userAddr: bob.accountAddress,
         publicKey: bob.publicKey,
-        signature: bob.sign(msgToSign),
+        signature: bob.sign(fullMessage),
+        fullMessage,
     });
 
     if (result.isOk) {
@@ -87,7 +93,7 @@ async function main() {
     }
     log('✓ Decryption denied (expected).');
     log(`  Workers refused to release key shares because`);
-    log(`  marketplace::check_permission(bob, "${target.name}") returned false.`);
+    log(`  marketplace::on_ace_decryption_request("${target.name}", bob, origin) returned false.`);
     log('');
     log('Next: pnpm 5-buy');
 }

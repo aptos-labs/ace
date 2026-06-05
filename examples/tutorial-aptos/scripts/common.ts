@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as readline from 'readline';
+import { AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 // ── ACE deployment targeted by this tutorial ──────────────────────────────────
@@ -15,6 +16,7 @@ const _knownDeployment = ACE.knownDeployments.preview20260506;
 export const TUTORIAL_ACE_DEPLOYMENT = _knownDeployment.aceDeployment;
 export const TUTORIAL_CHAIN_ID       = _knownDeployment.chainId;
 export const TUTORIAL_KEYPAIR_ID     = _knownDeployment.keypairId;
+export const TUTORIAL_APP_ORIGIN     = 'https://tutorial.ace.aptos.dev';
 //
 // Example: pointing the tutorial at a self-bootstrapped devnet deployment.
 // Replace the three lines above with:
@@ -65,6 +67,25 @@ export function log(...args: unknown[]): void {
 export function waitForEnter(prompt: string): Promise<void> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return new Promise(resolve => rl.question(prompt, () => { rl.close(); resolve(); }));
+}
+
+export function buildAptosWalletFullMessage(args: {
+    accountAddress: AccountAddress | string;
+    chainId: number;
+    message: string;
+    nonce: string;
+}): string {
+    const address = typeof args.accountAddress === 'string'
+        ? args.accountAddress
+        : args.accountAddress.toStringLong();
+    return [
+        'APTOS',
+        `address: ${address}`,
+        `application: ${TUTORIAL_APP_ORIGIN}`,
+        `chainId: ${args.chainId}`,
+        `message: ${args.message}`,
+        `nonce: ${args.nonce}`,
+    ].join('\n');
 }
 
 export const ALICE_FILE = path.join(DATA_DIR, 'alice.json');

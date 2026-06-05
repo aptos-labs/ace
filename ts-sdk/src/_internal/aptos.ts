@@ -27,17 +27,15 @@ export class ContractID {
     chainId: number;
     moduleAddr: AccountAddress;
     moduleName: string;
-    functionName: string;
 
-    constructor(chainId: number, moduleAddr: AccountAddress, moduleName: string, functionName: string) {
+    constructor(chainId: number, moduleAddr: AccountAddress, moduleName: string) {
         this.chainId = chainId;
         this.moduleAddr = moduleAddr;
         this.moduleName = moduleName;
-        this.functionName = functionName;
     }
 
     static dummy(): ContractID {
-        return new ContractID(0, AccountAddress.fromString("0x1"), "module3", "function3");
+        return new ContractID(0, AccountAddress.fromString("0x1"), "module3");
     }
 
     static deserialize(deserializer: Deserializer): Result<ContractID> {
@@ -45,8 +43,7 @@ export class ContractID {
             const chainId = deserializer.deserializeU8();
             const moduleAddr = deserializer.deserialize(AccountAddress);
             const moduleName = deserializer.deserializeStr();
-            const functionName = deserializer.deserializeStr();
-            return new ContractID(chainId, moduleAddr, moduleName, functionName);
+            return new ContractID(chainId, moduleAddr, moduleName);
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -74,7 +71,6 @@ export class ContractID {
         serializer.serializeU8(this.chainId);
         serializer.serialize(this.moduleAddr);
         serializer.serializeStr(this.moduleName);
-        serializer.serializeStr(this.functionName);
     }
 
     toBytes(): Uint8Array {
@@ -89,7 +85,7 @@ export class ContractID {
 
     toPrettyMessage(indent: number = 0): string {
         const pad = '  '.repeat(indent);
-        return `\n${pad}chainId: ${this.chainId}\n${pad}moduleAddr: ${this.moduleAddr.toStringLong()}\n${pad}moduleName: ${this.moduleName}\n${pad}functionName: ${this.functionName}`;
+        return `\n${pad}chainId: ${this.chainId}\n${pad}moduleAddr: ${this.moduleAddr.toStringLong()}\n${pad}moduleName: ${this.moduleName}`;
     }
 }
 

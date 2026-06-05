@@ -5,35 +5,40 @@
 ///
 /// Owner uploads `enc_blob` for `blob_id = @<owner>/<suffix>` to Shelby,
 /// derives a deterministic BLS keypair `(ask, apk)` from `(owner, blob_id)`
-/// via ACE's threshold VRF, and registers `apk` on-chain here together
-/// with the **expected request origin** for this blob. The owner shares
-/// `ask` out-of-band as a single-token access grant ("pre-signed URL"
-/// semantics): anyone who holds `ask` can ask the ACE workers to release
-/// a decryption-key share — provided they sign for the expected origin.
+/// via ACE's threshold VRF, and registers `apk` on-chain here. The owner
+/// shares `ask` out-of-band as a single-token access grant ("pre-signed
+/// URL" semantics): anyone who holds `ask` can ask the ACE workers to
+/// release a decryption-key share — provided they sign for this dapp's
+/// origin.
 ///
 /// Worker calls `on_ace_decryption_request_custom_flow(label, enc_pk, payload)`
 /// before releasing a share. Custom flow leaves the `payload` shape to
 /// the contract, so this contract defines:
 ///
-///   payload     = BCS(ReaderProof    { claimed_origin, sig })
+///   payload     = BCS({ claimed_origin, sig })
 ///   signed_msg  = BCS(SignableRequest { dst, label, enc_pk, claimed_origin })
 ///   sig is a BLS sig over signed_msg under the registered `apk`.
 ///
-/// Access is granted iff `claimed_origin == entry.expected_origin` AND
+/// Access is granted iff `claimed_origin == EXPECTED_APP_ORIGIN` AND
 /// `sig` verifies. Binding `enc_pk` stops an eavesdropper from replaying
 /// a captured signature with their own ephemeral encryption key; binding
 /// `claimed_origin` mirrors what the basic flow gets for free via
 /// wallet-`fullMessage` extraction — a wallet/helper holding `ask` should
 /// refuse to sign for an origin other than the actual requester's, so
 /// a malicious dapp at `evil.com` can't get the wallet to produce a
-/// signature claiming to be `shelby.example`. The explicit `dst` tag
+/// signature claiming to be this dapp's origin. The explicit `dst` tag
 /// prevents the same key from being reused to forge messages for other
 /// schemes that happen to share `(label, enc_pk, origin)`, and BCS's
 /// length-prefixed encoding rules out naive-concatenation ambiguity
 /// across variable-length fields.
 ///
-/// Overwrite-by-same-owner = revoke + reissue: registering a new
-/// `(apk, expected_origin)` for the same blob invalidates the old `ask`.
+/// `EXPECTED_APP_ORIGIN` is dapp-scope, not blob-scope: one deployment
+/// of this contract represents one dapp at one origin, exactly as the
+/// `tutorial-aptos` marketplace does. Owners don't pick the origin —
+/// the dapp does, at deploy time.
+///
+/// Overwrite-by-same-owner = revoke + reissue: registering a new `apk`
+/// for the same blob invalidates the old `ask`.
 module admin::presigned_access {
     use std::bcs;
     use std::error;
@@ -49,6 +54,12 @@ module admin::presigned_access {
     /// invalidates every outstanding `ask` even if the registered `apk`
     /// is unchanged — useful for protocol-level breaking changes.
     const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v2";
+
+    /// The dapp origin that ACE requests must be signed for. Must match
+    /// the `application` value that any wallet/helper holding `ask`
+    /// attests to before signing. Cribbed by `tools/gen-fixture.ts` and
+    /// by the TS-side reader scripts.
+    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://shelby.example";
 
     /// Module not initialized at `@admin` yet.
     const E_NOT_INITIALIZED: u64 = 1;
@@ -68,18 +79,11 @@ module admin::presigned_access {
         origin: vector<u8>,
     }
 
-    /// Per-blob registry entry: the bearer pubkey + the origin the
-    /// owner expects requests to be signed for.
-    struct Entry has store, drop {
-        apk: vector<u8>,
-        expected_origin: vector<u8>,
-    }
-
-    /// Singleton at `@admin`. `entries[blob_id]` carries the bearer
-    /// pubkey and expected request origin. `blob_id` is the canonical
+    /// Singleton at `@admin`. `entries[blob_id] = apk_bytes` (48-byte
+    /// compressed BLS12-381 G1 element). `blob_id` is the canonical
     /// `@<owner>/<suffix>` UTF-8 string.
     struct Registry has key {
-        entries: Table<vector<u8>, Entry>,
+        entries: Table<vector<u8>, vector<u8>>,
     }
 
     /// Create the singleton registry. Idempotent.
@@ -90,16 +94,15 @@ module admin::presigned_access {
         };
     }
 
-    /// Register (or overwrite) the bearer pubkey + expected origin for
-    /// `@<owner>/<suffix>`. `owner` here is `signer`, so the blob_id key
-    /// is self-namespaced to the caller's address: two distinct accounts
-    /// can never collide on the same key, and the same account can
-    /// overwrite freely (= revoke + reissue).
+    /// Register (or overwrite) the bearer pubkey for `@<owner>/<suffix>`.
+    /// `owner` here is `signer`, so the blob_id key is self-namespaced to
+    /// the caller's address: two distinct accounts can never collide on
+    /// the same key, and the same account can overwrite freely (= revoke
+    /// + reissue).
     public entry fun register(
         owner: &signer,
         blob_name_suffix: String,
         apk: vector<u8>,
-        expected_origin: vector<u8>,
     ) acquires Registry {
         assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
         // Fail closed on garbage pubkeys at write-time rather than later
@@ -109,13 +112,13 @@ module admin::presigned_access {
 
         let blob_id = create_full_blob_name(signer::address_of(owner), blob_name_suffix);
         let registry = borrow_global_mut<Registry>(@admin);
-        registry.entries.upsert(*blob_id.bytes(), Entry { apk, expected_origin });
+        registry.entries.upsert(*blob_id.bytes(), apk);
     }
 
     #[view]
     /// ACE custom-flow hook. Returns true iff (a) the reader's claimed
-    /// origin matches the owner-registered expected origin for `label`
-    /// and (b) `sig` is a valid BLS12-381 signature over
+    /// origin matches this dapp's `EXPECTED_APP_ORIGIN` and (b) `sig`
+    /// is a valid BLS12-381 signature over
     /// `BCS(SignableRequest { dst, label, enc_pk, claimed_origin })`
     /// under the registered `apk`. The signature suite is the IETF
     /// min-pubkey-size variant with DST
@@ -129,15 +132,15 @@ module admin::presigned_access {
         if (!exists<Registry>(@admin)) return false;
         let registry = borrow_global<Registry>(@admin);
         if (!registry.entries.contains(label)) return false;
-        let entry = registry.entries.borrow(label);
+        let apk_bytes = *registry.entries.borrow(label);
 
         let stream = bcs_stream::new(payload);
         let claimed_origin = read_vector_u8(&mut stream);
         let sig_bytes      = read_vector_u8(&mut stream);
         if (bcs_stream::has_remaining(&mut stream)) return false;
-        if (claimed_origin != entry.expected_origin) return false;
+        if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
 
-        let pk_opt = bls12381::public_key_from_bytes(entry.apk);
+        let pk_opt = bls12381::public_key_from_bytes(apk_bytes);
         if (!option::is_some(&pk_opt)) return false; // unreachable: register() validates
         let pk = option::extract(&mut pk_opt);
         let sig = bls12381::signature_from_bytes(sig_bytes);
@@ -180,8 +183,7 @@ module admin::presigned_access {
         account::create_account_for_test(@admin);
         init(admin);
         let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        let origin = b"https://shelby.example";
-        register(admin, string::utf8(b"song.mp3"), apk, origin);
+        register(admin, string::utf8(b"song.mp3"), apk);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let enc_pk  = x"deadbeefcafebabe";
@@ -195,7 +197,7 @@ module admin::presigned_access {
         account::create_account_for_test(@admin);
         init(admin);
         let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk, b"https://shelby.example");
+        register(admin, string::utf8(b"song.mp3"), apk);
 
         let label    = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let bad_pk   = x"deadbeefcafebabf";  // last byte flipped
@@ -203,41 +205,23 @@ module admin::presigned_access {
         assert!(!on_ace_decryption_request_custom_flow(label, bad_pk, payload), 101);
     }
 
-    // Reader claims a different origin than the one signed over → sig
-    // covers `https://shelby.example` but `claimed_origin` is
-    // `https://attacker.example`. Even if the contract accepted the
-    // claim (it doesn't, because of the expected-origin check), the
-    // sig would also fail to verify against the re-built signable.
+    // Claimed origin doesn't match this dapp's `EXPECTED_APP_ORIGIN`.
+    // The sig in the payload is even validly signed over the wrong
+    // origin (a malicious wallet that ignored the application context)
+    // — the contract still rejects on the `claimed_origin` check before
+    // even getting to the sig verify.
     #[test(admin = @admin)]
-    fun wrong_claimed_origin_rejected(admin: &signer) acquires Registry {
+    fun wrong_origin_rejected(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
         let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        // Owner expects `attacker.example` so the claim/expected match
-        // succeeds and the failure must come from the sig check itself.
-        register(admin, string::utf8(b"song.mp3"), apk, b"https://attacker.example");
+        register(admin, string::utf8(b"song.mp3"), apk);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let enc_pk  = x"deadbeefcafebabe";
-        let payload = x"1868747470733a2f2f61747461636b65722e6578616d706c6560b886d3be1b43e6edc06146346e0a55291e27f2cbf3dcd24688252f314b201e7393b0f4d15ff62412549ed2b4fd0e2a9c134e605444970e17ac079d526c650c512a52898421b7930e6bc1b6eef065ced6301b8b183c2d48f85de3e34d662ff4c6";
-        assert!(!on_ace_decryption_request_custom_flow(label, enc_pk, payload), 103);
-    }
-
-    // Sig made for the wrong origin, claim matches the sig, but contract
-    // expected_origin differs → origin-mismatch rejection.
-    #[test(admin = @admin)]
-    fun expected_origin_mismatch_rejected(admin: &signer) acquires Registry {
-        account::create_account_for_test(@admin);
-        init(admin);
-        let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        // Owner expects `shelby.example` but the payload below claims
-        // (and signs over) `attacker.example`.
-        register(admin, string::utf8(b"song.mp3"), apk, b"https://shelby.example");
-
-        let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
-        let enc_pk  = x"deadbeefcafebabe";
+        // payload claims (and self-consistently signs over) attacker.example.
         let payload = x"1868747470733a2f2f61747461636b65722e6578616d706c65608063bb21c4552acba704cce4841b2a67fe74871d41f79430fe5f35431d47b4748538d3129954827b70562b69d0d9730b0fac488ef08371db611c27bc9915b15aa72c2848a251d8d9d3efa0a0bc68d92597cc3e0ded8644bae3253d7f849995d3";
-        assert!(!on_ace_decryption_request_custom_flow(label, enc_pk, payload), 104);
+        assert!(!on_ace_decryption_request_custom_flow(label, enc_pk, payload), 103);
     }
 
     // Unregistered blob_id → hook returns false (no abort).
@@ -258,7 +242,7 @@ module admin::presigned_access {
         account::create_account_for_test(@admin);
         init(admin);
         let garbage = x"00112233";
-        register(admin, string::utf8(b"song.mp3"), garbage, b"https://shelby.example");
+        register(admin, string::utf8(b"song.mp3"), garbage);
     }
 
     // Re-registering with a new apk under the same suffix overwrites
@@ -269,7 +253,7 @@ module admin::presigned_access {
         init(admin);
 
         let apk_v1 = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk_v1, b"https://shelby.example");
+        register(admin, string::utf8(b"song.mp3"), apk_v1);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let enc_pk  = x"deadbeefcafebabe";
@@ -279,7 +263,7 @@ module admin::presigned_access {
         // Overwrite with a second well-formed apk (any valid G1 pk that
         // differs from apk_v1 works).
         let apk_v2 = x"808864c91ae7a9998b3f5ee71f447840864e56d79838e4785ff5126c51480198df3d972e1e0348c6da80d396983e42d7";
-        register(admin, string::utf8(b"song.mp3"), apk_v2, b"https://shelby.example");
+        register(admin, string::utf8(b"song.mp3"), apk_v2);
 
         assert!(!on_ace_decryption_request_custom_flow(label, enc_pk, payload), 111);
     }

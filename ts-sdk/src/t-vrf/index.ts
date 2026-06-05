@@ -23,6 +23,7 @@ import * as pke from "../pke";
 import * as group from "../group";
 import {
     AceDeployment,
+    ContractID,
     createAptos,
     fetchCurrentSessionPks,
     fetchNetworkState,
@@ -38,6 +39,7 @@ const DST_THRESHOLD_VRF_G1 = new TextEncoder().encode("ACE_THRESHOLD_VRF_BLS1238
 export interface RequestToSignArgs {
     aceDeployment: AceDeployment;
     keypairId: AccountAddress;
+    contractId: ContractID;
     label: Uint8Array;
     accountAddress: AccountAddress;
 }
@@ -45,7 +47,7 @@ export interface RequestToSignArgs {
 export class ThresholdVrfRequestPayload {
     keypairId: AccountAddress;
     epoch: number;
-    chainId: number;
+    contractId: ContractID;
     label: Uint8Array;
     accountAddress: AccountAddress;
     responseEncKey: pke.EncryptionKey;
@@ -53,14 +55,14 @@ export class ThresholdVrfRequestPayload {
     constructor(args: {
         keypairId: AccountAddress,
         epoch: number,
-        chainId: number,
+        contractId: ContractID,
         label: Uint8Array,
         accountAddress: AccountAddress,
         responseEncKey: pke.EncryptionKey,
     }) {
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
-        this.chainId = args.chainId;
+        this.contractId = args.contractId;
         this.label = args.label;
         this.accountAddress = args.accountAddress;
         this.responseEncKey = args.responseEncKey;
@@ -69,7 +71,7 @@ export class ThresholdVrfRequestPayload {
     serialize(serializer: Serializer): void {
         this.keypairId.serialize(serializer);
         serializer.serializeU64(BigInt(this.epoch));
-        serializer.serializeU8(this.chainId);
+        this.contractId.serialize(serializer);
         serializer.serializeBytes(this.label);
         this.accountAddress.serialize(serializer);
         this.responseEncKey.serialize(serializer);
@@ -87,7 +89,7 @@ export class ThresholdVrfRequestPayload {
             `purpose: ${PURPOSE}`,
             `keypairId: ${this.keypairId.toStringLong()}`,
             `epoch: ${this.epoch}`,
-            `chainId: ${this.chainId}`,
+            `contractId:${this.contractId.toPrettyMessage(1)}`,
             `label: 0x${bytesToHex(this.label)}`,
             `accountAddress: ${this.accountAddress.toStringLong()}`,
             `responseEncKey: ${this.responseEncKey.toHex()}`,
@@ -105,8 +107,9 @@ export class ThresholdVrfRequestPayload {
 
     toVrfInputBytes(): Uint8Array {
         const serializer = new Serializer();
+        serializer.serializeStr("ace.threshold-vrf.input.v1");
         this.keypairId.serialize(serializer);
-        serializer.serializeU8(this.chainId);
+        this.contractId.serialize(serializer);
         this.accountAddress.serialize(serializer);
         serializer.serializeBytes(this.label);
         return serializer.toUint8Array();
@@ -311,6 +314,7 @@ function reconstructThresholdVrf(shares: ThresholdVrfShare[]): Uint8Array {
 export class DerivationSession {
     aceDeployment: AceDeployment;
     keypairId: AccountAddress;
+    contractId: ContractID;
     label: Uint8Array;
     accountAddress: AccountAddress;
     responseEncryptionKey: pke.EncryptionKey;
@@ -325,6 +329,7 @@ export class DerivationSession {
     }) {
         this.aceDeployment = args.aceDeployment;
         this.keypairId = args.keypairId;
+        this.contractId = args.contractId;
         this.label = args.label;
         this.accountAddress = args.accountAddress;
         this.responseEncryptionKey = args.responseEncryptionKey;
@@ -341,14 +346,11 @@ export class DerivationSession {
     }
 
     private async refreshPayload(): Promise<ThresholdVrfRequestPayload> {
-        const [networkState, chainId] = await Promise.all([
-            fetchNetworkState(this.aceDeployment),
-            createAptos(this.aceDeployment.apiEndpoint).getChainId(),
-        ]);
+        const networkState = await fetchNetworkState(this.aceDeployment);
         const payload = new ThresholdVrfRequestPayload({
             keypairId: this.keypairId,
             epoch: networkState.epoch,
-            chainId,
+            contractId: this.contractId,
             label: this.label,
             accountAddress: this.accountAddress,
             responseEncKey: this.responseEncryptionKey,
@@ -372,7 +374,7 @@ export class DerivationSession {
     async deriveWithSignature(args: {
         pubKey: PublicKey;
         signature: Signature;
-        fullMessage?: string;
+        fullMessage: string;
     }): Promise<Uint8Array> {
         if (this.payload === undefined || this.message === undefined) {
             throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: call getRequestToSign() first");
@@ -381,7 +383,7 @@ export class DerivationSession {
             userAddr: this.accountAddress,
             publicKey: args.pubKey,
             signature: args.signature,
-            fullMessage: args.fullMessage ?? this.message,
+            fullMessage: args.fullMessage,
         });
         const requestBytes = RequestForDecryptionKey.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),

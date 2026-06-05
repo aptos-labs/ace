@@ -24,7 +24,7 @@ export { Result } from "./result";
 export * as pke from "./pke";
 
 // Shared types
-export { AceDeployment } from "./_internal/common";
+export { AceDeployment, ContractID } from "./_internal/common";
 
 // Registry of known ACE deployments (testnet, mainnet, …)
 export { knownDeployments } from "./known-deployments";

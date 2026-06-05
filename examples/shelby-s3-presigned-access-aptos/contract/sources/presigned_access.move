@@ -45,7 +45,7 @@ module admin::presigned_access {
     use std::option;
     use std::signer;
     use std::string::{Self, String};
-    use aptos_std::bcs_stream::{Self, BCSStream};
+    use aptos_std::bcs_stream;
     use aptos_std::bls12381;
     use aptos_std::string_utils;
     use aptos_std::table::{Self, Table};
@@ -135,8 +135,8 @@ module admin::presigned_access {
         let apk_bytes = *registry.entries.borrow(label);
 
         let stream = bcs_stream::new(payload);
-        let claimed_origin = read_vector_u8(&mut stream);
-        let sig_bytes      = read_vector_u8(&mut stream);
+        let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+        let sig_bytes      = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
         if (bcs_stream::has_remaining(&mut stream)) return false;
         if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
 
@@ -151,14 +151,6 @@ module admin::presigned_access {
             origin: claimed_origin,
         });
         bls12381::verify_normal_signature(&sig, &pk, msg)
-    }
-
-    /// `vector<u8>` BCS-decode helper — bcs_stream exposes `deserialize_string`
-    /// for UTF-8 and a generic `deserialize_vector<E>` for typed vectors, but
-    /// no direct `vector<u8>` primitive, so unfold it as `deserialize_vector`
-    /// over `deserialize_u8`. Wire format is identical: `ULEB128(len) || bytes`.
-    fun read_vector_u8(stream: &mut BCSStream): vector<u8> {
-        bcs_stream::deserialize_vector(stream, |s| bcs_stream::deserialize_u8(s))
     }
 
     /// Canonical blob_id constructor. Matches Shelby's convention used by

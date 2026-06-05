@@ -37,8 +37,8 @@ use sha3::Sha3_256;
 
 use crate::ChainRpcConfig;
 use super::{
-    BasicFlowRequest, DecryptionRequestPayload, ThresholdVrfRequest, ThresholdVrfRequestPayload,
-    ThresholdVrfAuthorization,
+    BasicFlowRequest, ContractId, DecryptionRequestPayload, ThresholdVrfRequest,
+    ThresholdVrfRequestPayload,
 };
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -405,16 +405,24 @@ pub(super) async fn verify_aptos(
 pub(super) async fn verify_threshold_vrf_aptos(
     req: &ThresholdVrfRequest,
     chain_rpc: &ChainRpcConfig,
-) -> Result<ThresholdVrfAuthorization> {
+) -> Result<()> {
     let proof = &req.auth_proof;
     if proof.user_addr != req.payload.account_address {
         return Err(anyhow!(
             "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
         ));
     }
-    verify_aptos_account_proof(&req.payload, req.payload.chain_id, proof, chain_rpc).await?;
+    let contract = match &req.payload.contract_id {
+        ContractId::Aptos(contract) => contract,
+        ContractId::Solana(_) => {
+            return Err(anyhow!(
+                "verify_threshold_vrf_aptos: threshold VRF origin checks require an Aptos contract"
+            ))
+        }
+    };
+    verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let application = extract_signed_wallet_application(proof)?;
-    Ok(ThresholdVrfAuthorization { application })
+    check_request_origin(contract, &application, chain_rpc).await
 }
 
 pub(super) trait AptosPayloadBinding {
@@ -857,6 +865,39 @@ fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
     Err(anyhow!(
         "extract_signed_wallet_application: fullMessage missing application"
     ))
+}
+
+async fn check_request_origin(
+    contract: &AptosContractId,
+    application: &str,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let func = format!(
+        "0x{}::{}::{}",
+        hex::encode(contract.module_addr),
+        contract.module_name,
+        contract.function_name,
+    );
+
+    let result = rpc
+        .call_view(&func, &[json!(application)])
+        .await
+        .map_err(|e| anyhow!("checkRequestOrigin: view call failed for {}: {}", func, e))?;
+
+    let returned = result
+        .first()
+        .ok_or_else(|| anyhow!("checkRequestOrigin: empty view result"))?;
+    if returned.as_bool() != Some(true) && returned.to_string() != "true" {
+        return Err(anyhow!(
+            "checkRequestOrigin: origin denied by {} for application {:?} (returned {:?})",
+            func,
+            application,
+            returned,
+        ));
+    }
+
+    Ok(())
 }
 
 async fn check_auth_key_bytes(

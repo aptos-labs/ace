@@ -29,6 +29,8 @@ use ark_serialize::CanonicalSerialize;
 use sha2::Sha256;
 use vss_common::group::{BcsElement, BcsPublicPoint, SCHEME_BLS12381G2};
 
+use crate::verify::ContractId;
+
 pub const SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC: u8 = 0;
 pub const SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD: u8 = 1;
 
@@ -156,9 +158,8 @@ pub fn partial_extract_idk_share(
 struct ThresholdVrfInput<'a> {
     purpose: &'static str,
     keypair_id: &'a [u8; 32],
-    chain_id: u8,
+    contract_id: &'a ContractId,
     account_address: &'a [u8; 32],
-    application: &'a str,
     label: &'a [u8],
 }
 
@@ -177,9 +178,8 @@ struct ThresholdVrfShareWire {
 /// client can verify `e(share_i, G2) == e(H_to_G1(input), P_i)`.
 pub fn partial_derive_threshold_vrf_share(
     keypair_id: &[u8; 32],
-    chain_id: u8,
+    contract_id: &ContractId,
     account_address: &[u8; 32],
-    application: &str,
     label: &[u8],
     scalar_le32: &[u8; 32],
     eval_point: u64,
@@ -195,9 +195,8 @@ pub fn partial_derive_threshold_vrf_share(
     let input = ThresholdVrfInput {
         purpose: THRESHOLD_VRF_INPUT_PURPOSE,
         keypair_id,
-        chain_id,
+        contract_id,
         account_address,
-        application,
         label,
     };
     let input_bytes = bcs::to_bytes(&input)
@@ -289,11 +288,16 @@ mod tests {
 
     #[test]
     fn threshold_vrf_share_is_eval_point_plus_g1_element() {
+        let contract_id = ContractId::Aptos(crate::verify::AptosContractId {
+            chain_id: 4,
+            module_addr: [0xef; 32],
+            module_name: "shelby_s3".to_string(),
+            function_name: "check_request_origin".to_string(),
+        });
         let share = partial_derive_threshold_vrf_share(
             &[0xab; 32],
-            4,
+            &contract_id,
             &[0xcd; 32],
-            "https://app.example",
             b"label-1",
             &[1u8; 32],
             42,

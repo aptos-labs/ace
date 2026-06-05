@@ -478,15 +478,12 @@ async fn handle_threshold_vrf(
     let pfn_start = Instant::now();
     let verify_result = verify::verify_threshold_vrf(&req, &state.chain_rpc).await;
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
-    let authorization = match verify_result {
-        Ok(v) => v,
-        Err(e) => {
-            return Outcome::Rejected {
-                reason: Reason::Forbidden,
-                detail: Some(format!("{:#}", e)),
-            };
-        }
-    };
+    if let Err(e) = verify_result {
+        return Outcome::Rejected {
+            reason: Reason::Forbidden,
+            detail: Some(format!("{:#}", e)),
+        };
+    }
 
     let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let extract_start = Instant::now();
@@ -506,9 +503,8 @@ async fn handle_threshold_vrf(
 
     let share_bytes = match crate::crypto::partial_derive_threshold_vrf_share(
         &req.payload.keypair_id,
-        req.payload.chain_id,
+        &req.payload.contract_id,
         &req.payload.account_address,
-        &authorization.application,
         &req.payload.label,
         &entry.scalar_le32,
         entry.eval_point,

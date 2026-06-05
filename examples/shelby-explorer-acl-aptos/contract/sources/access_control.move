@@ -10,8 +10,9 @@
 /// - TimeLock: Anyone can decrypt after a specified time
 /// - PayToDownload: Users must pay to gain decryption access
 ///
-/// The `check_permission` function serves as the hook that ACE workers call to verify
-/// if a user has permission to decrypt a particular blob before releasing key shares.
+/// The `on_ace_decryption_request` function serves as the hook that ACE workers
+/// call to verify if a user has permission to decrypt a particular blob before
+/// releasing key shares.
 module admin::access_control {
     use std::error;
     use std::signer::address_of;
@@ -217,8 +218,12 @@ module admin::access_control {
     /// - For Allowlist: the user's address is in the allowlist
     /// - For TimeLock: the current time is past the lock timestamp
     /// - For PayToDownload: the user has a purchase receipt
-    public fun check_permission(user: address, full_blob_name: vector<u8>): bool acquires ReceiptCollection, BlobMap {
-        let full_blob_name = utf8(full_blob_name);
+    public fun on_ace_decryption_request(label: vector<u8>, account: address, origin: String): bool acquires ReceiptCollection, BlobMap {
+        if (origin != utf8(b"https://shelby.example")) return false;
+        has_permission(account, utf8(label))
+    }
+
+    fun has_permission(user: address, full_blob_name: String): bool acquires ReceiptCollection, BlobMap {
         let blob_map = borrow_global<BlobMap>(@admin);
         
         // Blob must exist in the registry
@@ -245,6 +250,11 @@ module admin::access_control {
                 now_microseconds() >= *locked_until
             }
         }
+    }
+
+    #[test_only]
+    fun test_ace_decryption_request(user: address, full_blob_name: vector<u8>): bool acquires ReceiptCollection, BlobMap {
+        on_ace_decryption_request(full_blob_name, user, utf8(b"https://shelby.example"))
     }
 
     // ============================================================================
@@ -339,7 +349,7 @@ module admin::access_control {
         let star_wars_full_name = create_full_blob_name(@0xaa, star_wars_file_name);
         
         // Before registration: Carl cannot access (blob doesn't exist yet)
-        assert!(!check_permission(@0xcc, *star_wars_full_name.bytes()),
+        assert!(!test_ace_decryption_request(@0xcc, *star_wars_full_name.bytes()),
             0 /* Carl should not have access - blob not registered yet */);
         
         // Alice registers the blob with Bob in the allowlist
@@ -349,13 +359,13 @@ module admin::access_control {
         });
         
         // Alice (owner) always has access to her own blobs
-        assert!(check_permission(@0xaa, *star_wars_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xaa, *star_wars_full_name.bytes()),
             1 /* Alice is the owner, should always have access */);
         // Bob is in the allowlist, so he has access
-        assert!(check_permission(@0xbb, *star_wars_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xbb, *star_wars_full_name.bytes()),
             2 /* Bob is in the allowlist, should have access */);
         // Carl is NOT in the allowlist
-        assert!(!check_permission(@0xcc, *star_wars_full_name.bytes()),
+        assert!(!test_ace_decryption_request(@0xcc, *star_wars_full_name.bytes()),
             3 /* Carl is not in allowlist, should be denied */);
         
         // Alice updates the allowlist to include both Carl and Bob
@@ -363,11 +373,11 @@ module admin::access_control {
         force_update_policy(alice, star_wars_file_name, bcs::to_bytes(&new_policy));
         
         // After policy update: all three should have access
-        assert!(check_permission(@0xaa, *star_wars_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xaa, *star_wars_full_name.bytes()),
             4 /* Alice is still the owner */);
-        assert!(check_permission(@0xbb, *star_wars_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xbb, *star_wars_full_name.bytes()),
             5 /* Bob is still in the updated allowlist */);
-        assert!(check_permission(@0xcc, *star_wars_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xcc, *star_wars_full_name.bytes()),
             6 /* Carl is now in the updated allowlist */);
 
         // ====== Test 2: TimeLock Mode ======
@@ -383,22 +393,22 @@ module admin::access_control {
         });
         
         // Before time passes: only owner has access
-        assert!(check_permission(@0xaa, matrix_full_name_bytes),
+        assert!(test_ace_decryption_request(@0xaa, matrix_full_name_bytes),
             7 /* Alice is the owner, bypass time lock */);
-        assert!(!check_permission(@0xbb, matrix_full_name_bytes),
+        assert!(!test_ace_decryption_request(@0xbb, matrix_full_name_bytes),
             8 /* Bob cannot access - time lock not expired */);
-        assert!(!check_permission(@0xcc, matrix_full_name_bytes),
+        assert!(!test_ace_decryption_request(@0xcc, matrix_full_name_bytes),
             9 /* Carl cannot access - time lock not expired */);
         
         // Fast forward time by 61 seconds
         timestamp::fast_forward_seconds(61);
         
         // After time passes: everyone has access
-        assert!(check_permission(@0xaa, matrix_full_name_bytes),
+        assert!(test_ace_decryption_request(@0xaa, matrix_full_name_bytes),
             10 /* Alice still has access as owner */);
-        assert!(check_permission(@0xbb, matrix_full_name_bytes),
+        assert!(test_ace_decryption_request(@0xbb, matrix_full_name_bytes),
             11 /* Bob can now access - time lock expired */);
-        assert!(check_permission(@0xcc, matrix_full_name_bytes),
+        assert!(test_ace_decryption_request(@0xcc, matrix_full_name_bytes),
             12 /* Carl can now access - time lock expired */);
 
         // ====== Test 3: PayToDownload Mode ======
@@ -408,7 +418,7 @@ module admin::access_control {
         let price = 10000;
         
         // Before registration: no one can access
-        assert!(!check_permission(@0xcc, *titanic_full_name.bytes()),
+        assert!(!test_ace_decryption_request(@0xcc, *titanic_full_name.bytes()),
             13 /* Carl cannot access - blob not registered */);
         
         // Register with pay-to-download policy
@@ -418,11 +428,11 @@ module admin::access_control {
         });
         
         // After registration: only owner has access (no one has paid)
-        assert!(check_permission(@0xaa, *titanic_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xaa, *titanic_full_name.bytes()),
             14 /* Alice is the owner */);
-        assert!(!check_permission(@0xbb, *titanic_full_name.bytes()),
+        assert!(!test_ace_decryption_request(@0xbb, *titanic_full_name.bytes()),
             15 /* Bob has not purchased */);
-        assert!(!check_permission(@0xcc, *titanic_full_name.bytes()),
+        assert!(!test_ace_decryption_request(@0xcc, *titanic_full_name.bytes()),
             16 /* Carl has not purchased */);
         
         // Carl purchases access
@@ -430,7 +440,7 @@ module admin::access_control {
         purchase(carl, titanic_full_name);
         
         // After purchase: Carl now has access
-        assert!(check_permission(@0xcc, *titanic_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xcc, *titanic_full_name.bytes()),
             17 /* Carl purchased access, should be approved */);
 
         // Verify Carl's balance decreased by the price
@@ -447,7 +457,7 @@ module admin::access_control {
         purchase(bob, titanic_full_name);
         
         // Verify Bob now has access
-        assert!(check_permission(@0xbb, *titanic_full_name.bytes()),
+        assert!(test_ace_decryption_request(@0xbb, *titanic_full_name.bytes()),
             19 /* Bob purchased access at the new price */);
         // Verify Bob only paid the reduced price
         assert!(mint_amount - half_price == coin::balance<aptos_coin::AptosCoin>(@0xbb),

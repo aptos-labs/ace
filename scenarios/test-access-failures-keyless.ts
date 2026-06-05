@@ -88,7 +88,7 @@ async function main(): Promise<void> {
         const ctx = {
             aceDeployment: ace.aceDeployment, chainId: CHAIN_ID,
             moduleAddr: ace.adminAccountAddress, moduleName: 'access_control',
-            functionName: 'check_permission',
+            functionName: 'on_ace_decryption_request',
             keypair0Id, keypair1Id, correctDomain, wrongDomain, pingCiph,
             bob, bobLabel: 'keyless', charlie: actors.charlie,
         };

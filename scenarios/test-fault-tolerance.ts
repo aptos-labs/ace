@@ -61,6 +61,7 @@ import {
     buildRustWorkspace,
     spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
+import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 5;
 const EPOCH0_WORKER_INDICES = [0, 1, 2, 3];
@@ -246,7 +247,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            functionName: 'check_permission',
+            functionName: 'on_ace_decryption_request',
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
@@ -283,15 +284,22 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                functionName: 'check_permission',
+                functionName: 'on_ace_decryption_request',
                 domain: pingDomain,
                 ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();
+            const pingFullMessage = buildAptosWalletFullMessage({
+                accountAddress: bob.accountAddress,
+                chainId: CHAIN_ID,
+                message: pingMsgToSign,
+                nonce: 'fault-tolerance-ping',
+            });
             const pingDecResult = await pingSession.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
-                signature: bob.sign(pingMsgToSign),
+                signature: bob.sign(pingFullMessage),
+                fullMessage: pingFullMessage,
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');

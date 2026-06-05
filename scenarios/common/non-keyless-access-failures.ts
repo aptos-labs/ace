@@ -20,6 +20,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 
 import { CHAIN_ID } from './config';
 import { assert } from './helpers';
+import { buildAptosWalletFullMessage } from './aptos-wallet-message';
 
 /** Shared inputs every step needs: session config + the cast of users. */
 export interface NonKeylessAccessFailureContext {
@@ -44,7 +45,7 @@ export interface NonKeylessAccessFailureContext {
 }
 
 /** Per-variant mauling logic for Step E. Receives the bob signer and the
- *  pretty-message string returned by `session.getRequestToSign()`; must
+ *  wallet fullMessage containing the `session.getRequestToSign()` transcript; must
  *  return a *bad* signature of whatever shape the variant expects (e.g. an
  *  `AnySignature` wrapping a flipped-bit `Ed25519Signature`). */
 export type SignatureMauler = (signer: Account, msg: string) => Signature;
@@ -69,6 +70,15 @@ async function makeSession(
     });
 }
 
+function walletFullMessage(account: AccountAddress, message: string, nonce: string): string {
+    return buildAptosWalletFullMessage({
+        accountAddress: account,
+        chainId: CHAIN_ID,
+        message,
+        nonce,
+    });
+}
+
 /** Step A — nonexistent keypair ID. Workers fail-closed at the share lookup
  *  step (404). Different from the keyless variant of Step A, which uses a
  *  valid-but-wrong keypair (requires a second DKG'd secret). */
@@ -77,10 +87,12 @@ export async function decryptWithBadKeypairID(ctx: NonKeylessAccessFailureContex
     const fakeKeypairId = AccountAddress.fromString('0x' + 'ab'.repeat(32));
     const session = await makeSession(ctx, { keypairId: fakeKeypairId });
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx.bob.accountAddress, msg, 'non-keyless-step-a');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        signature: ctx.bob.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with nonexistent keypairId, but it succeeded`);
     console.log(`  ✓ decrypt with nonexistent keypairId correctly rejected (${result.errValue})`);
@@ -92,10 +104,12 @@ export async function decryptAsNonAllowlistedUser(ctx: NonKeylessAccessFailureCo
     step('B', `Negative: decrypt by Charlie (not allowlisted) → must fail (403)`);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx.charlie.accountAddress, msg, 'non-keyless-step-b');
     const result = await session.decryptWithProof({
         userAddr: ctx.charlie.accountAddress,
         publicKey: ctx.charlie.publicKey,
-        signature: ctx.charlie.sign(msg),
+        signature: ctx.charlie.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
     console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -107,10 +121,12 @@ export async function decryptWithWrongDomain(ctx: NonKeylessAccessFailureContext
     step('C', `Negative: Bob (${ctx.bobLabel}) decrypt with wrong domain → must fail (403)`);
     const session = await makeSession(ctx, { domain: ctx.wrongDomain });
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx.bob.accountAddress, msg, 'non-keyless-step-c');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        signature: ctx.bob.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
@@ -121,10 +137,12 @@ export async function decryptWithCorrectInputs(ctx: NonKeylessAccessFailureConte
     step('D', `Positive: Bob (${ctx.bobLabel}, allowlisted) decrypts with correct inputs → must succeed`);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx.bob.accountAddress, msg, 'non-keyless-step-d');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.publicKey,
-        signature: ctx.bob.sign(msg),
+        signature: ctx.bob.sign(fullMessage),
+        fullMessage,
     });
     assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
     assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -142,13 +160,14 @@ export async function decryptWithMauledSignature(
     step('E', `Negative: Bob (${ctx.bobLabel}) with mauled signature → must fail`);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
-    const mauledSig = mauler(ctx.bob, msg);
+    const fullMessage = walletFullMessage(ctx.bob.accountAddress, msg, 'non-keyless-step-e');
+    const mauledSig = mauler(ctx.bob, fullMessage);
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.publicKey,
         signature: mauledSig,
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with mauled signature, but it succeeded`);
     console.log(`  ✓ decrypt with mauled signature correctly rejected (${result.errValue})`);
 }
-

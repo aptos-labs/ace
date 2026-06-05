@@ -26,7 +26,7 @@ export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, mo
      */
     tibeScheme?: number,
 }): Promise<Result<Uint8Array>> {
-    if (functionName === undefined) functionName = 'check_permission';
+    if (functionName === undefined) functionName = 'on_ace_decryption_request';
     if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
         task: async (_extra) => {

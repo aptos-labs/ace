@@ -89,7 +89,7 @@ export async function encryptForAccessControl(
         chainId: CHAIN_ID,
         moduleAddr: adminAccountAddress,
         moduleName: 'access_control',
-        functionName: 'check_permission',
+        functionName: 'on_ace_decryption_request',
         domain,
         plaintext,
     });

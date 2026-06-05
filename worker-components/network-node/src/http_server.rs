@@ -503,7 +503,7 @@ async fn handle_threshold_vrf(
 
     let share_bytes = match crate::crypto::partial_derive_threshold_vrf_share(
         &req.payload.keypair_id,
-        req.payload.chain_id,
+        &req.payload.contract_id,
         &req.payload.account_address,
         &req.payload.label,
         &entry.scalar_le32,

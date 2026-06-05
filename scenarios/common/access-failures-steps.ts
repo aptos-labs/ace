@@ -37,6 +37,7 @@ import {
     SAMPLE_PROOF_B_HEX,
     SAMPLE_PROOF_C_HEX,
 } from './keyless-fixtures';
+import { buildAptosWalletFullMessage } from './aptos-wallet-message';
 
 /** Shared inputs every step needs: session config + the cast of users. */
 export interface AccessFailureContext {
@@ -109,6 +110,20 @@ async function makeSession(
     });
 }
 
+function walletFullMessage(
+    ctx: AccessFailureContext,
+    account: AccountAddress,
+    message: string,
+    nonce: string,
+): string {
+    return buildAptosWalletFullMessage({
+        accountAddress: account,
+        chainId: ctx.chainId,
+        message,
+        nonce,
+    });
+}
+
 /** Step A — keypair mismatch.
  *
  * Alice encrypted with keypair-0. Bob crafts a (correctly signed) proof of
@@ -126,10 +141,12 @@ export async function stepA_WrongKeypair(ctx: AccessFailureContext): Promise<voi
     const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx, { keypairId: ctx.keypair1Id });
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-a');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: wrapPk(ctx.bob.publicKey),
-        signature: wrapSig(ctx.bob.sign(msg)),
+        signature: wrapSig(ctx.bob.sign(fullMessage)),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail when using keypair-1 against keypair-0 ciphertext, but it succeeded`);
     console.log(`  ✓ decrypt with wrong keypair (keypair-1 vs keypair-0 ciphertext) correctly rejected (${result.errValue})`);
@@ -142,10 +159,12 @@ export async function stepB_NonAllowlistedCharlie(ctx: AccessFailureContext): Pr
     step('B', 'Negative: decrypt by Charlie (Ed25519, not allowlisted) → must fail (403)');
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx, ctx.charlie.accountAddress, msg, 'keyless-step-b');
     const result = await session.decryptWithProof({
         userAddr: ctx.charlie.accountAddress,
         publicKey: ctx.charlie.publicKey,
-        signature: ctx.charlie.sign(msg),
+        signature: ctx.charlie.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
     console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -158,10 +177,12 @@ export async function stepC_WrongDomain(ctx: AccessFailureContext): Promise<void
     const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx, { domain: ctx.wrongDomain });
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-c');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: wrapPk(ctx.bob.publicKey),
-        signature: wrapSig(ctx.bob.sign(msg)),
+        signature: wrapSig(ctx.bob.sign(fullMessage)),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);
@@ -173,10 +194,12 @@ export async function stepD_HappyPath(ctx: AccessFailureContext): Promise<void> 
     const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-d');
     const result = await session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: wrapPk(ctx.bob.publicKey),
-        signature: wrapSig(ctx.bob.sign(msg)),
+        signature: wrapSig(ctx.bob.sign(fullMessage)),
+        fullMessage,
     });
     assert(result.isOk, `decrypt with correct inputs failed: ${result.errValue}`);
     assert(new TextDecoder().decode(result.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -191,7 +214,8 @@ export async function stepE_MauledEpkSig(ctx: AccessFailureContext): Promise<voi
     const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
-    const goodSig = ctx.bob.sign(msg);
+    const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-e');
+    const goodSig = ctx.bob.sign(fullMessage);
     const innerEd = goodSig.ephemeralSignature.signature as Ed25519Signature;
     const mauledBytes = new Uint8Array(innerEd.toUint8Array());
     mauledBytes[0] ^= 0x01;
@@ -206,6 +230,7 @@ export async function stepE_MauledEpkSig(ctx: AccessFailureContext): Promise<voi
         userAddr: ctx.bob.accountAddress,
         publicKey: wrapPk(ctx.bob.publicKey),
         signature: wrapSig(mauledSig),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with mauled ephemeral signature, but it succeeded`);
     console.log(`  ✓ decrypt with mauled ephemeral signature correctly rejected (${result.errValue})`);
@@ -219,7 +244,8 @@ export async function stepF_MauledGroth16Proof(ctx: AccessFailureContext): Promi
     const { wrapPk, wrapSig } = bobWrappers(ctx);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
-    const goodSig = ctx.bob.sign(msg);
+    const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-f');
+    const goodSig = ctx.bob.sign(fullMessage);
 
     // Flip the first byte of proof.a (still 32 bytes; not necessarily a valid
     // curve point but the worker should fail closed regardless).
@@ -253,8 +279,8 @@ export async function stepF_MauledGroth16Proof(ctx: AccessFailureContext): Promi
         userAddr: ctx.bob.accountAddress,
         publicKey: wrapPk(ctx.bob.publicKey),
         signature: wrapSig(mauledSig),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail with mauled Groth16 proof, but it succeeded`);
     console.log(`  ✓ decrypt with mauled Groth16 proof correctly rejected (${result.errValue})`);
 }
-

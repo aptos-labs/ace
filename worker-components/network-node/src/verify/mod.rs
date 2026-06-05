@@ -120,7 +120,7 @@ pub struct CustomFlowRequestV2 {
 pub struct ThresholdVrfRequestPayload {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
-    pub chain_id: u8,
+    pub contract_id: ContractId,
     pub label: Vec<u8>,
     pub account_address: [u8; 32],
     pub response_enc_key: EncryptionKey,
@@ -257,7 +257,8 @@ const THRESHOLD_VRF_PURPOSE: &str = "ace.threshold-vrf.derive.v1";
 
 impl ThresholdVrfRequestPayload {
     /// Canonical human-readable form the owner signs for tVRF derivation.
-    /// Mirrors TS-SDK `ThresholdVrfRequestPayload.toPrettyMessage()` byte-for-byte.
+    /// The TS-SDK will need to mirror this byte-for-byte when its tVRF origin
+    /// binding is updated.
     pub fn to_pretty_message(&self) -> Result<String> {
         let response_ek_bytes = bcs::to_bytes(&self.response_enc_key).map_err(|e| {
             anyhow!(
@@ -266,11 +267,11 @@ impl ThresholdVrfRequestPayload {
             )
         })?;
         Ok(format!(
-            "ACE Threshold VRF Derive Request\npurpose: {}\nkeypairId: 0x{}\nepoch: {}\nchainId: {}\nlabel: 0x{}\naccountAddress: 0x{}\nresponseEncKey: {}",
+            "ACE Threshold VRF Derive Request\npurpose: {}\nkeypairId: 0x{}\nepoch: {}\ncontractId:{}\nlabel: 0x{}\naccountAddress: 0x{}\nresponseEncKey: {}",
             THRESHOLD_VRF_PURPOSE,
             hex::encode(self.keypair_id),
             self.epoch,
-            self.chain_id,
+            self.contract_id.to_pretty_message_lines(1)?,
             hex::encode(&self.label),
             hex::encode(self.account_address),
             hex::encode(response_ek_bytes),

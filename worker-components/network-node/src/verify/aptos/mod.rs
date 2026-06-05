@@ -16,11 +16,20 @@
 //! custom serde from `pk_scheme` / `sig_scheme`) and delegates to the appropriate
 //! sub-module.
 
+// The top-level dispatcher now uses `verify_aptos_account_proof` so both
+// decryption and tVRF can share one account-proof path before app-hook checks.
+// Keep the older account-specific verifier modules in-tree for now.
+#[allow(dead_code)]
 pub mod any;
+#[allow(dead_code)]
 pub mod ed25519;
+#[allow(dead_code)]
 pub mod federated_keyless;
+#[allow(dead_code)]
 pub mod keyless;
+#[allow(dead_code)]
 pub mod multi_ed25519;
+#[allow(dead_code)]
 pub mod multi_key;
 
 use anyhow::{anyhow, Result};
@@ -35,10 +44,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sha3::Sha3_256;
 
-use crate::ChainRpcConfig;
 use super::{
-    BasicFlowRequest, DecryptionRequestPayload, ThresholdVrfRequest, ThresholdVrfRequestPayload,
+    BasicFlowRequest, ContractId, DecryptionRequestPayload, ThresholdVrfRequest,
+    ThresholdVrfRequestPayload,
 };
+use crate::ChainRpcConfig;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -219,9 +229,9 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                         AptosPublicKeyMaterial::Any(inner)
                     }
                     PK_SCHEME_MULTI_ED25519_WIRE => {
-                        let bytes: serde_bytes::ByteBuf = seq.next_element()?.ok_or_else(|| {
-                            A::Error::custom("missing MultiEd25519 public_key")
-                        })?;
+                        let bytes: serde_bytes::ByteBuf = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing MultiEd25519 public_key"))?;
                         let inner = multi_ed25519::MultiEd25519PublicKeyInner::from_flat_bytes(
                             bytes.as_ref(),
                         )
@@ -241,18 +251,14 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                         AptosPublicKeyMaterial::Keyless(pk)
                     }
                     PK_SCHEME_FEDERATED_KEYLESS_WIRE => {
-                        let fpk: aptos_keyless_common::FederatedKeylessPublicKey = seq
-                            .next_element()?
-                            .ok_or_else(|| {
+                        let fpk: aptos_keyless_common::FederatedKeylessPublicKey =
+                            seq.next_element()?.ok_or_else(|| {
                                 A::Error::custom("missing FederatedKeyless public_key")
                             })?;
                         AptosPublicKeyMaterial::FederatedKeyless(fpk)
                     }
                     other => {
-                        return Err(A::Error::custom(format!(
-                            "unsupported pk_scheme {}",
-                            other
-                        )))
+                        return Err(A::Error::custom(format!("unsupported pk_scheme {}", other)))
                     }
                 };
                 let sig_scheme: u8 = seq
@@ -278,9 +284,9 @@ impl<'de> serde::Deserialize<'de> for AptosProofOfPermission {
                         AptosSignatureMaterial::Any(inner)
                     }
                     SIG_SCHEME_MULTI_ED25519_WIRE => {
-                        let bytes: serde_bytes::ByteBuf = seq.next_element()?.ok_or_else(|| {
-                            A::Error::custom("missing MultiEd25519 signature")
-                        })?;
+                        let bytes: serde_bytes::ByteBuf = seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::custom("missing MultiEd25519 signature"))?;
                         let inner = multi_ed25519::MultiEd25519SignatureInner::from_flat_bytes(
                             bytes.as_ref(),
                         )
@@ -372,33 +378,19 @@ pub(super) async fn verify_aptos(
     proof: &AptosProofOfPermission,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    match (&proof.public_key, &proof.signature) {
-        (AptosPublicKeyMaterial::Ed25519(pk_bytes), AptosSignatureMaterial::Ed25519(sig_bytes)) => {
-            ed25519::verify(req, contract, proof, pk_bytes, sig_bytes, chain_rpc).await
-        }
-        (AptosPublicKeyMaterial::Any(any_pk), AptosSignatureMaterial::Any(any_sig)) => {
-            any::verify(req, contract, proof, any_pk, any_sig, chain_rpc).await
-        }
-        (
-            AptosPublicKeyMaterial::MultiEd25519(pk),
-            AptosSignatureMaterial::MultiEd25519(sig),
-        ) => multi_ed25519::verify(req, contract, proof, pk, sig, chain_rpc).await,
-        (AptosPublicKeyMaterial::MultiKey(mk), AptosSignatureMaterial::MultiKey(ms)) => {
-            multi_key::verify(req, contract, proof, mk, ms, chain_rpc).await
-        }
-        (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
-            keyless::verify(req, contract, proof, pk, sig, chain_rpc).await
-        }
-        (
-            AptosPublicKeyMaterial::FederatedKeyless(fpk),
-            AptosSignatureMaterial::Keyless(sig),
-        ) => federated_keyless::verify(req, contract, proof, fpk, sig, chain_rpc).await,
-        (pk, sig) => Err(anyhow!(
-            "verify_aptos: pk/sig scheme mismatch ({} pk vs {} sig)",
-            pk.tag_name(),
-            sig.tag_name(),
-        )),
-    }
+    let origin = extract_request_origin(proof)?;
+    let (account_result, app_result) = tokio::join!(
+        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
+        check_ace_request_hook(
+            contract,
+            &req.payload.domain,
+            &proof.user_addr,
+            &origin,
+            chain_rpc,
+        ),
+    );
+    account_result?;
+    app_result
 }
 
 pub(super) async fn verify_threshold_vrf_aptos(
@@ -411,7 +403,27 @@ pub(super) async fn verify_threshold_vrf_aptos(
             "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
         ));
     }
-    verify_aptos_account_proof(&req.payload, req.payload.chain_id, proof, chain_rpc).await
+    let contract = match &req.payload.contract_id {
+        ContractId::Aptos(contract) => contract,
+        ContractId::Solana(_) => {
+            return Err(anyhow!(
+                "verify_threshold_vrf_aptos: threshold VRF origin checks require an Aptos contract"
+            ))
+        }
+    };
+    let origin = extract_request_origin(proof)?;
+    let (account_result, app_result) = tokio::join!(
+        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
+        check_ace_request_hook(
+            contract,
+            &req.payload.label,
+            &req.payload.account_address,
+            &origin,
+            chain_rpc,
+        ),
+    );
+    account_result?;
+    app_result
 }
 
 pub(super) trait AptosPayloadBinding {
@@ -810,6 +822,182 @@ fn signed_message_bytes<P: AptosPayloadBinding>(
     }
 }
 
+fn extract_signed_wallet_application(proof: &AptosProofOfPermission) -> Result<String> {
+    let full_message = signed_full_message_as_utf8(proof, "extract_signed_wallet_application")?;
+    parse_aptos_wallet_application(&full_message)
+}
+
+fn signed_full_message_as_utf8(proof: &AptosProofOfPermission, context: &str) -> Result<String> {
+    let full_msg = &proof.full_message;
+    let bytes = if is_valid_hex(full_msg) {
+        let stripped = full_msg.strip_prefix("0x").unwrap_or(full_msg.as_str());
+        hex::decode(stripped).map_err(|e| anyhow!("{}: hex decode fullMessage: {}", context, e))?
+    } else {
+        full_msg.as_bytes().to_vec()
+    };
+    String::from_utf8(bytes).map_err(|e| anyhow!("{}: fullMessage is not UTF-8: {}", context, e))
+}
+
+fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
+    let mut lines = full_message.split('\n');
+    match lines.next() {
+        Some("APTOS") => {}
+        _ => {
+            return Err(anyhow!(
+                "extract_signed_wallet_application: fullMessage is not an Aptos wallet message"
+            ))
+        }
+    }
+
+    for line in lines {
+        if line.starts_with("message:") {
+            break;
+        }
+        if let Some(application) = line.strip_prefix("application: ") {
+            if application.is_empty() {
+                return Err(anyhow!(
+                    "extract_signed_wallet_application: application is empty"
+                ));
+            }
+            return Ok(application.to_string());
+        }
+    }
+
+    Err(anyhow!(
+        "extract_signed_wallet_application: fullMessage missing application"
+    ))
+}
+
+fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
+    let mut origins = Vec::new();
+    collect_webauthn_app_origins(&proof.signature, &mut origins)?;
+
+    match extract_signed_wallet_application(proof) {
+        Ok(application) => origins.push(application),
+        Err(err) if origins.is_empty() => {
+            return Err(anyhow!("extract_request_origin: {}", err));
+        }
+        Err(_) => {}
+    }
+
+    let origin = origins
+        .first()
+        .ok_or_else(|| anyhow!("extract_request_origin: no signed request origin"))?
+        .clone();
+    if origins.iter().any(|candidate| candidate != &origin) {
+        return Err(anyhow!(
+            "extract_request_origin: signed origins disagree ({:?})",
+            origins
+        ));
+    }
+    Ok(origin)
+}
+
+fn collect_webauthn_app_origins(
+    sig: &AptosSignatureMaterial,
+    origins: &mut Vec<String>,
+) -> Result<()> {
+    match sig {
+        AptosSignatureMaterial::Any(any_sig) => collect_any_webauthn_app_origin(any_sig, origins),
+        AptosSignatureMaterial::MultiKey(ms) => {
+            for sig in &ms.signatures {
+                collect_any_webauthn_app_origin(sig, origins)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn collect_any_webauthn_app_origin(
+    sig: &any::AnySignatureInner,
+    origins: &mut Vec<String>,
+) -> Result<()> {
+    if let any::AnySignatureInner::WebAuthn(assertion) = sig {
+        origins.push(extract_webauthn_app_origin(assertion)?);
+    }
+    Ok(())
+}
+
+fn extract_webauthn_app_origin(assertion: &any::WebAuthnAssertion) -> Result<String> {
+    let cdj: serde_json::Value = serde_json::from_slice(&assertion.client_data_json)
+        .map_err(|e| anyhow!("extract_webauthn_app_origin: parse client_data_json: {}", e))?;
+    let typ = cdj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("extract_webauthn_app_origin: clientDataJSON missing `type`"))?;
+    if typ != "webauthn.get" {
+        return Err(anyhow!(
+            "extract_webauthn_app_origin: expected type webauthn.get, got {:?}",
+            typ
+        ));
+    }
+
+    let cross_origin = cdj
+        .get("crossOrigin")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let origin_field = if cross_origin { "topOrigin" } else { "origin" };
+    let origin = cdj
+        .get(origin_field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "extract_webauthn_app_origin: clientDataJSON missing `{}` string",
+                origin_field
+            )
+        })?;
+    if origin.is_empty() {
+        return Err(anyhow!(
+            "extract_webauthn_app_origin: clientDataJSON `{}` is empty",
+            origin_field
+        ));
+    }
+    Ok(origin.to_string())
+}
+
+async fn check_ace_request_hook(
+    contract: &AptosContractId,
+    label: &[u8],
+    account: &[u8; 32],
+    origin: &str,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+    let func = format!(
+        "0x{}::{}::{}",
+        hex::encode(contract.module_addr),
+        contract.module_name,
+        contract.function_name,
+    );
+    let label_hex = format!("0x{}", hex::encode(label));
+    let account_hex = format!("0x{}", hex::encode(account));
+
+    let result = rpc
+        .call_view(
+            &func,
+            &[json!(label_hex), json!(account_hex), json!(origin)],
+        )
+        .await
+        .map_err(|e| anyhow!("checkAceRequestHook: view call failed for {}: {}", func, e))?;
+
+    let returned = result
+        .first()
+        .ok_or_else(|| anyhow!("checkAceRequestHook: empty view result"))?;
+    if returned.as_bool() != Some(true) && returned.to_string() != "true" {
+        return Err(anyhow!(
+            "checkAceRequestHook: request denied by {} for origin {:?} account {} label {} (returned {:?})",
+            func,
+            origin,
+            account_hex,
+            label_hex,
+            returned,
+        ));
+    }
+
+    Ok(())
+}
+
 async fn check_auth_key_bytes(
     proof: &AptosProofOfPermission,
     computed: &[u8],
@@ -833,6 +1021,41 @@ async fn check_auth_key_bytes(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::parse_aptos_wallet_application;
+
+    #[test]
+    fn parses_application_before_message_body() {
+        let full_message = concat!(
+            "APTOS\n",
+            "address: 0xabc\n",
+            "application: https://app.example\n",
+            "chainId: 4\n",
+            "message: ACE Threshold VRF Derive Request\n",
+            "application: https://evil.example\n",
+            "nonce: 123",
+        );
+        assert_eq!(
+            parse_aptos_wallet_application(full_message).unwrap(),
+            "https://app.example"
+        );
+    }
+
+    #[test]
+    fn rejects_application_only_inside_message_body() {
+        let full_message = concat!(
+            "APTOS\n",
+            "address: 0xabc\n",
+            "chainId: 4\n",
+            "message: ACE Threshold VRF Derive Request\n",
+            "application: https://evil.example\n",
+            "nonce: 123",
+        );
+        assert!(parse_aptos_wallet_application(full_message).is_err());
+    }
+}
+
 // ── Shared helpers (used by ed25519 + keyless) ──────────────────────────────
 
 /// True if `s` is a valid hex string (optional `0x` prefix, all hex digits).
@@ -845,6 +1068,7 @@ pub(super) fn is_valid_hex(s: &str) -> bool {
     hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+#[allow(dead_code)]
 /// Calls the on-chain view function
 /// `{moduleAddr}::{moduleName}::{functionName}(userAddr, domain)` and expects
 /// `true` to be returned. The view function name comes from the request's
@@ -873,7 +1097,10 @@ pub(super) async fn check_permission(
         .first()
         .ok_or_else(|| anyhow!("checkPermission: empty view result"))?;
     if returned.as_bool() != Some(true) && returned.to_string() != "true" {
-        return Err(anyhow!("checkPermission: access denied (returned {:?})", returned));
+        return Err(anyhow!(
+            "checkPermission: access denied (returned {:?})",
+            returned
+        ));
     }
 
     Ok(())
@@ -922,14 +1149,12 @@ pub(super) fn find_rsa_jwk_in_jwks_resource(
             let data_hex = jwk
                 .pointer("/variant/data")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow!("find_rsa_jwk_in_jwks_resource: missing variant.data")
-                })?;
-            let data_bytes = hex::decode(data_hex.trim_start_matches("0x"))
-                .map_err(|e| anyhow!("find_rsa_jwk_in_jwks_resource: decode variant.data: {}", e))?;
-            let rsa: aptos_keyless_common::RsaJwk = bcs::from_bytes(&data_bytes).map_err(|e| {
-                anyhow!("find_rsa_jwk_in_jwks_resource: BCS decode RSA_JWK: {}", e)
+                .ok_or_else(|| anyhow!("find_rsa_jwk_in_jwks_resource: missing variant.data"))?;
+            let data_bytes = hex::decode(data_hex.trim_start_matches("0x")).map_err(|e| {
+                anyhow!("find_rsa_jwk_in_jwks_resource: decode variant.data: {}", e)
             })?;
+            let rsa: aptos_keyless_common::RsaJwk = bcs::from_bytes(&data_bytes)
+                .map_err(|e| anyhow!("find_rsa_jwk_in_jwks_resource: BCS decode RSA_JWK: {}", e))?;
             if rsa.kid == kid {
                 return Ok(Some(rsa));
             }
@@ -959,7 +1184,10 @@ pub(super) async fn verify_custom_aptos(
     let payload_hex = format!("0x{}", hex::encode(payload));
 
     let result = rpc
-        .call_view(&func, &[json!(label_hex), json!(enc_pk_hex), json!(payload_hex)])
+        .call_view(
+            &func,
+            &[json!(label_hex), json!(enc_pk_hex), json!(payload_hex)],
+        )
         .await
         .map_err(|e| anyhow!("check_aptos_acl: view call failed for {}: {}", func, e))?;
 
@@ -967,7 +1195,10 @@ pub(super) async fn verify_custom_aptos(
         .first()
         .ok_or_else(|| anyhow!("check_aptos_acl: empty view result"))?;
     if returned.as_bool() != Some(true) && returned.to_string() != "true" {
-        return Err(anyhow!("check_aptos_acl: access denied (returned {:?})", returned));
+        return Err(anyhow!(
+            "check_aptos_acl: access denied (returned {:?})",
+            returned
+        ));
     }
     Ok(())
 }

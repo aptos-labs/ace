@@ -15,30 +15,40 @@
  *   const session = await ACE.tVRF.DerivationSession.create({
  *       aceDeployment,
  *       keypairId,
+ *       contractId,
  *       label,
  *       accountAddress,
  *   });
  *   const msg = await session.getRequestToSign();
+ *   const fullMessage = wallet.signMessage({ application: true, message: msg, ... }).fullMessage;
  *   const derivedBytes = await session.deriveWithSignature({
  *       pubKey: account.publicKey,
- *       signature: account.sign(msg),
+ *       signature: account.sign(fullMessage),
+ *       fullMessage,
  *   });
  */
 
 import * as ACE from '@aptos-labs/ace-sdk';
+import * as path from 'path';
 
 import {
     fundAccount,
     cleanupScenario,
     assert,
+    ed25519PrivateKeyHex,
     getNetworkState,
     log,
+    prepareContractsPublishScratch,
+    publishMovePackage,
     proposeAndApprove,
+    rmContractsPublishScratch,
     serializeCommitteeChangeProposal,
     sleep,
     waitFor,
 } from './common/helpers';
 import { setupAceOnLocalnet, SetupAceOnLocalnetResult } from './common/ace-network';
+import { CHAIN_ID, REPO_ROOT } from './common/config';
+import { ACE_SCENARIO_APP_ORIGIN, buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 3;
 const COMMITTEE = [0, 1, 2];
@@ -53,6 +63,16 @@ function transcriptField(msg: string, field: string): string {
     const line = msg.split('\n').find(l => l.startsWith(prefix));
     if (!line) throw new Error(`missing transcript field: ${field}`);
     return line.slice(prefix.length);
+}
+
+async function deployOriginContract(admin: SetupAceOnLocalnetResult['actors']['admin']): Promise<void> {
+    const contractRoot = path.join(REPO_ROOT, 'scenarios', 'threshold-vrf-origin', 'contract');
+    const scratch = prepareContractsPublishScratch(contractRoot, admin.accountAddress.toStringLong());
+    try {
+        await publishMovePackage(scratch.contractsDir, ed25519PrivateKeyHex(admin));
+    } finally {
+        rmContractsPublishScratch(scratch);
+    }
 }
 
 async function main() {
@@ -72,6 +92,17 @@ async function main() {
         const owner = actors.alice;
         const keypairId = keypairIds[0]!;
 
+        step('0b', 'Publish tVRF origin-check contract');
+        await deployOriginContract(actors.admin);
+        const contractId = ACE.ContractID.newAptos({
+            chainId: CHAIN_ID,
+            moduleAddr: actors.admin.accountAddress,
+            moduleName: 'threshold_vrf_origin_demo',
+            functionName: 'on_ace_vrf_request',
+        });
+        console.log(`  contract: ${actors.admin.accountAddress.toStringLong()}::threshold_vrf_origin_demo::on_ace_vrf_request`);
+        console.log(`  origin:   ${ACE_SCENARIO_APP_ORIGIN}`);
+
         step(1, 'Build tVRF label');
         const label = new TextEncoder().encode('label-1');
         console.log(`  owner:    ${owner.accountAddress.toStringLong()}`);
@@ -82,6 +113,7 @@ async function main() {
         const session = await ACE.tVRF.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
+            contractId,
             label,
             accountAddress: owner.accountAddress,
         });
@@ -89,15 +121,23 @@ async function main() {
         assert(msg.includes('ACE Threshold VRF Derive Request'), 'getRequestToSign returns tVRF transcript');
         assert(msg.includes(keypairId.toStringLong()), 'transcript binds keypair id');
         assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
-        assert(msg.includes('chainId:'), 'transcript binds chain id');
+        assert(msg.includes('contractId:'), 'transcript binds contract id');
+        assert(msg.includes('on_ace_vrf_request'), 'transcript binds origin-check view');
         assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
         const firstResponseEncKey = transcriptField(msg, 'responseEncKey');
         console.log(msg);
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: owner.accountAddress.toStringLong(),
+            chainId: CHAIN_ID,
+            message: msg,
+            nonce: 'threshold-vrf-derive-1',
+        });
 
         step(3, 'Derive tVRF random bytes');
         const derived = await session.deriveWithSignature({
             pubKey: owner.publicKey,
-            signature: owner.sign(msg),
+            signature: owner.sign(fullMessage),
+            fullMessage,
         });
         assert(derived.length === 32, `tVRF output should be 32 bytes, got ${derived.length}`);
         console.log(`  randomBytes: 0x${Buffer.from(derived).toString('hex')}`);
@@ -128,6 +168,7 @@ async function main() {
         const repeatSession = await ACE.tVRF.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
+            contractId,
             label,
             accountAddress: owner.accountAddress,
         });
@@ -137,9 +178,16 @@ async function main() {
             'repeat session uses a fresh response encryption key',
         );
         assert(repeatMsg.includes(`epoch: ${targetEpoch}`), 'repeat transcript binds the next epoch');
+        const repeatFullMessage = buildAptosWalletFullMessage({
+            accountAddress: owner.accountAddress.toStringLong(),
+            chainId: CHAIN_ID,
+            message: repeatMsg,
+            nonce: 'threshold-vrf-derive-2',
+        });
         const repeat = await repeatSession.deriveWithSignature({
             pubKey: owner.publicKey,
-            signature: owner.sign(repeatMsg),
+            signature: owner.sign(repeatFullMessage),
+            fullMessage: repeatFullMessage,
         });
         assert(Buffer.from(repeat).equals(Buffer.from(derived)), 'same tVRF input should derive the same random bytes');
         log('tVRF shares verified, reconstructed, and deterministically hashed to random bytes.');

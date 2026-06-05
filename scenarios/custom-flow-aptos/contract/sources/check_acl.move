@@ -4,11 +4,11 @@
 /// Demo ACE hook for the custom-flow scenario.
 ///
 /// The admin stores an access code for each label. ACE workers call
-/// `check_acl(label, enc_pk, payload)` as a view function; it returns `true`
+/// `on_ace_decryption_request_custom_flow(label, enc_pk, payload)` as a view function; it returns `true`
 /// iff `payload` matches the stored code for `label`.
 ///
 /// In a production system the payload would be a zero-knowledge proof and
-/// `check_acl` would verify it on-chain. Here we use a simple code comparison
+/// `on_ace_decryption_request_custom_flow` would verify it on-chain. Here we use a simple code comparison
 /// as an illustrative stand-in.
 module admin::check_acl_demo {
     use std::error;
@@ -43,9 +43,9 @@ module admin::check_acl_demo {
     }
 
     // ACE hook — return true iff `payload` equals the stored code for `label`.
-    // Signature: check_acl(label, enc_pk, payload) -> bool
+    // Signature: on_ace_decryption_request_custom_flow(label, enc_pk, payload) -> bool
     #[view]
-    public fun check_acl(
+    public fun on_ace_decryption_request_custom_flow(
         label: vector<u8>,
         _enc_pk: vector<u8>,
         payload: vector<u8>,

@@ -14,7 +14,7 @@ import {
 
 export async function decrypt({
     ciphertext, label, encPk, encSk, payload,
-    aceDeployment, keypairId, chainId, moduleAddr, moduleName, functionName,
+    aceDeployment, keypairId, chainId, moduleAddr, moduleName,
 }: {
     ciphertext: Uint8Array,
     label: Uint8Array,
@@ -26,7 +26,6 @@ export async function decrypt({
     chainId: number,
     moduleAddr: AccountAddress,
     moduleName: string,
-    functionName: string,
 }): Promise<Uint8Array> {
     const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
         .unwrapOrThrow('AptosCustomFlow.decrypt: parse encPk');
@@ -34,7 +33,7 @@ export async function decrypt({
         .unwrapOrThrow('AptosCustomFlow.decrypt: parse encSk');
 
     const networkState = await fetchNetworkState(aceDeployment);
-    const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
+    const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
     const proof = CustomFlowProof.createAptos(payload);
     const customRequest = new CustomFlowRequest({
         keypairId,

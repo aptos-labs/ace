@@ -13,14 +13,14 @@
 //!      [`Scheme::Ed25519`][2] preimage) matches the on-chain
 //!      `authentication_key` for `userAddr`.
 //!   4. The permission view returns `true` (handled by the shared
-//!      `super::check_permission`).
+//!      `super::check_basic_ace_hook`).
 //!
 //! [1]: https://github.com/aptos-labs/ace/blob/main/ts-sdk/src/_internal/common.ts
 //! [2]: https://github.com/aptos-labs/aptos-core/blob/8ec3fb76716abf2e1ee8cb85fa41d0eb212200cb/types/src/transaction/authenticator.rs#L522-L526
 
 use anyhow::{anyhow, Result};
 
-use super::{check_permission, is_valid_hex, AptosContractId, AptosProofOfPermission};
+use super::{check_basic_ace_hook, is_valid_hex, AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 use super::super::BasicFlowRequest;
 
@@ -44,7 +44,7 @@ pub(super) async fn verify(
     // auth-key and permission checks are independent RPC calls; run them concurrently.
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, &vk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;

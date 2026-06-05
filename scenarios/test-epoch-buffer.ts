@@ -106,7 +106,6 @@ async function captureSignedSessionAtEpoch(args: {
         chainId: CHAIN_ID,
         moduleAddr: args.aceState.adminAccountAddress,
         moduleName: 'access_control',
-        functionName: 'on_ace_decryption_request',
         domain: args.correctDomain,
         ciphertext: args.pingCiph,
     });

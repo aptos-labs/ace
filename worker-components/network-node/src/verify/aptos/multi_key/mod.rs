@@ -26,8 +26,8 @@
 //! `verify_signature_only` — the auth-key check happens once at the
 //! MultiKey level (because the on-chain auth-key for a MultiKey account
 //! is the MultiKey-level `SHA3-256(BCS(MultiKey) || 0x03)`, not the
-//! per-position SingleKey one), and the dapp `check_permission` view
-//! likewise runs once over `proof.user_addr` rather than per position.
+//! per-position SingleKey one), and the app hook likewise runs once over
+//! `proof.user_addr` rather than per position.
 //!
 //! All five `AnyPublicKey`/`AnySignature` pairings — Ed25519, Secp256k1Ecdsa,
 //! Keyless, FederatedKeyless, and Secp256r1Ecdsa+WebAuthn — are accepted as
@@ -43,7 +43,7 @@ use sha3::{Digest, Sha3_256};
 
 use super::any::{AnyPublicKeyInner, AnySignatureInner};
 use super::super::BasicFlowRequest;
-use super::{check_permission, AptosContractId, AptosProofOfPermission};
+use super::{check_basic_ace_hook, AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
 // Mirrors aptos-core's `MAX_NUM_OF_SIGS: usize = 32` for MultiKey signers.
@@ -256,7 +256,7 @@ pub(super) async fn verify(
     let (sig_res, auth_res, perm_res) = tokio::join!(
         futures::future::try_join_all(position_futs),
         check_multi_key_auth_key(proof, mk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     sig_res?;
     auth_res?;

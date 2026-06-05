@@ -40,7 +40,7 @@ use sha3::{Digest, Sha3_256};
 
 use super::super::super::BasicFlowRequest;
 use super::super::{
-    check_permission, is_valid_hex, AptosContractId, AptosProofOfPermission,
+    check_basic_ace_hook, is_valid_hex, AptosContractId, AptosProofOfPermission,
 };
 use super::{authentication_key, AnyPublicKeyInner};
 use crate::ChainRpcConfig;
@@ -81,7 +81,7 @@ pub(super) async fn verify(
     let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
     let (auth_result, perm_result) = tokio::join!(
         check_auth_key(proof, any_pk, rpc),
-        check_permission(contract, &req.payload.domain, proof, rpc),
+        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
     );
     auth_result?;
     perm_result?;

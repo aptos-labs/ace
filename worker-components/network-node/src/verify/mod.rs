@@ -1,7 +1,7 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! Wire-format types for `RequestForDecryptionKey` and proof-of-permission verification.
+//! Wire-format types for `WorkerRequest` and proof-of-permission verification.
 //!
 //! The on-the-wire request layout mirrors `ts-sdk/src/_internal/common.ts` and is decoded
 //! in one shot via `bcs::from_bytes` (`#[derive(Serialize, Deserialize)]` on every nested
@@ -38,38 +38,32 @@ use crate::ChainRpcConfig;
 pub use aptos::{
     AptosContractId, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
 };
-pub use solana::SolanaProofOfPermission;
 use solana::SolanaContractId;
+pub use solana::SolanaProofOfPermission;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
-/// Top-level request body. Outer enum tag picks the flow and wire version.
+/// Top-level request body. Outer enum tag picks the flow.
 ///
-/// V2 variants carry an explicit `tibe_scheme: u8` so the handler can serve
+/// Decryption variants carry an explicit `tibe_scheme: u8` so the handler can serve
 /// shares formatted for the client's actual t-IBE choice, rather than guessing
-/// it from the share's group scheme via a hard-coded 1:1 mapping. V1 variants
-/// stay for backwards compatibility with older clients; the handler falls
-/// back to [`crate::crypto::tibe_scheme_for_group`] for those.
+/// it from the share's group scheme via a hard-coded 1:1 mapping.
 ///
 /// BCS discriminants:
-///   0 = Basic    (V1; legacy, no tibe_scheme field)
-///   1 = Custom   (V1; legacy)
-///   2 = BasicV2  (carries tibe_scheme)
-///   3 = CustomV2 (carries tibe_scheme)
-///   4 = ThresholdVrf
+///   0 = DecryptionBasicFlow
+///   1 = DecryptionCustomFlow
+///   2 = ThresholdVrf
 #[derive(Serialize, Deserialize)]
-pub enum RequestForDecryptionKey {
-    Basic(BasicFlowRequest),
-    Custom(CustomFlowRequest),
-    BasicV2(BasicFlowRequestV2),
-    CustomV2(CustomFlowRequestV2),
+pub enum WorkerRequest {
+    DecryptionBasicFlow(DecryptionBasicFlowRequest),
+    DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(ThresholdVrfRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
 /// TS-side `DecryptionRequestPayload` class — same field order, BCS-identical
 /// wire shape. The `proof` lives one level up in [`BasicFlowRequest`] /
-/// [`BasicFlowRequestV2`], not here, because the proof is *about* this
+/// [`DecryptionBasicFlowRequest`], not here, because the proof is *about* this
 /// payload (it carries a signature over it).
 #[derive(Serialize, Deserialize)]
 pub struct DecryptionRequestPayload {
@@ -97,7 +91,7 @@ pub struct CustomFlowRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BasicFlowRequestV2 {
+pub struct DecryptionBasicFlowRequest {
     pub payload: DecryptionRequestPayload,
     pub proof: ProofOfPermission,
     /// Client-asserted t-IBE scheme the share should be formatted for.
@@ -106,7 +100,7 @@ pub struct BasicFlowRequestV2 {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct CustomFlowRequestV2 {
+pub struct DecryptionCustomFlowRequest {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
     pub contract_id: ContractId,
@@ -195,8 +189,12 @@ impl DecryptionRequestPayload {
     pub fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
         use sha3::{Digest, Sha3_256};
         let seed: [u8; 32] = Sha3_256::digest(b"ACE::DecryptionRequestPayload").into();
-        let body = bcs::to_bytes(self)
-            .map_err(|e| anyhow!("DecryptionRequestPayload::to_webauthn_challenge: BCS encode: {}", e))?;
+        let body = bcs::to_bytes(self).map_err(|e| {
+            anyhow!(
+                "DecryptionRequestPayload::to_webauthn_challenge: BCS encode: {}",
+                e
+            )
+        })?;
         let mut h = Sha3_256::new();
         h.update(seed);
         h.update(&body);
@@ -218,7 +216,6 @@ impl DecryptionRequestPayload {
     ///       chainId: <u8>
     ///       moduleAddr: 0x<32 hex>
     ///       moduleName: <string>
-    ///       functionName: <string>
     /// domain: 0x<hex>
     /// ephemeralEncKey: <hex of BCS(EncryptionKey), no 0x>
     /// ```
@@ -413,13 +410,14 @@ mod tests {
                 chain_id: 4,
                 module_addr: [0xcd; 32],
                 module_name: "my_module".to_string(),
-                function_name: "check_perm".to_string(),
             }),
             domain: vec![0x01, 0x02, 0x03, 0x04],
-            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey {
-                enc_base: vec![0x11; 32],
-                public_point: vec![0x22; 32],
-            }),
+            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(
+                ElGamalOtpRistretto255EncKey {
+                    enc_base: vec![0x11; 32],
+                    public_point: vec![0x22; 32],
+                },
+            ),
         };
         // BCS(EncryptionKey::ElGamalOtpRistretto255) = variant tag 0x00
         //   || ULEB128(32)=0x20 || 32×0x11 || ULEB128(32)=0x20 || 32×0x22.
@@ -433,7 +431,6 @@ mod tests {
             "      chainId: 4\n",
             "      moduleAddr: 0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n",
             "      moduleName: my_module\n",
-            "      functionName: check_perm\n",
             "domain: 0x01020304\n",
             "ephemeralEncKey: 00201111111111111111111111111111111111111111111111111111111111111111202222222222222222222222222222222222222222222222222222222222222222",
         );
@@ -453,12 +450,18 @@ mod tests {
                 program_id: vec![0; 32],
             }),
             domain: vec![],
-            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey {
-                enc_base: vec![0; 32],
-                public_point: vec![0; 32],
-            }),
+            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(
+                ElGamalOtpRistretto255EncKey {
+                    enc_base: vec![0; 32],
+                    public_point: vec![0; 32],
+                },
+            ),
         };
         let err = payload.to_pretty_message().unwrap_err().to_string();
-        assert!(err.contains("Solana"), "expected Solana-rejection error, got: {}", err);
+        assert!(
+            err.contains("Solana"),
+            "expected Solana-rejection error, got: {}",
+            err
+        );
     }
 }

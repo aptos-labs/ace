@@ -7,7 +7,7 @@
  * This is the punchline of the tutorial. Bob runs the same decryption flow
  * twice, against two ciphertexts produced by the same Alice with the same
  * keypair. Buying song-1 grants Bob exactly song-1: the on-chain
- * `check_permission` is bound to the item name (the encryption "domain"),
+ * `on_ace_decryption_request` is bound to the item name (the encryption "domain"),
  * and Bob did not pay for song-2.
  */
 
@@ -18,7 +18,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 
 import {
     BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogEntry, CatalogFile, ConfigFile, AccountFile, ITEMS,
-    log, readJson,
+    buildAptosWalletFullMessage, log, readJson,
     TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
 } from './common.js';
 
@@ -40,15 +40,21 @@ async function main() {
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            functionName: 'check_permission',
             domain: new TextEncoder().encode(entry.name),
             ciphertext: Buffer.from(entry.ciphertextHex, 'hex'),
         });
         const msgToSign = await session.getRequestToSign();
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: bob.accountAddress,
+            chainId,
+            message: msgToSign,
+            nonce: `tutorial-step-6-${entry.name}`,
+        });
         const result = await session.decryptWithProof({
             userAddr: bob.accountAddress,
             publicKey: bob.publicKey,
-            signature: bob.sign(msgToSign),
+            signature: bob.sign(fullMessage),
+            fullMessage,
         });
         if (!result.isOk) return { ok: false };
         return { ok: true, plaintext: new TextDecoder().decode(result.okValue!) };
@@ -78,7 +84,7 @@ async function main() {
         process.exit(1);
     }
     log(`✓ Decryption denied (expected).`);
-    log(`  marketplace::check_permission(bob, "${notBought.name}") returned false.`);
+    log(`  marketplace::on_ace_decryption_request("${notBought.name}", bob, origin) returned false.`);
     log('  Domain-binding holds: paying for one item does not unlock another.');
 }
 

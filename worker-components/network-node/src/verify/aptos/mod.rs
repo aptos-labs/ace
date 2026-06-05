@@ -57,26 +57,28 @@ pub struct AptosContractId {
     pub chain_id: u8,
     pub module_addr: [u8; 32],
     pub module_name: String,
-    pub function_name: String,
 }
 
 impl AptosContractId {
     /// Mirrors TS-SDK `AptosContractID.toPrettyMessage(indent)` in
-    /// `ts-sdk/src/_internal/aptos.ts:90-93`. Returns the 4 inner contract
-    /// lines (`chainId`, `moduleAddr`, `moduleName`, `functionName`), each
+    /// `ts-sdk/src/_internal/aptos.ts`. Returns the 3 inner contract
+    /// lines (`chainId`, `moduleAddr`, `moduleName`), each
     /// prefixed with a leading `\n` + `"  " * indent`. Used by
     /// [`super::ContractId::to_pretty_message_lines`] for the inner section.
     pub(crate) fn to_pretty_message_lines(&self, indent: usize) -> String {
         let pad = "  ".repeat(indent);
         format!(
-            "\n{pad}chainId: {}\n{pad}moduleAddr: 0x{}\n{pad}moduleName: {}\n{pad}functionName: {}",
+            "\n{pad}chainId: {}\n{pad}moduleAddr: 0x{}\n{pad}moduleName: {}",
             self.chain_id,
             hex::encode(self.module_addr),
             self.module_name,
-            self.function_name,
         )
     }
 }
+
+const APTOS_DECRYPTION_HOOK: &str = "on_ace_decryption_request";
+const APTOS_VRF_HOOK: &str = "on_ace_vrf_request";
+const APTOS_CUSTOM_DECRYPTION_HOOK: &str = "on_ace_decryption_request_custom_flow";
 
 /// Proof of permission for a basic-flow Aptos request.
 ///
@@ -383,6 +385,7 @@ pub(super) async fn verify_aptos(
         verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
         check_ace_request_hook(
             contract,
+            APTOS_DECRYPTION_HOOK,
             &req.payload.domain,
             &proof.user_addr,
             &origin,
@@ -416,6 +419,7 @@ pub(super) async fn verify_threshold_vrf_aptos(
         verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
         check_ace_request_hook(
             contract,
+            APTOS_VRF_HOOK,
             &req.payload.label,
             &req.payload.account_address,
             &origin,
@@ -958,6 +962,7 @@ fn extract_webauthn_app_origin(assertion: &any::WebAuthnAssertion) -> Result<Str
 
 async fn check_ace_request_hook(
     contract: &AptosContractId,
+    hook_name: &str,
     label: &[u8],
     account: &[u8; 32],
     origin: &str,
@@ -968,7 +973,7 @@ async fn check_ace_request_hook(
         "0x{}::{}::{}",
         hex::encode(contract.module_addr),
         contract.module_name,
-        contract.function_name,
+        hook_name,
     );
     let label_hex = format!("0x{}", hex::encode(label));
     let account_hex = format!("0x{}", hex::encode(account));
@@ -1070,10 +1075,9 @@ pub(super) fn is_valid_hex(s: &str) -> bool {
 
 #[allow(dead_code)]
 /// Calls the on-chain view function
-/// `{moduleAddr}::{moduleName}::{functionName}(userAddr, domain)` and expects
-/// `true` to be returned. The view function name comes from the request's
-/// `AptosContractId` — typically the dapp's `check_permission` ACL view.
-pub(super) async fn check_permission(
+/// `{moduleAddr}::{moduleName}::on_ace_decryption_request(label, account, origin)`
+/// and expects `true` to be returned.
+pub(super) async fn check_basic_ace_hook(
     contract: &AptosContractId,
     domain: &[u8],
     proof: &AptosProofOfPermission,
@@ -1083,22 +1087,22 @@ pub(super) async fn check_permission(
         "0x{}::{}::{}",
         hex::encode(contract.module_addr),
         contract.module_name,
-        contract.function_name,
+        APTOS_DECRYPTION_HOOK,
     );
     let user_addr = format!("0x{}", hex::encode(proof.user_addr));
     let domain_hex = format!("0x{}", hex::encode(domain));
 
     let result = rpc
-        .call_view(&func, &[json!(user_addr), json!(domain_hex)])
+        .call_view(&func, &[json!(domain_hex), json!(user_addr), json!("")])
         .await
-        .map_err(|e| anyhow!("checkPermission: view call failed for {}: {}", func, e))?;
+        .map_err(|e| anyhow!("checkBasicAceHook: view call failed for {}: {}", func, e))?;
 
     let returned = result
         .first()
-        .ok_or_else(|| anyhow!("checkPermission: empty view result"))?;
+        .ok_or_else(|| anyhow!("checkBasicAceHook: empty view result"))?;
     if returned.as_bool() != Some(true) && returned.to_string() != "true" {
         return Err(anyhow!(
-            "checkPermission: access denied (returned {:?})",
+            "checkBasicAceHook: access denied (returned {:?})",
             returned
         ));
     }
@@ -1177,7 +1181,7 @@ pub(super) async fn verify_custom_aptos(
         "0x{}::{}::{}",
         hex::encode(contract.module_addr),
         contract.module_name,
-        contract.function_name,
+        APTOS_CUSTOM_DECRYPTION_HOOK,
     );
     let label_hex = format!("0x{}", hex::encode(label));
     let enc_pk_hex = format!("0x{}", hex::encode(enc_pk_bytes));

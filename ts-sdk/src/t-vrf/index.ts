@@ -28,7 +28,7 @@ import {
     fetchCurrentSessionPks,
     fetchNetworkState,
     NetworkState,
-    RequestForDecryptionKey,
+    WorkerRequest,
 } from "../_internal/common";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 import { frInv, frMod, frMul } from "../group/bls12381fr";
@@ -385,7 +385,7 @@ export class DerivationSession {
             signature: args.signature,
             fullMessage: args.fullMessage,
         });
-        const requestBytes = RequestForDecryptionKey.newThresholdVrf(
+        const requestBytes = WorkerRequest.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),
         ).toBytes();
         if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");

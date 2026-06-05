@@ -4,9 +4,9 @@
 /**
  * Step 3 — Alice encrypts each item and lists it on the marketplace.
  *
- * Each ciphertext is bound to (keypairId, contractId(...::marketplace::check_permission),
+ * Each ciphertext is bound to (keypairId, contractId(...::marketplace),
  * domain=itemName). ACE workers will only release a key share when a caller's
- * decryption attempt makes `check_permission(user, itemName)` return true —
+ * decryption attempt makes `on_ace_decryption_request(itemName, user, origin)` return true —
  * which happens exactly when that user has paid for that specific item.
  */
 
@@ -46,7 +46,6 @@ async function main() {
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            functionName: 'check_permission',
             domain,
             plaintext: textEncoder.encode(item.plaintext),
         })).unwrapOrThrow('encrypt failed');

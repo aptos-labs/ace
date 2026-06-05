@@ -6,7 +6,7 @@
  *
  * Bob signs a `marketplace::buy` transaction. The contract transfers the item's
  * price in APT from Bob to Alice and pushes Bob onto song-1's buyer list. From
- * this moment, `check_permission(bob, "song-1.mp3")` returns true; song-2 is
+ * this moment, `on_ace_decryption_request("song-1.mp3", bob, origin)` returns true; song-2 is
  * unaffected.
  */
 

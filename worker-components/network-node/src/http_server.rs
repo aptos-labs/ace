@@ -4,12 +4,12 @@
 //! HTTP server that handles `POST /` requests for threshold-IBE partial key extraction.
 //!
 //! Request body:  hex-encoded PKE ciphertext (encrypted to this node's registered key) whose
-//!                plaintext is a BCS [`verify::RequestForDecryptionKey`].
+//!                plaintext is a BCS [`verify::WorkerRequest`].
 //! Response body: hex-encoded PKE ciphertext (encrypted to the client's key) whose
 //!                plaintext is a BCS `tibe.IdentityDecryptionKeyShare` for
 //!                decryption flows, or a BCS `ThresholdVrfShare` for tVRF.
 //!
-//! Adding a new request flow or chain is a one-arm change in `verify::RequestForDecryptionKey`
+//! Adding a new request flow or chain is a one-arm change in `verify::WorkerRequest`
 //! and a matching arm here — no manual byte-walking, no per-scheme size tables.
 //!
 //! ## Per-request structured log line
@@ -64,8 +64,7 @@ use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
 use crate::secrets::{LocalSecrets, SecretsProvider, SecretsSnapshotWire};
 use crate::verify::{
-    self, BasicFlowRequest, BasicFlowRequestV2, CustomFlowRequest, CustomFlowRequestV2,
-    RequestForDecryptionKey, ThresholdVrfRequest,
+    self, BasicFlowRequest, CustomFlowRequest, ThresholdVrfRequest, WorkerRequest,
 };
 use crate::{now_utc_iso, wlog, ChainRpcConfig};
 
@@ -124,9 +123,7 @@ pub async fn run_secrets_server(port: u16, state: SecretsServerState) {
     serve(port, app, "http-server (secrets)").await;
 }
 
-async fn handle_get_secrets(
-    State(state): State<SecretsServerState>,
-) -> Json<SecretsSnapshotWire> {
+async fn handle_get_secrets(State(state): State<SecretsServerState>) -> Json<SecretsSnapshotWire> {
     Json(state.local.snapshot_wire().await)
 }
 
@@ -216,8 +213,13 @@ impl Reason {
 }
 
 enum Outcome {
-    Ok { share_hex: String },
-    Rejected { reason: Reason, detail: Option<String> },
+    Ok {
+        share_hex: String,
+    },
+    Rejected {
+        reason: Reason,
+        detail: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -327,12 +329,12 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     };
     ctx.decrypt_ms = Some(decrypt_start.elapsed().as_millis() as u64);
 
-    let request: RequestForDecryptionKey = match bcs::from_bytes(&req_bytes) {
+    let request: WorkerRequest = match bcs::from_bytes(&req_bytes) {
         Ok(r) => r,
         Err(e) => {
             return Outcome::Rejected {
                 reason: Reason::BadRequest,
-                detail: Some(format!("bcs decode RequestForDecryptionKey failed: {}", e)),
+                detail: Some(format!("bcs decode WorkerRequest failed: {}", e)),
             };
         }
     };
@@ -350,28 +352,18 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     };
 
     match request {
-        // V1 wire variants (tags 0 and 1) are kept in the enum so V2's BCS
-        // tags (2 and 3) stay stable, but the handler refuses them — every
-        // client we ship today sends V2 (`RequestForDecryptionKey.newBasicFlowV2`
-        // / `newCustomFlowV2` in `ts-sdk/src/_internal/common.ts`). A V2-only
-        // server is one less variant to keep correct.
-        RequestForDecryptionKey::Basic(_) | RequestForDecryptionKey::Custom(_) => Outcome::Rejected {
-            reason: Reason::BadRequest,
-            detail: Some(
-                "V1 wire (RequestForDecryptionKey::Basic/Custom) is deprecated; \
-                 clients must send BasicV2 or CustomV2 (with tibe_scheme)"
-                    .to_string(),
-            ),
-        },
-        RequestForDecryptionKey::BasicV2(req) => {
+        WorkerRequest::DecryptionBasicFlow(req) => {
             ctx.flow = Some(Flow::Basic);
             ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
             ctx.epoch = Some(req.payload.epoch);
             ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.ephemeral_enc_key);
-            let v1 = BasicFlowRequest { payload: req.payload, proof: req.proof };
-            handle_basic_flow(state, &snapshot, v1, Some(req.tibe_scheme), ctx).await
+            let v1 = BasicFlowRequest {
+                payload: req.payload,
+                proof: req.proof,
+            };
+            handle_basic_flow(state, &snapshot, v1, req.tibe_scheme, ctx).await
         }
-        RequestForDecryptionKey::CustomV2(req) => {
+        WorkerRequest::DecryptionCustomFlow(req) => {
             ctx.flow = Some(Flow::Custom);
             ctx.keypair_short = Some(short_hex(&req.keypair_id));
             ctx.epoch = Some(req.epoch);
@@ -384,9 +376,9 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
                 enc_pk: req.enc_pk,
                 proof: req.proof,
             };
-            handle_custom_flow(state, &snapshot, v1, Some(req.tibe_scheme), ctx).await
+            handle_custom_flow(state, &snapshot, v1, req.tibe_scheme, ctx).await
         }
-        RequestForDecryptionKey::ThresholdVrf(req) => {
+        WorkerRequest::ThresholdVrf(req) => {
             ctx.flow = Some(Flow::ThresholdVrf);
             ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
             ctx.epoch = Some(req.payload.epoch);
@@ -396,12 +388,6 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     }
 }
 
-// `BasicFlowRequestV2` / `CustomFlowRequestV2` are deserialized by serde even
-// when the fields don't get read directly here — silence unused-import lints
-// if they crop up.
-#[allow(dead_code)]
-fn _hint_v2_types_in_use(_: BasicFlowRequestV2, _: CustomFlowRequestV2, _: ThresholdVrfRequest) {}
-
 fn enc_pk_to_hex(ek: &EncryptionKey) -> Option<String> {
     bcs::to_bytes(ek).ok().map(hex::encode)
 }
@@ -410,7 +396,7 @@ async fn handle_basic_flow(
     state: &AppState,
     snapshot: &crate::secrets::Snapshot,
     req: BasicFlowRequest,
-    client_tibe_scheme: Option<u8>,
+    tibe_scheme: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
     let pfn_start = Instant::now();
@@ -422,7 +408,11 @@ async fn handle_basic_flow(
             detail: Some(format!("{:#}", e)),
         };
     }
-    let identity = verify::identity_bytes(&req.payload.keypair_id, &req.payload.contract_id, &req.payload.domain);
+    let identity = verify::identity_bytes(
+        &req.payload.keypair_id,
+        &req.payload.contract_id,
+        &req.payload.domain,
+    );
     let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let extract_start = Instant::now();
     let outcome = extract_and_respond(
@@ -431,7 +421,7 @@ async fn handle_basic_flow(
         req.payload.epoch,
         &identity,
         &req.payload.ephemeral_enc_key,
-        client_tibe_scheme,
+        tibe_scheme,
     );
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
     outcome
@@ -441,7 +431,7 @@ async fn handle_custom_flow(
     state: &AppState,
     snapshot: &crate::secrets::Snapshot,
     req: CustomFlowRequest,
-    client_tibe_scheme: Option<u8>,
+    tibe_scheme: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
     let pfn_start = Instant::now();
@@ -463,7 +453,7 @@ async fn handle_custom_flow(
         req.epoch,
         &identity,
         &req.enc_pk,
-        client_tibe_scheme,
+        tibe_scheme,
     );
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
     outcome
@@ -547,7 +537,7 @@ fn extract_and_respond(
     epoch: u64,
     identity: &[u8],
     response_enc_key: &EncryptionKey,
-    client_tibe_scheme: Option<u8>,
+    tibe_scheme: u8,
 ) -> Outcome {
     // Empty entries (no shares yet, or this node isn't in the committee) and a
     // simple keypair/epoch miss both map to NotFound; the operator-facing
@@ -557,49 +547,32 @@ fn extract_and_respond(
         None => {
             return Outcome::Rejected {
                 reason: Reason::NotFound,
-                detail: Some(format!("no share for keypair_id={} epoch={}", keypair_id, epoch)),
+                detail: Some(format!(
+                    "no share for keypair_id={} epoch={}",
+                    keypair_id, epoch
+                )),
             };
         }
     };
 
-    // Pick the t-IBE scheme to format the share for:
-    //   * V2 request (`client_tibe_scheme = Some(_)`) — use the client-asserted
-    //     value, after validating it's compatible with the share's group.
-    //     This is the path that supports >1 t-IBE schemes over the same group.
-    //   * V1 request (`client_tibe_scheme = None`)    — fall back to the 1:1
-    //     mapping. Only safe while there's exactly one t-IBE per group; will
-    //     be retired once V1 clients are gone.
-    let tibe_scheme = match client_tibe_scheme {
-        Some(client_scheme) => {
-            match crate::crypto::group_scheme_for_tibe(client_scheme) {
-                Ok(expected_group) if expected_group == entry.group_scheme => client_scheme,
-                Ok(expected_group) => {
-                    return Outcome::Rejected {
-                        reason: Reason::BadRequest,
-                        detail: Some(format!(
-                            "tibe_scheme {} requires group {}, but share's group is {}",
-                            client_scheme, expected_group, entry.group_scheme
-                        )),
-                    };
-                }
-                Err(e) => {
-                    return Outcome::Rejected {
-                        reason: Reason::BadRequest,
-                        detail: Some(format!("unknown tibe_scheme {}: {:#}", client_scheme, e)),
-                    };
-                }
-            }
+    match crate::crypto::group_scheme_for_tibe(tibe_scheme) {
+        Ok(expected_group) if expected_group == entry.group_scheme => {}
+        Ok(expected_group) => {
+            return Outcome::Rejected {
+                reason: Reason::BadRequest,
+                detail: Some(format!(
+                    "tibe_scheme {} requires group {}, but share's group is {}",
+                    tibe_scheme, expected_group, entry.group_scheme
+                )),
+            };
         }
-        None => match crate::crypto::tibe_scheme_for_group(entry.group_scheme) {
-            Ok(s) => s,
-            Err(e) => {
-                return Outcome::Rejected {
-                    reason: Reason::Internal,
-                    detail: Some(format!("tibe_scheme_for_group: {:#}", e)),
-                };
-            }
-        },
-    };
+        Err(e) => {
+            return Outcome::Rejected {
+                reason: Reason::BadRequest,
+                detail: Some(format!("unknown tibe_scheme {}: {:#}", tibe_scheme, e)),
+            };
+        }
+    }
 
     let share_hex = match crate::crypto::partial_extract_idk_share(
         tibe_scheme,

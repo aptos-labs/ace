@@ -86,43 +86,37 @@ The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/v
 
 ---
 
-## 2. Decryption-request wire format
+## 2. Worker-request wire format
 
 Defined in `worker-components/network-node/src/verify.rs`, mirrored in `ts-sdk/src/_internal/common.ts` (and `aptos.ts` / `solana.ts` for the per-chain inner types).
 
 ### 2.1 Outer envelope
 
-The HTTP request body is the **hex string** of `pke_encrypt(worker_enc_key, BCS(RequestForDecryptionKey))`. Wire-decoded, the inner is:
+The HTTP request body is the **hex string** of `pke_encrypt(worker_enc_key, BCS(WorkerRequest))`. Wire-decoded, the inner is:
 
 ```rust
-enum RequestForDecryptionKey {
-    Basic(BasicFlowRequest),        // tag 0 — V1, legacy
-    Custom(CustomFlowRequest),      // tag 1 — V1, legacy
-    BasicV2(BasicFlowRequestV2),    // tag 2 — adds tibe_scheme
-    CustomV2(CustomFlowRequestV2),  // tag 3 — adds tibe_scheme
+enum WorkerRequest {
+    DecryptionBasicFlow(DecryptionBasicFlowRequest),    // tag 0
+    DecryptionCustomFlow(DecryptionCustomFlowRequest),  // tag 1
+    ThresholdVrf(ThresholdVrfRequest),                  // tag 2
 }
 ```
 
-V2 variants carry an explicit `tibe_scheme: u8` so the handler serves the share formatted for the client's actual t-IBE choice instead of guessing from the share's group via `crypto::tibe_scheme_for_group` (the V1 fallback). The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme` and rejects otherwise. SDK clients on the current release emit V2; V1 is accepted for older clients (`worker-components/network-node/src/http_server.rs:339-385`).
+Decryption variants carry an explicit `tibe_scheme: u8` so the handler serves the share formatted for the client's actual t-IBE choice instead of guessing from the share's group via `crypto::tibe_scheme_for_group`. The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme` and rejects otherwise.
 
-### 2.2 `BasicFlowRequest` / `BasicFlowRequestV2`
+### 2.2 `DecryptionBasicFlowRequest`
 
 ```rust
-struct BasicFlowRequest {           // V1, tag 0
+struct DecryptionRequestPayload {
     keypair_id:        [u8; 32],
     epoch:             u64,
     contract_id:       ContractId,
     domain:            Vec<u8>,           // app-specific label (called `label` in spec docs and Move; field is named `domain` for historical reasons — see glossary)
     ephemeral_enc_key: pke::EncryptionKey,
-    proof:             ProofOfPermission,
 }
 
-struct BasicFlowRequestV2 {         // V2, tag 2
-    keypair_id:        [u8; 32],
-    epoch:             u64,
-    contract_id:       ContractId,
-    domain:            Vec<u8>,
-    ephemeral_enc_key: pke::EncryptionKey,
+struct DecryptionBasicFlowRequest {     // tag 0
+    payload:           DecryptionRequestPayload,
     proof:             ProofOfPermission,
     tibe_scheme:       u8,
 }
@@ -131,23 +125,13 @@ struct BasicFlowRequestV2 {         // V2, tag 2
 Wire layout:
 
 ```
-V1 (after outer `00`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission]
-V2 (after outer `02`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [ProofOfPermission] [1B tibe_scheme]
+after outer `00`: [DecryptionRequestPayload] [ProofOfPermission] [1B tibe_scheme]
 ```
 
-### 2.3 `CustomFlowRequest` / `CustomFlowRequestV2`
+### 2.3 `DecryptionCustomFlowRequest`
 
 ```rust
-struct CustomFlowRequest {          // V1, tag 1
-    keypair_id: [u8; 32],
-    epoch:      u64,
-    contract_id: ContractId,
-    label:      Vec<u8>,             // app-specific label
-    enc_pk:     pke::EncryptionKey,
-    proof:      CustomFlowProof,
-}
-
-struct CustomFlowRequestV2 {        // V2, tag 3
+struct DecryptionCustomFlowRequest {    // tag 1
     keypair_id:  [u8; 32],
     epoch:       u64,
     contract_id: ContractId,
@@ -161,8 +145,7 @@ struct CustomFlowRequestV2 {        // V2, tag 3
 Wire layout:
 
 ```
-V1 (after outer `01`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof]
-V2 (after outer `03`): [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof] [1B tibe_scheme]
+after outer `01`: [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof] [1B tibe_scheme]
 ```
 
 ### 2.4 `ContractId`
@@ -177,7 +160,6 @@ struct AptosContractId {
     chain_id:      u8,
     module_addr:   [u8; 32],
     module_name:   String,
-    function_name: String,
 }
 
 struct SolanaContractId {
@@ -188,7 +170,7 @@ struct SolanaContractId {
 
 | Variant | Wire bytes |
 |---------|------------|
-| Aptos | `00 \| 1B chain_id \| 32B module_addr \| ULEB(\|module_name\|) \| UTF-8 \| ULEB(\|function_name\|) \| UTF-8` |
+| Aptos | `00 \| 1B chain_id \| 32B module_addr \| ULEB(\|module_name\|) \| UTF-8` |
 | Solana | `01 \| ULEB(\|known_chain_name\|) \| UTF-8 \| ULEB(32) \| 32B program_id` |
 
 ### 2.5 `ProofOfPermission` (basic flow)
@@ -510,7 +492,6 @@ contractId:
       chainId: {decimal}
       moduleAddr: 0x{64 hex chars}
       moduleName: {string}
-      functionName: {string}
 domain: 0x{hex of label bytes}
 ephemeralEncKey: {hex of EncryptionKey BCS, no 0x prefix}
 ```

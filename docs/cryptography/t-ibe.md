@@ -9,7 +9,7 @@ t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on
 
 > **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` ([`pke.md`](./pke.md)). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of this file describes scheme `0x01` only.
 
-The runtime choice between schemes is a static dispatch on the underlying DKG basepoint group, in `worker-components/network-node/src/crypto.rs::tibe_scheme_for_group`: G1 → scheme `0x00` (test-only), G2 → scheme `0x01` (production).
+The request carries the t-IBE scheme used by the ciphertext. The worker validates that scheme against the underlying DKG basepoint group via `worker-components/network-node/src/crypto.rs::group_scheme_for_tibe`: scheme `0x00` requires G1 (test-only), and scheme `0x01` requires G2 (production).
 
 ## 1. BFIBE-BLS12381-ShortSig-AEAD (scheme `0x01`, default)
 

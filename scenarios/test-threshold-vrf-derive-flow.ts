@@ -98,7 +98,6 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: actors.admin.accountAddress,
             moduleName: 'threshold_vrf_origin_demo',
-            functionName: 'on_ace_vrf_request',
         });
         console.log(`  contract: ${actors.admin.accountAddress.toStringLong()}::threshold_vrf_origin_demo::on_ace_vrf_request`);
         console.log(`  origin:   ${ACE_SCENARIO_APP_ORIGIN}`);
@@ -122,7 +121,7 @@ async function main() {
         assert(msg.includes(keypairId.toStringLong()), 'transcript binds keypair id');
         assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
         assert(msg.includes('contractId:'), 'transcript binds contract id');
-        assert(msg.includes('on_ace_vrf_request'), 'transcript binds origin-check view');
+        assert(msg.includes('threshold_vrf_origin_demo'), 'transcript binds origin-check contract');
         assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
         const firstResponseEncKey = transcriptField(msg, 'responseEncKey');
         console.log(msg);

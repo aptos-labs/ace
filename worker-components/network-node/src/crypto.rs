@@ -60,9 +60,8 @@ pub fn tibe_scheme_for_group(group_scheme: u8) -> Result<u8> {
 
 /// Inverse of [`tibe_scheme_for_group`] in spirit — but **not** an inverse in
 /// general. A group can back multiple t-IBE schemes; this maps a specific
-/// t-IBE scheme to the unique group it is built over. Used by the V2 request
-/// path to validate `request.tibe_scheme` is compatible with the share's
-/// stored `group_scheme`.
+/// t-IBE scheme to the unique group it is built over. Used to validate
+/// `request.tibe_scheme` is compatible with the share's stored `group_scheme`.
 pub fn group_scheme_for_tibe(tibe_scheme: u8) -> Result<u8> {
     use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
     match tibe_scheme {
@@ -292,7 +291,6 @@ mod tests {
             chain_id: 4,
             module_addr: [0xef; 32],
             module_name: "shelby_s3".to_string(),
-            function_name: "check_request_origin".to_string(),
         });
         let share = partial_derive_threshold_vrf_share(
             &[0xab; 32],

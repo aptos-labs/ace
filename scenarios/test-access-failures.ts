@@ -87,7 +87,7 @@ async function main(): Promise<void> {
         );
         const ctx: NonKeylessAccessFailureContext = {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
-            moduleName: 'access_control', functionName: 'check_permission',
+            moduleName: 'access_control', functionName: 'on_ace_decryption_request',
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
             pingCiph, bob, bobLabel: 'Ed25519', charlie: actors.charlie,
         };

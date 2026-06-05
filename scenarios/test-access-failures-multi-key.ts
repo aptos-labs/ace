@@ -30,7 +30,7 @@
  *                  `clientDataJSON.challenge` to the BCS payload, NOT via
  *                  `proof.full_message` — that's why mixing pretty-message and
  *                  WebAuthn-preimage signers under one MultiKey works)
- * — then applies the MultiKey-level auth-key check + the dapp `check_permission`
+ * — then applies the MultiKey-level auth-key check + the dapp `on_ace_decryption_request`
  * view once over `proof.user_addr`.
  *
  * Three variant-specific pieces live in this file:
@@ -87,6 +87,7 @@ import { CHAIN_ID } from './common/config';
 import { assert, cleanupScenario, fundAccount } from './common/helpers';
 import { buildBobKeylessAccount, runKeylessFrameworkBootstrap } from './common/keyless';
 import { WebAuthnAssertion, buildAssertion } from './common/webauthn-signer';
+import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 3;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
@@ -122,8 +123,8 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
 
 /** Assemble the per-request MultiKeySignature. Each signing position pulls
  *  the bytes it actually needs:
- *    - position 0 (Ed25519): signs the pretty-message string
- *    - position 2 (Keyless): signs the pretty-message string; bare
+ *    - position 0 (Ed25519): signs the wallet fullMessage string
+ *    - position 2 (Keyless): signs the wallet fullMessage string; bare
  *      `KeylessSignature` wrapped in `AnySignature` for the on-wire
  *      `Vec<AnySignature>`
  *    - position 3 (WebAuthn): signs over the BCS-derived 32-byte WebAuthn
@@ -133,12 +134,12 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
  *  the bitmap-packed `MultiKeySignature` is constructed. */
 function buildMultiKeySignature(
     bob: MultiKeyWithWebAuthnBob,
-    prettyMsg: string,
+    fullMessage: string,
     webAuthnChallenge: Uint8Array,
     mauler?: (sigs: AnySignature[], webAuthnAssertion: WebAuthnAssertion) => AnySignature[],
 ): MultiKeySignature {
-    const ed25519AnySig = bob.ed25519Primary.sign(prettyMsg) as AnySignature;
-    const keylessBare = bob.keyless.sign(prettyMsg);
+    const ed25519AnySig = bob.ed25519Primary.sign(fullMessage) as AnySignature;
+    const keylessBare = bob.keyless.sign(fullMessage);
     const keylessAnySig = new AnySignature(keylessBare);
     const webAuthnAssertion = buildAssertion(webAuthnChallenge, bob.webAuthnPrivateKey);
     const webAuthnRs = derEcdsaToRawLowS(webAuthnAssertion.signature);
@@ -244,14 +245,20 @@ async function decryptAsBob(
     session: ACE.AptosBasicFlow.DecryptionSession,
     mauler?: (sigs: AnySignature[], assertion: WebAuthnAssertion) => AnySignature[],
 ) {
-    const prettyMsg = await session.getRequestToSign();
+    const msg = await session.getRequestToSign();
+    const fullMessage = buildAptosWalletFullMessage({
+        accountAddress: ctx.bob.accountAddress,
+        chainId: CHAIN_ID,
+        message: msg,
+        nonce: 'multi-key-bob',
+    });
     const webAuthnChallenge = await session.getRequestToSignForWebAuthn();
-    const signature = buildMultiKeySignature(ctx.bob, prettyMsg, webAuthnChallenge, mauler);
+    const signature = buildMultiKeySignature(ctx.bob, fullMessage, webAuthnChallenge, mauler);
     return session.decryptWithProof({
         userAddr: ctx.bob.accountAddress,
         publicKey: ctx.bob.multiKey,
         signature,
-        fullMessage: prettyMsg,
+        fullMessage,
     });
 }
 
@@ -268,10 +275,17 @@ async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
     step('B', `Negative: decrypt by Charlie (Ed25519, not allowlisted) → must fail (403)`);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = buildAptosWalletFullMessage({
+        accountAddress: ctx.charlie.accountAddress,
+        chainId: CHAIN_ID,
+        message: msg,
+        nonce: 'multi-key-step-b',
+    });
     const result = await session.decryptWithProof({
         userAddr: ctx.charlie.accountAddress,
         publicKey: ctx.charlie.publicKey,
-        signature: ctx.charlie.sign(msg),
+        signature: ctx.charlie.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
     console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -325,7 +339,7 @@ async function main(): Promise<void> {
         );
         const ctx: Ctx = {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
-            moduleName: 'access_control', functionName: 'check_permission',
+            moduleName: 'access_control', functionName: 'on_ace_decryption_request',
             keypair0Id, correctDomain, wrongDomain: domainForBlob(actors.alice, 'other-blob'),
             pingCiph, bob, charlie: actors.charlie,
         };

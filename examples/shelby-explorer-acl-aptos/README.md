@@ -93,7 +93,7 @@ The script will:
 │  1. Fetch DKG session (keypair) from ACE contract on Aptos                  │
 │  2. Encrypt plaintext with:                                                 │
 │     - keypairId (identifies the DKG keypair on the ACE contract)            │
-│     - Contract ID (points to check_permission function)                     │
+│     - Contract ID (points to on_ace_decryption_request function)                     │
 │     - Domain (unique blob identifier)                                       │
 │  3. Register blob on-chain with access policy (e.g., empty allowlist)       │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -104,7 +104,7 @@ The script will:
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  1. Create proof-of-permission (sign the decryption domain)                 │
 │  2. Request decryption key from workers:                                    │
-│     - ACE workers call check_permission(bob, domain) on-chain               │
+│     - ACE workers call on_ace_decryption_request(label, bob, origin) on-chain                │
 │     - If returns true, ACE workers release their key shares                 │
 │  3. Aggregate key shares and decrypt ciphertext                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -116,7 +116,7 @@ The script will:
 // Step 1: Encrypt data with ACE
 const { fullDecryptionDomain, ciphertext } = await ace_ex.encrypt({
   keypairId,           // DKG keypair address on ACE contract
-  contractId,          // Points to check_permission function
+  contractId,          // Points to on_ace_decryption_request function
   domain: blobName,    // Unique identifier for this blob
   plaintext: data,     // Data to encrypt
   aceContract,         // ACE contract address on Aptos
@@ -145,7 +145,7 @@ const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
 });
 
 // Step 2: Request decryption key from ACE workers and decrypt.
-// ACE workers call check_permission(bob, domain) on-chain to verify access,
+// ACE workers call on_ace_decryption_request(label, bob, origin) on-chain to verify access,
 // then release their key shares. ace_ex.decrypt() handles everything.
 const plaintext = await ace_ex.decrypt({
   keypairId, contractId,
@@ -164,7 +164,7 @@ The `access_control.move` contract provides:
 | `initialize()` | Initialize the contract (admin only) |
 | `register_blobs(regs)` | Register encrypted blobs with access policies |
 | `force_update_policy(blob_name, policy)` | Update access policy for a blob (owner only) |
-| `check_permission(user, domain)` | View function called by ACE workers to verify access |
+| `on_ace_decryption_request(label, account, origin)` | View function called by ACE workers to verify access |
 
 ### Access Policies
 

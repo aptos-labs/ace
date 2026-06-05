@@ -37,6 +37,7 @@ const CONTRACT_ADDRESS = "0x147e4d3a5b10eaed2a93536e284c23096dfcea9ac61f0a8420e5
 // Text encoding utilities for converting between strings and bytes
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const APPLICATION_ORIGIN = "https://shelby.example";
 
 // ============================================================================
 // Helper Functions
@@ -47,6 +48,22 @@ const textDecoder = new TextDecoder();
  */
 function log(...args: any[]) {
     console.log(`[${new Date().toISOString()}]`, ...args);
+}
+
+function buildAptosWalletFullMessage(args: {
+    accountAddress: AccountAddress;
+    chainId: number;
+    message: string;
+    nonce: string;
+}): string {
+    return [
+        "APTOS",
+        `address: ${args.accountAddress.toStringLong()}`,
+        `application: ${APPLICATION_ORIGIN}`,
+        `chainId: ${args.chainId}`,
+        `message: ${args.message}`,
+        `nonce: ${args.nonce}`,
+    ].join("\n");
 }
 
 /**
@@ -206,7 +223,7 @@ async function main() {
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        functionName: "check_permission",
+        functionName: "on_ace_decryption_request",
         domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
     })).unwrapOrThrow("encryption failed");
@@ -229,8 +246,8 @@ async function main() {
      * The flow is:
      * 1. Bob signs the decryption domain to prove his identity
      * 2. Bob requests decryption key shares from workers
-     * 3. Workers call check_permission(bob, domain) on-chain
-     * 4. If check_permission returns true, workers release their key shares
+     * 3. Workers call on_ace_decryption_request(label, bob, origin) on-chain
+     * 4. If on_ace_decryption_request returns true, workers release their key shares
      * 5. Bob aggregates key shares and decrypts
      */
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
@@ -240,15 +257,22 @@ async function main() {
             chainId,
             moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
             moduleName: "access_control",
-            functionName: "check_permission",
+            functionName: "on_ace_decryption_request",
             domain: textEncoder.encode(fullBlobName),
             ciphertext,
         });
         const msgToSign = await session.getRequestToSign();
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: bob.accountAddress,
+            chainId,
+            message: msgToSign,
+            nonce: "shelby-testnet-bob-decrypt",
+        });
         return session.decryptWithProof({
             userAddr: bob.accountAddress,
             publicKey: bob.publicKey,
-            signature: bob.sign(msgToSign),
+            signature: bob.sign(fullMessage),
+            fullMessage,
         });
     }
     
@@ -313,4 +337,3 @@ async function main() {
 
 // Run the main function and handle any errors
 main().catch(console.error);
-

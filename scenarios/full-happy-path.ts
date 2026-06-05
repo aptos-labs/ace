@@ -71,6 +71,7 @@ import {
     killStaleNetworkNodes,
     spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
+import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 5;
 // Three overlapping committees referenced by worker indices (not epoch numbers).
@@ -287,7 +288,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            functionName: 'check_permission',
+            functionName: 'on_ace_decryption_request',
             domain: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
@@ -325,15 +326,22 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                functionName: 'check_permission',
+                functionName: 'on_ace_decryption_request',
                 domain: pingDomain,
                 ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();
+            const pingFullMessage = buildAptosWalletFullMessage({
+                accountAddress: bob.accountAddress,
+                chainId: CHAIN_ID,
+                message: pingMsgToSign,
+                nonce: 'full-happy-path-ping',
+            });
             const pingDecResult = await pingSession.decryptWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
-                signature: bob.sign(pingMsgToSign),
+                signature: bob.sign(pingFullMessage),
+                fullMessage: pingFullMessage,
             });
             assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
@@ -413,7 +421,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            functionName: 'check_permission',
+            functionName: 'on_ace_decryption_request',
             domain: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
         });
@@ -448,15 +456,22 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                functionName: 'check_permission',
+                functionName: 'on_ace_decryption_request',
                 domain: pongDomain,
                 ciphertext: pongCiph,
             });
             const pongMsgToSign = await pongSession.getRequestToSign();
+            const pongFullMessage = buildAptosWalletFullMessage({
+                accountAddress: alice.accountAddress,
+                chainId: CHAIN_ID,
+                message: pongMsgToSign,
+                nonce: 'full-happy-path-pong',
+            });
             const pongDecResult = await pongSession.decryptWithProof({
                 userAddr: alice.accountAddress,
                 publicKey: alice.publicKey,
-                signature: alice.sign(pongMsgToSign),
+                signature: alice.sign(pongFullMessage),
+                fullMessage: pongFullMessage,
             });
             assert(pongDecResult.isOk, `decrypt PONG failed: ${pongDecResult.errValue}`);
             assert(new TextDecoder().decode(pongDecResult.okValue!) === 'PONG', 'PONG plaintext mismatch');

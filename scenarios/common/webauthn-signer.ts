@@ -25,11 +25,12 @@ import {
 import { p256 } from '@noble/curves/p256';
 import { sha256 } from '@noble/hashes/sha256';
 
+import { ACE_SCENARIO_APP_ORIGIN } from './aptos-wallet-message';
+
 /** Stable rpIdHash for tests. The worker does not validate it — only the
  *  `challenge` field of `clientDataJSON` is checked — so its value is
  *  arbitrary, but keeping it constant makes traces reproducible. */
 const RP_ID_HASH = sha256(new TextEncoder().encode('ace.test'));
-const RP_ORIGIN = 'https://ace.test';
 
 /** Mirror of what a browser hands back from `navigator.credentials.get()`. */
 export interface WebAuthnAssertion {
@@ -67,7 +68,7 @@ export function buildAssertion(challenge: Uint8Array, privateKey: Uint8Array): W
     const clientDataJSON = new TextEncoder().encode(JSON.stringify({
         type: 'webauthn.get',
         challenge: base64UrlEncode(challenge),
-        origin: RP_ORIGIN,
+        origin: ACE_SCENARIO_APP_ORIGIN,
     }));
     // authData = rpIdHash(32) || flags=0x01(UP) || signCount=0u32(BE).
     const authenticatorData = new Uint8Array(32 + 1 + 4);

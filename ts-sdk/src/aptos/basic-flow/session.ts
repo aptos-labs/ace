@@ -52,7 +52,7 @@ export class DecryptionSession {
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
         this.aceDeployment = aceDeployment;
-        if (functionName === undefined) functionName = 'check_permission';
+        if (functionName === undefined) functionName = 'on_ace_decryption_request';
         const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName, functionName});
         this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
         this.ciphertext = ciphertext;

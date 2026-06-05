@@ -50,6 +50,7 @@ import { setupAceOnLocalnet } from './common/ace-network';
 import { CHAIN_ID } from './common/config';
 import { assert, cleanupScenario, fundAccount } from './common/helpers';
 import { WebAuthnAccount, buildAssertion, newWebAuthnAccount } from './common/webauthn-signer';
+import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 3;
 const EPOCH0_WORKER_INDICES = [0, 1, 2];
@@ -108,10 +109,17 @@ async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
     step('B', `Negative: decrypt by Charlie (Ed25519, not allowlisted) → must fail (403)`);
     const session = await makeSession(ctx);
     const msg = await session.getRequestToSign();
+    const fullMessage = buildAptosWalletFullMessage({
+        accountAddress: ctx.charlie.accountAddress,
+        chainId: CHAIN_ID,
+        message: msg,
+        nonce: 'anypub-secp256r1-step-b',
+    });
     const result = await session.decryptWithProof({
         userAddr: ctx.charlie.accountAddress,
         publicKey: ctx.charlie.publicKey,
-        signature: ctx.charlie.sign(msg),
+        signature: ctx.charlie.sign(fullMessage),
+        fullMessage,
     });
     assert(!result.isOk, `Expected decrypt to fail for non-allowlisted Charlie, but it succeeded`);
     console.log(`  ✓ decrypt by non-allowlisted Charlie correctly rejected (${result.errValue})`);
@@ -194,7 +202,7 @@ async function main(): Promise<void> {
         );
         const ctx: Ctx = {
             aceDeployment: ace.aceDeployment, moduleAddr: ace.adminAccountAddress,
-            moduleName: 'access_control', functionName: 'check_permission',
+            moduleName: 'access_control', functionName: 'on_ace_decryption_request',
             keypair0Id, keypair1Id, correctDomain,
             wrongDomain: domainForBlob(actors.alice, 'other-blob'),
             pingCiph, bob, charlie: actors.charlie,

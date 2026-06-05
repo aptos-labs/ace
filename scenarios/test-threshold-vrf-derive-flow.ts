@@ -48,11 +48,11 @@ import {
 } from './common/helpers';
 import { setupAceOnLocalnet, SetupAceOnLocalnetResult } from './common/ace-network';
 import { CHAIN_ID, REPO_ROOT } from './common/config';
+import { ACE_SCENARIO_APP_ORIGIN, buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 3;
 const COMMITTEE = [0, 1, 2];
 const THRESHOLD = 2;
-const WALLET_APPLICATION = 'https://shelby.example';
 
 function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
@@ -73,22 +73,6 @@ async function deployOriginContract(admin: SetupAceOnLocalnetResult['actors']['a
     } finally {
         rmContractsPublishScratch(scratch);
     }
-}
-
-function buildAptosWalletFullMessage(args: {
-    accountAddress: string;
-    chainId: number;
-    message: string;
-    nonce: string;
-}): string {
-    return [
-        'APTOS',
-        `address: ${args.accountAddress}`,
-        `application: ${WALLET_APPLICATION}`,
-        `chainId: ${args.chainId}`,
-        `message: ${args.message}`,
-        `nonce: ${args.nonce}`,
-    ].join('\n');
 }
 
 async function main() {
@@ -114,10 +98,10 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: actors.admin.accountAddress,
             moduleName: 'threshold_vrf_origin_demo',
-            functionName: 'check_request_origin',
+            functionName: 'on_ace_vrf_request',
         });
-        console.log(`  contract: ${actors.admin.accountAddress.toStringLong()}::threshold_vrf_origin_demo::check_request_origin`);
-        console.log(`  origin:   ${WALLET_APPLICATION}`);
+        console.log(`  contract: ${actors.admin.accountAddress.toStringLong()}::threshold_vrf_origin_demo::on_ace_vrf_request`);
+        console.log(`  origin:   ${ACE_SCENARIO_APP_ORIGIN}`);
 
         step(1, 'Build tVRF label');
         const label = new TextEncoder().encode('label-1');
@@ -138,7 +122,7 @@ async function main() {
         assert(msg.includes(keypairId.toStringLong()), 'transcript binds keypair id');
         assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
         assert(msg.includes('contractId:'), 'transcript binds contract id');
-        assert(msg.includes('check_request_origin'), 'transcript binds origin-check view');
+        assert(msg.includes('on_ace_vrf_request'), 'transcript binds origin-check view');
         assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
         const firstResponseEncKey = transcriptField(msg, 'responseEncKey');
         console.log(msg);

@@ -38,6 +38,7 @@ const DEPLOYER_PRIVATE_KEY_HEX = "0x11111111111111111111111111111111111111111111
 // Text encoding utilities for converting between strings and bytes
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const APPLICATION_ORIGIN = "https://shelby.example";
 
 // ============================================================================
 // Helper Functions
@@ -48,6 +49,22 @@ const textDecoder = new TextDecoder();
  */
 function log(...args: any[]) {
     console.log(`[${new Date().toISOString()}]`, ...args);
+}
+
+function buildAptosWalletFullMessage(args: {
+    accountAddress: AccountAddress;
+    chainId: number;
+    message: string;
+    nonce: string;
+}): string {
+    return [
+        "APTOS",
+        `address: ${args.accountAddress.toStringLong()}`,
+        `application: ${APPLICATION_ORIGIN}`,
+        `chainId: ${args.chainId}`,
+        `message: ${args.message}`,
+        `nonce: ${args.nonce}`,
+    ].join("\n");
 }
 
 /**
@@ -233,7 +250,7 @@ async function main() {
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        functionName: "check_permission",
+        functionName: "on_ace_decryption_request",
         domain: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
     })).unwrapOrThrow("encryption failed");
@@ -257,15 +274,22 @@ async function main() {
             chainId,
             moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
             moduleName: "access_control",
-            functionName: "check_permission",
+            functionName: "on_ace_decryption_request",
             domain: textEncoder.encode(fullBlobName),
             ciphertext,
         });
         const msgToSign = await session.getRequestToSign();
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: bob.accountAddress,
+            chainId,
+            message: msgToSign,
+            nonce: "shelby-localnet-bob-decrypt",
+        });
         return session.decryptWithProof({
             userAddr: bob.accountAddress,
             publicKey: bob.publicKey,
-            signature: bob.sign(msgToSign),
+            signature: bob.sign(fullMessage),
+            fullMessage,
         });
     }
     

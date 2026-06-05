@@ -50,20 +50,20 @@ pub use solana::SolanaProofOfPermission;
 /// it from the share's group scheme via a hard-coded 1:1 mapping.
 ///
 /// BCS discriminants:
-///   0 = BasicDecryption
-///   1 = CustomDecryption
+///   0 = DecryptionBasicFlow
+///   1 = DecryptionCustomFlow
 ///   2 = ThresholdVrf
 #[derive(Serialize, Deserialize)]
 pub enum WorkerRequest {
-    BasicDecryption(BasicDecryptionRequest),
-    CustomDecryption(CustomDecryptionRequest),
+    DecryptionBasicFlow(DecryptionBasicFlowRequest),
+    DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(ThresholdVrfRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
 /// TS-side `DecryptionRequestPayload` class — same field order, BCS-identical
 /// wire shape. The `proof` lives one level up in [`BasicFlowRequest`] /
-/// [`BasicDecryptionRequest`], not here, because the proof is *about* this
+/// [`DecryptionBasicFlowRequest`], not here, because the proof is *about* this
 /// payload (it carries a signature over it).
 #[derive(Serialize, Deserialize)]
 pub struct DecryptionRequestPayload {
@@ -91,7 +91,7 @@ pub struct CustomFlowRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct BasicDecryptionRequest {
+pub struct DecryptionBasicFlowRequest {
     pub payload: DecryptionRequestPayload,
     pub proof: ProofOfPermission,
     /// Client-asserted t-IBE scheme the share should be formatted for.
@@ -100,7 +100,7 @@ pub struct BasicDecryptionRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct CustomDecryptionRequest {
+pub struct DecryptionCustomFlowRequest {
     pub keypair_id: [u8; 32],
     pub epoch: u64,
     pub contract_id: ContractId,

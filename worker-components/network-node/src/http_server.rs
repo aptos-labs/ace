@@ -352,7 +352,7 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
     };
 
     match request {
-        WorkerRequest::BasicDecryption(req) => {
+        WorkerRequest::DecryptionBasicFlow(req) => {
             ctx.flow = Some(Flow::Basic);
             ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
             ctx.epoch = Some(req.payload.epoch);
@@ -363,7 +363,7 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             };
             handle_basic_flow(state, &snapshot, v1, req.tibe_scheme, ctx).await
         }
-        WorkerRequest::CustomDecryption(req) => {
+        WorkerRequest::DecryptionCustomFlow(req) => {
             ctx.flow = Some(Flow::Custom);
             ctx.keypair_short = Some(short_hex(&req.keypair_id));
             ctx.epoch = Some(req.epoch);

@@ -6,7 +6,8 @@
 /// The admin lists items at fixed APT prices. A buyer pays the price in a
 /// single transaction and is added to the item's buyer list. ACE workers
 /// invoke `on_ace_decryption_request(item_name, user, origin)` before releasing key shares,
-/// so a buyer can decrypt only the items they have actually paid for.
+/// so a buyer can decrypt only the items they have actually paid for, and only
+/// when the request was signed for this app's origin (anti-replay across dapps).
 module admin::marketplace {
     use std::error;
     use std::signer::address_of;
@@ -22,6 +23,11 @@ module admin::marketplace {
     const E_ITEM_NOT_FOUND: u64 = 2;
     /// An item with this name has already been listed.
     const E_ITEM_ALREADY_LISTED: u64 = 3;
+
+    /// The dapp origin that ACE requests must be signed for. Must match
+    /// `TUTORIAL_APP_ORIGIN` in `scripts/common.ts`. The hook rejects any
+    /// request whose wallet `application:` line names a different origin.
+    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://tutorial.ace.aptos.dev";
 
     struct Item has store, drop {
         price: u64,
@@ -65,12 +71,14 @@ module admin::marketplace {
 
     #[view]
     /// The hook ACE workers call before releasing a decryption key share.
-    /// Returns true iff `account` is the admin or has bought item `label`.
+    /// Returns true iff the request was signed for this app's origin and
+    /// `account` is the admin or has bought item `label`.
     public fun on_ace_decryption_request(
         label: vector<u8>,
         account: address,
-        _origin: String,
+        origin: String,
     ): bool acquires Catalog {
+        if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
         if (account == @admin) return true;
         let catalog = borrow_global<Catalog>(@admin);
         if (!catalog.items.contains(label)) return false;

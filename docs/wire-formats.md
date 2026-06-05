@@ -96,15 +96,15 @@ The HTTP request body is the **hex string** of `pke_encrypt(worker_enc_key, BCS(
 
 ```rust
 enum WorkerRequest {
-    BasicDecryption(BasicDecryptionRequest),    // tag 0
-    CustomDecryption(CustomDecryptionRequest),  // tag 1
-    ThresholdVrf(ThresholdVrfRequest),           // tag 2
+    DecryptionBasicFlow(DecryptionBasicFlowRequest),    // tag 0
+    DecryptionCustomFlow(DecryptionCustomFlowRequest),  // tag 1
+    ThresholdVrf(ThresholdVrfRequest),                  // tag 2
 }
 ```
 
 Decryption variants carry an explicit `tibe_scheme: u8` so the handler serves the share formatted for the client's actual t-IBE choice instead of guessing from the share's group via `crypto::tibe_scheme_for_group`. The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme` and rejects otherwise.
 
-### 2.2 `BasicDecryptionRequest`
+### 2.2 `DecryptionBasicFlowRequest`
 
 ```rust
 struct DecryptionRequestPayload {
@@ -115,7 +115,7 @@ struct DecryptionRequestPayload {
     ephemeral_enc_key: pke::EncryptionKey,
 }
 
-struct BasicDecryptionRequest {     // tag 0
+struct DecryptionBasicFlowRequest {     // tag 0
     payload:           DecryptionRequestPayload,
     proof:             ProofOfPermission,
     tibe_scheme:       u8,
@@ -128,10 +128,10 @@ Wire layout:
 after outer `00`: [DecryptionRequestPayload] [ProofOfPermission] [1B tibe_scheme]
 ```
 
-### 2.3 `CustomDecryptionRequest`
+### 2.3 `DecryptionCustomFlowRequest`
 
 ```rust
-struct CustomDecryptionRequest {    // tag 1
+struct DecryptionCustomFlowRequest {    // tag 1
     keypair_id:  [u8; 32],
     epoch:       u64,
     contract_id: ContractId,

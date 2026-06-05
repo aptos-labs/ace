@@ -181,6 +181,7 @@ jobs:
           - test-dkg-protocol-g1
           - test-dkr-protocol
           - test-dkr-protocol-g1
+          - test-threshold-vrf-derive-flow
           - test-network-protocol
           - test-network-protocol-shortpk
           - full-happy-path

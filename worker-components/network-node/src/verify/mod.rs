@@ -56,12 +56,14 @@ use solana::SolanaContractId;
 ///   1 = Custom   (V1; legacy)
 ///   2 = BasicV2  (carries tibe_scheme)
 ///   3 = CustomV2 (carries tibe_scheme)
+///   4 = ThresholdVrf
 #[derive(Serialize, Deserialize)]
 pub enum RequestForDecryptionKey {
     Basic(BasicFlowRequest),
     Custom(CustomFlowRequest),
     BasicV2(BasicFlowRequestV2),
     CustomV2(CustomFlowRequestV2),
+    ThresholdVrf(ThresholdVrfRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
@@ -112,6 +114,24 @@ pub struct CustomFlowRequestV2 {
     pub enc_pk: EncryptionKey,
     pub proof: CustomFlowProof,
     pub tibe_scheme: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ThresholdVrfRequestPayload {
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub chain_id: u8,
+    pub label: Vec<u8>,
+    pub account_address: [u8; 32],
+    pub response_enc_key: EncryptionKey,
+}
+
+pub type AptosAccountSignatureProof = AptosProofOfPermission;
+
+#[derive(Serialize, Deserialize)]
+pub struct ThresholdVrfRequest {
+    pub payload: ThresholdVrfRequestPayload,
+    pub auth_proof: AptosAccountSignatureProof,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -233,6 +253,52 @@ impl DecryptionRequestPayload {
     }
 }
 
+const THRESHOLD_VRF_PURPOSE: &str = "ace.threshold-vrf.derive.v1";
+
+impl ThresholdVrfRequestPayload {
+    /// Canonical human-readable form the owner signs for tVRF derivation.
+    /// Mirrors TS-SDK `ThresholdVrfRequestPayload.toPrettyMessage()` byte-for-byte.
+    pub fn to_pretty_message(&self) -> Result<String> {
+        let response_ek_bytes = bcs::to_bytes(&self.response_enc_key).map_err(|e| {
+            anyhow!(
+                "ThresholdVrfRequestPayload::to_pretty_message: serialize response_enc_key: {}",
+                e
+            )
+        })?;
+        Ok(format!(
+            "ACE Threshold VRF Derive Request\npurpose: {}\nkeypairId: 0x{}\nepoch: {}\nchainId: {}\nlabel: 0x{}\naccountAddress: 0x{}\nresponseEncKey: {}",
+            THRESHOLD_VRF_PURPOSE,
+            hex::encode(self.keypair_id),
+            self.epoch,
+            self.chain_id,
+            hex::encode(&self.label),
+            hex::encode(self.account_address),
+            hex::encode(response_ek_bytes),
+        ))
+    }
+
+    /// 32-byte WebAuthn challenge bytes for this payload:
+    ///
+    ///   `SHA3-256( SHA3-256(b"ACE::ThresholdVrfRequestPayload") || BCS(self) )`
+    ///
+    /// Mirrors the decryption payload's passkey binding, with a tVRF-specific
+    /// domain separator so a WebAuthn assertion cannot cross flow types.
+    pub fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        use sha3::{Digest, Sha3_256};
+        let seed: [u8; 32] = Sha3_256::digest(b"ACE::ThresholdVrfRequestPayload").into();
+        let body = bcs::to_bytes(self).map_err(|e| {
+            anyhow!(
+                "ThresholdVrfRequestPayload::to_webauthn_challenge: BCS encode: {}",
+                e
+            )
+        })?;
+        let mut h = Sha3_256::new();
+        h.update(seed);
+        h.update(&body);
+        Ok(h.finalize().into())
+    }
+}
+
 impl ContractId {
     /// Mirrors TS-SDK `ContractID.toPrettyMessage(indent)` in
     /// `ts-sdk/src/_internal/common.ts:108-113`. Returns the inner block
@@ -311,6 +377,17 @@ pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) 
             proof.tag_name()
         )),
     }
+}
+
+/// Verify a threshold-VRF derivation request: the account proof must sign the
+/// tVRF transcript, the proof account must match the requested account address,
+/// and the supplied public key must still be the on-chain auth key for that
+/// account.
+pub async fn verify_threshold_vrf(
+    req: &ThresholdVrfRequest,
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    aptos::verify_threshold_vrf_aptos(req, chain_rpc).await
 }
 
 #[cfg(test)]

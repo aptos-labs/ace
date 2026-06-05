@@ -100,7 +100,7 @@ const PK_SCHEME_MULTI_KEY = 3;
 const PK_SCHEME_KEYLESS = 4;
 const PK_SCHEME_FEDERATED_KEYLESS = 5;
 
-function getPublicKeyScheme(publicKey: PublicKey): number {
+export function getPublicKeyScheme(publicKey: PublicKey): number {
     if (publicKey instanceof Ed25519PublicKey) {
         return PK_SCHEME_ED25519;
     } else if (publicKey instanceof AnyPublicKey) {
@@ -142,7 +142,7 @@ const SIG_SCHEME_MULTI_ED25519 = 2;
 const SIG_SCHEME_MULTI_KEY = 3;
 const SIG_SCHEME_KEYLESS = 4;
 
-function getSignatureScheme(signature: Signature): number {
+export function getSignatureScheme(signature: Signature): number {
     if (signature instanceof Ed25519Signature) {
         return SIG_SCHEME_ED25519;
     } else if (signature instanceof AnySignature) {

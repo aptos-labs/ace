@@ -237,7 +237,7 @@ pub(crate) fn bitmap_iter_ones(bitmap: &[u8; BITMAP_NUM_OF_BYTES]) -> impl Itera
 ///   4. `popcount(bitmap) == signatures.len()` — verify_arbitrary_msg
 ///   5. `popcount(bitmap) >= threshold`        — verify_arbitrary_msg
 ///   6. `last_set_bit(bitmap) < public_keys.len()` — verify_arbitrary_msg
-fn validate(pk: &MultiEd25519PublicKeyInner, sig: &MultiEd25519SignatureInner) -> Result<()> {
+pub(in crate::verify::aptos) fn validate(pk: &MultiEd25519PublicKeyInner, sig: &MultiEd25519SignatureInner) -> Result<()> {
     if pk.threshold == 0 {
         return Err(anyhow!("multi_ed25519: threshold must be >= 1"));
     }

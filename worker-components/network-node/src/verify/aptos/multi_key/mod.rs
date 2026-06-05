@@ -140,7 +140,7 @@ pub(crate) fn bitmap_iter_ones(bitmap: &[u8]) -> impl Iterator<Item = usize> + '
 /// verifies; this matches that policy. Earlier versions of this file
 /// enforced strict equality to match the TS-SDK producer, but consensus
 /// reference (aptos-core) is the authoritative spec.
-fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
+pub(in crate::verify::aptos) fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
     if mk.signatures_required == 0 {
         return Err(anyhow!("multi_key: signatures_required must be >= 1"));
     }

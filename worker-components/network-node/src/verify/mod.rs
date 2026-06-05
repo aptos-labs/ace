@@ -134,6 +134,10 @@ pub struct ThresholdVrfRequest {
     pub auth_proof: AptosAccountSignatureProof,
 }
 
+pub struct ThresholdVrfAuthorization {
+    pub application: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum ContractId {
     Aptos(AptosContractId),
@@ -386,7 +390,7 @@ pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) 
 pub async fn verify_threshold_vrf(
     req: &ThresholdVrfRequest,
     chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
+) -> Result<ThresholdVrfAuthorization> {
     aptos::verify_threshold_vrf_aptos(req, chain_rpc).await
 }
 

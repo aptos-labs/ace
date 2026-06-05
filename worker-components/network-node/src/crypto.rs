@@ -154,11 +154,15 @@ pub fn partial_extract_idk_share(
 
 #[derive(serde::Serialize)]
 struct ThresholdVrfInput<'a> {
+    purpose: &'static str,
     keypair_id: &'a [u8; 32],
     chain_id: u8,
     account_address: &'a [u8; 32],
+    application: &'a str,
     label: &'a [u8],
 }
+
+const THRESHOLD_VRF_INPUT_PURPOSE: &str = "ace.threshold-vrf.input.v1";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ThresholdVrfShareWire {
@@ -175,6 +179,7 @@ pub fn partial_derive_threshold_vrf_share(
     keypair_id: &[u8; 32],
     chain_id: u8,
     account_address: &[u8; 32],
+    application: &str,
     label: &[u8],
     scalar_le32: &[u8; 32],
     eval_point: u64,
@@ -188,9 +193,11 @@ pub fn partial_derive_threshold_vrf_share(
     }
 
     let input = ThresholdVrfInput {
+        purpose: THRESHOLD_VRF_INPUT_PURPOSE,
         keypair_id,
         chain_id,
         account_address,
+        application,
         label,
     };
     let input_bytes = bcs::to_bytes(&input)
@@ -286,6 +293,7 @@ mod tests {
             &[0xab; 32],
             4,
             &[0xcd; 32],
+            "https://app.example",
             b"label-1",
             &[1u8; 32],
             42,

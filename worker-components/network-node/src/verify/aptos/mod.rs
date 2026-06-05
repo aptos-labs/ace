@@ -38,6 +38,7 @@ use sha3::Sha3_256;
 use crate::ChainRpcConfig;
 use super::{
     BasicFlowRequest, DecryptionRequestPayload, ThresholdVrfRequest, ThresholdVrfRequestPayload,
+    ThresholdVrfAuthorization,
 };
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -404,14 +405,16 @@ pub(super) async fn verify_aptos(
 pub(super) async fn verify_threshold_vrf_aptos(
     req: &ThresholdVrfRequest,
     chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
+) -> Result<ThresholdVrfAuthorization> {
     let proof = &req.auth_proof;
     if proof.user_addr != req.payload.account_address {
         return Err(anyhow!(
             "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
         ));
     }
-    verify_aptos_account_proof(&req.payload, req.payload.chain_id, proof, chain_rpc).await
+    verify_aptos_account_proof(&req.payload, req.payload.chain_id, proof, chain_rpc).await?;
+    let application = extract_signed_wallet_application(proof)?;
+    Ok(ThresholdVrfAuthorization { application })
 }
 
 pub(super) trait AptosPayloadBinding {
@@ -810,6 +813,52 @@ fn signed_message_bytes<P: AptosPayloadBinding>(
     }
 }
 
+fn extract_signed_wallet_application(proof: &AptosProofOfPermission) -> Result<String> {
+    let full_message = signed_full_message_as_utf8(proof, "extract_signed_wallet_application")?;
+    parse_aptos_wallet_application(&full_message)
+}
+
+fn signed_full_message_as_utf8(proof: &AptosProofOfPermission, context: &str) -> Result<String> {
+    let full_msg = &proof.full_message;
+    let bytes = if is_valid_hex(full_msg) {
+        let stripped = full_msg.strip_prefix("0x").unwrap_or(full_msg.as_str());
+        hex::decode(stripped).map_err(|e| anyhow!("{}: hex decode fullMessage: {}", context, e))?
+    } else {
+        full_msg.as_bytes().to_vec()
+    };
+    String::from_utf8(bytes).map_err(|e| anyhow!("{}: fullMessage is not UTF-8: {}", context, e))
+}
+
+fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
+    let mut lines = full_message.split('\n');
+    match lines.next() {
+        Some("APTOS") => {}
+        _ => {
+            return Err(anyhow!(
+                "extract_signed_wallet_application: fullMessage is not an Aptos wallet message"
+            ))
+        }
+    }
+
+    for line in lines {
+        if line.starts_with("message:") {
+            break;
+        }
+        if let Some(application) = line.strip_prefix("application: ") {
+            if application.is_empty() {
+                return Err(anyhow!(
+                    "extract_signed_wallet_application: application is empty"
+                ));
+            }
+            return Ok(application.to_string());
+        }
+    }
+
+    Err(anyhow!(
+        "extract_signed_wallet_application: fullMessage missing application"
+    ))
+}
+
 async fn check_auth_key_bytes(
     proof: &AptosProofOfPermission,
     computed: &[u8],
@@ -831,6 +880,41 @@ async fn check_auth_key_bytes(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_aptos_wallet_application;
+
+    #[test]
+    fn parses_application_before_message_body() {
+        let full_message = concat!(
+            "APTOS\n",
+            "address: 0xabc\n",
+            "application: https://app.example\n",
+            "chainId: 4\n",
+            "message: ACE Threshold VRF Derive Request\n",
+            "application: https://evil.example\n",
+            "nonce: 123",
+        );
+        assert_eq!(
+            parse_aptos_wallet_application(full_message).unwrap(),
+            "https://app.example"
+        );
+    }
+
+    #[test]
+    fn rejects_application_only_inside_message_body() {
+        let full_message = concat!(
+            "APTOS\n",
+            "address: 0xabc\n",
+            "chainId: 4\n",
+            "message: ACE Threshold VRF Derive Request\n",
+            "application: https://evil.example\n",
+            "nonce: 123",
+        );
+        assert!(parse_aptos_wallet_application(full_message).is_err());
+    }
 }
 
 // ── Shared helpers (used by ed25519 + keyless) ──────────────────────────────

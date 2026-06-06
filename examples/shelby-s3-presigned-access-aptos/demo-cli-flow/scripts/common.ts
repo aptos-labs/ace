@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { Account, AccountAddress, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, PublicKey, Serializer, Signature } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { bls12_381 } from '@noble/curves/bls12-381';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
@@ -195,30 +195,31 @@ export function aceDeploymentFromConfig(cfg: LocalnetConfig): ACE.AceDeployment 
     });
 }
 
-// ── WalletSigner for ACE.tVRF.derive ─────────────────────────────────────────
+// ── Sign callback for ACE.tVRF.derive ────────────────────────────────────────
 
-/** Returns the `WalletSigner` `ACE.tVRF.derive` expects, faking the
+/** Returns the `sign` callback `ACE.tVRF.derive` expects, faking the
  *  AIP-62 wallet-message protocol with a local Aptos `Account`. Real
  *  apps swap this for a wallet-adapter call. */
 export function walletSignerFor(args: {
     account: Account;
     chainId: number;
     nonce: string;
-}): ACE.tVRF.WalletSigner {
-    return {
-        accountAddress: args.account.accountAddress,
-        sign: async (message) => {
-            const fullMessage = buildAptosWalletFullMessage({
-                accountAddress: args.account.accountAddress,
-                chainId: args.chainId,
-                message,
-                nonce: args.nonce,
-            });
-            return {
-                pubKey: args.account.publicKey,
-                signature: args.account.sign(fullMessage),
-                fullMessage,
-            };
-        },
+}): (msg: string) => Promise<{
+    pubKey: PublicKey;
+    signature: Signature;
+    fullMessage: string;
+}> {
+    return async (message) => {
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: args.account.accountAddress,
+            chainId: args.chainId,
+            message,
+            nonce: args.nonce,
+        });
+        return {
+            pubKey: args.account.publicKey,
+            signature: args.account.sign(fullMessage),
+            fullMessage,
+        };
     };
 }

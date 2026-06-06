@@ -73,7 +73,8 @@ async function main() {
         keypairId,
         chainId, moduleAddr, moduleName,
         label: new TextEncoder().encode(BLOB_SUFFIX),
-        signer: walletSignerFor({ account: alice, chainId, nonce: `presigned-derive-${BLOB_SUFFIX}` }),
+        accountAddress: alice.accountAddress,
+        sign: walletSignerFor({ account: alice, chainId, nonce: `presigned-derive-${BLOB_SUFFIX}` }),
     });
     const accessToken = vrfOutputToAccessToken(vrfBytes);
     const accessPk = accessPkFromAccessToken(accessToken);

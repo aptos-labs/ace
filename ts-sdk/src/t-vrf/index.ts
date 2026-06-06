@@ -505,26 +505,6 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
 }
 
 /**
- * A wallet-like signer the tVRF derive flow drives. Carries the Aptos
- * account it represents (`accountAddress`) so the caller doesn't have
- * to pass it as a separate top-level arg — the address is intrinsically
- * tied to whoever can actually produce the signature.
- *
- * The `sign` callback gets the canonical request message to sign and
- * returns the `(pubKey, signature, fullMessage)` triple
- * `DerivationSession.deriveWithSignature` consumes. Real apps wire this
- * to a wallet-adapter; CLIs/scripts wire it to a local Aptos `Account`.
- */
-export interface WalletSigner {
-    accountAddress: AccountAddress;
-    sign: (msgToSign: string) => Promise<{
-        pubKey: PublicKey;
-        signature: Signature;
-        fullMessage: string;
-    }>;
-}
-
-/**
  * One-shot tVRF derive. Wraps `DerivationSession.create →
  * getRequestToSign → deriveWithSignature` for callers (CLIs, scripts,
  * server-side jobs) that already know how to sign and don't need to
@@ -544,13 +524,10 @@ export interface WalletSigner {
  *
  *   const vrfBytes = await ACE.tVRF.derive({
  *       aceDeployment, keypairId, chainId, moduleAddr, moduleName,
- *       label,
- *       signer: {
- *           accountAddress: owner.accountAddress,
- *           sign: async msg => {
- *               const fullMessage = buildAptosWalletFullMessage({ ... message: msg, ... });
- *               return { pubKey: owner.publicKey, signature: owner.sign(fullMessage), fullMessage };
- *           },
+ *       label, accountAddress: owner.accountAddress,
+ *       sign: async msg => {
+ *           const fullMessage = buildAptosWalletFullMessage({ ... message: msg, ... });
+ *           return { pubKey: owner.publicKey, signature: owner.sign(fullMessage), fullMessage };
  *       },
  *   });
  */
@@ -561,7 +538,12 @@ export async function derive(args: {
     moduleAddr: AccountAddress;
     moduleName: string;
     label: Uint8Array;
-    signer: WalletSigner;
+    accountAddress: AccountAddress;
+    sign: (msgToSign: string) => Promise<{
+        pubKey: PublicKey;
+        signature: Signature;
+        fullMessage: string;
+    }>;
 }): Promise<Uint8Array> {
     const session = await DerivationSession.create({
         aceDeployment: args.aceDeployment,
@@ -572,8 +554,8 @@ export async function derive(args: {
             moduleName: args.moduleName,
         }),
         label: args.label,
-        accountAddress: args.signer.accountAddress,
+        accountAddress: args.accountAddress,
     });
     const message = await session.getRequestToSign();
-    return session.deriveWithSignature(await args.signer.sign(message));
+    return session.deriveWithSignature(await args.sign(message));
 }

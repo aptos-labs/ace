@@ -503,3 +503,36 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
     const sig = p256.Signature.fromDER(der).normalizeS();
     return sig.toCompactRawBytes();
 }
+
+/**
+ * One-shot tVRF derive. Wraps `DerivationSession.create →
+ * getRequestToSign → deriveWithSignature` for callers (CLIs, scripts,
+ * server-side jobs) that already know how to sign and don't need to
+ * keep the session object around between phases.
+ *
+ * The two-phase `DerivationSession` API is the right shape for wallets
+ * that render the message to a user between phases; this is for
+ * everything else.
+ *
+ * Example:
+ *
+ *   const vrfBytes = await ACE.tVRF.derive({
+ *       aceDeployment, keypairId, contractId, label, accountAddress: owner.accountAddress,
+ *       sign: async msg => {
+ *           const fullMessage = buildAptosWalletFullMessage({ ... message: msg, ... });
+ *           return { pubKey: owner.publicKey, signature: owner.sign(fullMessage), fullMessage };
+ *       },
+ *   });
+ */
+export async function derive(args: RequestToSignArgs & {
+    sign: (msgToSign: string) => Promise<{
+        pubKey: PublicKey;
+        signature: Signature;
+        fullMessage: string;
+    }>;
+}): Promise<Uint8Array> {
+    const { sign, ...sessionArgs } = args;
+    const session = await DerivationSession.create(sessionArgs);
+    const message = await session.getRequestToSign();
+    return session.deriveWithSignature(await sign(message));
+}

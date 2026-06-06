@@ -112,12 +112,12 @@ function buildAptosWalletFullMessage(args: {
 
 /** Reduce the 32-byte tVRF output to a BLS12-381 Fr scalar. The bias from a
  *  256-bit-mod-r reduction is ~2^-255 — negligible for this use case. */
-function vrfOutputToAsk(vrfBytes: Uint8Array): bigint {
+function vrfOutputToAccessToken(vrfBytes: Uint8Array): bigint {
     if (vrfBytes.length !== 32) throw new Error(`vrfBytes: expected 32, got ${vrfBytes.length}`);
     return BigInt("0x" + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
 }
 
-function accessPkFromAsk(accessToken: bigint): Uint8Array {
+function accessPkFromAccessToken(accessToken: bigint): Uint8Array {
     return bls12_381.G1.ProjectivePoint.BASE.multiply(accessToken).toRawBytes(true);
 }
 
@@ -138,7 +138,7 @@ function buildSignableMessage(args: {
     return s.toUint8Array();
 }
 
-function signWithAsk(accessToken: bigint, msg: Uint8Array): Uint8Array {
+function signWithAccessToken(accessToken: bigint, msg: Uint8Array): Uint8Array {
     return (bls12_381.G2.hashToCurve(msg, { DST: BLS_HASH_DST }) as any)
         .multiply(accessToken)
         .toRawBytes(true);
@@ -155,7 +155,7 @@ function buildPayload(origin: Uint8Array, sig: Uint8Array): Uint8Array {
 
 // ── tVRF derive: owner-side, runs once at register time ──────────────────────
 
-async function deriveAsk(args: {
+async function deriveAccessToken(args: {
     aceDeployment: ACE.AceDeployment;
     keypairId: AccountAddress;
     contractId: ACE.ContractID;
@@ -163,26 +163,27 @@ async function deriveAsk(args: {
     blobSuffix: string;
     chainId: number;
 }): Promise<bigint> {
-    const session = await ACE.tVRF.DerivationSession.create({
+    const vrfBytes = await ACE.tVRF.derive({
         aceDeployment: args.aceDeployment,
         keypairId: args.keypairId,
         contractId: args.contractId,
         label: enc.encode(args.blobSuffix),
         accountAddress: args.owner.accountAddress,
+        sign: async (msg: string) => {
+            const fullMessage = buildAptosWalletFullMessage({
+                accountAddress: args.owner.accountAddress,
+                chainId: args.chainId,
+                message: msg,
+                nonce: `presigned-derive-${args.blobSuffix}`,
+            });
+            return {
+                pubKey: args.owner.publicKey,
+                signature: args.owner.sign(fullMessage),
+                fullMessage,
+            };
+        },
     });
-    const message = await session.getRequestToSign();
-    const fullMessage = buildAptosWalletFullMessage({
-        accountAddress: args.owner.accountAddress,
-        chainId: args.chainId,
-        message,
-        nonce: `presigned-derive-${args.blobSuffix}`,
-    });
-    const vrfBytes = await session.deriveWithSignature({
-        pubKey: args.owner.publicKey,
-        signature: args.owner.sign(fullMessage),
-        fullMessage,
-    });
-    return vrfOutputToAsk(vrfBytes);
+    return vrfOutputToAccessToken(vrfBytes);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -295,10 +296,10 @@ async function main(): Promise<void> {
     })).unwrapOrThrow("encrypt failed");
 
     log("Alice deriving (accessToken, accessPk) via threshold VRF...");
-    const accessToken = await deriveAsk({
+    const accessToken = await deriveAccessToken({
         aceDeployment, keypairId, contractId, owner: alice, blobSuffix, chainId,
     });
-    const accessPk = accessPkFromAsk(accessToken);
+    const accessPk = accessPkFromAccessToken(accessToken);
     log(`  accessPk = 0x${bytesToHex(accessPk)}`);
 
     log("Alice registering accessPk on-chain...");
@@ -323,7 +324,7 @@ async function main(): Promise<void> {
             userEpk: userEpkBytes,
             origin: originBytes,
         });
-        const sig = signWithAsk(accessTokenForBob, signableMsg);
+        const sig = signWithAccessToken(accessTokenForBob, signableMsg);
         const payload = buildPayload(originBytes, sig);
         try {
             return await ACE.AptosCustomFlow.decrypt({
@@ -353,10 +354,10 @@ async function main(): Promise<void> {
     // keypair_id/contract). Here we just pick a deterministic-but-different
     // scalar so the demo stays self-contained.
     log("Alice rotating: register a fresh accessPk → invalidates the old accessToken...");
-    const accessTokenPrime = vrfOutputToAsk(
+    const accessTokenPrime = vrfOutputToAccessToken(
         new Uint8Array(32).map((_, i) => i + 100),
     );
-    const accessPkPrime = accessPkFromAsk(accessTokenPrime);
+    const accessPkPrime = accessPkFromAccessToken(accessTokenPrime);
     await runTxn(
         aptos, alice,
         `${moduleAddr.toStringLong()}::${moduleName}::register`,

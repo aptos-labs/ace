@@ -106,7 +106,7 @@ async function captureSignedSessionAtEpoch(args: {
         chainId: CHAIN_ID,
         moduleAddr: args.aceState.adminAccountAddress,
         moduleName: 'access_control',
-        domain: args.correctDomain,
+        label: args.correctDomain,
         ciphertext: args.pingCiph,
     });
     const msg = await session.getRequestToSign();

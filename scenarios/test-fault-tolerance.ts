@@ -247,7 +247,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            domain: pingDomain,
+            label: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
@@ -283,7 +283,7 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                domain: pingDomain,
+                label: pingDomain,
                 ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();

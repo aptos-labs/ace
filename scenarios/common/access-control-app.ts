@@ -89,7 +89,7 @@ export async function encryptForAccessControl(
         chainId: CHAIN_ID,
         moduleAddr: adminAccountAddress,
         moduleName: 'access_control',
-        domain,
+        label: domain,
         plaintext,
     });
     assert(result.isOk, `encrypt failed: ${result.errValue}`);

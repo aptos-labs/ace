@@ -46,7 +46,7 @@ async function main() {
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            domain,
+            label: domain,
             plaintext: textEncoder.encode(item.plaintext),
         })).unwrapOrThrow('encrypt failed');
         log(`  Encrypted (${ciphertext.length} bytes).`);

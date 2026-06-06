@@ -233,7 +233,7 @@ async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<Cus
     const encResult = await ACE.AptosCustomFlow.encrypt({
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr,
         moduleName: 'check_acl_demo',
-        domain: label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
+        label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
     });
     assert(encResult.isOk, `encrypt failed: ${encResult.errValue}`);
     const callerKeyPair = await pke.keygen();

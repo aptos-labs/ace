@@ -55,7 +55,7 @@ async function main() {
         chainId: cfg.chainId,
         moduleAddr,
         moduleName: cfg.moduleName,
-        domain: LABEL,
+        label: LABEL,
         plaintext: PLAINTEXT,
     });
     const ciphertext = result.unwrapOrThrow('AptosCustomFlow.encrypt failed');

@@ -70,7 +70,7 @@ async function main() {
         chainId,
         moduleAddr: appContractAddr,
         moduleName: 'marketplace',
-        domain,
+        label: domain,
         ciphertext,
     });
     const msgToSign = await session.getRequestToSign();

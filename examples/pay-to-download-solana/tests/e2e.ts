@@ -140,7 +140,7 @@ describe("access-control", () => {
       keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: fullBlobNameBytes,
+      label: fullBlobNameBytes,
       plaintext: secretContent,
     })).unwrapOrThrow('failed to encrypt');
 
@@ -197,7 +197,7 @@ describe("access-control", () => {
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
-        domain: fullBlobNameBytes,
+        label: fullBlobNameBytes,
         ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
@@ -224,7 +224,7 @@ describe("access-control", () => {
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
-        domain: fullBlobNameBytes,
+        label: fullBlobNameBytes,
         ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
@@ -419,7 +419,7 @@ describe("access-control failures (worker-side rejection)", () => {
       keypairId: args.sessionKeypairId ?? keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: args.sessionDomain ?? domain,
+      label: args.sessionDomain ?? domain,
       ciphertext,
     });
     const fullRequestBytes = await session.getRequestToSign();

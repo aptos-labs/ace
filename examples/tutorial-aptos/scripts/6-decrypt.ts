@@ -40,7 +40,7 @@ async function main() {
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            domain: new TextEncoder().encode(entry.name),
+            label: new TextEncoder().encode(entry.name),
             ciphertext: Buffer.from(entry.ciphertextHex, 'hex'),
         });
         const msgToSign = await session.getRequestToSign();

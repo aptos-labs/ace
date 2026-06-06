@@ -238,7 +238,7 @@ async function main() {
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        domain: textEncoder.encode(fullBlobName),
+        label: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
     })).unwrapOrThrow("encryption failed");
     log("✓ Content encrypted");
@@ -271,7 +271,7 @@ async function main() {
             chainId,
             moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
             moduleName: "access_control",
-            domain: textEncoder.encode(fullBlobName),
+            label: textEncoder.encode(fullBlobName),
             ciphertext,
         });
         const msgToSign = await session.getRequestToSign();

@@ -288,7 +288,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            domain: pingDomain,
+            label: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
@@ -325,7 +325,7 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                domain: pingDomain,
+                label: pingDomain,
                 ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();
@@ -419,7 +419,7 @@ async function main() {
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            domain: pongDomain,
+            label: pongDomain,
             plaintext: new TextEncoder().encode('PONG'),
         });
         assert(pongEncResult.isOk, `encrypt PONG failed: ${pongEncResult.errValue}`);
@@ -453,7 +453,7 @@ async function main() {
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                domain: pongDomain,
+                label: pongDomain,
                 ciphertext: pongCiph,
             });
             const pongMsgToSign = await pongSession.getRequestToSign();

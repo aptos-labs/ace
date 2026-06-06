@@ -225,7 +225,7 @@ function step(n: string, msg: string): void {
 
 async function makeSession(
     ctx: Ctx,
-    overrides: { keypairId?: AccountAddress; domain?: Uint8Array } = {},
+    overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
 ): Promise<ACE.AptosBasicFlow.DecryptionSession> {
     return ACE.AptosBasicFlow.DecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
@@ -233,7 +233,7 @@ async function makeSession(
         chainId: CHAIN_ID,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        domain: overrides.domain ?? ctx.correctDomain,
+        label: overrides.label ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });
 }
@@ -291,7 +291,7 @@ async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
 
 async function stepC_WrongDomain(ctx: Ctx): Promise<void> {
     step('C', `Negative: Bob (${BOB_LABEL}) decrypt with wrong domain → must fail (403)`);
-    const session = await makeSession(ctx, { domain: ctx.wrongDomain });
+    const session = await makeSession(ctx, { label: ctx.wrongDomain });
     const result = await decryptAsBob(ctx, session);
     assert(!result.isOk, `Expected decrypt to fail with wrong domain, but it succeeded`);
     console.log(`  ✓ decrypt with wrong domain correctly rejected (${result.errValue})`);

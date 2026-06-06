@@ -37,7 +37,7 @@ export class DecryptionSession {
     networkState: NetworkState | undefined;
 
     private constructor({
-        aceDeployment, keypairId, chainId, moduleAddr, moduleName, domain, ciphertext,
+        aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, ciphertext,
         ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
@@ -45,14 +45,14 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        domain: Uint8Array,
+        label: Uint8Array,
         ciphertext: Uint8Array,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
         this.aceDeployment = aceDeployment;
         const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
-        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
+        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, label});
         this.ciphertext = ciphertext;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
@@ -64,7 +64,7 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        domain: Uint8Array,
+        label: Uint8Array,
         ciphertext: Uint8Array,
     }): Promise<DecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();

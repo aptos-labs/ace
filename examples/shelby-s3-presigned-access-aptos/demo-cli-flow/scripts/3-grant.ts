@@ -62,7 +62,7 @@ async function main() {
         chainId,
         moduleAddr,
         moduleName,
-        domain: labelBytes,
+        label: labelBytes,
         plaintext: new TextEncoder().encode(PLAINTEXT),
     })).unwrapOrThrow('encrypt failed');
     log(`Ciphertext (${ciphertext.length} B) ready`);

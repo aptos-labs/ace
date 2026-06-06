@@ -131,7 +131,7 @@ describe("custom-acl", () => {
                 keypairId,
                 knownChainName,
                 programId,
-                domain: label,
+                label,
                 plaintext,
             })
         ).unwrapOrThrow("encrypt failed");

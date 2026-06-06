@@ -25,10 +25,10 @@ import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
-    aceDeploymentFromConfig, accessPkFromAccessToken,
+    aceDeploymentFromConfig,
     buildAptosWalletFullMessage,
     ensureDataDir, log, readJson, readLocalnetConfig,
-    vrfOutputToAccessToken, writeJson,
+    vrfOutputToAccessKeypair, writeJson,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -91,8 +91,7 @@ async function main() {
         accountAddress: alice.accountAddress,
         sign: signAsAlice,
     });
-    const accessToken = vrfOutputToAccessToken(vrfBytes);
-    const accessPk = accessPkFromAccessToken(accessToken);
+    const { accessPk } = vrfOutputToAccessKeypair(vrfBytes);
     log(`  accessPk = 0x${bytesToHex(accessPk)}`);
 
     log('Registering accessPk on-chain...');

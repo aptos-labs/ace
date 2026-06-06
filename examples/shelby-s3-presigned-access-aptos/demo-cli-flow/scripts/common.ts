@@ -123,15 +123,18 @@ export async function fundViaFaucet(addr: AccountAddress, octas: number): Promis
 
 // ── Bearer-token crypto (mirrors presigned_access.move) ──────────────────────
 
-/** Reduce 32 bytes of tVRF output to a BLS12-381 Fr scalar. The bias from
- *  a 256-bit-mod-r reduction is ~2^-255, negligible for this use case. */
-export function vrfOutputToAccessToken(vrfBytes: Uint8Array): bigint {
+/** Derive the BLS12-381 access keypair from 32 bytes of tVRF output.
+ *  Reduces to an Fr scalar (`accessToken`) and computes `accessPk =
+ *  accessToken * G1`. The bias from 256-bit-mod-r reduction is ~2^-255,
+ *  negligible for this use case. */
+export function vrfOutputToAccessKeypair(vrfBytes: Uint8Array): {
+    accessToken: bigint;
+    accessPk: Uint8Array;
+} {
     if (vrfBytes.length !== 32) throw new Error(`vrfBytes: expected 32, got ${vrfBytes.length}`);
-    return BigInt('0x' + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
-}
-
-export function accessPkFromAccessToken(accessToken: bigint): Uint8Array {
-    return bls12_381.G1.ProjectivePoint.BASE.multiply(accessToken).toRawBytes(true);
+    const accessToken = BigInt('0x' + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
+    const accessPk = bls12_381.G1.ProjectivePoint.BASE.multiply(accessToken).toRawBytes(true);
+    return { accessToken, accessPk };
 }
 
 /** Build the bytes the bearer's `accessToken` actually signs. Must match

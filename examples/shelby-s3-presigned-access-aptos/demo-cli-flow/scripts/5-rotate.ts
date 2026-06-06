@@ -22,7 +22,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile,
-    accessPkFromAccessToken, log, readJson, readLocalnetConfig, vrfOutputToAccessToken,
+    log, readJson, readLocalnetConfig, vrfOutputToAccessKeypair,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -38,8 +38,7 @@ async function main() {
     // Any 32 bytes work; using deterministic-but-different bytes so the
     // demo doesn't depend on system randomness.
     const rotationBytes = new Uint8Array(32).map((_, i) => i + 100);
-    const accessTokenPrime = vrfOutputToAccessToken(rotationBytes);
-    const accessPkPrime = accessPkFromAccessToken(accessTokenPrime);
+    const { accessPk: accessPkPrime } = vrfOutputToAccessKeypair(rotationBytes);
     log(`Rotating accessPk -> 0x${bytesToHex(accessPkPrime)}`);
 
     const txn = await aptos.transaction.build.simple({

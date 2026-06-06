@@ -18,7 +18,7 @@ import { hexToBytes } from '@noble/hashes/utils';
 import {
     APP_ORIGIN, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
     aceDeploymentFromConfig, buildPayload, buildSignableMessage, log,
-    readJson, readLocalnetConfig, signWithAccessToken, vrfOutputToAccessToken,
+    readJson, readLocalnetConfig, signWithAccessToken, vrfOutputToAccessKeypair,
 } from './common.js';
 
 async function main() {
@@ -33,7 +33,7 @@ async function main() {
 
     const label = hexToBytes(grant.blobIdHex);
     const ciphertext = hexToBytes(grant.ciphertextHex);
-    const accessToken = vrfOutputToAccessToken(hexToBytes(grant.accessTokenHex));
+    const { accessToken } = vrfOutputToAccessKeypair(hexToBytes(grant.accessTokenHex));
 
     const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
     const userEpkBytes = epk.toBytes();

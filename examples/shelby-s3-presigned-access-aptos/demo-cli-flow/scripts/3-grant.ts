@@ -26,8 +26,9 @@ import { bytesToHex } from '@noble/hashes/utils';
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
     aceDeploymentFromConfig, accessPkFromAccessToken,
+    buildAptosWalletFullMessage,
     ensureDataDir, log, readJson, readLocalnetConfig,
-    vrfOutputToAccessToken, walletSignerFor, writeJson,
+    vrfOutputToAccessToken, writeJson,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -67,6 +68,20 @@ async function main() {
     })).unwrapOrThrow('encrypt failed');
     log(`Ciphertext (${ciphertext.length} B) ready`);
 
+    async function signAsAlice(message: string) {
+        const fullMessage = buildAptosWalletFullMessage({
+            accountAddress: alice.accountAddress,
+            chainId,
+            message,
+            nonce: `presigned-derive-${BLOB_SUFFIX}`,
+        });
+        return {
+            pubKey: alice.publicKey,
+            signature: alice.sign(fullMessage),
+            fullMessage,
+        };
+    }
+
     log('Deriving (accessToken, accessPk) via threshold VRF...');
     const vrfBytes = await ACE.tVRF.derive({
         aceDeployment,
@@ -74,7 +89,7 @@ async function main() {
         chainId, moduleAddr, moduleName,
         label: new TextEncoder().encode(BLOB_SUFFIX),
         accountAddress: alice.accountAddress,
-        sign: walletSignerFor({ account: alice, chainId, nonce: `presigned-derive-${BLOB_SUFFIX}` }),
+        sign: signAsAlice,
     });
     const accessToken = vrfOutputToAccessToken(vrfBytes);
     const accessPk = accessPkFromAccessToken(accessToken);

@@ -137,36 +137,65 @@ export function vrfOutputToAccessKeypair(vrfBytes: Uint8Array): {
     return { accessPrivateKey, accessPublicKey };
 }
 
-/** Build the bytes the bearer's `accessPrivateKey` actually signs. Must match
- *  `bcs::to_bytes(&SignableRequest { dst, label, user_epk, origin })`
- *  on-chain — struct BCS = concat of fields, each `vector<u8>` =
+/** What the bearer's `accessPrivateKey` actually signs. Mirrors the
+ *  on-chain `SignableRequest` Move struct — BCS for a struct is the
+ *  concatenation of its fields, and each `vector<u8>` is encoded as
  *  ULEB128(len)||bytes. */
-export function buildSignableMessage(args: {
+export class SignableRequest {
+    dst: Uint8Array;
     label: Uint8Array;
     userEpk: Uint8Array;
     origin: Uint8Array;
-}): Uint8Array {
-    const s = new Serializer();
-    s.serializeBytes(utf8ToBytes(SIGNABLE_REQUEST_DST));
-    s.serializeBytes(args.label);
-    s.serializeBytes(args.userEpk);
-    s.serializeBytes(args.origin);
-    return s.toUint8Array();
+
+    constructor(args: { label: Uint8Array; userEpk: Uint8Array; origin: Uint8Array }) {
+        this.dst = utf8ToBytes(SIGNABLE_REQUEST_DST);
+        this.label = args.label;
+        this.userEpk = args.userEpk;
+        this.origin = args.origin;
+    }
+
+    serialize(s: Serializer): void {
+        s.serializeBytes(this.dst);
+        s.serializeBytes(this.label);
+        s.serializeBytes(this.userEpk);
+        s.serializeBytes(this.origin);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
 }
 
-export function signWithAccessToken(accessPrivateKey: bigint, msg: Uint8Array): Uint8Array {
+/** The `payload: vector<u8>` the worker passes opaquely to the contract.
+ *  The contract bcs_stream-decodes it as `{ origin, sig }`; mirror that
+ *  shape here. */
+export class ReaderProof {
+    origin: Uint8Array;
+    sig: Uint8Array;
+
+    constructor(args: { origin: Uint8Array; sig: Uint8Array }) {
+        this.origin = args.origin;
+        this.sig = args.sig;
+    }
+
+    serialize(s: Serializer): void {
+        s.serializeBytes(this.origin);
+        s.serializeBytes(this.sig);
+    }
+
+    toBytes(): Uint8Array {
+        const s = new Serializer();
+        this.serialize(s);
+        return s.toUint8Array();
+    }
+}
+
+export function signWithAccessPrivateKey(accessPrivateKey: bigint, msg: Uint8Array): Uint8Array {
     return (bls12_381.G2.hashToCurve(msg, { DST: BLS_HASH_DST }) as any)
         .multiply(accessPrivateKey)
         .toRawBytes(true);
-}
-
-/** Build `payload: vector<u8>` — the worker passes this opaquely to the
- *  contract: `BCS({ origin, sig })`. */
-export function buildPayload(origin: Uint8Array, sig: Uint8Array): Uint8Array {
-    const s = new Serializer();
-    s.serializeBytes(origin);
-    s.serializeBytes(sig);
-    return s.toUint8Array();
 }
 
 /** Mirrors AIP-62 `aptos:signMessage` output for the labeled multi-line layout

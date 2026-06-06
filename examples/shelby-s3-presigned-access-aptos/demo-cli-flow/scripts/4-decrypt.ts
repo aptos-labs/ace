@@ -23,9 +23,9 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import { hexToBytes } from '@noble/hashes/utils';
 
 import {
-    APP_ORIGIN, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
-    aceDeploymentFromConfig, buildPayload, buildSignableMessage, log,
-    readJson, readLocalnetConfig, signWithAccessToken, vrfOutputToAccessKeypair,
+    APP_ORIGIN, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile, ReaderProof, SignableRequest,
+    aceDeploymentFromConfig, log,
+    readJson, readLocalnetConfig, signWithAccessPrivateKey, vrfOutputToAccessKeypair,
 } from './common.js';
 
 async function main() {
@@ -46,11 +46,11 @@ async function main() {
     const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
     const userEpkBytes = epk.toBytes();
     const originBytes = new TextEncoder().encode(APP_ORIGIN);
-    const sig = signWithAccessToken(
+    const sig = signWithAccessPrivateKey(
         accessPrivateKey,
-        buildSignableMessage({ label, userEpk: userEpkBytes, origin: originBytes }),
+        new SignableRequest({ label, userEpk: userEpkBytes, origin: originBytes }).toBytes(),
     );
-    const payload = buildPayload(originBytes, sig);
+    const payload = new ReaderProof({ origin: originBytes, sig }).toBytes();
 
     const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
     const chainId = await aptos.getChainId();

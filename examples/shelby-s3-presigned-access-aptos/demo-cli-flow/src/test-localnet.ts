@@ -6,15 +6,15 @@
  *
  * Flow:
  *   1. Deploy `presigned_access` to the localnet admin address.
- *   2. Alice (owner): encrypt a blob; derive (ask, apk) via ACE's threshold
+ *   2. Alice (owner): encrypt a blob; derive (accessToken, accessPk) via ACE's threshold
  *      VRF over (keypair_id, contract_id, owner_addr, blob_suffix); register
- *      apk on-chain. Saves `ask` in-memory.
-3. Alice hands ask to Bob (here just in-memory; in real life this is the
+ *      accessPk on-chain. Saves `accessToken` in-memory.
+3. Alice hands accessToken to Bob (here just in-memory; in real life this is the
  *      "pre-signed URL" that gets emailed/whatever).
- *   4. Bob with ask: sign over BCS(SignableRequest { dst, label, user_epk,
+ *   4. Bob with accessToken: sign over BCS(SignableRequest { dst, label, user_epk,
  *      origin }), wrap into payload = BCS({ origin, sig }), decrypt → ok.
- *   5. Alice overwrites apk (= revoke + reissue under a new ask). Bob's old
- *      ask must no longer verify — this is also the "wrong scalar → reject"
+ *   5. Alice overwrites accessPk (= revoke + reissue under a new accessToken). Bob's old
+ *      accessToken must no longer verify — this is also the "wrong scalar → reject"
  *      case, so the demo doesn't need a separate negative test for that.
  *
  * Prerequisites: a running ACE localnet with a G2 keypair. Bring one up via
@@ -117,11 +117,11 @@ function vrfOutputToAsk(vrfBytes: Uint8Array): bigint {
     return BigInt("0x" + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
 }
 
-function apkFromAsk(ask: bigint): Uint8Array {
-    return bls12_381.G1.ProjectivePoint.BASE.multiply(ask).toRawBytes(true);
+function accessPkFromAsk(accessToken: bigint): Uint8Array {
+    return bls12_381.G1.ProjectivePoint.BASE.multiply(accessToken).toRawBytes(true);
 }
 
-/** Build the bytes the reader's `ask` actually signs. Must match
+/** Build the bytes the reader's `accessToken` actually signs. Must match
  *  `bcs::to_bytes(&SignableRequest { dst, label, user_epk, origin })`
  *  on-chain — struct BCS = concat of fields, each `vector<u8>` =
  *  ULEB128(len)||bytes. */
@@ -138,9 +138,9 @@ function buildSignableMessage(args: {
     return s.toUint8Array();
 }
 
-function signWithAsk(ask: bigint, msg: Uint8Array): Uint8Array {
+function signWithAsk(accessToken: bigint, msg: Uint8Array): Uint8Array {
     return (bls12_381.G2.hashToCurve(msg, { DST: BLS_HASH_DST }) as any)
-        .multiply(ask)
+        .multiply(accessToken)
         .toRawBytes(true);
 }
 
@@ -294,27 +294,27 @@ async function main(): Promise<void> {
         plaintext,
     })).unwrapOrThrow("encrypt failed");
 
-    log("Alice deriving (ask, apk) via threshold VRF...");
-    const ask = await deriveAsk({
+    log("Alice deriving (accessToken, accessPk) via threshold VRF...");
+    const accessToken = await deriveAsk({
         aceDeployment, keypairId, contractId, owner: alice, blobSuffix, chainId,
     });
-    const apk = apkFromAsk(ask);
-    log(`  apk = 0x${bytesToHex(apk)}`);
+    const accessPk = accessPkFromAsk(accessToken);
+    log(`  accessPk = 0x${bytesToHex(accessPk)}`);
 
-    log("Alice registering apk on-chain...");
+    log("Alice registering accessPk on-chain...");
     await runTxn(
         aptos, alice,
         `${moduleAddr.toStringLong()}::${moduleName}::register`,
-        [blobSuffix, apk],
+        [blobSuffix, accessPk],
     );
     log("✓ Registered");
 
-    // ── 4. Alice hands ask to Bob (in-memory; in real life out-of-band) ─────
+    // ── 4. Alice hands accessToken to Bob (in-memory; in real life out-of-band) ─────
     const bob = Account.generate();
     await fundViaFaucet(bob.accountAddress, 100_000_000);
     log(`Bob = ${bob.accountAddress.toStringLong()}`);
 
-    async function bobAttemptToDecrypt(askForBob: bigint): Promise<Uint8Array | null> {
+    async function bobAttemptToDecrypt(accessTokenForBob: bigint): Promise<Uint8Array | null> {
         const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
         const userEpkBytes = epk.toBytes();
         const originBytes = enc.encode(APP_ORIGIN);
@@ -323,7 +323,7 @@ async function main(): Promise<void> {
             userEpk: userEpkBytes,
             origin: originBytes,
         });
-        const sig = signWithAsk(askForBob, signableMsg);
+        const sig = signWithAsk(accessTokenForBob, signableMsg);
         const payload = buildPayload(originBytes, sig);
         try {
             return await ACE.AptosCustomFlow.decrypt({
@@ -337,36 +337,36 @@ async function main(): Promise<void> {
         }
     }
 
-    log("Alice hands `ask` to Bob (out-of-band — emailed, stored in wallet, …)");
-    const bobWithAccess = await bobAttemptToDecrypt(ask);
-    if (bobWithAccess === null) throw new Error("Bob should have decrypted with the real ask");
+    log("Alice hands `accessToken` to Bob (out-of-band — emailed, stored in wallet, …)");
+    const bobWithAccess = await bobAttemptToDecrypt(accessToken);
+    if (bobWithAccess === null) throw new Error("Bob should have decrypted with the real accessToken");
     const got = dec.decode(bobWithAccess);
     if (got !== dec.decode(plaintext)) {
         throw new Error(`plaintext mismatch: ${got}`);
     }
-    log(`✓ Bob decrypted with ask: "${got}"`);
+    log(`✓ Bob decrypted with accessToken: "${got}"`);
 
-    // ── 5. Alice rotates apk → Bob's old ask must stop working ──────────────
+    // ── 5. Alice rotates accessPk → Bob's old accessToken must stop working ──────────────
     // Rotation doesn't have to re-use tVRF — the only property the contract
-    // enforces at `register` is that `apk` is a well-formed G1 point. Alice
+    // enforces at `register` is that `accessPk` is a well-formed G1 point. Alice
     // could swap in any fresh keypair (or re-derive tVRF under a different
     // keypair_id/contract). Here we just pick a deterministic-but-different
     // scalar so the demo stays self-contained.
-    log("Alice rotating: register a fresh apk → invalidates the old ask...");
-    const askPrime = vrfOutputToAsk(
+    log("Alice rotating: register a fresh accessPk → invalidates the old accessToken...");
+    const accessTokenPrime = vrfOutputToAsk(
         new Uint8Array(32).map((_, i) => i + 100),
     );
-    const apkPrime = apkFromAsk(askPrime);
+    const accessPkPrime = accessPkFromAsk(accessTokenPrime);
     await runTxn(
         aptos, alice,
         `${moduleAddr.toStringLong()}::${moduleName}::register`,
-        [blobSuffix, apkPrime],
+        [blobSuffix, accessPkPrime],
     );
     log("✓ Overwritten");
 
-    const bobAfterRotate = await bobAttemptToDecrypt(ask);
-    if (bobAfterRotate !== null) throw new Error("Bob's old ask should NOT work after rotation");
-    log("✓ Denied — Bob's old ask no longer matches the rotated apk");
+    const bobAfterRotate = await bobAttemptToDecrypt(accessToken);
+    if (bobAfterRotate !== null) throw new Error("Bob's old accessToken should NOT work after rotation");
+    log("✓ Denied — Bob's old accessToken no longer matches the rotated accessPk");
 
     log("");
     log("=== Demo complete ===");

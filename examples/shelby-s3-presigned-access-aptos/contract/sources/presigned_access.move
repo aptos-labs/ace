@@ -4,10 +4,10 @@
 /// Shelby pre-signed access: one BLS12-381 bearer pubkey per blob.
 ///
 /// Owner uploads `enc_blob` for `blob_id = @<owner>/<suffix>` to Shelby,
-/// derives a deterministic BLS keypair `(ask, apk)` from `(owner, blob_id)`
-/// via ACE's threshold VRF, and registers `apk` on-chain here. The owner
-/// shares `ask` out-of-band as a single-token access grant ("pre-signed
-/// URL" semantics): anyone who holds `ask` can ask the ACE workers to
+/// derives a deterministic BLS keypair `(access_token, access_pk)` from `(owner, blob_id)`
+/// via ACE's threshold VRF, and registers `access_pk` on-chain here. The owner
+/// shares `access_token` out-of-band as a single-token access grant ("pre-signed
+/// URL" semantics): anyone who holds `access_token` can access_token the ACE workers to
 /// release a decryption-key share — provided they sign for this dapp's
 /// origin.
 ///
@@ -17,13 +17,13 @@
 ///
 ///   payload     = BCS({ claimed_origin, sig })
 ///   signed_msg  = BCS(SignableRequest { dst, label, user_epk, claimed_origin })
-///   sig is a BLS sig over signed_msg under the registered `apk`.
+///   sig is a BLS sig over signed_msg under the registered `access_pk`.
 ///
 /// Access is granted iff `claimed_origin == EXPECTED_APP_ORIGIN` AND
 /// `sig` verifies. Binding `user_epk` stops an eavesdropper from replaying
 /// a captured signature with their own ephemeral encryption key; binding
 /// `claimed_origin` mirrors what the basic flow gets for free via
-/// wallet-`fullMessage` extraction — a wallet/helper holding `ask` should
+/// wallet-`fullMessage` extraction — a wallet/helper holding `access_token` should
 /// refuse to sign for an origin other than the actual requester's, so
 /// a malicious dapp at `evil.com` can't get the wallet to produce a
 /// signature claiming to be this dapp's origin. The explicit `dst` tag
@@ -37,8 +37,8 @@
 /// `tutorial-aptos` marketplace does. Owners don't pick the origin —
 /// the dapp does, at deploy time.
 ///
-/// Overwrite-by-same-owner = revoke + reissue: registering a new `apk`
-/// for the same blob invalidates the old `ask`.
+/// Overwrite-by-same-owner = revoke + reissue: registering a new `access_pk`
+/// for the same blob invalidates the old `access_token`.
 module admin::presigned_access {
     use std::bcs;
     use std::error;
@@ -51,12 +51,12 @@ module admin::presigned_access {
     use aptos_std::table::{Self, Table};
 
     /// Domain-separation tag for the BLS signed message. Bumping it
-    /// invalidates every outstanding `ask` even if the registered `apk`
+    /// invalidates every outstanding `access_token` even if the registered `access_pk`
     /// is unchanged — useful for protocol-level breaking changes.
     const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v2";
 
     /// The dapp origin that ACE requests must be signed for. Must match
-    /// the `application` value that any wallet/helper holding `ask`
+    /// the `application` value that any wallet/helper holding `access_token`
     /// attests to before signing. Cribbed by `tools/gen-fixture.ts` and
     /// by the TS-side reader scripts.
     const EXPECTED_APP_ORIGIN: vector<u8> = b"https://shelby.example";
@@ -68,7 +68,7 @@ module admin::presigned_access {
     /// Supplied bytes are not a valid BLS12-381 G1 public key.
     const E_INVALID_APK: u64 = 3;
 
-    /// What `ask` actually signs. BCS-encoded by the reader, then
+    /// What `access_token` actually signs. BCS-encoded by the reader, then
     /// `bls12381::verify_normal_signature`'d by the hook. BCS for a
     /// struct = concat of its field encodings; each `vector<u8>` is
     /// ULEB128(len)||bytes.
@@ -79,7 +79,7 @@ module admin::presigned_access {
         origin: vector<u8>,
     }
 
-    /// Singleton at `@admin`. `entries[blob_id] = apk_bytes` (48-byte
+    /// Singleton at `@admin`. `entries[blob_id] = access_pk_bytes` (48-byte
     /// compressed BLS12-381 G1 element). `blob_id` is the canonical
     /// `@<owner>/<suffix>` UTF-8 string.
     struct Registry has key {
@@ -102,17 +102,17 @@ module admin::presigned_access {
     public entry fun register(
         owner: &signer,
         blob_name_suffix: String,
-        apk: vector<u8>,
+        access_pk: vector<u8>,
     ) acquires Registry {
         assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
         // Fail closed on garbage pubkeys at write-time rather than later
         // at every verify call.
-        let pk_opt = bls12381::public_key_from_bytes(apk);
+        let pk_opt = bls12381::public_key_from_bytes(access_pk);
         assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_APK));
 
         let blob_id = create_full_blob_name(signer::address_of(owner), blob_name_suffix);
         let registry = borrow_global_mut<Registry>(@admin);
-        registry.entries.upsert(*blob_id.bytes(), apk);
+        registry.entries.upsert(*blob_id.bytes(), access_pk);
     }
 
     #[view]
@@ -120,7 +120,7 @@ module admin::presigned_access {
     /// origin matches this dapp's `EXPECTED_APP_ORIGIN` and (b) `sig`
     /// is a valid BLS12-381 signature over
     /// `BCS(SignableRequest { dst, label, user_epk, claimed_origin })`
-    /// under the registered `apk`. The signature suite is the IETF
+    /// under the registered `access_pk`. The signature suite is the IETF
     /// min-pubkey-size variant with DST
     /// `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_` (matches Aptos's
     /// native `aptos_std::bls12381::verify_normal_signature`).
@@ -132,7 +132,7 @@ module admin::presigned_access {
         if (!exists<Registry>(@admin)) return false;
         let registry = borrow_global<Registry>(@admin);
         if (!registry.entries.contains(label)) return false;
-        let apk_bytes = *registry.entries.borrow(label);
+        let access_pk_bytes = *registry.entries.borrow(label);
 
         let stream = bcs_stream::new(payload);
         let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
@@ -140,7 +140,7 @@ module admin::presigned_access {
         if (bcs_stream::has_remaining(&mut stream)) return false;
         if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
 
-        let pk_opt = bls12381::public_key_from_bytes(apk_bytes);
+        let pk_opt = bls12381::public_key_from_bytes(access_pk_bytes);
         if (!option::is_some(&pk_opt)) return false; // unreachable: register() validates
         let pk = option::extract(&mut pk_opt);
         let sig = bls12381::signature_from_bytes(sig_bytes);
@@ -157,7 +157,7 @@ module admin::presigned_access {
     /// Worker-called hook for ACE threshold-VRF derive requests. The
     /// reader-side custom-flow check is in
     /// `on_ace_decryption_request_custom_flow`; this one is for the
-    /// owner-side derive of `(ask, apk)`. We allow any account to derive
+    /// owner-side derive of `(access_token, access_pk)`. We allow any account to derive
     /// (the register step further enforces that the signer's address
     /// matches the blob prefix), and require the same dapp origin.
     public fun on_ace_vrf_request(
@@ -189,8 +189,8 @@ module admin::presigned_access {
     fun happy_path_verifies(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
-        let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk);
+        let access_pk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
+        register(admin, string::utf8(b"song.mp3"), access_pk);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let user_epk  = x"deadbeefcafebabe";
@@ -203,8 +203,8 @@ module admin::presigned_access {
     fun mismatched_user_epk_rejected(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
-        let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk);
+        let access_pk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
+        register(admin, string::utf8(b"song.mp3"), access_pk);
 
         let label    = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let bad_pk   = x"deadbeefcafebabf";  // last byte flipped
@@ -221,8 +221,8 @@ module admin::presigned_access {
     fun wrong_origin_rejected(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
-        let apk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk);
+        let access_pk = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
+        register(admin, string::utf8(b"song.mp3"), access_pk);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let user_epk  = x"deadbeefcafebabe";
@@ -242,35 +242,35 @@ module admin::presigned_access {
         assert!(!on_ace_decryption_request_custom_flow(label, user_epk, payload), 102);
     }
 
-    // Garbage apk bytes → register aborts; nothing is stored.
+    // Garbage access_pk bytes → register aborts; nothing is stored.
     #[test(admin = @admin)]
     #[expected_failure(abort_code = 0x10003, location = Self)]
-    fun register_rejects_garbage_apk(admin: &signer) acquires Registry {
+    fun register_rejects_garbage_access_pk(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
         let garbage = x"00112233";
         register(admin, string::utf8(b"song.mp3"), garbage);
     }
 
-    // Re-registering with a new apk under the same suffix overwrites
-    // (= revokes the old ask). Sig from the old apk should now reject.
+    // Re-registering with a new access_pk under the same suffix overwrites
+    // (= revokes the old access_token). Sig from the old access_pk should now reject.
     #[test(admin = @admin)]
-    fun overwrite_revokes_previous_apk(admin: &signer) acquires Registry {
+    fun overwrite_revokes_previous_access_pk(admin: &signer) acquires Registry {
         account::create_account_for_test(@admin);
         init(admin);
 
-        let apk_v1 = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
-        register(admin, string::utf8(b"song.mp3"), apk_v1);
+        let access_pk_v1 = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
+        register(admin, string::utf8(b"song.mp3"), access_pk_v1);
 
         let label   = x"40303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636166652f736f6e672e6d7033";
         let user_epk  = x"deadbeefcafebabe";
         let payload = x"1668747470733a2f2f7368656c62792e6578616d706c6560b886d3be1b43e6edc06146346e0a55291e27f2cbf3dcd24688252f314b201e7393b0f4d15ff62412549ed2b4fd0e2a9c134e605444970e17ac079d526c650c512a52898421b7930e6bc1b6eef065ced6301b8b183c2d48f85de3e34d662ff4c6";
         assert!(on_ace_decryption_request_custom_flow(label, user_epk, payload), 110);
 
-        // Overwrite with a second well-formed apk (any valid G1 pk that
-        // differs from apk_v1 works).
-        let apk_v2 = x"808864c91ae7a9998b3f5ee71f447840864e56d79838e4785ff5126c51480198df3d972e1e0348c6da80d396983e42d7";
-        register(admin, string::utf8(b"song.mp3"), apk_v2);
+        // Overwrite with a second well-formed access_pk (any valid G1 pk that
+        // differs from access_pk_v1 works).
+        let access_pk_v2 = x"808864c91ae7a9998b3f5ee71f447840864e56d79838e4785ff5126c51480198df3d972e1e0348c6da80d396983e42d7";
+        register(admin, string::utf8(b"song.mp3"), access_pk_v2);
 
         assert!(!on_ace_decryption_request_custom_flow(label, user_epk, payload), 111);
     }

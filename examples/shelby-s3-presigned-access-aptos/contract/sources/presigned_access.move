@@ -153,6 +153,21 @@ module admin::presigned_access {
         bls12381::verify_normal_signature(&sig, &pk, msg)
     }
 
+    #[view]
+    /// Worker-called hook for ACE threshold-VRF derive requests. The
+    /// reader-side custom-flow check is in
+    /// `on_ace_decryption_request_custom_flow`; this one is for the
+    /// owner-side derive of `(ask, apk)`. We allow any account to derive
+    /// (the register step further enforces that the signer's address
+    /// matches the blob prefix), and require the same dapp origin.
+    public fun on_ace_vrf_request(
+        _label: vector<u8>,
+        _account: address,
+        origin: String,
+    ): bool {
+        origin.bytes() == &EXPECTED_APP_ORIGIN
+    }
+
     /// Canonical blob_id constructor. Matches Shelby's convention used by
     /// `shelby-explorer-acl-aptos`: `@<canonical-64-hex-owner>/<suffix>`.
     public fun create_full_blob_name(owner_address: address, blob_name_suffix: String): String {

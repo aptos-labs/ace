@@ -68,11 +68,10 @@ async function main() {
     log(`Ciphertext (${ciphertext.length} B) ready`);
 
     log('Deriving (accessToken, accessPk) via threshold VRF...');
-    const contractId = ACE.ContractID.newAptos({ chainId, moduleAddr, moduleName });
     const vrfBytes = await ACE.tVRF.derive({
         aceDeployment,
         keypairId,
-        contractId,
+        chainId, moduleAddr, moduleName,
         label: new TextEncoder().encode(BLOB_SUFFIX),
         accountAddress: alice.accountAddress,
         sign: walletSignerFor({ account: alice, chainId, nonce: `presigned-derive-${BLOB_SUFFIX}` }),

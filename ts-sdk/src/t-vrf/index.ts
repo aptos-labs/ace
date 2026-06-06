@@ -514,25 +514,48 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
  * that render the message to a user between phases; this is for
  * everything else.
  *
+ * Takes the Aptos contract identity (`chainId`, `moduleAddr`,
+ * `moduleName`) as flat fields rather than a pre-built `ContractID`
+ * — matches the shape of `AptosCustomFlow.encrypt` / `decrypt`. tVRF
+ * is Aptos-only at the worker layer (`verify_threshold_vrf_aptos`),
+ * so there's no Solana variant to keep optional.
+ *
  * Example:
  *
  *   const vrfBytes = await ACE.tVRF.derive({
- *       aceDeployment, keypairId, contractId, label, accountAddress: owner.accountAddress,
+ *       aceDeployment, keypairId, chainId, moduleAddr, moduleName,
+ *       label, accountAddress: owner.accountAddress,
  *       sign: async msg => {
  *           const fullMessage = buildAptosWalletFullMessage({ ... message: msg, ... });
  *           return { pubKey: owner.publicKey, signature: owner.sign(fullMessage), fullMessage };
  *       },
  *   });
  */
-export async function derive(args: RequestToSignArgs & {
+export async function derive(args: {
+    aceDeployment: AceDeployment;
+    keypairId: AccountAddress;
+    chainId: number;
+    moduleAddr: AccountAddress;
+    moduleName: string;
+    label: Uint8Array;
+    accountAddress: AccountAddress;
     sign: (msgToSign: string) => Promise<{
         pubKey: PublicKey;
         signature: Signature;
         fullMessage: string;
     }>;
 }): Promise<Uint8Array> {
-    const { sign, ...sessionArgs } = args;
-    const session = await DerivationSession.create(sessionArgs);
+    const session = await DerivationSession.create({
+        aceDeployment: args.aceDeployment,
+        keypairId: args.keypairId,
+        contractId: ContractID.newAptos({
+            chainId: args.chainId,
+            moduleAddr: args.moduleAddr,
+            moduleName: args.moduleName,
+        }),
+        label: args.label,
+        accountAddress: args.accountAddress,
+    });
     const message = await session.getRequestToSign();
-    return session.deriveWithSignature(await sign(message));
+    return session.deriveWithSignature(await args.sign(message));
 }

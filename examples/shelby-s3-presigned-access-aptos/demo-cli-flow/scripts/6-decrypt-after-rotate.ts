@@ -4,10 +4,10 @@
 /**
  * Step 6 — The stale grant from step 3 no longer decrypts.
  *
- * Same decrypt flow as step 4 — same accessToken, same signed message
- * shape — but the on-chain accessPk has been rotated by step 5, so the
- * sig under the *old* accessToken doesn't verify against the *new*
- * accessPk. Workers return 403 and the SDK reports the share count is
+ * Same decrypt flow as step 4 — same accessPrivateKey, same signed message
+ * shape — but the on-chain accessPublicKey has been rotated by step 5, so the
+ * sig under the *old* accessPrivateKey doesn't verify against the *new*
+ * accessPublicKey. Workers return 403 and the SDK reports the share count is
  * below threshold.
  */
 
@@ -33,13 +33,13 @@ async function main() {
 
     const label = hexToBytes(grant.blobIdHex);
     const ciphertext = hexToBytes(grant.ciphertextHex);
-    const { accessToken } = vrfOutputToAccessKeypair(hexToBytes(grant.accessTokenHex));
+    const { accessPrivateKey } = vrfOutputToAccessKeypair(hexToBytes(grant.accessPrivateKeyHex));
 
     const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
     const userEpkBytes = epk.toBytes();
     const originBytes = new TextEncoder().encode(APP_ORIGIN);
     const sig = signWithAccessToken(
-        accessToken,
+        accessPrivateKey,
         buildSignableMessage({ label, userEpk: userEpkBytes, origin: originBytes }),
     );
     const payload = buildPayload(originBytes, sig);
@@ -47,7 +47,7 @@ async function main() {
     const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
     const chainId = await aptos.getChainId();
 
-    log('Attempting decrypt with the now-stale accessToken (should fail)...');
+    log('Attempting decrypt with the now-stale accessPrivateKey (should fail)...');
     try {
         await ACE.AptosCustomFlow.decrypt({
             ciphertext, label,

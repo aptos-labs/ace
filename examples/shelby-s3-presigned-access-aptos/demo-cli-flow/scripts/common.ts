@@ -91,7 +91,7 @@ export interface GrantFile {
     blobSuffix: string;
     blobIdHex: string;        // utf8 hex of `@<canon-owner>/<suffix>`
     ciphertextHex: string;
-    accessTokenHex: string;   // 32-byte hex; reduced mod r when used as a scalar
+    accessPrivateKeyHex: string;   // 32-byte hex; reduced mod r when used as a scalar
 }
 
 export function ensureDataDir(): void {
@@ -124,20 +124,20 @@ export async function fundViaFaucet(addr: AccountAddress, octas: number): Promis
 // ── Bearer-token crypto (mirrors presigned_access.move) ──────────────────────
 
 /** Derive the BLS12-381 access keypair from 32 bytes of tVRF output.
- *  Reduces to an Fr scalar (`accessToken`) and computes `accessPk =
- *  accessToken * G1`. The bias from 256-bit-mod-r reduction is ~2^-255,
+ *  Reduces to an Fr scalar (`accessPrivateKey`) and computes `accessPublicKey =
+ *  accessPrivateKey * G1`. The bias from 256-bit-mod-r reduction is ~2^-255,
  *  negligible for this use case. */
 export function vrfOutputToAccessKeypair(vrfBytes: Uint8Array): {
-    accessToken: bigint;
-    accessPk: Uint8Array;
+    accessPrivateKey: bigint;
+    accessPublicKey: Uint8Array;
 } {
     if (vrfBytes.length !== 32) throw new Error(`vrfBytes: expected 32, got ${vrfBytes.length}`);
-    const accessToken = BigInt('0x' + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
-    const accessPk = bls12_381.G1.ProjectivePoint.BASE.multiply(accessToken).toRawBytes(true);
-    return { accessToken, accessPk };
+    const accessPrivateKey = BigInt('0x' + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
+    const accessPublicKey = bls12_381.G1.ProjectivePoint.BASE.multiply(accessPrivateKey).toRawBytes(true);
+    return { accessPrivateKey, accessPublicKey };
 }
 
-/** Build the bytes the bearer's `accessToken` actually signs. Must match
+/** Build the bytes the bearer's `accessPrivateKey` actually signs. Must match
  *  `bcs::to_bytes(&SignableRequest { dst, label, user_epk, origin })`
  *  on-chain — struct BCS = concat of fields, each `vector<u8>` =
  *  ULEB128(len)||bytes. */
@@ -154,9 +154,9 @@ export function buildSignableMessage(args: {
     return s.toUint8Array();
 }
 
-export function signWithAccessToken(accessToken: bigint, msg: Uint8Array): Uint8Array {
+export function signWithAccessToken(accessPrivateKey: bigint, msg: Uint8Array): Uint8Array {
     return (bls12_381.G2.hashToCurve(msg, { DST: BLS_HASH_DST }) as any)
-        .multiply(accessToken)
+        .multiply(accessPrivateKey)
         .toRawBytes(true);
 }
 

@@ -8,7 +8,7 @@
  * Alice is the data owner: she deploys the contract in step 2, encrypts +
  * grants in step 3, rotates in step 5. Bob never gets an on-chain identity
  * — the whole point of the bearer-token pattern is that holding the
- * `accessToken` is the only thing that matters for read access.
+ * `accessPrivateKey` is the only thing that matters for read access.
  *
  * Idempotent: reuses `data/alice.json` if present, skips the faucet call
  * if Alice already has APT.

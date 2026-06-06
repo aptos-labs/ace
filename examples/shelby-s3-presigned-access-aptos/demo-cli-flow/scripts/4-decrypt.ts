@@ -8,13 +8,13 @@
  * on-chain identity check at decrypt time. The contract's custom-flow
  * hook only verifies that the request's `claimed_origin` matches
  * `EXPECTED_APP_ORIGIN` AND that the request's BLS sig verifies under the
- * `accessPk` registered for `label`. Possession of `accessToken` is the
+ * `accessPublicKey` registered for `label`. Possession of `accessPrivateKey` is the
  * single capability check.
  *
  * Flow:
  *   - Generate a fresh ephemeral PKE keypair for the response.
  *   - Sign `BCS(SignableRequest { dst, label, user_epk, origin })` with
- *     `accessToken`.
+ *     `accessPrivateKey`.
  *   - Wrap `payload = BCS({ origin, sig })` and call AptosCustomFlow.decrypt.
  */
 
@@ -40,14 +40,14 @@ async function main() {
 
     const label = hexToBytes(grant.blobIdHex);
     const ciphertext = hexToBytes(grant.ciphertextHex);
-    const { accessToken } = vrfOutputToAccessKeypair(hexToBytes(grant.accessTokenHex));
+    const { accessPrivateKey } = vrfOutputToAccessKeypair(hexToBytes(grant.accessPrivateKeyHex));
     log(`Decrypting "${new TextDecoder().decode(label)}"`);
 
     const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
     const userEpkBytes = epk.toBytes();
     const originBytes = new TextEncoder().encode(APP_ORIGIN);
     const sig = signWithAccessToken(
-        accessToken,
+        accessPrivateKey,
         buildSignableMessage({ label, userEpk: userEpkBytes, origin: originBytes }),
     );
     const payload = buildPayload(originBytes, sig);
@@ -63,7 +63,7 @@ async function main() {
     });
     log(`Decrypted: "${new TextDecoder().decode(plaintext)}"`);
     log('');
-    log('Try `pnpm 5-rotate` next to watch Alice revoke the grant by registering a fresh accessPk.');
+    log('Try `pnpm 5-rotate` next to watch Alice revoke the grant by registering a fresh accessPublicKey.');
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

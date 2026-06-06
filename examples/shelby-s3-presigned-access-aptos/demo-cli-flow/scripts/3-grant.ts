@@ -6,15 +6,15 @@
  *
  * Three things happen here:
  *   - Encrypt the plaintext under ACE custom flow with `domain = blob_id`.
- *   - Derive a deterministic BLS keypair `(accessToken, accessPk)` from
+ *   - Derive a deterministic BLS keypair `(accessPrivateKey, accessPublicKey)` from
  *     `(keypair_id, contract_id, alice_addr, blob_suffix)` via threshold
- *     VRF. The owner reproduces the same `accessToken` later by re-running
+ *     VRF. The owner reproduces the same `accessPrivateKey` later by re-running
  *     this derive — no key to memorize.
- *   - Register `accessPk` on-chain. Bob (= whoever) decrypts in step 4 by
- *     signing requests under `accessToken`.
+ *   - Register `accessPublicKey` on-chain. Bob (= whoever) decrypts in step 4 by
+ *     signing requests under `accessPrivateKey`.
  *
  * Output: `data/grant.json` — `{ blobSuffix, blobIdHex, ciphertextHex,
- * accessTokenHex }`. That single file is the pre-signed URL.
+ * accessPrivateKeyHex }`. That single file is the pre-signed URL.
  */
 
 import {
@@ -82,7 +82,7 @@ async function main() {
         };
     }
 
-    log('Deriving (accessToken, accessPk) via threshold VRF...');
+    log('Deriving (accessPrivateKey, accessPublicKey) via threshold VRF...');
     const vrfBytes = await ACE.tVRF.derive({
         aceDeployment,
         keypairId,
@@ -91,16 +91,16 @@ async function main() {
         accountAddress: alice.accountAddress,
         sign: signAsAlice,
     });
-    const { accessPk } = vrfOutputToAccessKeypair(vrfBytes);
-    log(`  accessPk = 0x${bytesToHex(accessPk)}`);
+    const { accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
+    log(`  accessPublicKey = 0x${bytesToHex(accessPublicKey)}`);
 
-    log('Registering accessPk on-chain...');
+    log('Registering accessPublicKey on-chain...');
     const registerTxn = await aptos.transaction.build.simple({
         sender: alice.accountAddress,
         data: {
             function: `${conf.appContractAddr}::presigned_access::register` as `${string}::${string}::${string}`,
             typeArguments: [],
-            functionArguments: [BLOB_SUFFIX, accessPk],
+            functionArguments: [BLOB_SUFFIX, accessPublicKey],
         },
     });
     const submitted = await aptos.signAndSubmitTransaction({ signer: alice, transaction: registerTxn });
@@ -111,7 +111,7 @@ async function main() {
         blobSuffix: BLOB_SUFFIX,
         blobIdHex: bytesToHex(labelBytes),
         ciphertextHex: bytesToHex(ciphertext),
-        accessTokenHex: vrfBytes ? bytesToHex(vrfBytes) : '',
+        accessPrivateKeyHex: vrfBytes ? bytesToHex(vrfBytes) : '',
     } satisfies GrantFile);
     log(`Wrote pre-signed grant to ${GRANT_FILE}`);
     log('');

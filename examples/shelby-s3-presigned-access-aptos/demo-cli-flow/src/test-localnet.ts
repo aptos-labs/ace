@@ -9,14 +9,13 @@
  *   2. Alice (owner): encrypt a blob; derive (ask, apk) via ACE's threshold
  *      VRF over (keypair_id, contract_id, owner_addr, blob_suffix); register
  *      apk on-chain. Saves `ask` in-memory.
- *   3. Bob with no ask: try to decrypt → must fail (the workers' custom-flow
- *      hook check rejects because Bob can't produce a valid sig under apk).
- *   4. Alice hands ask to Bob (here just in-memory; in real life this is the
+3. Alice hands ask to Bob (here just in-memory; in real life this is the
  *      "pre-signed URL" that gets emailed/whatever).
- *   5. Bob with ask: sign over BCS(SignableRequest { dst, label, user_epk,
+ *   4. Bob with ask: sign over BCS(SignableRequest { dst, label, user_epk,
  *      origin }), wrap into payload = BCS({ origin, sig }), decrypt → ok.
- *   6. Alice overwrites apk (= revoke + reissue under a new ask). Bob's old
- *      ask must no longer verify.
+ *   5. Alice overwrites apk (= revoke + reissue under a new ask). Bob's old
+ *      ask must no longer verify — this is also the "wrong scalar → reject"
+ *      case, so the demo doesn't need a separate negative test for that.
  *
  * Prerequisites: a running ACE localnet with a G2 keypair. Bring one up via
  * `pnpm --filter ace-scenarios run-local-network-forever` (wait for the
@@ -310,7 +309,7 @@ async function main(): Promise<void> {
     );
     log("✓ Registered");
 
-    // ── 4. Bob without `ask` tries to decrypt — must fail ────────────────────
+    // ── 4. Alice hands ask to Bob (in-memory; in real life out-of-band) ─────
     const bob = Account.generate();
     await fundViaFaucet(bob.accountAddress, 100_000_000);
     log(`Bob = ${bob.accountAddress.toStringLong()}`);
@@ -338,13 +337,6 @@ async function main(): Promise<void> {
         }
     }
 
-    log("Bob (no real ask) attempting decrypt with a garbage scalar...");
-    const garbageAsk = BigInt("0xdeadbeefcafebabe") % bls12_381.fields.Fr.ORDER;
-    const bobNoAccess = await bobAttemptToDecrypt(garbageAsk);
-    if (bobNoAccess !== null) throw new Error("Bob should NOT have decrypted without the real ask");
-    log("✓ Denied — Bob's garbage sig didn't verify under Alice's registered apk");
-
-    // ── 5. Alice hands ask to Bob (in-memory; in real life out-of-band) ──────
     log("Alice hands `ask` to Bob (out-of-band — emailed, stored in wallet, …)");
     const bobWithAccess = await bobAttemptToDecrypt(ask);
     if (bobWithAccess === null) throw new Error("Bob should have decrypted with the real ask");
@@ -354,7 +346,7 @@ async function main(): Promise<void> {
     }
     log(`✓ Bob decrypted with ask: "${got}"`);
 
-    // ── 6. Alice rotates apk → Bob's old ask must stop working ───────────────
+    // ── 5. Alice rotates apk → Bob's old ask must stop working ──────────────
     // Rotation doesn't have to re-use tVRF — the only property the contract
     // enforces at `register` is that `apk` is a well-formed G1 point. Alice
     // could swap in any fresh keypair (or re-derive tVRF under a different

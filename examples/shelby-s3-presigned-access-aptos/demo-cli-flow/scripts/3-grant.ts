@@ -25,8 +25,9 @@ import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
-    aceDeploymentFromConfig, accessPkFromAccessToken, buildAptosWalletFullMessage,
-    ensureDataDir, log, readJson, readLocalnetConfig, vrfOutputToAccessToken, writeJson,
+    aceDeploymentFromConfig, accessPkFromAccessToken,
+    ensureDataDir, log, readJson, readLocalnetConfig,
+    vrfOutputToAccessToken, walletSignerFor, writeJson,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -74,19 +75,7 @@ async function main() {
         contractId,
         label: new TextEncoder().encode(BLOB_SUFFIX),
         accountAddress: alice.accountAddress,
-        sign: async (msg) => {
-            const fullMessage = buildAptosWalletFullMessage({
-                accountAddress: alice.accountAddress,
-                chainId,
-                message: msg,
-                nonce: `presigned-derive-${BLOB_SUFFIX}`,
-            });
-            return {
-                pubKey: alice.publicKey,
-                signature: alice.sign(fullMessage),
-                fullMessage,
-            };
-        },
+        sign: walletSignerFor({ account: alice, chainId, nonce: `presigned-derive-${BLOB_SUFFIX}` }),
     });
     const accessToken = vrfOutputToAccessToken(vrfBytes);
     const accessPk = accessPkFromAccessToken(accessToken);

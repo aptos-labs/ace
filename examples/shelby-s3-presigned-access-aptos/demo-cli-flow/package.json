@@ -1,12 +1,17 @@
 {
   "name": "shelby-s3-presigned-access-aptos-demo-cli-flow",
   "version": "0.1.0",
-  "description": "End-to-end demo of the Shelby S3 pre-signed access pattern on Aptos.",
+  "description": "Step-by-step demo of the Shelby S3 pre-signed access pattern on Aptos.",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:localnet": "tsx src/test-localnet.ts"
+    "1-setup": "tsx scripts/1-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-grant": "tsx scripts/3-grant.ts",
+    "4-decrypt": "tsx scripts/4-decrypt.ts",
+    "5-rotate": "tsx scripts/5-rotate.ts",
+    "6-decrypt-after-rotate": "tsx scripts/6-decrypt-after-rotate.ts"
   },
   "dependencies": {
     "@aptos-labs/ts-sdk": "^5.2.0",

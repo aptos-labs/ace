@@ -11,7 +11,7 @@
  *
  * ENCRYPT (anyone):
  *   2. Generate a PKE keypair (enc_pk / enc_sk).
- *   3. Encrypt a plaintext with `SolanaCustomFlow.encrypt`, using `label` as
+ *   3. Encrypt a plaintext with `ACE.IBE_Solana.encrypt`, using `label` as
  *      the IBE domain and the `custom_acl` program as the contract.
  *
  * DECRYPT (consumer):
@@ -19,7 +19,7 @@
  *   5. Build `CustomFullRequestBytes` with `buildCustomRequestBytes`, embedding
  *      the candidate payload.
  *   6. Build a Solana transaction calling `assert_custom_acl` with those bytes.
- *   7. Sign and submit to `SolanaCustomFlow.decrypt`.
+ *   7. Sign and submit to `ACE.IBE_Solana.decryptCustomFlow`.
  *
  * Workers:
  *   - decode `CustomFullRequestBytes` from the instruction data

@@ -15,7 +15,7 @@
  *   - Generate a fresh ephemeral PKE keypair for the response.
  *   - Sign `BCS(SignableRequest { dst, label, user_epk, origin })` with
  *     `accessPrivateKey`.
- *   - Wrap `payload = BCS({ origin, sig })` and call AptosCustomFlow.decrypt.
+ *   - Wrap `payload = BCS({ origin, sig })` and call ACE.IBE_Aptos.decryptCustomFlow.
  */
 
 import { AccountAddress, Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';

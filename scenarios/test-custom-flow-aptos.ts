@@ -284,7 +284,7 @@ async function runCustomFlowTestCases(setup: AptosCustomFlowSetup): Promise<void
     );
 }
 
-/** Calls AptosCustomFlow.decrypt with the given args; asserts that the
+/** Calls ACE.IBE_Aptos.decryptCustomFlow with the given args; asserts that the
  *  call throws (i.e., decrypt is rejected). Logs the case label. */
 async function expectCustomFlowDecryptFails(
     args: Parameters<typeof ACE.IBE_Aptos.decryptCustomFlow>[0],

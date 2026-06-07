@@ -526,7 +526,7 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
  *
  * Takes the Aptos contract identity (`chainId`, `moduleAddr`,
  * `moduleName`) as flat fields rather than a pre-built `ContractID`
- * — matches the shape of `AptosCustomFlow.encrypt` / `decrypt`. tVRF
+ * — matches the shape of `ACE.IBE_Aptos.encrypt` / `decryptCustomFlow`. tVRF
  * is Aptos-only at the worker layer (`verify_threshold_vrf_aptos`),
  * so there's no Solana variant to keep optional.
  *

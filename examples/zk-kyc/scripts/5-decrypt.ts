@@ -12,7 +12,7 @@
  * 4. Generates a Groth16 proof using snarkjs — this is where the ZK magic
  *    happens: the proof asserts that the holder has a valid credential and is
  *    18 or older, WITHOUT revealing the actual age.
- * 5. Sends the proof as the `payload` to `AptosCustomFlow.decrypt`.
+ * 5. Sends the proof as the `payload` to `ACE.IBE_Aptos.decryptCustomFlow`.
  *    ACE workers call `kyc_verifier::on_ace_decryption_request_custom_flow` on-chain; if the proof
  *    verifies, they release their key shares.
  * 6. Reconstructs the threshold key and decrypts the ciphertext.

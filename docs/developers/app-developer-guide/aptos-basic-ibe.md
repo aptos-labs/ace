@@ -1,0 +1,113 @@
+# Aptos Basic IBE: Move-Gated Decryption
+
+## TLDR
+
+Use this flow when an Aptos contract can decide decryption from three values: the encrypted object's `label`, the requestor's Aptos account address, and the application `origin` that the user signed for. It is the right default for pay-to-download, allowlists, subscriptions, time locks, and other policies that fit normal on-chain state.
+
+You need to:
+
+- Write a Move module with `on_ace_decryption_request(label, account, origin): bool`.
+- Store enough policy state to answer that view function.
+- Encrypt with `ACE.IBE_Aptos.encrypt`.
+- Decrypt with `ACE.IBE_Aptos.BasicDecryptionSession`, asking the user's wallet to sign the session request.
+- Lock the hook to the deployed web app origin once the origin is stable.
+
+## Walkthrough
+
+Start with the access policy. For a pay-to-download app, store a catalog keyed by `label`, where each item records its price and buyers. The ACE hook is a view function with a fixed name and fixed signature:
+
+```move
+use std::string::String;
+
+#[view]
+public fun on_ace_decryption_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool acquires Catalog {
+    if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
+    if (!exists<Catalog>(@admin)) return false;
+    let catalog = borrow_global<Catalog>(@admin);
+    if (!catalog.items.contains(label)) return false;
+    let item = catalog.items.borrow(label);
+    item.buyers.contains(&account)
+}
+```
+
+Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. While developing locally, you can temporarily allow your local origin; after deployment, update the contract or policy resource to the real origin, such as `https://app.example.com`.
+
+Deploy the Move package and run whatever initializer creates your policy table. Record:
+
+- `chainId`: the Aptos chain id.
+- `moduleAddr`: the account that published your module.
+- `moduleName`: the Move module containing `on_ace_decryption_request`.
+- `aceDeployment` and `keypairId`: from `ACE.knownDeployments` or your local ACE network config.
+
+Encrypt before or after listing the item on-chain, but use the same `label` in both places:
+
+```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress } from "@aptos-labs/ts-sdk";
+
+const label = new TextEncoder().encode("album/song-001");
+
+const ciphertext = (await ACE.IBE_Aptos.encrypt({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
+  moduleName: "marketplace",
+  label,
+  plaintext: songBytes,
+})).unwrapOrThrow("ACE encrypt failed");
+```
+
+The parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
+
+For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
+
+```typescript
+const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
+  moduleName: "marketplace",
+  label,
+  ciphertext,
+});
+
+const message = await session.getRequestToSign();
+const signed = await wallet.signMessage({
+  message,
+  nonce: crypto.randomUUID(),
+  application: true,
+  chainId,
+  address: userAddress,
+});
+
+const plaintext = (await session.decryptWithProof({
+  userAddr: userAddress,
+  publicKey: signed.publicKey,
+  signature: signed.signature,
+  fullMessage: signed.fullMessage,
+})).unwrapOrThrow("ACE decrypt failed");
+```
+
+For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
+
+After the client is deployed, make the origin check final. For Aptos wallet messages, ACE workers extract the application origin from the signed full message and pass it to your hook. A contract that does not check `origin` can be tricked into serving requests signed for another app.
+
+## Remarks
+
+- Treat the hook as the security boundary. If it returns `true`, honest workers release shares.
+- `label` is public metadata. Do not put secrets in it.
+- The contract should return `false` for malformed or missing state instead of aborting where possible.
+- The same user can retry decryption; your policy should be idempotent unless you deliberately want one-time access.
+- Basic Aptos IBE supports the Aptos account signature schemes handled by the SDK, including Ed25519, modern single-key accounts, passkeys/WebAuthn, keyless, federated keyless, MultiEd25519, and MultiKey.
+- Account abstraction flows that do not expose a normal public-key signature should use custom IBE instead.
+
+## Ready-To-Run Examples
+
+- [`examples/tutorial-aptos`](../../../examples/tutorial-aptos): minimal pay-to-download marketplace.
+- [`examples/shelby-explorer-acl-aptos`](../../../examples/shelby-explorer-acl-aptos): allowlist, time lock, and pay-to-download policies.

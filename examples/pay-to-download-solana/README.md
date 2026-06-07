@@ -201,7 +201,7 @@ const ciphertext = (await ACE.IBE_Solana.encrypt({
   keypairId,
   knownChainName,
   programId: aceHookProgram.programId.toBase58(),
-  domain: fullBlobNameBytes,
+  label: fullBlobNameBytes,
   plaintext: secretContent,
 })).unwrapOrThrow();
 
@@ -229,7 +229,7 @@ await program.methods
 const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
   aceDeployment, keypairId, knownChainName,
   programId: aceHookProgram.programId.toBase58(),
-  domain: fullBlobNameBytes, ciphertext,
+  label: fullBlobNameBytes, ciphertext,
 });
 const fullRequestBytes = await session.getRequestToSign();
 const txn = await aceHookProgram.methods

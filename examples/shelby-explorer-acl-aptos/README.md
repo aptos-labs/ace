@@ -93,8 +93,8 @@ The script will:
 │  1. Fetch DKG session (keypair) from ACE contract on Aptos                  │
 │  2. Encrypt plaintext with:                                                 │
 │     - keypairId (identifies the DKG keypair on the ACE contract)            │
-│     - Contract ID (points to on_ace_decryption_request function)                     │
-│     - Domain (unique blob identifier)                                       │
+│     - Contract ID (points to on_ace_decryption_request function)            │
+│     - Label (unique blob identifier)                                        │
 │  3. Register blob on-chain with access policy (e.g., empty allowlist)       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -114,13 +114,16 @@ The script will:
 
 ```typescript
 // Step 1: Encrypt data with ACE
-const { fullDecryptionDomain, ciphertext } = await ace_ex.encrypt({
-  keypairId,           // DKG keypair address on ACE contract
-  contractId,          // Points to on_ace_decryption_request function
-  domain: blobName,    // Unique identifier for this blob
+const label = textEncoder.encode(fullBlobName);
+const ciphertext = (await ACE.IBE_Aptos.encrypt({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+  moduleName: "access_control",
+  label,               // Unique identifier for this blob
   plaintext: data,     // Data to encrypt
-  aceContract,         // ACE contract address on Aptos
-});
+})).unwrapOrThrow("encryption failed");
 
 // Step 2: Register blob on-chain with access policy
 const policy = AccessPolicy.newAllowlist([]);  // Empty = owner only
@@ -136,23 +139,32 @@ await runTxn(aptos, alice, `${CONTRACT}::access_control::force_update_policy`, [
 
 ```typescript
 // Step 1: Create proof of permission by signing the canonical request bytes
-const msgToSign = '0x' + Buffer.from(decryptionRequest.toBytes()).toString('hex');
-const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
-  userAddr: bob.accountAddress,
-  publicKey: bob.publicKey,
-  signature: bob.sign(msgToSign),
-  fullMessage: msgToSign,
+const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
+  moduleName: "access_control",
+  label,
+  ciphertext,
+});
+const msgToSign = await session.getRequestToSign();
+const fullMessage = buildAptosWalletFullMessage({
+  accountAddress: bob.accountAddress,
+  chainId,
+  message: msgToSign,
+  nonce: "shelby-bob-decrypt",
 });
 
 // Step 2: Request decryption key from ACE workers and decrypt.
 // ACE workers call on_ace_decryption_request(label, bob, origin) on-chain to verify access,
-// then release their key shares. ace_ex.decrypt() handles everything.
-const plaintext = await ace_ex.decrypt({
-  keypairId, contractId,
-  domain: fullDecryptionDomain.domain,
-  proof: proofOfPermission,
-  ciphertext, aceContract,
-});
+// then release their key shares.
+const plaintext = (await session.decryptWithProof({
+  userAddr: bob.accountAddress,
+  publicKey: bob.publicKey,
+  signature: bob.sign(fullMessage),
+  fullMessage,
+})).unwrapOrThrow("decryption failed");
 ```
 
 ## Move Contract

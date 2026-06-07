@@ -2,20 +2,30 @@
 
 ## TLDR
 
-Use ACE VRF when an Aptos contract should decide whether a user may derive deterministic threshold VRF bytes for `(keypairId, contract, account, label)`. A VRF, or verifiable random function, is like a keyed hash: the same input always gives the same output, but nobody can predict the output without the secret key. In ACE, that secret key is split across workers, so no single worker can derive the output alone.
+Use ACE VRF when an Aptos contract should decide whether a user may derive deterministic secret bytes for `(keypairId, contract, account, label)`. A VRF, or verifiable random function, is like a keyed hash: the same input always gives the same output, but nobody can predict the output without the secret key. In ACE, that secret key is split across workers, so no single worker can derive the output alone.
 
-This is useful for per-object access keys, deterministic grants, app-scoped random-looking bytes, and workflows where the app wants a reproducible secret without storing it.
+The most common app pattern is per-object access keys. For example, a data owner can derive `VRF(blob_id, owner, ...)`, map the 32-byte output into an access keypair, register the public key on-chain, and use the private key to create pre-signed access grants. The owner can re-derive the same private key later without storing it.
 
 You need to:
 
 - Write a Move module with `on_ace_vrf_request(label, account, origin): bool`.
-- Store whatever policy decides who may derive.
+- Store whatever policy decides who may derive the access key for a blob.
 - Use `ACE.VRF_Aptos.DerivationSession` for wallet-driven clients, or `ACE.VRF_Aptos.derive` for one-shot scripts.
-- Bind derivations to a stable label and lock the hook to your deployed origin.
+- Use a stable, domain-separated derivation label such as `access-key:v1:<blob_id>`.
+- Map the returned bytes into your app's key material and register the public half where later access checks can find it.
 
 ## Walkthrough
 
-Design the derivation policy. For a per-blob access-key app, `label` can be the blob id, `account` can be the owner or authorized issuer, and `origin` can pin the derivation to your app. The contract below stores, for each label, the accounts allowed to derive VRF bytes:
+Design the derivation policy around the key you want to create. In the pre-signed-access pattern, each encrypted blob has a canonical `blob_id`, and the owner derives an access keypair from the ACE VRF tuple:
+
+```text
+(keypairId, contractId, ownerAddress, accessKeyLabel)
+where accessKeyLabel = "access-key:v1:" || blob_id
+```
+
+The 32-byte VRF output is not sent to the reader directly. The owner maps it into an access private key, computes the matching public key, registers that public key on-chain, and later gives the private key or a grant containing it to the reader. The custom IBE hook then verifies reader proofs against the registered public key.
+
+The contract below gates who may derive each access-key label. `account` is the Aptos account that signed the derivation request, and `origin` pins the request to your deployed client.
 
 The hook name and signature are fixed:
 
@@ -30,8 +40,8 @@ module admin::vrf_access {
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
 
-    struct VrfPolicy has key {
-        allowed_accounts: Table<vector<u8>, vector<address>>,
+    struct AccessKeyPolicy has key {
+        owners: Table<vector<u8>, address>,
     }
 
     struct AppConfig has key {
@@ -40,9 +50,9 @@ module admin::vrf_access {
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        if (!exists<VrfPolicy>(@admin)) {
-            move_to(admin, VrfPolicy {
-                allowed_accounts: table::new(),
+        if (!exists<AccessKeyPolicy>(@admin)) {
+            move_to(admin, AccessKeyPolicy {
+                owners: table::new(),
             });
         };
         if (!exists<AppConfig>(@admin)) {
@@ -64,18 +74,12 @@ module admin::vrf_access {
 
     public entry fun allow_deriver(
         admin: &signer,
-        label: vector<u8>,
-        account: address,
-    ) acquires VrfPolicy {
+        access_key_label: vector<u8>,
+        owner: address,
+    ) acquires AccessKeyPolicy {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        let policy = borrow_global_mut<VrfPolicy>(@admin);
-        if (!policy.allowed_accounts.contains(label)) {
-            policy.allowed_accounts.add(label, vector::empty());
-        };
-        let accounts = policy.allowed_accounts.borrow_mut(label);
-        if (!accounts.contains(&account)) {
-            accounts.push_back(account);
-        };
+        let policy = borrow_global_mut<AccessKeyPolicy>(@admin);
+        policy.owners.upsert(access_key_label, owner);
     }
 
     #[view]
@@ -83,30 +87,33 @@ module admin::vrf_access {
         label: vector<u8>,
         account: address,
         origin: String,
-    ): bool acquires VrfPolicy, AppConfig {
-        if (!exists<VrfPolicy>(@admin)) return false;
+    ): bool acquires AccessKeyPolicy, AppConfig {
+        if (!exists<AccessKeyPolicy>(@admin)) return false;
         if (!exists<AppConfig>(@admin)) return false;
-        let policy = borrow_global<VrfPolicy>(@admin);
+        let policy = borrow_global<AccessKeyPolicy>(@admin);
         let config = borrow_global<AppConfig>(@admin);
         if (origin.bytes() != &config.client_origin) return false;
-        if (!policy.allowed_accounts.contains(label)) return false;
-        policy.allowed_accounts.borrow(label).contains(&account)
+        if (!policy.owners.contains(label)) return false;
+        *policy.owners.borrow(label) == account
     }
 }
 ```
 
-If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes.
+If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes. Your app then turns those bytes into the access key material it needs.
 
-Deploy the Move package, initialize policy, and configure the accounts allowed to derive each label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
+Deploy the Move package, initialize policy, and configure which owner accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId`.
-- The label construction for each derivation.
+- The label construction for each derivation, for example `access-key:v1:<blob_id>`.
 
 For a wallet or web app, prefer the session API:
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
+
+const blobId = `@${ownerAddress.toStringLong().slice(2)}/song-1.mp3`;
+const accessKeyLabel = new TextEncoder().encode(`access-key:v1:${blobId}`);
 
 const contractId = ACE.ContractID.newAptos({
   chainId,
@@ -118,7 +125,7 @@ const session = await ACE.VRF_Aptos.DerivationSession.create({
   aceDeployment,
   keypairId,
   contractId,
-  label,
+  label: accessKeyLabel,
   accountAddress: ownerAddress,
 });
 
@@ -136,9 +143,16 @@ const vrfBytes = await session.deriveWithSignature({
   signature: signed.signature,
   fullMessage: signed.fullMessage,
 });
+
+const { accessPrivateKey, accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
+
+// Then submit your app's registration transaction, for example:
+// presigned_access::register(blob_id_suffix, accessPublicKey)
 ```
 
-For CLIs or server-side jobs that already know how to sign, use the one-shot helper:
+`vrfOutputToAccessKeypair` is your app's documented mapping from 32 VRF bytes into the target key type. In the pre-signed-access example, it reduces the bytes into a BLS12-381 scalar for `accessPrivateKey` and computes the matching G1 public key. The public key is stored on-chain for later custom IBE checks; the private key becomes the bearer capability that can sign reader grants.
+
+For CLIs or server-side jobs that already know how to sign, use the one-shot helper instead of the session API:
 
 ```typescript
 const vrfBytes = await ACE.VRF_Aptos.derive({
@@ -147,7 +161,7 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
   chainId,
   moduleAddr,
   moduleName: "vrf_access",
-  label,
+  label: accessKeyLabel,
   accountAddress: ownerAddress,
   sign: async (message) => {
     const signed = await signAptosMessage(message);
@@ -160,15 +174,15 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
 });
 ```
 
-After deriving, turn the bytes into whatever your app needs. The presigned-access example maps 32 VRF bytes into a BLS12-381 private key and registers the public key on-chain.
+The remaining order is the same: map `vrfBytes` into the access keypair, register the public key on-chain, and put the private key only in the grant or controlled client that is supposed to use it.
 
 As with Aptos basic IBE, deploy the client first, learn the stable origin, then update the app config resource once to accept only that origin.
 
 ## Remarks
 
-ACE VRF is best understood as deterministic secret derivation, not as a public randomness beacon. The same ACE keypair, contract id, account, and label produce the same output; changing any of those inputs changes the derived bytes. Treat label construction as part of your app protocol, domain-separate it, and avoid letting users freely grind labels if the output affects fairness or rewards.
+The derived access private key is a bearer capability. Anyone who obtains it can sign whatever reader proof your follow-on access flow accepts, so do not log it, publish it on-chain, or put it in a client that should not be able to grant access.
 
-If you use VRF output as key material, keep it off-chain and out of logs. When converting the 32 bytes into another primitive, such as a group scalar or keypair, use a documented mapping for that target primitive rather than ad hoc truncation.
+Derivation is reproducible only for the exact ACE keypair, contract id, owner account, and label. Use a canonical, domain-separated label such as `access-key:v1:<blob_id>`. Re-running the same tuple gives the same private key; rotating access requires changing the derivation inputs or registering a different public key, not re-deriving the same tuple.
 
 ## Ready-To-Run Examples
 

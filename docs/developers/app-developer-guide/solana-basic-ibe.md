@@ -13,6 +13,8 @@ You need to:
 
 ## Walkthrough
 
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+
 Design the policy first. A pay-to-download app might store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid. The hook instruction should do only the access proof:
 
 ```rust

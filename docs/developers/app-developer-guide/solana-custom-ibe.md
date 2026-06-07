@@ -14,6 +14,8 @@ You need to:
 
 ## Walkthrough
 
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+
 Define your policy state and payload. A simple code-gated example stores `CodeEntry` PDAs by label and accepts a payload only when it matches the stored code. A production app would replace that comparison with a ZK verifier, signed credential check, or richer ACL.
 
 The hook instruction should decode the ACE request and validate that supplied accounts match what the request says:

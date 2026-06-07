@@ -201,80 +201,9 @@ impl DecryptionRequestPayload {
         Ok(h.finalize().into())
     }
 
-    /// Canonical human-readable form the wallet signs for the Flavor-A proof
-    /// path (Ed25519, Secp256k1, Keyless, FederatedKeyless). Mirrors the TS-side
-    /// `DecryptionRequestPayload.toPrettyMessage(0)` in
-    /// `ts-sdk/src/_internal/common.ts` byte-for-byte. Field order matches:
-    ///
-    /// ```text
-    /// ACE Decryption Request
-    /// keypairId: 0x<32 hex>
-    /// epoch: <u64>
-    /// contractId:
-    ///   scheme: aptos
-    ///   inner:
-    ///       chainId: <u8>
-    ///       moduleAddr: 0x<32 hex>
-    ///       moduleName: <string>
-    /// domain: 0x<hex>
-    /// ephemeralEncKey: <hex of BCS(EncryptionKey), no 0x>
-    /// ```
-    ///
-    /// The verifier's binding step requires the wallet's `fullMessage` to
-    /// contain this string (or its hex form, for AptosConnect wallets that
-    /// sign the hex of the UTF-8). Binding `ephemeralEncKey` is critical: it
-    /// is the public key the IDK share is encrypted to in the response. If it
-    /// were not part of the signed message, anyone holding a valid proof
-    /// could replay it with a substituted `ephemeralEncKey` and have shares
-    /// re-encrypted to themselves.
-    ///
-    /// Returns an error if `self.contract_id` is not an Aptos contract — only
-    /// Flavor-A Aptos proofs use this pretty-message binding; Solana proofs
-    /// carry a real transaction and do not use a signed pretty message.
-    pub fn to_pretty_message(&self) -> Result<String> {
-        let contract_lines = self.contract_id.to_pretty_message_lines(1)?;
-        let ephemeral_ek_bytes = bcs::to_bytes(&self.ephemeral_enc_key).map_err(|e| {
-            anyhow!(
-                "DecryptionRequestPayload::to_pretty_message: serialize ephemeral_enc_key: {}",
-                e
-            )
-        })?;
-        Ok(format!(
-            "ACE Decryption Request\nkeypairId: 0x{}\nepoch: {}\ncontractId:{}\ndomain: 0x{}\nephemeralEncKey: {}",
-            hex::encode(self.keypair_id),
-            self.epoch,
-            contract_lines,
-            hex::encode(&self.domain),
-            hex::encode(&ephemeral_ek_bytes),
-        ))
-    }
 }
 
-const THRESHOLD_VRF_PURPOSE: &str = "ace.threshold-vrf.derive.v1";
-
 impl ThresholdVrfRequestPayload {
-    /// Canonical human-readable form the owner signs for tVRF derivation.
-    /// The TS-SDK will need to mirror this byte-for-byte when its tVRF origin
-    /// binding is updated.
-    pub fn to_pretty_message(&self) -> Result<String> {
-        let response_ek_bytes = bcs::to_bytes(&self.response_enc_key).map_err(|e| {
-            anyhow!(
-                "ThresholdVrfRequestPayload::to_pretty_message: serialize response_enc_key: {}",
-                e
-            )
-        })?;
-        Ok(format!(
-            "ACE Threshold VRF Derive Request\npurpose: {}\nkeypairId: 0x{}\nepoch: {}\ncontractId:{}\nlabel: 0x{}\naccountAddress: 0x{}\nresponseEncKey: {}",
-            THRESHOLD_VRF_PURPOSE,
-            hex::encode(self.keypair_id),
-            self.epoch,
-            self.contract_id.to_pretty_message_lines(1)?,
-            hex::encode(&self.label),
-            hex::encode(self.account_address),
-            hex::encode(response_ek_bytes),
-        ))
-    }
-
     /// 32-byte WebAuthn challenge bytes for this payload:
     ///
     ///   `SHA3-256( SHA3-256(b"ACE::ThresholdVrfRequestPayload") || BCS(self) )`
@@ -297,27 +226,6 @@ impl ThresholdVrfRequestPayload {
     }
 }
 
-impl ContractId {
-    /// Mirrors TS-SDK `ContractID.toPrettyMessage(indent)` in
-    /// `ts-sdk/src/_internal/common.ts:108-113`. Returns the inner block
-    /// (`\n{pad}scheme: <name>\n{pad}inner:<inner_lines>`) with `pad =
-    /// "  " * indent`. The inner-variant lines are produced at `indent + 2`,
-    /// matching the TS step. Errors for variants without a pretty-message
-    /// path (Solana's proof is a real txn, not a signed canonical string).
-    pub(crate) fn to_pretty_message_lines(&self, indent: usize) -> Result<String> {
-        let pad = "  ".repeat(indent);
-        match self {
-            ContractId::Aptos(c) => Ok(format!(
-                "\n{pad}scheme: aptos\n{pad}inner:{}",
-                c.to_pretty_message_lines(indent + 2),
-            )),
-            ContractId::Solana(_) => Err(anyhow!(
-                "ContractId::to_pretty_message_lines: Solana proofs are not bound via a signed pretty message"
-            )),
-        }
-    }
-}
-
 // ── Identity bytes ────────────────────────────────────────────────────────────
 
 /// IBE identity = `keypair_id (32B raw) ++ BCS(contract_id) ++ BCS(domain)`. This is the
@@ -335,9 +243,10 @@ pub fn identity_bytes(keypair_id: &[u8; 32], contract_id: &ContractId, domain: &
 /// Verify a basic-flow request: checks the proof-of-permission and binds it to the
 /// keypair_id, epoch, contract_id, domain, and ephemeral encryption key in `req`.
 ///
-/// The Aptos side derives the ephemeral-key hex from `req.payload.ephemeral_enc_key`
-/// itself (via [`DecryptionRequestPayload::to_pretty_message`]); only the Solana
-/// path needs the pre-serialized bytes for its `build_full_request_bytes` shape.
+/// The Aptos side binds via `"0x" || hex(BCS(payload))` appearing in the wallet's
+/// `fullMessage` (see [`aptos::AptosPayloadBinding::to_signed_message_hex`]); only
+/// the Solana path needs the pre-serialized bytes for its `build_full_request_bytes`
+/// shape.
 pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
     match (&req.payload.contract_id, &req.proof) {
         (ContractId::Aptos(contract), ProofOfPermission::Aptos(proof)) => {
@@ -394,15 +303,15 @@ mod tests {
     use solana::SolanaContractId;
     use vss_common::pke::{ElGamalOtpRistretto255EncKey, EncryptionKey};
 
-    /// Pin down the exact pretty-message output for a hand-built Aptos payload.
-    /// Mirrors `ts-sdk/src/_internal/common.ts:341-344`'s `toPrettyMessage(0)`
-    /// byte-for-byte (verified by hand against the template). If this string
-    /// ever drifts, every wallet that has been signing the old shape will
-    /// stop passing the `contains()` binding check in the verifier — so this
-    /// test deliberately hard-codes the expected bytes rather than
-    /// recomputing them with `format!`.
+    /// Pin down the exact `"0x" || hex(BCS(payload))` form for a hand-built
+    /// Aptos payload. The wallet signs an AIP-62 wrap whose `message:` value
+    /// is this string; the worker reconstructs it from the request and looks
+    /// for it as a substring of `fullMessage`. If the BCS layout drifts,
+    /// signatures from all wallets stop verifying — so the expected hex is
+    /// pinned literally.
     #[test]
-    fn to_pretty_message_aptos_known_answer() {
+    fn signed_message_hex_aptos_known_answer() {
+        use super::aptos::AptosPayloadBinding;
         let payload = DecryptionRequestPayload {
             keypair_id: [0xab; 32],
             epoch: 42,
@@ -419,49 +328,30 @@ mod tests {
                 },
             ),
         };
-        // BCS(EncryptionKey::ElGamalOtpRistretto255) = variant tag 0x00
-        //   || ULEB128(32)=0x20 || 32×0x11 || ULEB128(32)=0x20 || 32×0x22.
+        // BCS layout:
+        //   keypair_id [32] = 32×0xab
+        //   epoch (u64 LE)  = 0x2a 0x00 0x00 0x00 0x00 0x00 0x00 0x00
+        //   contract_id (tag=0 Aptos)
+        //     chain_id (u8)    = 0x04
+        //     module_addr [32] = 32×0xcd
+        //     module_name      = ULEB(9) "my_module"
+        //   domain (vec<u8>) = ULEB(4) 0x01 0x02 0x03 0x04
+        //   ephemeral_enc_key (tag=0 ElGamalOtpRistretto255)
+        //     enc_base     = ULEB(32) 32×0x11
+        //     public_point = ULEB(32) 32×0x22
         let expected = concat!(
-            "ACE Decryption Request\n",
-            "keypairId: 0xabababababababababababababababababababababababababababababababab\n",
-            "epoch: 42\n",
-            "contractId:\n",
-            "  scheme: aptos\n",
-            "  inner:\n",
-            "      chainId: 4\n",
-            "      moduleAddr: 0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n",
-            "      moduleName: my_module\n",
-            "domain: 0x01020304\n",
-            "ephemeralEncKey: 00201111111111111111111111111111111111111111111111111111111111111111202222222222222222222222222222222222222222222222222222222222222222",
+            "0x",
+            "abababababababababababababababababababababababababababababababab",
+            "2a00000000000000",
+            "00",
+            "04",
+            "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "096d795f6d6f64756c65",
+            "0401020304",
+            "00",
+            "201111111111111111111111111111111111111111111111111111111111111111",
+            "202222222222222222222222222222222222222222222222222222222222222222",
         );
-        assert_eq!(payload.to_pretty_message().unwrap(), expected);
-    }
-
-    /// Solana payloads don't have a signed pretty-message path (the proof is
-    /// a real Solana transaction). Calling the method must surface a clear
-    /// error rather than producing a nonsense string.
-    #[test]
-    fn to_pretty_message_solana_errors() {
-        let payload = DecryptionRequestPayload {
-            keypair_id: [0; 32],
-            epoch: 0,
-            contract_id: ContractId::Solana(SolanaContractId {
-                known_chain_name: "devnet".to_string(),
-                program_id: vec![0; 32],
-            }),
-            domain: vec![],
-            ephemeral_enc_key: EncryptionKey::ElGamalOtpRistretto255(
-                ElGamalOtpRistretto255EncKey {
-                    enc_base: vec![0; 32],
-                    public_point: vec![0; 32],
-                },
-            ),
-        };
-        let err = payload.to_pretty_message().unwrap_err().to_string();
-        assert!(
-            err.contains("Solana"),
-            "expected Solana-rejection error, got: {}",
-            err
-        );
+        assert_eq!(payload.to_signed_message_hex().unwrap(), expected);
     }
 }

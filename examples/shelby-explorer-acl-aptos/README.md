@@ -135,8 +135,8 @@ await runTxn(aptos, alice, `${CONTRACT}::access_control::force_update_policy`, [
 ### 2. Consumer (Bob) Flow
 
 ```typescript
-// Step 1: Create proof of permission by signing the domain
-const msgToSign = fullDecryptionDomain.toPrettyMessage();
+// Step 1: Create proof of permission by signing the canonical request bytes
+const msgToSign = '0x' + Buffer.from(decryptionRequest.toBytes()).toString('hex');
 const proofOfPermission = ace_ex.ProofOfPermission.createAptos({
   userAddr: bob.accountAddress,
   publicKey: bob.publicKey,

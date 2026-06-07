@@ -54,10 +54,6 @@ export class ContractID {
         return bytesToHex(this.toBytes());
     }
 
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `\n${pad}knownChainName: ${this.knownChainName}\n${pad}programId: ${this.programId.toBase58()}`;
-    }
 }
 
 export class ProofOfPermission {

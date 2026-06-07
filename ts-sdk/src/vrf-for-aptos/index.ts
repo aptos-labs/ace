@@ -83,17 +83,27 @@ export class ThresholdVrfRequestPayload {
         return serializer.toUint8Array();
     }
 
-    toPrettyMessage(): string {
-        return [
-            "ACE Threshold VRF Derive Request",
-            `purpose: ${PURPOSE}`,
-            `keypairId: ${this.keypairId.toStringLong()}`,
-            `epoch: ${this.epoch}`,
-            `contractId:${this.contractId.toPrettyMessage(1)}`,
-            `label: 0x${bytesToHex(this.label)}`,
-            `accountAddress: ${this.accountAddress.toStringLong()}`,
-            `responseEncKey: ${this.responseEncKey.toHex()}`,
-        ].join("\n");
+    static deserialize(deserializer: Deserializer): ThresholdVrfRequestPayload {
+        const keypairId = AccountAddress.deserialize(deserializer);
+        const epoch = Number(deserializer.deserializeU64());
+        const contractId = ContractID.deserialize(deserializer)
+            .unwrapOrThrow("ThresholdVrfRequestPayload.deserialize: contractId");
+        const label = deserializer.deserializeBytes();
+        const accountAddress = AccountAddress.deserialize(deserializer);
+        const responseEncKey = pke.EncryptionKey.deserialize(deserializer)
+            .unwrapOrThrow("ThresholdVrfRequestPayload.deserialize: responseEncKey");
+        return new ThresholdVrfRequestPayload({
+            keypairId, epoch, contractId, label, accountAddress, responseEncKey,
+        });
+    }
+
+    static fromBytes(bytes: Uint8Array): ThresholdVrfRequestPayload {
+        const deserializer = new Deserializer(bytes);
+        const payload = ThresholdVrfRequestPayload.deserialize(deserializer);
+        if (deserializer.remaining() !== 0) {
+            throw new Error("ThresholdVrfRequestPayload.fromBytes: trailing bytes");
+        }
+        return payload;
     }
 
     toWebAuthnChallenge(): Uint8Array {
@@ -357,13 +367,13 @@ export class DerivationSession {
         });
         this.networkState = networkState;
         this.payload = payload;
-        this.message = payload.toPrettyMessage();
+        this.message = '0x' + bytesToHex(payload.toBytes());
         return payload;
     }
 
     async getRequestToSign(): Promise<string> {
         const payload = await this.refreshPayload();
-        return payload.toPrettyMessage();
+        return '0x' + bytesToHex(payload.toBytes());
     }
 
     async getRequestToSignForWebAuthn(): Promise<Uint8Array> {

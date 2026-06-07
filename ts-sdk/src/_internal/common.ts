@@ -105,12 +105,6 @@ export class ContractID {
         return bytesToHex(this.toBytes());
     }
 
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        const schemeName = this.scheme === ContractID.SCHEME_APTOS ? 'aptos' : 'solana';
-        const innerMsg = (this.inner as AptosContractID | SolanaContractID).toPrettyMessage(indent + 2);
-        return `\n${pad}scheme: ${schemeName}\n${pad}inner:${innerMsg}`;
-    }
 }
 
 export class FullDecryptionDomain {
@@ -175,11 +169,6 @@ export class FullDecryptionDomain {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
-    }
-
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}label: 0x${bytesToHex(this.label)}`;
     }
 
     getSolanaContractID(): SolanaContractID {
@@ -336,11 +325,6 @@ export class DecryptionRequestPayload {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
-    }
-
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `${pad}ACE Decryption Request\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}epoch: ${this.epoch}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}\n${pad}ephemeralEncKey: ${this.ephemeralEncKey.toHex()}`;
     }
 
     /**

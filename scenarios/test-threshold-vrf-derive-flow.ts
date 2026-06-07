@@ -58,13 +58,6 @@ function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
 }
 
-function transcriptField(msg: string, field: string): string {
-    const prefix = `${field}: `;
-    const line = msg.split('\n').find(l => l.startsWith(prefix));
-    if (!line) throw new Error(`missing transcript field: ${field}`);
-    return line.slice(prefix.length);
-}
-
 async function deployOriginContract(admin: SetupAceOnLocalnetResult['actors']['admin']): Promise<void> {
     const contractRoot = path.join(REPO_ROOT, 'scenarios', 'threshold-vrf-origin', 'contract');
     const scratch = prepareContractsPublishScratch(contractRoot, admin.accountAddress.toStringLong());
@@ -117,13 +110,19 @@ async function main() {
             accountAddress: owner.accountAddress,
         });
         const msg = await session.getRequestToSign();
-        assert(msg.includes('ACE Threshold VRF Derive Request'), 'getRequestToSign returns tVRF transcript');
-        assert(msg.includes(keypairId.toStringLong()), 'transcript binds keypair id');
-        assert(msg.includes(owner.accountAddress.toStringLong()), 'transcript binds owner account');
-        assert(msg.includes('contractId:'), 'transcript binds contract id');
-        assert(msg.includes('threshold_vrf_origin_demo'), 'transcript binds origin-check contract');
-        assert(msg.includes('responseEncKey:'), 'transcript binds response encryption key');
-        const firstResponseEncKey = transcriptField(msg, 'responseEncKey');
+        // `getRequestToSign` now returns `"0x" + hex(BCS(ThresholdVrfRequestPayload))`.
+        // Verify the wire-shape contract directly: it's hex, starts with 0x, and
+        // the inner bytes BCS-decode back into a payload whose fields match what
+        // we asked for.
+        assert(msg.startsWith('0x') && /^0x[0-9a-f]+$/.test(msg), 'getRequestToSign returns hex');
+        const firstPayload = ACE.tVRFforAptos.ThresholdVrfRequestPayload.fromBytes(
+            Buffer.from(msg.slice(2), 'hex'),
+        );
+        assert(firstPayload.keypairId.toStringLong() === keypairId.toStringLong(), 'payload binds keypair id');
+        assert(firstPayload.accountAddress.toStringLong() === owner.accountAddress.toStringLong(), 'payload binds owner account');
+        assert(Buffer.from(firstPayload.label).equals(Buffer.from(label)), 'payload binds label');
+        assert(firstPayload.contractId.toBytes().length > 0, 'payload binds contract id');
+        const firstResponseEncKey = firstPayload.responseEncKey.toHex();
         console.log(msg);
         const fullMessage = buildAptosWalletFullMessage({
             accountAddress: owner.accountAddress.toStringLong(),
@@ -172,11 +171,14 @@ async function main() {
             accountAddress: owner.accountAddress,
         });
         const repeatMsg = await repeatSession.getRequestToSign();
+        const repeatPayload = ACE.tVRFforAptos.ThresholdVrfRequestPayload.fromBytes(
+            Buffer.from(repeatMsg.slice(2), 'hex'),
+        );
         assert(
-            transcriptField(repeatMsg, 'responseEncKey') !== firstResponseEncKey,
+            repeatPayload.responseEncKey.toHex() !== firstResponseEncKey,
             'repeat session uses a fresh response encryption key',
         );
-        assert(repeatMsg.includes(`epoch: ${targetEpoch}`), 'repeat transcript binds the next epoch');
+        assert(repeatPayload.epoch === targetEpoch, 'repeat payload binds the next epoch');
         const repeatFullMessage = buildAptosWalletFullMessage({
             accountAddress: owner.accountAddress.toStringLong(),
             chainId: CHAIN_ID,

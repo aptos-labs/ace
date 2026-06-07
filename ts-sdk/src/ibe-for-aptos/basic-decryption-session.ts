@@ -76,9 +76,10 @@ export class BasicDecryptionSession {
     }
 
     /**
-     * Returns the UTF-8 pretty-printed `DecryptionRequestPayload` string that
-     * the wallet fullMessage must cover. Use this for account types whose
-     * signature scheme digests the wallet fullMessage directly:
+     * Returns the canonical `"0x" || hex(BCS(DecryptionRequestPayload))` string
+     * that the wallet's `fullMessage` must contain. Pass this as the `message`
+     * field to AIP-62 `signMessage`. Use this for account types whose signature
+     * scheme digests the wallet fullMessage directly:
      *
      *   - bare Ed25519              (`pk_scheme=0`)
      *   - bare Keyless              (`pk_scheme=4`)
@@ -86,17 +87,19 @@ export class BasicDecryptionSession {
      *   - `AnyPublicKey` wrapping any of `Ed25519`, `Secp256k1Ecdsa`,
      *     `Keyless`, or `FederatedKeyless` (`pk_scheme=1` inner 0/1/3/4)
      *
+     * Hex (`[0-9a-f]`) is injection-safe — no separator, whitespace, or
+     * Unicode-normalization concerns when embedded in the AIP-62 wrapper.
+     *
      * For passkeys (`AnyPublicKey<Secp256r1Ecdsa>+AnySignature<WebAuthn>`),
      * use [`getRequestToSignForWebAuthn`] instead — that path signs a
-     * WebAuthn-shaped challenge derived from the BCS body, not the pretty
-     * string.
+     * WebAuthn-shaped challenge derived from the BCS body, not this hex.
      */
     async getRequestToSign(): Promise<string> {
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
             this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
         this.networkState = networkState;
         this.request = request;
-        return request.toPrettyMessage();
+        return '0x' + bytesToHex(request.toBytes());
     }
 
     /**

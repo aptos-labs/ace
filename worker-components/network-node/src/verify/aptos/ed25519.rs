@@ -20,7 +20,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{check_basic_ace_hook, is_valid_hex, AptosContractId, AptosProofOfPermission};
+use super::{check_basic_ace_hook, is_valid_hex, AptosContractId, AptosPayloadBinding, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 use super::super::BasicFlowRequest;
 
@@ -52,10 +52,11 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// Checks that `fullMessage` contains the decryption request's pretty-printed
-/// representation (or its hex encoding, to handle AptosConnect wallets which
-/// sign the hex of the UTF-8 bytes rather than the raw string), then verifies
-/// the Ed25519 signature over the (possibly hex-decoded) message bytes.
+/// Checks that `fullMessage` contains the decryption request's canonical
+/// `"0x" || hex(BCS(payload))` marker (or its hex-of-hex form, to handle
+/// AptosConnect wallets which sign the hex of the UTF-8 bytes rather than the
+/// raw string), then verifies the Ed25519 signature over the (possibly
+/// hex-decoded) message bytes.
 fn verify_sig(
     req: &BasicFlowRequest,
     proof: &AptosProofOfPermission,
@@ -64,12 +65,12 @@ fn verify_sig(
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let pretty_msg = req.payload.to_pretty_message()?;
-    // AptosConnect embeds hex(UTF-8(pretty_msg)) rather than the raw string.
-    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    let expected_hex = req.payload.to_signed_message_hex()?;
+    // AptosConnect embeds hex(UTF-8(fullMessage)) rather than the raw string.
+    let expected_hex_hex = hex::encode(expected_hex.as_bytes());
 
     let full_msg = &proof.full_message;
-    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+    if !full_msg.contains(&expected_hex) && !full_msg.contains(&expected_hex_hex) {
         return Err(anyhow!(
             "verifySig: fullMessage does not contain expected decryption request content"
         ));

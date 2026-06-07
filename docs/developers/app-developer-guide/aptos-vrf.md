@@ -2,7 +2,9 @@
 
 ## TLDR
 
-Use ACE VRF when an Aptos contract should decide whether a user may derive deterministic threshold VRF bytes for `(keypairId, contract, account, label)`. It is useful for per-object access keys, deterministic grants, app-scoped random-looking bytes, and workflows where the app wants a reproducible secret without storing it.
+Use ACE VRF when an Aptos contract should decide whether a user may derive deterministic threshold VRF bytes for `(keypairId, contract, account, label)`. A VRF, or verifiable random function, is like a keyed hash: the same input always gives the same output, but nobody can predict the output without the secret key. In ACE, that secret key is split across workers, so no single worker can derive the output alone.
+
+This is useful for per-object access keys, deterministic grants, app-scoped random-looking bytes, and workflows where the app wants a reproducible secret without storing it.
 
 You need to:
 
@@ -13,23 +15,64 @@ You need to:
 
 ## Walkthrough
 
-Design the derivation policy. For a per-blob access-key app, `label` can be the blob id, `account` can be the owner or authorized issuer, and `origin` can pin the derivation to your app.
+Design the derivation policy. For a per-blob access-key app, `label` can be the blob id, `account` can be the owner or authorized issuer, and `origin` can pin the derivation to your app. The contract below stores, for each label, the accounts allowed to derive VRF bytes:
 
 The hook name and signature are fixed:
 
 ```move
-use std::string::String;
+module admin::vrf_access {
+    use aptos_std::table;
+    use aptos_std::table::Table;
+    use std::error;
+    use std::signer;
+    use std::string::String;
 
-#[view]
-public fun on_ace_vrf_request(
-    label: vector<u8>,
-    account: address,
-    origin: String,
-): bool acquires VrfPolicy {
-    if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
-    is_allowed_to_derive(account, label)
+    const E_NOT_ADMIN: u64 = 1;
+    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
+
+    struct VrfPolicy has key {
+        allowed_accounts: Table<vector<u8>, vector<address>>,
+    }
+
+    public entry fun init(admin: &signer) {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        if (!exists<VrfPolicy>(@admin)) {
+            move_to(admin, VrfPolicy { allowed_accounts: table::new() });
+        };
+    }
+
+    public entry fun allow_deriver(
+        admin: &signer,
+        label: vector<u8>,
+        account: address,
+    ) acquires VrfPolicy {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        let policy = borrow_global_mut<VrfPolicy>(@admin);
+        if (!policy.allowed_accounts.contains(label)) {
+            policy.allowed_accounts.add(label, vector::empty());
+        };
+        let accounts = policy.allowed_accounts.borrow_mut(label);
+        if (!accounts.contains(&account)) {
+            accounts.push_back(account);
+        };
+    }
+
+    #[view]
+    public fun on_ace_vrf_request(
+        label: vector<u8>,
+        account: address,
+        origin: String,
+    ): bool acquires VrfPolicy {
+        if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
+        if (!exists<VrfPolicy>(@admin)) return false;
+        let policy = borrow_global<VrfPolicy>(@admin);
+        if (!policy.allowed_accounts.contains(label)) return false;
+        policy.allowed_accounts.borrow(label).contains(&account)
+    }
 }
 ```
+
+If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes.
 
 Deploy the Move package and initialize policy. Record:
 
@@ -45,7 +88,7 @@ import * as ACE from "@aptos-labs/ace-sdk";
 const contractId = ACE.ContractID.newAptos({
   chainId,
   moduleAddr,
-  moduleName: "presigned_access",
+  moduleName: "vrf_access",
 });
 
 const session = await ACE.VRF_Aptos.DerivationSession.create({
@@ -80,7 +123,7 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
   keypairId,
   chainId,
   moduleAddr,
-  moduleName: "presigned_access",
+  moduleName: "vrf_access",
   label,
   accountAddress: ownerAddress,
   sign: async (message) => {

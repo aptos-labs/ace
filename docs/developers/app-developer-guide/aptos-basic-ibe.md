@@ -14,27 +14,70 @@ You need to:
 
 ## Walkthrough
 
-Start with the access policy. For a pay-to-download app, store a catalog keyed by `label`, where each item records its price and buyers. The ACE hook is a view function with a fixed name and fixed signature:
+Start with the access policy. For a pay-to-download or allowlist app, store a catalog keyed by `label`, where each item records the accounts that may decrypt it. The ACE hook is a view function with a fixed name and fixed signature. This minimal module defines the state the hook reads:
 
 ```move
-use std::string::String;
+module admin::marketplace {
+    use aptos_std::table;
+    use aptos_std::table::Table;
+    use std::error;
+    use std::signer;
+    use std::string::String;
 
-#[view]
-public fun on_ace_decryption_request(
-    label: vector<u8>,
-    account: address,
-    origin: String,
-): bool acquires Catalog {
-    if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
-    if (!exists<Catalog>(@admin)) return false;
-    let catalog = borrow_global<Catalog>(@admin);
-    if (!catalog.items.contains(label)) return false;
-    let item = catalog.items.borrow(label);
-    item.buyers.contains(&account)
+    const E_NOT_ADMIN: u64 = 1;
+    const E_ITEM_NOT_FOUND: u64 = 2;
+    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
+
+    struct Item has store, drop {
+        readers: vector<address>,
+    }
+
+    struct Catalog has key {
+        items: Table<vector<u8>, Item>,
+    }
+
+    public entry fun init(admin: &signer) {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        if (!exists<Catalog>(@admin)) {
+            move_to(admin, Catalog { items: table::new() });
+        };
+    }
+
+    public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        let catalog = borrow_global_mut<Catalog>(@admin);
+        if (!catalog.items.contains(label)) {
+            catalog.items.add(label, Item { readers: vector::empty() });
+        };
+    }
+
+    public entry fun grant(admin: &signer, label: vector<u8>, reader: address) acquires Catalog {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        let catalog = borrow_global_mut<Catalog>(@admin);
+        assert!(catalog.items.contains(label), error::not_found(E_ITEM_NOT_FOUND));
+        let item = catalog.items.borrow_mut(label);
+        if (!item.readers.contains(&reader)) {
+            item.readers.push_back(reader);
+        };
+    }
+
+    #[view]
+    public fun on_ace_decryption_request(
+        label: vector<u8>,
+        account: address,
+        origin: String,
+    ): bool acquires Catalog {
+        if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
+        if (!exists<Catalog>(@admin)) return false;
+        let catalog = borrow_global<Catalog>(@admin);
+        if (!catalog.items.contains(label)) return false;
+        let item = catalog.items.borrow(label);
+        item.readers.contains(&account)
+    }
 }
 ```
 
-Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. While developing locally, you can temporarily allow your local origin; after deployment, update the contract or policy resource to the real origin, such as `https://app.example.com`.
+In a real pay-to-download app, `grant` would usually be called after a payment entry function succeeds rather than directly by the admin. Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. While developing locally, you can temporarily allow your local origin; after deployment, update the contract or policy resource to the real origin, such as `https://app.example.com`.
 
 Deploy the Move package and run whatever initializer creates your policy table. Record:
 

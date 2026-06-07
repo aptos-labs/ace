@@ -14,24 +14,91 @@ You need to:
 
 ## Walkthrough
 
-Design the payload before the hook. In a ZK-gated app, the payload might be a Groth16 proof plus public outputs. In a pre-signed-access app, it might be BCS bytes containing an origin and a signature from an access key.
-
-The hook name and signature are fixed:
+Design the payload before the hook. In a ZK-gated app, the payload might be a Groth16 proof plus public outputs. The example below uses the pre-signed-access pattern: each `label` has a registered BLS public key, and the reader's payload contains `(origin, sig)`. The signature must cover a domain-separation string, `label`, the reader's ephemeral response key `enc_pk`, and the claimed origin.
 
 ```move
-#[view]
-public fun on_ace_decryption_request_custom_flow(
-    label: vector<u8>,
-    enc_pk: vector<u8>,
-    payload: vector<u8>,
-): bool acquires VerifierState {
-    // Decode payload.
-    // Verify payload against policy state.
-    // Return true only when the payload is bound to label and enc_pk.
+module admin::presigned_access {
+    use aptos_std::bcs;
+    use aptos_std::bcs_stream;
+    use aptos_std::bls12381;
+    use aptos_std::table;
+    use aptos_std::table::Table;
+    use std::error;
+    use std::option;
+    use std::signer;
+
+    const E_NOT_ADMIN: u64 = 1;
+    const E_NOT_INITIALIZED: u64 = 2;
+    const E_INVALID_ACCESS_PUBLIC_KEY: u64 = 3;
+    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
+    const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
+
+    struct SignableRequest has copy, drop {
+        dst: vector<u8>,
+        label: vector<u8>,
+        user_epk: vector<u8>,
+        origin: vector<u8>,
+    }
+
+    struct Registry has key {
+        access_public_keys: Table<vector<u8>, vector<u8>>,
+    }
+
+    public entry fun init(admin: &signer) {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        if (!exists<Registry>(@admin)) {
+            move_to(admin, Registry { access_public_keys: table::new() });
+        };
+    }
+
+    public entry fun register(
+        admin: &signer,
+        label: vector<u8>,
+        access_public_key: vector<u8>,
+    ) acquires Registry {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
+        let pk_opt = bls12381::public_key_from_bytes(access_public_key);
+        assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
+
+        let registry = borrow_global_mut<Registry>(@admin);
+        registry.access_public_keys.upsert(label, access_public_key);
+    }
+
+    #[view]
+    public fun on_ace_decryption_request_custom_flow(
+        label: vector<u8>,
+        enc_pk: vector<u8>,
+        payload: vector<u8>,
+    ): bool acquires Registry {
+        if (!exists<Registry>(@admin)) return false;
+        let registry = borrow_global<Registry>(@admin);
+        if (!registry.access_public_keys.contains(label)) return false;
+        let access_public_key_bytes = *registry.access_public_keys.borrow(label);
+
+        // payload = BCS(origin: vector<u8>) || BCS(sig: vector<u8>)
+        let stream = bcs_stream::new(payload);
+        let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+        let sig_bytes = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+        if (bcs_stream::has_remaining(&mut stream)) return false;
+        if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
+
+        let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
+        if (!option::is_some(&pk_opt)) return false;
+        let pk = option::extract(&mut pk_opt);
+        let sig = bls12381::signature_from_bytes(sig_bytes);
+        let msg = bcs::to_bytes(&SignableRequest {
+            dst: SIGNABLE_REQUEST_DST,
+            label,
+            user_epk: enc_pk,
+            origin: claimed_origin,
+        });
+        bls12381::verify_normal_signature(&sig, &pk, msg)
+    }
 }
 ```
 
-The `enc_pk` is the requestor's ephemeral public key for this decryption session. Bind your proof or signature to it. That prevents someone from copying a valid payload and replaying it with their own response key.
+The hook name and signature are fixed. The internals are app-defined. In this pattern, `enc_pk` is part of the signed message, so someone who captures `(origin, sig)` cannot replay it with their own response key.
 
 Deploy the Move package, initialize verifier state, and record:
 
@@ -47,25 +114,39 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
   keypairId,
   chainId,
   moduleAddr,
-  moduleName: "kyc_verifier",
+  moduleName: "presigned_access",
   label,
   plaintext: privateContent,
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, generate a fresh PKE keypair, build the payload, and submit it:
+For decryption, generate a fresh PKE keypair, build the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
+import { Serializer } from "@aptos-labs/ts-sdk";
+import { bls12_381 } from "@noble/curves/bls12-381";
+
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
 const encPk = encryptionKey.toBytes();
 const encSk = decryptionKey.toBytes();
 
-const payload = await buildPayload({
-  label,
-  encPk,
-  origin: "https://app.example.com",
-  credential,
-});
+const origin = new TextEncoder().encode("https://app.example.com");
+const dst = new TextEncoder().encode("ACE_PRESIGNED_ACCESS_v1");
+const blsDst = new TextEncoder().encode("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_");
+
+const signable = new Serializer();
+signable.serializeBytes(dst);
+signable.serializeBytes(label);
+signable.serializeBytes(encPk);
+signable.serializeBytes(origin);
+const sig = bls12_381.G2.hashToCurve(signable.toUint8Array(), { DST: blsDst })
+  .multiply(accessPrivateKey)
+  .toRawBytes(true);
+
+const payloadSerializer = new Serializer();
+payloadSerializer.serializeBytes(origin);
+payloadSerializer.serializeBytes(sig);
+const payload = payloadSerializer.toUint8Array();
 
 const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
   ciphertext,
@@ -77,7 +158,7 @@ const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
   keypairId,
   chainId,
   moduleAddr,
-  moduleName: "kyc_verifier",
+  moduleName: "presigned_access",
 });
 ```
 

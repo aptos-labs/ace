@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
-import * as pke from "../../pke";
+import * as pke from "../pke";
 import {
     AceDeployment,
     ContractID,
@@ -10,9 +10,9 @@ import {
     CustomFlowRequest,
     fetchNetworkState,
     decryptCoreCustom,
-} from "../../_internal/common";
+} from "../_internal/common";
 
-export async function decrypt({
+export async function decryptCustomFlow({
     ciphertext, label, encPk, encSk, epoch, txn,
     aceDeployment, keypairId, knownChainName, programId,
 }: {

@@ -49,7 +49,7 @@ async function main() {
 
     log('Attempting decrypt with the now-stale accessPrivateKey (should fail)...');
     try {
-        await ACE.AptosCustomFlow.decrypt({
+        await ACE.tIBEforAptos.decryptCustomFlow({
             ciphertext, label,
             encPk: userEpkBytes, encSk: edk.toBytes(),
             payload,

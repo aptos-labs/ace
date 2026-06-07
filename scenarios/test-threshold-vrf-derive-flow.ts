@@ -12,7 +12,7 @@
  *
  * Desired SDK shape:
  *
- *   const session = await ACE.tVRF.DerivationSession.create({
+ *   const session = await ACE.tVRFforAptos.DerivationSession.create({
  *       aceDeployment,
  *       keypairId,
  *       contractId,
@@ -109,7 +109,7 @@ async function main() {
         console.log('  label:    label-1');
 
         step(2, 'Ask TS SDK for the canonical tVRF request to sign');
-        const session = await ACE.tVRF.DerivationSession.create({
+        const session = await ACE.tVRFforAptos.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
             contractId,
@@ -164,7 +164,7 @@ async function main() {
         await sleep(30000);
 
         step(5, 'Repeat derivation in the next epoch with a fresh response key and the same label');
-        const repeatSession = await ACE.tVRF.DerivationSession.create({
+        const repeatSession = await ACE.tVRFforAptos.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
             contractId,

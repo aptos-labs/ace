@@ -282,7 +282,7 @@ async function main() {
             contractAddr: adminAccountAddress,
         });
 
-        const pingEncResult = await ACE.AptosBasicFlow.encrypt({
+        const pingEncResult = await ACE.tIBEforAptos.encrypt({
             aceDeployment,
             keypairId: keypair0Id,
             chainId: CHAIN_ID,
@@ -319,7 +319,7 @@ async function main() {
         // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
         step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
         {
-            const pingSession = await ACE.AptosBasicFlow.DecryptionSession.create({
+            const pingSession = await ACE.tIBEforAptos.BasicDecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
@@ -413,7 +413,7 @@ async function main() {
             console.log('  pong-blob registered (owner=Bob, pay-to-download price=1)');
         }
 
-        const pongEncResult = await ACE.AptosBasicFlow.encrypt({
+        const pongEncResult = await ACE.tIBEforAptos.encrypt({
             aceDeployment,
             keypairId: keypair1Id,
             chainId: CHAIN_ID,
@@ -447,7 +447,7 @@ async function main() {
         console.log('  Alice purchased pong-blob');
 
         {
-            const pongSession = await ACE.AptosBasicFlow.DecryptionSession.create({
+            const pongSession = await ACE.tIBEforAptos.BasicDecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair1Id,
                 chainId: CHAIN_ID,

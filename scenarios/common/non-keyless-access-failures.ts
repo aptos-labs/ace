@@ -31,7 +31,7 @@ export interface NonKeylessAccessFailureContext {
     keypair0Id: AccountAddress;
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
-    /** `ACE.AptosBasicFlow.encrypt(..., plaintext='PING', keypair=keypair0)`. */
+    /** `ACE.tIBEforAptos.encrypt(..., plaintext='PING', keypair=keypair0)`. */
     pingCiph: Uint8Array;
     /** Allowlisted reader. Any `Account` — bare Ed25519, `SingleKeyAccount`,
      *  whichever the per-variant scenario constructs. */
@@ -56,8 +56,8 @@ function step(n: string, msg: string): void {
 async function makeSession(
     ctx: NonKeylessAccessFailureContext,
     overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
-): Promise<ACE.AptosBasicFlow.DecryptionSession> {
-    return ACE.AptosBasicFlow.DecryptionSession.create({
+): Promise<ACE.tIBEforAptos.BasicDecryptionSession> {
+    return ACE.tIBEforAptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: CHAIN_ID,

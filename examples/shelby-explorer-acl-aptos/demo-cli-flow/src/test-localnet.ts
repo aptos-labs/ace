@@ -259,7 +259,7 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const ciphertext = (await ACE.AptosBasicFlow.encrypt({
+    const ciphertext = (await ACE.tIBEforAptos.encrypt({
         aceDeployment,
         keypairId,
         chainId,
@@ -282,7 +282,7 @@ async function main() {
     // ========================================================================
     
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+        const session = await ACE.tIBEforAptos.BasicDecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,

@@ -227,7 +227,7 @@ async function fetchCurrentNodeInfos(
             }),
         ]);
         const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, "")))
-            .unwrapOrThrow(`ACE.tVRF: parse pke enc key for ${addrStr}`);
+            .unwrapOrThrow(`ACE.tVRFforAptos: parse pke enc key for ${addrStr}`);
         return { nodeAddr: addrStr, endpoint: endpoint as string, nodeEncKey };
     }));
 }
@@ -251,7 +251,7 @@ function verifyThresholdVrfShare(args: {
         return false;
     }
     if (sessionPks.basePoint.scheme !== group.SCHEME_BLS12381G2) {
-        throw new Error(`ACE.tVRF: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
+        throw new Error(`ACE.tVRFforAptos: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
     }
     const sharePk = sessionPks.sharePks[sdkIdx];
     if (sharePk === undefined) {
@@ -278,12 +278,12 @@ function verifyThresholdVrfShare(args: {
 
 function reconstructThresholdVrf(shares: ThresholdVrfShare[]): Uint8Array {
     if (shares.length === 0) {
-        throw new Error("ACE.tVRF.reconstructThresholdVrf: no shares");
+        throw new Error("ACE.tVRFforAptos.reconstructThresholdVrf: no shares");
     }
     const xs = shares.map((s) => frMod(BigInt(s.evalPoint)));
     for (let i = 0; i < xs.length; i++) {
         for (let j = i + 1; j < xs.length; j++) {
-            if (xs[i] === xs[j]) throw new Error("ACE.tVRF.reconstructThresholdVrf: duplicate evalPoint");
+            if (xs[i] === xs[j]) throw new Error("ACE.tVRFforAptos.reconstructThresholdVrf: duplicate evalPoint");
         }
     }
 
@@ -300,7 +300,7 @@ function reconstructThresholdVrf(shares: ThresholdVrfShare[]): Uint8Array {
         full = full === null ? scaled : full.add(scaled);
     }
     if (full === null) {
-        throw new Error("ACE.tVRF.reconstructThresholdVrf: all Lagrange coefficients were zero");
+        throw new Error("ACE.tVRFforAptos.reconstructThresholdVrf: all Lagrange coefficients were zero");
     }
 
     const pointBytes = new group.bls12381G1.PublicPoint(full).rawBytes();
@@ -377,7 +377,7 @@ export class DerivationSession {
         fullMessage: string;
     }): Promise<Uint8Array> {
         if (this.payload === undefined || this.message === undefined) {
-            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: call getRequestToSign() first");
+            throw new Error("ACE.tVRFforAptos.DerivationSession.deriveWithSignature: call getRequestToSign() first");
         }
         const authProof = new AptosAccountSignatureProof({
             userAddr: this.accountAddress,
@@ -388,21 +388,21 @@ export class DerivationSession {
         const requestBytes = WorkerRequest.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),
         ).toBytes();
-        if (requestBytes.length === 0) throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: empty request");
+        if (requestBytes.length === 0) throw new Error("ACE.tVRFforAptos.DerivationSession.deriveWithSignature: empty request");
 
         const networkState = this.networkState;
         if (networkState === undefined) {
-            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: missing network state");
+            throw new Error("ACE.tVRFforAptos.DerivationSession.deriveWithSignature: missing network state");
         }
         const [nodeInfos, sessionPks] = await Promise.all([
             fetchCurrentNodeInfos(this.aceDeployment, networkState),
             fetchCurrentSessionPks(this.aceDeployment, networkState, this.keypairId),
         ]);
         if (sessionPks.sharePks.length !== networkState.curNodes.length) {
-            throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: sharePks length ${sessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`);
+            throw new Error(`ACE.tVRFforAptos.DerivationSession.deriveWithSignature: sharePks length ${sessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`);
         }
         if (sessionPks.basePoint.scheme !== group.SCHEME_BLS12381G2) {
-            throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
+            throw new Error(`ACE.tVRFforAptos.DerivationSession.deriveWithSignature: threshold VRF requires a G2 keypair, got basePoint scheme ${sessionPks.basePoint.scheme}`);
         }
         const vrfInput = this.payload.toVrfInputBytes();
         const workerErrors: string[] = [];
@@ -463,12 +463,12 @@ export class DerivationSession {
         }));
 
         if (sawNotImplemented) {
-            throw new Error("ACE.tVRF.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
+            throw new Error("ACE.tVRFforAptos.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
         }
         if (shares.length >= networkState.curThreshold) {
             return reconstructThresholdVrf(shares.slice(0, networkState.curThreshold));
         }
-        throw new Error(`ACE.tVRF.DerivationSession.deriveWithSignature: need ${networkState.curThreshold} valid shares, got ${shares.length} (${workerErrors.join("; ")})`);
+        throw new Error(`ACE.tVRFforAptos.DerivationSession.deriveWithSignature: need ${networkState.curThreshold} valid shares, got ${shares.length} (${workerErrors.join("; ")})`);
     }
 
     async deriveWithWebAuthnAssertion(args: {
@@ -478,7 +478,7 @@ export class DerivationSession {
         signature: Uint8Array;
     }): Promise<Uint8Array> {
         if (this.payload === undefined || this.message === undefined) {
-            throw new Error("ACE.tVRF.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
+            throw new Error("ACE.tVRFforAptos.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
         }
 
         const sigRs = derEcdsaToRawLowS(args.signature);
@@ -522,7 +522,7 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
  *
  * Example:
  *
- *   const vrfBytes = await ACE.tVRF.derive({
+ *   const vrfBytes = await ACE.tVRFforAptos.derive({
  *       aceDeployment, keypairId, chainId, moduleAddr, moduleName,
  *       label, accountAddress: owner.accountAddress,
  *       sign: async msg => {

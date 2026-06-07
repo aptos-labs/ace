@@ -57,7 +57,7 @@ async function main() {
     log(`blob_id = "${blobId}"`);
 
     log('Encrypting plaintext via ACE custom flow...');
-    const ciphertext = (await ACE.AptosCustomFlow.encrypt({
+    const ciphertext = (await ACE.tIBEforAptos.encrypt({
         aceDeployment,
         keypairId,
         chainId,
@@ -83,7 +83,7 @@ async function main() {
     }
 
     log('Deriving (accessPrivateKey, accessPublicKey) via threshold VRF...');
-    const vrfBytes = await ACE.tVRF.derive({
+    const vrfBytes = await ACE.tVRFforAptos.derive({
         aceDeployment,
         keypairId,
         chainId, moduleAddr, moduleName,

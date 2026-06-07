@@ -52,7 +52,7 @@ export interface AccessFailureContext {
     keypair1Id: AccountAddress;
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
-    /** Output of `ACE.AptosBasicFlow.encrypt(..., plaintext='PING', keypair=keypair0)`. */
+    /** Output of `ACE.tIBEforAptos.encrypt(..., plaintext='PING', keypair=keypair0)`. */
     pingCiph: Uint8Array;
     /** The keyless-flavoured Bob (KeylessAccount or FederatedKeylessAccount).
      *  Used for Steps A, C, D, E, F. */
@@ -97,7 +97,7 @@ async function makeSession(
     ctx: AccessFailureContext,
     overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
 ) {
-    return ACE.AptosBasicFlow.DecryptionSession.create({
+    return ACE.tIBEforAptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: ctx.chainId,

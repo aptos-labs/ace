@@ -49,7 +49,7 @@ async function main() {
     console.log('Encrypting plaintext...');
     console.log(`  Label (IBE domain): "${new TextDecoder().decode(LABEL)}"`);
 
-    const result = await ACE.AptosCustomFlow.encrypt({
+    const result = await ACE.tIBEforAptos.encrypt({
         aceDeployment,
         keypairId,
         chainId: cfg.chainId,
@@ -58,7 +58,7 @@ async function main() {
         label: LABEL,
         plaintext: PLAINTEXT,
     });
-    const ciphertext = result.unwrapOrThrow('AptosCustomFlow.encrypt failed');
+    const ciphertext = result.unwrapOrThrow('tIBEforAptos.encrypt failed');
     console.log('Plaintext encrypted.');
 
     const session = {

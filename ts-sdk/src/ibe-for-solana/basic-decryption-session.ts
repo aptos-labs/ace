@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
-import { Result } from "../../result";
-import * as pke from "../../pke";
-import { State as NetworkState } from "../../network";
+import { Result } from "../result";
+import * as pke from "../pke";
+import { State as NetworkState } from "../network";
 import {
     AceDeployment,
     ContractID,
@@ -13,9 +13,9 @@ import {
     DecryptionRequestPayload,
     fetchNetworkStateAndBuildRequest,
     decryptCore,
-} from "../../_internal/common";
+} from "../_internal/common";
 
-export class DecryptionSession {
+export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
     fullDecryptionDomain: FullDecryptionDomain;
     ciphertext: Uint8Array;
@@ -52,9 +52,9 @@ export class DecryptionSession {
         programId: string,
         label: Uint8Array,
         ciphertext: Uint8Array,
-    }): Promise<DecryptionSession> {
+    }): Promise<BasicDecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
-        return new DecryptionSession({
+        return new BasicDecryptionSession({
             ...params,
             ephemeralEncryptionKey: encryptionKey,
             ephemeralDecryptionKey: decryptionKey,

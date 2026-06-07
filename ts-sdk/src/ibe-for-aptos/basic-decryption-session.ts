@@ -13,9 +13,9 @@ import {
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { Result } from "../../result";
-import * as pke from "../../pke";
-import { State as NetworkState } from "../../network";
+import { Result } from "../result";
+import * as pke from "../pke";
+import { State as NetworkState } from "../network";
 import {
     AceDeployment,
     ContractID,
@@ -25,9 +25,9 @@ import {
     fetchNetworkStateAndBuildRequest,
     decryptCore,
     buildPerNodeRequestCore,
-} from "../../_internal/common";
+} from "../_internal/common";
 
-export class DecryptionSession {
+export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
     fullDecryptionDomain: FullDecryptionDomain;
     ciphertext: Uint8Array;
@@ -66,9 +66,9 @@ export class DecryptionSession {
         moduleName: string,
         label: Uint8Array,
         ciphertext: Uint8Array,
-    }): Promise<DecryptionSession> {
+    }): Promise<BasicDecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
-        return new DecryptionSession({
+        return new BasicDecryptionSession({
             ...params,
             ephemeralEncryptionKey: encryptionKey,
             ephemeralDecryptionKey: decryptionKey,

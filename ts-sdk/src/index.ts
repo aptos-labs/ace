@@ -29,11 +29,9 @@ export { AceDeployment, ContractID } from "./_internal/common";
 // Registry of known ACE deployments (testnet, mainnet, …)
 export { knownDeployments } from "./known-deployments";
 
-// Aptos flows
-export * as AptosBasicFlow from "./aptos/basic-flow";
-export * as AptosCustomFlow from "./aptos/custom-flow";
-export * as tVRF from "./t-vrf";
+// Threshold IBE (encrypt + basic/custom-flow decrypt) — per chain
+export * as tIBEforAptos  from "./ibe-for-aptos";
+export * as tIBEforSolana from "./ibe-for-solana";
 
-// Solana flows
-export * as SolanaBasicFlow from "./solana/basic-flow";
-export * as SolanaCustomFlow from "./solana/custom-flow";
+// Threshold VRF (derive deterministic bytes from owner + label)
+export * as tVRFforAptos from "./vrf-for-aptos";

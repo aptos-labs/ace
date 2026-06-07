@@ -28,10 +28,14 @@ module admin::vrf_access {
     use std::string::String;
 
     const E_NOT_ADMIN: u64 = 1;
+    const E_NOT_INITIALIZED: u64 = 2;
 
     struct VrfPolicy has key {
         allowed_accounts: Table<vector<u8>, vector<address>>,
-        allowed_origin: vector<u8>,
+    }
+
+    struct AppConfig has key {
+        client_origin: vector<u8>,
     }
 
     public entry fun init(admin: &signer) {
@@ -39,18 +43,23 @@ module admin::vrf_access {
         if (!exists<VrfPolicy>(@admin)) {
             move_to(admin, VrfPolicy {
                 allowed_accounts: table::new(),
-                allowed_origin: vector::empty(),
+            });
+        };
+        if (!exists<AppConfig>(@admin)) {
+            move_to(admin, AppConfig {
+                client_origin: vector::empty(),
             });
         };
     }
 
-    public entry fun set_allowed_origin(
+    public entry fun set_client_origin(
         admin: &signer,
         origin: vector<u8>,
-    ) acquires VrfPolicy {
+    ) acquires AppConfig {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        let policy = borrow_global_mut<VrfPolicy>(@admin);
-        policy.allowed_origin = origin;
+        assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
+        let config = borrow_global_mut<AppConfig>(@admin);
+        config.client_origin = origin;
     }
 
     public entry fun allow_deriver(
@@ -74,10 +83,12 @@ module admin::vrf_access {
         label: vector<u8>,
         account: address,
         origin: String,
-    ): bool acquires VrfPolicy {
+    ): bool acquires VrfPolicy, AppConfig {
         if (!exists<VrfPolicy>(@admin)) return false;
+        if (!exists<AppConfig>(@admin)) return false;
         let policy = borrow_global<VrfPolicy>(@admin);
-        if (origin.bytes() != &policy.allowed_origin) return false;
+        let config = borrow_global<AppConfig>(@admin);
+        if (origin.bytes() != &config.client_origin) return false;
         if (!policy.allowed_accounts.contains(label)) return false;
         policy.allowed_accounts.borrow(label).contains(&account)
     }
@@ -86,7 +97,7 @@ module admin::vrf_access {
 
 If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes.
 
-Deploy the Move package, initialize policy, and configure the accounts allowed to derive each label. After deploying the client, call `set_allowed_origin` with the client's stable origin. Record:
+Deploy the Move package, initialize policy, and configure the accounts allowed to derive each label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId`.
@@ -151,7 +162,7 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
 
 After deriving, turn the bytes into whatever your app needs. The presigned-access example maps 32 VRF bytes into a BLS12-381 private key and registers the public key on-chain.
 
-As with Aptos basic IBE, deploy the client first, learn the stable origin, then update the contract or policy resource to accept only that origin.
+As with Aptos basic IBE, deploy the client first, learn the stable origin, then update the app config resource once to accept only that origin.
 
 ## Remarks
 

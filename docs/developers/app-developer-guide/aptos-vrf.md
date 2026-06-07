@@ -28,17 +28,29 @@ module admin::vrf_access {
     use std::string::String;
 
     const E_NOT_ADMIN: u64 = 1;
-    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
 
     struct VrfPolicy has key {
         allowed_accounts: Table<vector<u8>, vector<address>>,
+        allowed_origin: vector<u8>,
     }
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<VrfPolicy>(@admin)) {
-            move_to(admin, VrfPolicy { allowed_accounts: table::new() });
+            move_to(admin, VrfPolicy {
+                allowed_accounts: table::new(),
+                allowed_origin: vector::empty(),
+            });
         };
+    }
+
+    public entry fun set_allowed_origin(
+        admin: &signer,
+        origin: vector<u8>,
+    ) acquires VrfPolicy {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        let policy = borrow_global_mut<VrfPolicy>(@admin);
+        policy.allowed_origin = origin;
     }
 
     public entry fun allow_deriver(
@@ -63,9 +75,9 @@ module admin::vrf_access {
         account: address,
         origin: String,
     ): bool acquires VrfPolicy {
-        if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
         if (!exists<VrfPolicy>(@admin)) return false;
         let policy = borrow_global<VrfPolicy>(@admin);
+        if (origin.bytes() != &policy.allowed_origin) return false;
         if (!policy.allowed_accounts.contains(label)) return false;
         policy.allowed_accounts.borrow(label).contains(&account)
     }
@@ -74,7 +86,7 @@ module admin::vrf_access {
 
 If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes.
 
-Deploy the Move package and initialize policy. Record:
+Deploy the Move package, initialize policy, and configure the accounts allowed to derive each label. After deploying the client, call `set_allowed_origin` with the client's stable origin. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId`.

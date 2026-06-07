@@ -26,7 +26,6 @@ module admin::marketplace {
 
     const E_NOT_ADMIN: u64 = 1;
     const E_ITEM_NOT_FOUND: u64 = 2;
-    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
 
     struct Item has store, drop {
         readers: vector<address>,
@@ -34,13 +33,26 @@ module admin::marketplace {
 
     struct Catalog has key {
         items: Table<vector<u8>, Item>,
+        allowed_origin: vector<u8>,
     }
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<Catalog>(@admin)) {
-            move_to(admin, Catalog { items: table::new() });
+            move_to(admin, Catalog {
+                items: table::new(),
+                allowed_origin: vector::empty(),
+            });
         };
+    }
+
+    public entry fun set_allowed_origin(
+        admin: &signer,
+        origin: vector<u8>,
+    ) acquires Catalog {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        let catalog = borrow_global_mut<Catalog>(@admin);
+        catalog.allowed_origin = origin;
     }
 
     public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
@@ -67,9 +79,9 @@ module admin::marketplace {
         account: address,
         origin: String,
     ): bool acquires Catalog {
-        if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
         if (!exists<Catalog>(@admin)) return false;
         let catalog = borrow_global<Catalog>(@admin);
+        if (origin.bytes() != &catalog.allowed_origin) return false;
         if (!catalog.items.contains(label)) return false;
         let item = catalog.items.borrow(label);
         item.readers.contains(&account)
@@ -77,9 +89,9 @@ module admin::marketplace {
 }
 ```
 
-In a real pay-to-download app, `grant` would usually be called after a payment entry function succeeds rather than directly by the admin. Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. While developing locally, you can temporarily allow your local origin; after deployment, update the contract or policy resource to the real origin, such as `https://app.example.com`.
+In a real pay-to-download app, `grant` would usually be called after a payment entry function succeeds rather than directly by the admin. Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. Keep `allowed_origin` empty while the client is not ready, then call `set_allowed_origin` after deploying the web app or CLI wrapper and learning the real production origin.
 
-Deploy the Move package and run whatever initializer creates your policy table. Record:
+Deploy the Move package, run `init`, register your items, and grant whatever test access you need. Once the client is deployed, call `set_allowed_origin` with its stable origin. Record:
 
 - `chainId`: the Aptos chain id.
 - `moduleAddr`: the account that published your module.

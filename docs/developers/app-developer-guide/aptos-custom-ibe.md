@@ -30,7 +30,6 @@ module admin::presigned_access {
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
     const E_INVALID_ACCESS_PUBLIC_KEY: u64 = 3;
-    const EXPECTED_APP_ORIGIN: vector<u8> = b"https://app.example.com";
     const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
 
     struct SignableRequest has copy, drop {
@@ -42,13 +41,27 @@ module admin::presigned_access {
 
     struct Registry has key {
         access_public_keys: Table<vector<u8>, vector<u8>>,
+        allowed_origin: vector<u8>,
     }
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<Registry>(@admin)) {
-            move_to(admin, Registry { access_public_keys: table::new() });
+            move_to(admin, Registry {
+                access_public_keys: table::new(),
+                allowed_origin: vector::empty(),
+            });
         };
+    }
+
+    public entry fun set_allowed_origin(
+        admin: &signer,
+        origin: vector<u8>,
+    ) acquires Registry {
+        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
+        let registry = borrow_global_mut<Registry>(@admin);
+        registry.allowed_origin = origin;
     }
 
     public entry fun register(
@@ -81,7 +94,7 @@ module admin::presigned_access {
         let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
         let sig_bytes = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
         if (bcs_stream::has_remaining(&mut stream)) return false;
-        if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
+        if (&claimed_origin != &registry.allowed_origin) return false;
 
         let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
         if (!option::is_some(&pk_opt)) return false;
@@ -100,7 +113,7 @@ module admin::presigned_access {
 
 The hook name and signature are fixed. The internals are app-defined. In this pattern, `enc_pk` is part of the signed message, so someone who captures `(origin, sig)` cannot replay it with their own response key.
 
-Deploy the Move package, initialize verifier state, and record:
+Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_allowed_origin` with the client's stable origin. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName` for the module with the hook.
 - `aceDeployment` and `keypairId`.
@@ -130,7 +143,7 @@ const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
 const encPk = encryptionKey.toBytes();
 const encSk = decryptionKey.toBytes();
 
-const origin = new TextEncoder().encode("https://app.example.com");
+const origin = new TextEncoder().encode(window.location.origin);
 const dst = new TextEncoder().encode("ACE_PRESIGNED_ACCESS_v1");
 const blsDst = new TextEncoder().encode("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_");
 
@@ -164,7 +177,7 @@ const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
 
 Custom Aptos IBE is a one-call SDK flow today. If your UI has multiple phases, keep `encPk`, `encSk`, and the payload inputs in your own session state until the user finishes the proof step.
 
-Unlike basic Aptos IBE, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, put it in the payload and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then update the contract state or republish the constant so only that origin is accepted.
+Unlike basic Aptos IBE, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, put it in the payload and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_allowed_origin` so only that origin is accepted.
 
 ## Remarks
 

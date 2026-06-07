@@ -2,7 +2,7 @@
 
 ## TLDR
 
-Use this flow when an Aptos contract can decide decryption from three values: the encrypted object's `label`, the requestor's Aptos account address, and the application `origin` that the user signed for. It is the right default for pay-to-download, allowlists, subscriptions, time locks, and other policies that fit normal on-chain state.
+Use this flow when an Aptos contract can decide decryption from three values: the encrypted object's `label`, the requestor's Aptos account address, and the application `origin` that the user signed for. It is the right default for allowlists, subscriptions, time locks, and pay-to-download flows where a purchase function writes entitlement state on-chain.
 
 You need to:
 
@@ -14,10 +14,10 @@ You need to:
 
 ## Walkthrough
 
-Start with the access policy. For a pay-to-download or allowlist app, store a catalog keyed by `label`, where each item records the accounts that may decrypt it. The ACE hook is a view function with a fixed name and fixed signature. This minimal module defines the state the hook reads:
+Start with the access policy. This walkthrough uses an allowlist-style content catalog keyed by `label`, where each item records the accounts that may decrypt it. The ACE hook is a view function with a fixed name and fixed signature. This minimal module defines the entitlement state the hook reads:
 
 ```move
-module admin::marketplace {
+module admin::content_access {
     use aptos_std::table;
     use aptos_std::table::Table;
     use std::error;
@@ -100,7 +100,9 @@ module admin::marketplace {
 }
 ```
 
-In a real pay-to-download app, `grant` would usually be called after a payment entry function succeeds rather than directly by the admin. Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. `AppConfig.client_origin` is one app-level value, not item policy. Keep it empty while the client is not ready, then call `set_client_origin` once after deploying the web app or CLI wrapper and learning the real production origin.
+Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. `AppConfig.client_origin` is one app-level value, not item policy. Keep it empty while the client is not ready, then call `set_client_origin` once after deploying the web app or CLI wrapper and learning the real production origin.
+
+This snippet is intentionally an allowlist, not a payment contract. For pay-to-download, keep the same ACE hook shape, but replace direct admin calls to `grant` with a purchase entry function that collects or verifies payment and then records the buyer in the same entitlement state.
 
 Deploy the Move package, run `init`, register your items, and grant whatever test access you need. Once the client is deployed, call `set_client_origin` with its stable origin. Do not repeat this per label. Record:
 
@@ -122,7 +124,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
   keypairId,
   chainId,
   moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "marketplace",
+  moduleName: "content_access",
   label,
   plaintext: songBytes,
 })).unwrapOrThrow("ACE encrypt failed");
@@ -138,7 +140,7 @@ const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
   keypairId,
   chainId,
   moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "marketplace",
+  moduleName: "content_access",
   label,
   ciphertext,
 });

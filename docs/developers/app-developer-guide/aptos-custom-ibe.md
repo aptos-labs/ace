@@ -14,7 +14,22 @@ You need to:
 
 ## Walkthrough
 
-Design the payload before the hook. In a ZK-gated app, the payload might be a Groth16 proof plus public outputs. The example below uses the pre-signed-access pattern: each `label` has a registered BLS public key, and the reader's payload contains `(origin, sig)`. The signature must cover a domain-separation string, `label`, the reader's ephemeral response key `enc_pk`, and the claimed origin.
+Start by deciding what the payload proves. In custom IBE, ACE does not interpret the payload and does not require a normal Aptos wallet identity proof. Workers pass three values to your hook: the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload`. Your contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
+
+The payload should be an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
+
+This walkthrough uses the pre-signed-access pattern:
+
+```text
+owner registers: access_public_keys[label] = accessPublicKey
+reader proves:   sig = Sign(accessPrivateKey,
+                            BCS(dst, label, enc_pk, origin))
+payload:         BCS(origin, sig)
+hook checks:     registered public key verifies sig for this label,
+                 this response key, and this app origin
+```
+
+The concrete design idea is that possession of `accessPrivateKey` is the grant. The reader does not need an Aptos account. To decrypt, the reader generates a fresh PKE keypair, signs a statement that binds the grant to the object and to that fresh response key, and sends the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
 
 ```move
 module admin::presigned_access {
@@ -120,7 +135,9 @@ module admin::presigned_access {
 }
 ```
 
-The hook name and signature are fixed. The internals are app-defined. In this pattern, `enc_pk` is part of the signed message, so someone who captures `(origin, sig)` cannot replay it with their own response key.
+The hook name and signature are fixed. The internals are app-defined. This example stores one access public key per `label`, decodes `payload = BCS(origin) || BCS(sig)`, checks that `origin` matches app-level config, and verifies that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
+
+Before readers decrypt, create or derive the access keypair for each `label`. The [Aptos VRF guide](./aptos-vrf.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
 
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
@@ -142,7 +159,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, generate a fresh PKE keypair, build the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, generate a fresh PKE keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
 import { Serializer } from "@aptos-labs/ts-sdk";
@@ -190,9 +207,7 @@ Unlike basic Aptos IBE, custom flow does not automatically receive a wallet `ori
 
 ## Remarks
 
-Design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical payload includes a version or domain-separation string, the app audience or origin if relevant, the subject being authorized, any expiry or nonce your policy needs, the policy-specific public claims, and an authenticator such as a signature, proof, or witness.
-
-That authenticator should cover a canonical encoding of every field the hook relies on. At minimum, bind it to `label` and the per-request `enc_pk`. Binding `label` prevents a proof for one object from authorizing another object. Binding `enc_pk` prevents someone who sees a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. If the grant is origin-bound, time-bound, or issuer-bound, include those fields in the signed statement or proof public inputs too, and have the hook reject mismatches and malformed encodings.
+In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid payload for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the payload prove the reader's identity or use the basic Aptos IBE flow.
 
 ## Ready-To-Run Examples
 

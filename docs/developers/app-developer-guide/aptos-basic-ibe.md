@@ -102,8 +102,6 @@ module admin::content_access {
 
 Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. `AppConfig.client_origin` is one app-level value, not item policy. Keep it empty while the client is not ready, then call `set_client_origin` once after deploying the web app or CLI wrapper and learning the real production origin.
 
-This snippet is intentionally an allowlist, not a payment contract. For pay-to-download, keep the same ACE hook shape, but replace direct admin calls to `grant` with a purchase entry function that collects or verifies payment and then records the buyer in the same entitlement state.
-
 Deploy the Move package, run `init`, register your items, and grant whatever test access you need. Once the client is deployed, call `set_client_origin` with its stable origin. Do not repeat this per label. Record:
 
 - `chainId`: the Aptos chain id.

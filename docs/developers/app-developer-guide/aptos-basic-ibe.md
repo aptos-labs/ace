@@ -166,7 +166,7 @@ After the client is deployed, make the origin check final. For Aptos wallet mess
 
 ## Remarks
 
-Once a user is allowed to decrypt something, assume they can keep the plaintext. They may save it, copy it, screenshot it, or simply remember it. Revoking that user's access in the contract can prevent future ACE decryption requests, but it does not make already revealed plaintext disappear. If your application needs continuing control after plaintext has been shown, implement that behavior in your own DRM-style client instead of relying on contract revocation alone.
+Once a user is allowed to decrypt something, assume they can keep the plaintext. They may save it, copy it, screenshot it, or simply remember it. Revoking that user's access in the contract can prevent future ACE decryption requests, but it does not make already revealed plaintext disappear. If your application needs ongoing control after decryption, ACE can still gate access to the encrypted content, but the plaintext should stay inside your own DRM-style client instead of being exposed directly to the user.
 
 ## Ready-To-Run Examples
 

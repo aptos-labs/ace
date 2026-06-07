@@ -48,7 +48,7 @@ export function readLocalnetConfig(): LocalnetConfig {
 export const LOCALNET_FAUCET_URL = 'http://localhost:8081';
 
 /** Matches `EXPECTED_APP_ORIGIN` in `presigned_access.move`. */
-export const APP_ORIGIN = 'https://shelby.example';
+export const APP_ORIGIN = 'https://example.com';
 
 /** Matches `SIGNABLE_REQUEST_DST` in `presigned_access.move`. */
 export const SIGNABLE_REQUEST_DST = 'ACE_PRESIGNED_ACCESS_v2';
@@ -86,7 +86,7 @@ export interface ConfigFile {
 
 /** The "pre-signed URL" Alice hands to Bob out-of-band. Carrying the
  *  ciphertext alongside the bearer key is a convenience: in real life
- *  the ciphertext lives on Shelby and the grant just points to it. */
+ *  the ciphertext lives in object storage and the grant just points to it. */
 export interface GrantFile {
     blobSuffix: string;
     blobIdHex: string;        // utf8 hex of `@<canon-owner>/<suffix>`

@@ -1,7 +1,7 @@
 {
-  "name": "shelby-s3-presigned-access-aptos-demo-cli-flow",
+  "name": "presigned-access-aptos-demo-cli-flow",
   "version": "0.1.0",
-  "description": "Step-by-step demo of the Shelby S3 pre-signed access pattern on Aptos.",
+  "description": "Step-by-step demo of the pre-signed-URL / bearer-token access pattern on Aptos.",
   "private": true,
   "type": "module",
   "scripts": {

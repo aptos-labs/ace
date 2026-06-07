@@ -1,10 +1,10 @@
-# Shelby S3 Pre-Signed Access — Aptos
+# Pre-Signed Access — Aptos
 
 A step-by-step demo of the **bearer-token / "pre-signed URL"** pattern on top
-of ACE. Modeled on AWS S3 pre-signed URLs: the data owner uploads an
-encrypted blob, derives a per-blob keypair, and hands the *private* half to a
-reader out-of-band. Anyone holding that private half can decrypt; no on-chain
-identity is required from the reader.
+of ACE — modeled on AWS S3 pre-signed URLs. The data owner uploads an
+encrypted blob, derives a per-blob keypair via threshold VRF, and hands the
+*private* half to a reader out-of-band. Anyone holding that private half can
+decrypt; no on-chain identity is required from the reader.
 
 You will:
 
@@ -85,7 +85,7 @@ Three properties:
 In a separate terminal:
 
 ```bash
-cd examples/shelby-s3-presigned-access-aptos/demo-cli-flow
+cd examples/presigned-access-aptos/demo-cli-flow
 ```
 
 ## Walkthrough
@@ -180,7 +180,7 @@ asserts the expected failure.
 ## Layout
 
 ```
-examples/shelby-s3-presigned-access-aptos/
+examples/presigned-access-aptos/
 ├── README.md
 ├── contract/
 │   ├── Move.toml                    # admin = "0xcafe" placeholder

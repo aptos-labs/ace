@@ -166,12 +166,9 @@ As with Aptos basic IBE, deploy the client first, learn the stable origin, then 
 
 ## Remarks
 
-- VRF output is deterministic for the same ACE keypair, contract id, account, and label.
-- VRF output is not a public randomness beacon. The requestor and policy shape matter, and the caller can choose labels unless your app constrains them.
-- Use domain-separated labels. For example, prefix labels with `access-key:v1:` or another app-specific tag.
-- Keep derived secrets off-chain unless intentionally publishing them.
-- If you convert VRF bytes into a scalar or keypair, use rejection sampling or a documented modulo reduction appropriate for the target group.
-- The current SDK exposes the VRF flow for Aptos contracts.
+ACE VRF is best understood as deterministic secret derivation, not as a public randomness beacon. The same ACE keypair, contract id, account, and label produce the same output; changing any of those inputs changes the derived bytes. Treat label construction as part of your app protocol, domain-separate it, and avoid letting users freely grind labels if the output affects fairness or rewards.
+
+If you use VRF output as key material, keep it off-chain and out of logs. When converting the 32 bytes into another primitive, such as a group scalar or keypair, use a documented mapping for that target primitive rather than ad hoc truncation.
 
 ## Ready-To-Run Examples
 

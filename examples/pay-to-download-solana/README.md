@@ -196,7 +196,7 @@ This allows the same logical identity to be used across both chains.
 
 ```typescript
 // 1. Encrypt the content payload directly with ACE.
-const ciphertext = (await ACE.tIBEforSolana.encrypt({
+const ciphertext = (await ACE.IBE_Solana.encrypt({
   aceDeployment,
   keypairId,
   knownChainName,
@@ -226,7 +226,7 @@ await program.methods
   .rpc();
 
 // Build proof-of-permission transaction (calls ace_hook::assert_access)
-const session = await ACE.tIBEforSolana.BasicDecryptionSession.create({
+const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
   aceDeployment, keypairId, knownChainName,
   programId: aceHookProgram.programId.toBase58(),
   domain: fullBlobNameBytes, ciphertext,

@@ -55,7 +55,7 @@ async function main() {
     const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
     const chainId = await aptos.getChainId();
 
-    const plaintext = await ACE.tIBEforAptos.decryptCustomFlow({
+    const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
         ciphertext, label,
         encPk: userEpkBytes, encSk: edk.toBytes(),
         payload,

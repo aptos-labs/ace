@@ -226,8 +226,8 @@ function step(n: string, msg: string): void {
 async function makeSession(
     ctx: Ctx,
     overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
-): Promise<ACE.tIBEforAptos.BasicDecryptionSession> {
-    return ACE.tIBEforAptos.BasicDecryptionSession.create({
+): Promise<ACE.IBE_Aptos.BasicDecryptionSession> {
+    return ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: CHAIN_ID,
@@ -240,7 +240,7 @@ async function makeSession(
 
 async function decryptAsBob(
     ctx: Ctx,
-    session: ACE.tIBEforAptos.BasicDecryptionSession,
+    session: ACE.IBE_Aptos.BasicDecryptionSession,
     mauler?: (sigs: AnySignature[], assertion: WebAuthnAssertion) => AnySignature[],
 ) {
     const msg = await session.getRequestToSign();

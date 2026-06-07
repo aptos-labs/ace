@@ -30,8 +30,8 @@ export { AceDeployment, ContractID } from "./_internal/common";
 export { knownDeployments } from "./known-deployments";
 
 // Threshold IBE (encrypt + basic/custom-flow decrypt) — per chain
-export * as tIBEforAptos  from "./ibe-for-aptos";
-export * as tIBEforSolana from "./ibe-for-solana";
+export * as IBE_Aptos  from "./ibe-for-aptos";
+export * as IBE_Solana from "./ibe-for-solana";
 
 // Threshold VRF (derive deterministic bytes from owner + label)
-export * as tVRFforAptos from "./vrf-for-aptos";
+export * as VRF_Aptos from "./vrf-for-aptos";

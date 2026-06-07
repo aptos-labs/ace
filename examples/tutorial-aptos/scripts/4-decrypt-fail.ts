@@ -64,7 +64,7 @@ async function main() {
     const domain = new TextEncoder().encode(target.name);
 
     log(`Bob attempting to decrypt "${target.name}" (without buying)...`);
-    const session = await ACE.tIBEforAptos.BasicDecryptionSession.create({
+    const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment,
         keypairId,
         chainId,

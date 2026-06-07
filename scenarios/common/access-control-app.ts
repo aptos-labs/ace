@@ -5,7 +5,7 @@
  * Helpers for the `access_control` dapp used across the access-failure
  * scenarios. Owns the deploy + initialize sequence, the allowlist-blob
  * registration, the domain-bytes convention `@<owner-addr>/<blob-name>`, and
- * a thin wrapper around `ACE.tIBEforAptos.encrypt` for the PING fixture.
+ * a thin wrapper around `ACE.IBE_Aptos.encrypt` for the PING fixture.
  */
 
 import { Account, AccountAddress, Aptos, Serializer } from '@aptos-labs/ts-sdk';
@@ -83,7 +83,7 @@ export async function encryptForAccessControl(
     domain: Uint8Array,
     plaintext: Uint8Array,
 ): Promise<Uint8Array> {
-    const result = await ACE.tIBEforAptos.encrypt({
+    const result = await ACE.IBE_Aptos.encrypt({
         aceDeployment,
         keypairId,
         chainId: CHAIN_ID,

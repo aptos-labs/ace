@@ -40,7 +40,7 @@ async function main() {
         const domain = textEncoder.encode(item.name);
 
         log(`Encrypting "${item.name}"...`);
-        const ciphertext = (await ACE.tIBEforAptos.encrypt({
+        const ciphertext = (await ACE.IBE_Aptos.encrypt({
             aceDeployment,
             keypairId,
             chainId,

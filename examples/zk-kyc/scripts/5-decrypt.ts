@@ -125,7 +125,7 @@ async function main() {
     const moduleAddr = AccountAddress.fromString(cfg.adminAddress);
 
     console.log('Sending proof to ACE workers for on-chain verification...');
-    const decrypted = await ACE.tIBEforAptos.decryptCustomFlow({
+    const decrypted = await ACE.IBE_Aptos.decryptCustomFlow({
         ciphertext,
         label,
         encPk,

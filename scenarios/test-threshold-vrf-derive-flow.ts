@@ -12,7 +12,7 @@
  *
  * Desired SDK shape:
  *
- *   const session = await ACE.tVRFforAptos.DerivationSession.create({
+ *   const session = await ACE.VRF_Aptos.DerivationSession.create({
  *       aceDeployment,
  *       keypairId,
  *       contractId,
@@ -102,7 +102,7 @@ async function main() {
         console.log('  label:    label-1');
 
         step(2, 'Ask TS SDK for the canonical tVRF request to sign');
-        const session = await ACE.tVRFforAptos.DerivationSession.create({
+        const session = await ACE.VRF_Aptos.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
             contractId,
@@ -115,7 +115,7 @@ async function main() {
         // the inner bytes BCS-decode back into a payload whose fields match what
         // we asked for.
         assert(msg.startsWith('0x') && /^0x[0-9a-f]+$/.test(msg), 'getRequestToSign returns hex');
-        const firstPayload = ACE.tVRFforAptos.ThresholdVrfRequestPayload.fromBytes(
+        const firstPayload = ACE.VRF_Aptos.ThresholdVrfRequestPayload.fromBytes(
             Buffer.from(msg.slice(2), 'hex'),
         );
         assert(firstPayload.keypairId.toStringLong() === keypairId.toStringLong(), 'payload binds keypair id');
@@ -163,7 +163,7 @@ async function main() {
         await sleep(30000);
 
         step(5, 'Repeat derivation in the next epoch with a fresh response key and the same label');
-        const repeatSession = await ACE.tVRFforAptos.DerivationSession.create({
+        const repeatSession = await ACE.VRF_Aptos.DerivationSession.create({
             aceDeployment: ace.aceDeployment,
             keypairId,
             contractId,
@@ -171,7 +171,7 @@ async function main() {
             accountAddress: owner.accountAddress,
         });
         const repeatMsg = await repeatSession.getRequestToSign();
-        const repeatPayload = ACE.tVRFforAptos.ThresholdVrfRequestPayload.fromBytes(
+        const repeatPayload = ACE.VRF_Aptos.ThresholdVrfRequestPayload.fromBytes(
             Buffer.from(repeatMsg.slice(2), 'hex'),
         );
         assert(

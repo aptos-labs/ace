@@ -39,7 +39,7 @@ parse grant.json
 sign  BCS(SignableRequest { dst, label, user_epk, origin })
         with accessPrivateKey (BLS sig in G2)
 payload = BCS({ origin, sig })
-ACE.tIBEforAptos.decryptCustomFlow({ label, encPk, encSk, payload, … })
+ACE.IBE_Aptos.decryptCustomFlow({ label, encPk, encSk, payload, … })
    └─→ workers call presigned_access::on_ace_decryption_request_custom_flow
         which verifies the sig under the registered accessPublicKey
    └─→ plaintext
@@ -145,7 +145,7 @@ The bearer of `data/grant.json` runs this. The script:
 - Signs `BCS(SignableRequest { dst, label, user_epk, origin })` with
   `accessPrivateKey`.
 - Wraps `payload = BCS({ origin, sig })` and calls
-  `ACE.tIBEforAptos.decryptCustomFlow`.
+  `ACE.IBE_Aptos.decryptCustomFlow`.
 - ACE workers call `presigned_access::on_ace_decryption_request_custom_flow`
   on-chain, which verifies the BLS sig under the registered
   `accessPublicKey`, then release their share. The SDK reconstructs and

@@ -190,12 +190,9 @@ Unlike basic Aptos IBE, custom flow does not automatically receive a wallet `ori
 
 ## Remarks
 
-- The hook must be deterministic and view-safe. Workers rely on the chain's answer.
-- Never accept a payload that is not bound to `enc_pk`; replay protection depends on it.
-- Prefer versioned payloads with explicit domain-separation strings.
-- Check for trailing bytes after decoding structured payloads.
-- Use `label` as part of the proof statement when the proof authorizes one specific object.
-- Return `false` for malformed payloads where practical.
+Design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical payload includes a version or domain-separation string, the app audience or origin if relevant, the subject being authorized, any expiry or nonce your policy needs, the policy-specific public claims, and an authenticator such as a signature, proof, or witness.
+
+That authenticator should cover a canonical encoding of every field the hook relies on. At minimum, bind it to `label` and the per-request `enc_pk`. Binding `label` prevents a proof for one object from authorizing another object. Binding `enc_pk` prevents someone who sees a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. If the grant is origin-bound, time-bound, or issuer-bound, include those fields in the signed statement or proof public inputs too, and have the hook reject mismatches and malformed encodings.
 
 ## Ready-To-Run Examples
 

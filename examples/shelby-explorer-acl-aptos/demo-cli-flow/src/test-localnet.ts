@@ -259,13 +259,13 @@ async function main() {
     const plaintext = "A long time ago in a galaxy far, far away....";
     
     log("Alice encrypting content...");
-    const ciphertext = (await ACE.AptosBasicFlow.encrypt({
+    const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment,
         keypairId,
         chainId,
         moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
         moduleName: "access_control",
-        domain: textEncoder.encode(fullBlobName),
+        label: textEncoder.encode(fullBlobName),
         plaintext: textEncoder.encode(plaintext),
     })).unwrapOrThrow("encryption failed");
     log("✓ Content encrypted");
@@ -282,13 +282,13 @@ async function main() {
     // ========================================================================
     
     async function bobAttemptToDecrypt(): Promise<Result<Uint8Array>> {
-        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+        const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,
             moduleAddr: AccountAddress.fromString(CONTRACT_ADDRESS),
             moduleName: "access_control",
-            domain: textEncoder.encode(fullBlobName),
+            label: textEncoder.encode(fullBlobName),
             ciphertext,
         });
         const msgToSign = await session.getRequestToSign();

@@ -99,14 +99,14 @@ async function captureSignedSessionAtEpoch(args: {
     correctDomain: Uint8Array;
     pingCiph: Uint8Array;
     expectedEpoch: number;
-}): Promise<{ session: ACE.AptosBasicFlow.DecryptionSession; signature: Signature; fullMessage: string }> {
-    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+}): Promise<{ session: ACE.IBE_Aptos.BasicDecryptionSession; signature: Signature; fullMessage: string }> {
+    const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: args.aceState.aceDeployment,
         keypairId: args.keypair0Id,
         chainId: CHAIN_ID,
         moduleAddr: args.aceState.adminAccountAddress,
         moduleName: 'access_control',
-        domain: args.correctDomain,
+        label: args.correctDomain,
         ciphertext: args.pingCiph,
     });
     const msg = await session.getRequestToSign();
@@ -130,7 +130,7 @@ async function captureSignedSessionAtEpoch(args: {
  *  the success/failure outcome the caller expects. On success, also
  *  asserts the PING plaintext. */
 async function replayDecryptWithExpectation(args: {
-    session: ACE.AptosBasicFlow.DecryptionSession;
+    session: ACE.IBE_Aptos.BasicDecryptionSession;
     bob: Account;
     signature: Signature;
     fullMessage: string;
@@ -165,7 +165,7 @@ async function bringUpAndCaptureSession(): Promise<{
     workers: ChildProcess[];
     localnetProc: ChildProcess;
     aceState: AceNetworkState;
-    session: ACE.AptosBasicFlow.DecryptionSession;
+    session: ACE.IBE_Aptos.BasicDecryptionSession;
     bob: Account;
     signature: Signature;
     fullMessage: string;

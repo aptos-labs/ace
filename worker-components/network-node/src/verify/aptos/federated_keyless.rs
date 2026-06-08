@@ -25,7 +25,7 @@ use anyhow::{anyhow, Result};
 use super::keyless::{fetch_configuration, fetch_groth16_vk, fetch_system_rsa_jwk};
 use super::{
     check_basic_ace_hook, find_rsa_jwk_in_jwks_resource, is_valid_hex, AptosContractId,
-    AptosProofOfPermission,
+    AptosPayloadBinding, AptosProofOfPermission,
 };
 use super::super::BasicFlowRequest;
 use crate::ChainRpcConfig;
@@ -70,11 +70,11 @@ pub(super) async fn verify_signature_only(
     sig: &aptos_keyless_common::KeylessSignature,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    // 1. Same pretty-message + AptosConnect hex tolerance as the regular path.
-    let pretty_msg = req.payload.to_pretty_message()?;
-    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    // 1. Same hex-BCS marker + AptosConnect hex tolerance as the regular path.
+    let expected_hex = req.payload.to_signed_message_hex()?;
+    let expected_hex_hex = hex::encode(expected_hex.as_bytes());
     let full_msg = &proof.full_message;
-    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+    if !full_msg.contains(&expected_hex) && !full_msg.contains(&expected_hex_hex) {
         return Err(anyhow!(
             "verify_aptos_federated_keyless: fullMessage does not contain expected decryption request content"
         ));

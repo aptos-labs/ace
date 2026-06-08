@@ -40,13 +40,13 @@ async function main() {
         const domain = textEncoder.encode(item.name);
 
         log(`Encrypting "${item.name}"...`);
-        const ciphertext = (await ACE.AptosBasicFlow.encrypt({
+        const ciphertext = (await ACE.IBE_Aptos.encrypt({
             aceDeployment,
             keypairId,
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            domain,
+            label: domain,
             plaintext: textEncoder.encode(item.plaintext),
         })).unwrapOrThrow('encrypt failed');
         log(`  Encrypted (${ciphertext.length} bytes).`);

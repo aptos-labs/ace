@@ -31,7 +31,7 @@ export interface NonKeylessAccessFailureContext {
     keypair0Id: AccountAddress;
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
-    /** `ACE.AptosBasicFlow.encrypt(..., plaintext='PING', keypair=keypair0)`. */
+    /** `ACE.IBE_Aptos.encrypt(..., plaintext='PING', keypair=keypair0)`. */
     pingCiph: Uint8Array;
     /** Allowlisted reader. Any `Account` — bare Ed25519, `SingleKeyAccount`,
      *  whichever the per-variant scenario constructs. */
@@ -55,15 +55,15 @@ function step(n: string, msg: string): void {
 
 async function makeSession(
     ctx: NonKeylessAccessFailureContext,
-    overrides: { keypairId?: AccountAddress; domain?: Uint8Array } = {},
-): Promise<ACE.AptosBasicFlow.DecryptionSession> {
-    return ACE.AptosBasicFlow.DecryptionSession.create({
+    overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
+): Promise<ACE.IBE_Aptos.BasicDecryptionSession> {
+    return ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: CHAIN_ID,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        domain: overrides.domain ?? ctx.correctDomain,
+        label: overrides.label ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });
 }
@@ -117,7 +117,7 @@ export async function decryptAsNonAllowlistedUser(ctx: NonKeylessAccessFailureCo
  *  match any registered blob; permission view returns false (403). */
 export async function decryptWithWrongDomain(ctx: NonKeylessAccessFailureContext): Promise<void> {
     step('C', `Negative: Bob (${ctx.bobLabel}) decrypt with wrong domain → must fail (403)`);
-    const session = await makeSession(ctx, { domain: ctx.wrongDomain });
+    const session = await makeSession(ctx, { label: ctx.wrongDomain });
     const msg = await session.getRequestToSign();
     const fullMessage = walletFullMessage(ctx.bob.accountAddress, msg, 'non-keyless-step-c');
     const result = await session.decryptWithProof({

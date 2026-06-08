@@ -52,7 +52,7 @@ export interface AccessFailureContext {
     keypair1Id: AccountAddress;
     correctDomain: Uint8Array;
     wrongDomain: Uint8Array;
-    /** Output of `ACE.AptosBasicFlow.encrypt(..., plaintext='PING', keypair=keypair0)`. */
+    /** Output of `ACE.IBE_Aptos.encrypt(..., plaintext='PING', keypair=keypair0)`. */
     pingCiph: Uint8Array;
     /** The keyless-flavoured Bob (KeylessAccount or FederatedKeylessAccount).
      *  Used for Steps A, C, D, E, F. */
@@ -95,15 +95,15 @@ function step(n: string, msg: string): void {
 
 async function makeSession(
     ctx: AccessFailureContext,
-    overrides: { keypairId?: AccountAddress; domain?: Uint8Array } = {},
+    overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
 ) {
-    return ACE.AptosBasicFlow.DecryptionSession.create({
+    return ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: ctx.chainId,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        domain: overrides.domain ?? ctx.correctDomain,
+        label: overrides.label ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });
 }
@@ -173,7 +173,7 @@ export async function stepB_NonAllowlistedCharlie(ctx: AccessFailureContext): Pr
 export async function stepC_WrongDomain(ctx: AccessFailureContext): Promise<void> {
     step('C', `Negative: Bob (${ctx.bobLabel}) decrypt with wrong domain → must fail (403)`);
     const { wrapPk, wrapSig } = bobWrappers(ctx);
-    const session = await makeSession(ctx, { domain: ctx.wrongDomain });
+    const session = await makeSession(ctx, { label: ctx.wrongDomain });
     const msg = await session.getRequestToSign();
     const fullMessage = walletFullMessage(ctx, ctx.bob.accountAddress, msg, 'keyless-step-c');
     const result = await session.decryptWithProof({

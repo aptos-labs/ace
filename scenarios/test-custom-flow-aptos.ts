@@ -209,7 +209,7 @@ interface CustomFlowFixtures {
     label: Uint8Array;
     correctCode: Uint8Array;
     wrongCode: Uint8Array;
-    baseArgs: Omit<Parameters<typeof ACE.AptosCustomFlow.decrypt>[0],
+    baseArgs: Omit<Parameters<typeof ACE.IBE_Aptos.decryptCustomFlow>[0],
         'label' | 'payload' | 'keypairId'>;
 }
 
@@ -230,10 +230,10 @@ async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<Cus
     const aceDeployment = new ACE.AceDeployment({
         apiEndpoint: LOCALNET_URL, contractAddr: adminAddr,
     });
-    const encResult = await ACE.AptosCustomFlow.encrypt({
+    const encResult = await ACE.IBE_Aptos.encrypt({
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr,
         moduleName: 'check_acl_demo',
-        domain: label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
+        label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
     });
     assert(encResult.isOk, `encrypt failed: ${encResult.errValue}`);
     const callerKeyPair = await pke.keygen();
@@ -260,7 +260,7 @@ async function runCustomFlowTestCases(setup: AptosCustomFlowSetup): Promise<void
         'wrong payload',
     );
     log('Attempting decrypt with correct payload (should succeed)...');
-    const decrypted = await ACE.AptosCustomFlow.decrypt(
+    const decrypted = await ACE.IBE_Aptos.decryptCustomFlow(
         { ...f.baseArgs, label: f.label, payload: f.correctCode, keypairId: f.keypairId },
     );
     assert(
@@ -284,15 +284,15 @@ async function runCustomFlowTestCases(setup: AptosCustomFlowSetup): Promise<void
     );
 }
 
-/** Calls AptosCustomFlow.decrypt with the given args; asserts that the
+/** Calls ACE.IBE_Aptos.decryptCustomFlow with the given args; asserts that the
  *  call throws (i.e., decrypt is rejected). Logs the case label. */
 async function expectCustomFlowDecryptFails(
-    args: Parameters<typeof ACE.AptosCustomFlow.decrypt>[0],
+    args: Parameters<typeof ACE.IBE_Aptos.decryptCustomFlow>[0],
     caseLabel: string,
 ): Promise<void> {
     let failed = false;
     try {
-        await ACE.AptosCustomFlow.decrypt(args);
+        await ACE.IBE_Aptos.decryptCustomFlow(args);
     } catch (_e) {
         failed = true;
     }

@@ -34,13 +34,13 @@ async function main() {
     const keypairId     = TUTORIAL_KEYPAIR_ID;
 
     async function tryDecrypt(entry: CatalogEntry): Promise<{ ok: boolean; plaintext?: string }> {
-        const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+        const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
             aceDeployment,
             keypairId,
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
-            domain: new TextEncoder().encode(entry.name),
+            label: new TextEncoder().encode(entry.name),
             ciphertext: Buffer.from(entry.ciphertextHex, 'hex'),
         });
         const msgToSign = await session.getRequestToSign();

@@ -59,23 +59,6 @@ pub struct AptosContractId {
     pub module_name: String,
 }
 
-impl AptosContractId {
-    /// Mirrors TS-SDK `AptosContractID.toPrettyMessage(indent)` in
-    /// `ts-sdk/src/_internal/aptos.ts`. Returns the 3 inner contract
-    /// lines (`chainId`, `moduleAddr`, `moduleName`), each
-    /// prefixed with a leading `\n` + `"  " * indent`. Used by
-    /// [`super::ContractId::to_pretty_message_lines`] for the inner section.
-    pub(crate) fn to_pretty_message_lines(&self, indent: usize) -> String {
-        let pad = "  ".repeat(indent);
-        format!(
-            "\n{pad}chainId: {}\n{pad}moduleAddr: 0x{}\n{pad}moduleName: {}",
-            self.chain_id,
-            hex::encode(self.module_addr),
-            self.module_name,
-        )
-    }
-}
-
 const APTOS_DECRYPTION_HOOK: &str = "on_ace_decryption_request";
 const APTOS_VRF_HOOK: &str = "on_ace_vrf_request";
 const APTOS_CUSTOM_DECRYPTION_HOOK: &str = "on_ace_decryption_request_custom_flow";
@@ -430,26 +413,28 @@ pub(super) async fn verify_threshold_vrf_aptos(
     app_result
 }
 
-pub(super) trait AptosPayloadBinding {
-    fn to_pretty_message(&self) -> Result<String>;
+pub(super) trait AptosPayloadBinding: serde::Serialize {
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]>;
+
+    /// The hex string the dapp asks the wallet to sign as the AIP-62 `message`
+    /// field — `"0x" || hex(BCS(payload))`. The worker reconstructs this from
+    /// its own copy of the payload and checks that it appears as a substring of
+    /// the wallet's `fullMessage`. Hex is injection-safe (`[0-9a-f]`) and gives
+    /// byte-equality on the binding without any of the canonicalization
+    /// headaches the old multi-line pretty-text approach had.
+    fn to_signed_message_hex(&self) -> Result<String> {
+        let bytes = bcs::to_bytes(self).map_err(|e| anyhow!("BCS encode payload: {}", e))?;
+        Ok(format!("0x{}", hex::encode(&bytes)))
+    }
 }
 
 impl AptosPayloadBinding for DecryptionRequestPayload {
-    fn to_pretty_message(&self) -> Result<String> {
-        DecryptionRequestPayload::to_pretty_message(self)
-    }
-
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
         DecryptionRequestPayload::to_webauthn_challenge(self)
     }
 }
 
 impl AptosPayloadBinding for ThresholdVrfRequestPayload {
-    fn to_pretty_message(&self) -> Result<String> {
-        ThresholdVrfRequestPayload::to_pretty_message(self)
-    }
-
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
         ThresholdVrfRequestPayload::to_webauthn_challenge(self)
     }
@@ -808,10 +793,12 @@ fn signed_message_bytes<P: AptosPayloadBinding>(
     proof: &AptosProofOfPermission,
     context: &str,
 ) -> Result<Vec<u8>> {
-    let pretty_msg = payload.to_pretty_message()?;
-    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    let expected_hex = payload.to_signed_message_hex()?;
+    // AptosConnect wallets sign `hex(UTF-8(fullMessage))` rather than the raw
+    // string, so the BCS-hex marker may appear hex-of-hex'd inside `full_msg`.
+    let expected_hex_hex = hex::encode(expected_hex.as_bytes());
     let full_msg = &proof.full_message;
-    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+    if !full_msg.contains(&expected_hex) && !full_msg.contains(&expected_hex_hex) {
         return Err(anyhow!(
             "{}: fullMessage does not contain expected request content",
             context

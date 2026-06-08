@@ -105,30 +105,24 @@ export class ContractID {
         return bytesToHex(this.toBytes());
     }
 
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        const schemeName = this.scheme === ContractID.SCHEME_APTOS ? 'aptos' : 'solana';
-        const innerMsg = (this.inner as AptosContractID | SolanaContractID).toPrettyMessage(indent + 2);
-        return `\n${pad}scheme: ${schemeName}\n${pad}inner:${innerMsg}`;
-    }
 }
 
 export class FullDecryptionDomain {
     keypairId: AccountAddress;
     contractId: ContractID;
-    domain: Uint8Array;
+    label: Uint8Array;
 
-    constructor({keypairId, contractId, domain}: {keypairId: AccountAddress, contractId: ContractID, domain: Uint8Array}) {
+    constructor({keypairId, contractId, label}: {keypairId: AccountAddress, contractId: ContractID, label: Uint8Array}) {
         this.keypairId = keypairId;
         this.contractId = contractId;
-        this.domain = domain;
+        this.label = label;
     }
 
     static dummy(): FullDecryptionDomain {
         return new FullDecryptionDomain({
             keypairId: AccountAddress.ZERO,
             contractId: ContractID.dummy(),
-            domain: new Uint8Array(0),
+            label: new Uint8Array(0),
         });
     }
 
@@ -136,8 +130,8 @@ export class FullDecryptionDomain {
         const task = (_extra: Record<string, any>) => {
             const keypairId = AccountAddress.deserialize(deserializer);
             const contractId = ContractID.deserialize(deserializer).unwrapOrThrow('ACE.FullDecryptionDomain.deserialize failed with ContractID deserialization error');
-            const domain = deserializer.deserializeBytes();
-            return new FullDecryptionDomain({keypairId, contractId, domain});
+            const label = deserializer.deserializeBytes();
+            return new FullDecryptionDomain({keypairId, contractId, label});
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -164,7 +158,7 @@ export class FullDecryptionDomain {
     serialize(serializer: Serializer): void {
         this.keypairId.serialize(serializer);
         this.contractId.serialize(serializer);
-        serializer.serializeBytes(this.domain);
+        serializer.serializeBytes(this.label);
     }
 
     toBytes(): Uint8Array {
@@ -175,11 +169,6 @@ export class FullDecryptionDomain {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
-    }
-
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}`;
     }
 
     getSolanaContractID(): SolanaContractID {
@@ -336,11 +325,6 @@ export class DecryptionRequestPayload {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
-    }
-
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `${pad}ACE Decryption Request\n${pad}keypairId: ${this.keypairId.toStringLong()}\n${pad}epoch: ${this.epoch}\n${pad}contractId:${this.contractId.toPrettyMessage(indent + 1)}\n${pad}domain: 0x${bytesToHex(this.domain)}\n${pad}ephemeralEncKey: ${this.ephemeralEncKey.toHex()}`;
     }
 
     /**
@@ -662,7 +646,7 @@ export async function fetchNetworkStateAndBuildRequest(
         keypairId: fullDecryptionDomain.keypairId,
         epoch: networkState.epoch,
         contractId: fullDecryptionDomain.contractId,
-        domain: fullDecryptionDomain.domain,
+        domain: fullDecryptionDomain.label,
         ephemeralEncKey: ephemeralEncryptionKey,
     });
 
@@ -763,7 +747,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
             const fdd = new FullDecryptionDomain({
                 keypairId: request.keypairId,
                 contractId: request.contractId,
-                domain: request.domain,
+                label: request.domain,
             });
             const fddBytes = fdd.toBytes();
 
@@ -871,7 +855,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             const fdd = new FullDecryptionDomain({
                 keypairId: customRequest.keypairId,
                 contractId: customRequest.contractId,
-                domain: customRequest.label,
+                label: customRequest.label,
             });
             const fddBytes = fdd.toBytes();
 

@@ -64,13 +64,13 @@ async function main() {
     const domain = new TextEncoder().encode(target.name);
 
     log(`Bob attempting to decrypt "${target.name}" (without buying)...`);
-    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+    const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment,
         keypairId,
         chainId,
         moduleAddr: appContractAddr,
         moduleName: 'marketplace',
-        domain,
+        label: domain,
         ciphertext,
     });
     const msgToSign = await session.getRequestToSign();

@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use super::{
     check_basic_ace_hook, find_rsa_jwk_in_jwks_resource, is_valid_hex, AptosContractId,
-    AptosProofOfPermission,
+    AptosPayloadBinding, AptosProofOfPermission,
 };
 use crate::ChainRpcConfig;
 use super::super::BasicFlowRequest;
@@ -76,11 +76,11 @@ pub(super) async fn verify_signature_only(
 ) -> Result<()> {
     // 1. Reconstruct the message that the ephemeral key signed and confirm
     //    `proof.full_message` covers it (same logic as Ed25519 path's
-    //    verify_signature_only — pretty-message + AptosConnect hex tolerance).
-    let pretty_msg = req.payload.to_pretty_message()?;
-    let pretty_msg_hex = hex::encode(pretty_msg.as_bytes());
+    //    verify_signature_only — hex-BCS marker + AptosConnect hex tolerance).
+    let expected_hex = req.payload.to_signed_message_hex()?;
+    let expected_hex_hex = hex::encode(expected_hex.as_bytes());
     let full_msg = &proof.full_message;
-    if !full_msg.contains(&pretty_msg) && !full_msg.contains(&pretty_msg_hex) {
+    if !full_msg.contains(&expected_hex) && !full_msg.contains(&expected_hex_hex) {
         return Err(anyhow!(
             "verify_aptos_keyless: fullMessage does not contain expected decryption request content"
         ));

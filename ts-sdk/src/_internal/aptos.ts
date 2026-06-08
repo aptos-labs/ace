@@ -83,10 +83,6 @@ export class ContractID {
         return bytesToHex(this.toBytes());
     }
 
-    toPrettyMessage(indent: number = 0): string {
-        const pad = '  '.repeat(indent);
-        return `\n${pad}chainId: ${this.chainId}\n${pad}moduleAddr: ${this.moduleAddr.toStringLong()}\n${pad}moduleName: ${this.moduleName}`;
-    }
 }
 
 const PK_SCHEME_ED25519 = 0;

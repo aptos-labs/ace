@@ -241,13 +241,13 @@ async function main() {
             apiEndpoint: LOCALNET_URL,
             contractAddr: adminAccountAddress,
         });
-        const pingEncResult = await ACE.AptosBasicFlow.encrypt({
+        const pingEncResult = await ACE.IBE_Aptos.encrypt({
             aceDeployment,
             keypairId: keypair0Id,
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            domain: pingDomain,
+            label: pingDomain,
             plaintext: new TextEncoder().encode('PING'),
         });
         assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
@@ -277,13 +277,13 @@ async function main() {
         // ── Decrypt in epoch 1 (workers 1,2,3 online, worker 4 offline) ─────────
         step(12, 'Bob decrypts "PING" (keypair-0, epoch-1 committee, worker 4 offline)');
         {
-            const pingSession = await ACE.AptosBasicFlow.DecryptionSession.create({
+            const pingSession = await ACE.IBE_Aptos.BasicDecryptionSession.create({
                 aceDeployment,
                 keypairId: keypair0Id,
                 chainId: CHAIN_ID,
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
-                domain: pingDomain,
+                label: pingDomain,
                 ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();

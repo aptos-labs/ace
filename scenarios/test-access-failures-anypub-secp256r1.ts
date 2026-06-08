@@ -76,15 +76,15 @@ function step(n: string, msg: string): void {
 
 async function makeSession(
     ctx: Ctx,
-    overrides: { keypairId?: AccountAddress; domain?: Uint8Array } = {},
-): Promise<ACE.AptosBasicFlow.DecryptionSession> {
-    return ACE.AptosBasicFlow.DecryptionSession.create({
+    overrides: { keypairId?: AccountAddress; label?: Uint8Array } = {},
+): Promise<ACE.IBE_Aptos.BasicDecryptionSession> {
+    return ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: ctx.aceDeployment,
         keypairId: overrides.keypairId ?? ctx.keypair0Id,
         chainId: CHAIN_ID,
         moduleAddr: ctx.moduleAddr,
         moduleName: ctx.moduleName,
-        domain: overrides.domain ?? ctx.correctDomain,
+        label: overrides.label ?? ctx.correctDomain,
         ciphertext: ctx.pingCiph,
     });
 }
@@ -125,7 +125,7 @@ async function stepB_NonAllowlistedCharlie(ctx: Ctx): Promise<void> {
 
 async function stepC_WrongDomain(ctx: Ctx): Promise<void> {
     step('C', `Negative: Bob (AnyPublicKey<Secp256r1Ecdsa+WebAuthn>) decrypt with wrong domain → must fail (403)`);
-    const session = await makeSession(ctx, { domain: ctx.wrongDomain });
+    const session = await makeSession(ctx, { label: ctx.wrongDomain });
     const challenge = await session.getRequestToSignForWebAuthn();
     const assertion = buildAssertion(challenge, ctx.bob.privateKey);
     const result = await session.decryptWithWebAuthnAssertion({

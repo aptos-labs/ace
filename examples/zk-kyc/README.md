@@ -194,7 +194,7 @@ What happens under the hood:
    `enc_pk` so it cannot be replayed for another caller key.
 3. Calls `snarkjs.groth16.fullProve` with the circuit inputs — the ZK prover runs
    locally in Node.js and produces a Groth16 proof in ~2 seconds.
-4. Encodes the proof as a 256-byte payload and calls `AptosCustomFlow.decrypt`.
+4. Encodes the proof as a payload and calls `ACE.IBE_Aptos.decryptCustomFlow`.
 5. Each ACE worker simulates `kyc_verifier::on_ace_decryption_request_custom_flow` on-chain (BN254 pairing check).
    If the proof is valid, the worker releases its key share.
 6. Once a threshold of shares is collected, the threshold key is reconstructed and the

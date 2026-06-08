@@ -135,12 +135,12 @@ describe("access-control", () => {
 
     // Encrypt the content directly with ACE. The ciphertext can only be
     // decrypted by users who pass the on-chain access check.
-    const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
+    const ciphertext = (await ACE.IBE_Solana.encrypt({
       aceDeployment,
       keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: fullBlobNameBytes,
+      label: fullBlobNameBytes,
       plaintext: secretContent,
     })).unwrapOrThrow('failed to encrypt');
 
@@ -192,12 +192,12 @@ describe("access-control", () => {
      * - Only release key shares if verification passes
      */
     async function bobDecryptLegacyTxn(): Promise<Result<Uint8Array>> {
-      const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
+      const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
-        domain: fullBlobNameBytes,
+        label: fullBlobNameBytes,
         ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
@@ -219,12 +219,12 @@ describe("access-control", () => {
     }
 
     async function bobDecryptVersionedTxn(): Promise<Result<Uint8Array>> {
-      const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
+      const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
         aceDeployment,
         keypairId,
         knownChainName,
         programId: accessControlProgram.programId.toBase58(),
-        domain: fullBlobNameBytes,
+        label: fullBlobNameBytes,
         ciphertext,
       });
       const fullRequestBytes = await session.getRequestToSign();
@@ -411,15 +411,15 @@ describe("access-control failures (worker-side rejection)", () => {
     sessionDomain?: Buffer;
     sessionKeypairId?: AccountAddress;
   } = {}): Promise<{
-    session: ACE.SolanaBasicFlow.DecryptionSession;
+    session: ACE.IBE_Solana.BasicDecryptionSession;
     txnBytes: Uint8Array;
   }> {
-    const session = await ACE.SolanaBasicFlow.DecryptionSession.create({
+    const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
       aceDeployment,
       keypairId: args.sessionKeypairId ?? keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
-      domain: args.sessionDomain ?? domain,
+      label: args.sessionDomain ?? domain,
       ciphertext,
     });
     const fullRequestBytes = await session.getRequestToSign();
@@ -751,12 +751,12 @@ async function aliceEncryptAndRegisterBlob(args: {
     Buffer.from("0x"), Buffer.from(args.aliceAptosAddrBytes),
     Buffer.from("/"), Buffer.from(args.fileName),
   ]);
-  const ciphertext = (await ACE.SolanaBasicFlow.encrypt({
+  const ciphertext = (await ACE.IBE_Solana.encrypt({
     aceDeployment: args.aceDeployment,
     keypairId: args.keypairId,
     knownChainName: args.knownChainName,
     programId: args.accessControlProgramId.toBase58(),
-    domain,
+    label: domain,
     plaintext,
   })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
   // Only the listing (price + seqnum) goes on-chain; the ciphertext stays

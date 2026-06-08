@@ -49,7 +49,7 @@ pub struct CustomFullRequestBytes {
 
 /// Serialize `CustomFullRequestBytes` for embedding in a Solana instruction.
 ///
-/// Mirrors the TypeScript `buildCustomRequestBytes` in `SolanaCustomFlow`.
+/// Mirrors the TypeScript `ACE.IBE_Solana.buildCustomRequestBytes`.
 pub fn build_custom_full_request_bytes(
     keypair_id: &[u8; 32],
     epoch: u64,

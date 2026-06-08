@@ -119,7 +119,7 @@ The chain itself is subject to whatever ordering / front-running properties the 
 
 Master secrets rotate on every epoch (auto every `epoch_duration_micros` ≥ 30s, or on `CommitteeChange`). However:
 - A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. **The PKE decryption key derivation step ([`cryptography/vss.md`](./cryptography/vss.md) §1.1 item 7) deterministically derives polynomial coefficients from the dealer's PKE dk, so the dealer can always recover their old contributions while their PKE dk lives.** Operationally, deleting old shares from disk is the operator's responsibility; the protocol does not enforce it.
-- See [`project_epoch_in_decryption_request`](../.claude/projects/-Users-zhoujun-ma-repos-aptos-labs-ace/memory/project_epoch_in_decryption_request.md) — workers retain old shares for ~30s after rotation to handle in-flight requests.
+- Workers retain old shares for ~30s after rotation to handle in-flight requests.
 
 ### 4.5 Sybil resistance and cryptoeconomic incentives
 

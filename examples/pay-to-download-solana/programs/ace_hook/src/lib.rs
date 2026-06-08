@@ -55,7 +55,7 @@ pub mod ace_hook {
     /// # Arguments
     ///
     /// * `full_request_bytes` - Opaque ACE request bytes produced by
-    ///   `session.getFullRequestBytesToSign()` in the ACE TypeScript SDK.
+    ///   `session.getRequestToSign()` in the ACE TypeScript SDK.
     ///   Use `ace_sdk::decode_blob_name` to extract the blob identifier.
     ///
     /// # Errors

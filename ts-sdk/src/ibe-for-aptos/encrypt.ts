@@ -8,13 +8,13 @@ import * as dkg from "../dkg";
 import * as tibe from "../t-ibe";
 import { AceDeployment, ContractID, FullDecryptionDomain, createAptos } from "../_internal/common";
 
-export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, moduleName, domain, plaintext, tibeScheme}: {
+export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, plaintext, tibeScheme}: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
     chainId: number,
     moduleAddr: AccountAddress,
     moduleName: string,
-    domain: Uint8Array,
+    label: Uint8Array,
     plaintext: Uint8Array,
     /**
      * The t-IBE scheme to encrypt under. Defaults to the project default
@@ -30,7 +30,7 @@ export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, mo
         task: async (_extra) => {
             const aptos = createAptos(aceDeployment.apiEndpoint);
             const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
-            const fdd = new FullDecryptionDomain({keypairId, contractId, domain});
+            const fdd = new FullDecryptionDomain({keypairId, contractId, label});
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const [hexBytes] = await aptos.view({

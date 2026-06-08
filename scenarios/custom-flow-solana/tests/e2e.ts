@@ -11,7 +11,7 @@
  *
  * ENCRYPT (anyone):
  *   2. Generate a PKE keypair (enc_pk / enc_sk).
- *   3. Encrypt a plaintext with `SolanaCustomFlow.encrypt`, using `label` as
+ *   3. Encrypt a plaintext with `ACE.IBE_Solana.encrypt`, using `label` as
  *      the IBE domain and the `custom_acl` program as the contract.
  *
  * DECRYPT (consumer):
@@ -19,7 +19,7 @@
  *   5. Build `CustomFullRequestBytes` with `buildCustomRequestBytes`, embedding
  *      the candidate payload.
  *   6. Build a Solana transaction calling `assert_custom_acl` with those bytes.
- *   7. Sign and submit to `SolanaCustomFlow.decrypt`.
+ *   7. Sign and submit to `ACE.IBE_Solana.decryptCustomFlow`.
  *
  * Workers:
  *   - decode `CustomFullRequestBytes` from the instruction data
@@ -126,19 +126,19 @@ describe("custom-acl", () => {
         console.log("\n=== Encrypt plaintext ===");
         const plaintext = Buffer.from("HELLO CUSTOM FLOW");
         const ciphertext = (
-            await ACE.SolanaCustomFlow.encrypt({
+            await ACE.IBE_Solana.encrypt({
                 aceDeployment,
                 keypairId,
                 knownChainName,
                 programId,
-                domain: label,
+                label,
                 plaintext,
             })
         ).unwrapOrThrow("encrypt failed");
         console.log("✓ Plaintext encrypted");
 
         // ── Fetch epoch ───────────────────────────────────────────────────────
-        const epoch = await ACE.SolanaCustomFlow.fetchCurrentEpoch(aceDeployment);
+        const epoch = await ACE.IBE_Solana.fetchCurrentEpoch(aceDeployment);
         console.log(`Epoch: ${epoch}`);
 
         // ── Helper: attempt decrypt using a legacy (v0) transaction ──────────
@@ -151,7 +151,7 @@ describe("custom-acl", () => {
         ): Promise<{ ok: boolean; value?: Uint8Array }> {
             const effKeypairId = overrides.keypairId ?? keypairId;
             const effLabel = overrides.label ?? label;
-            const requestBytes = ACE.SolanaCustomFlow.buildCustomRequestBytes({
+            const requestBytes = ACE.IBE_Solana.buildCustomRequestBytes({
                 keypairId: effKeypairId,
                 epoch,
                 encPk,
@@ -170,7 +170,7 @@ describe("custom-acl", () => {
             txn.sign(payer);
 
             try {
-                const value = await ACE.SolanaCustomFlow.decrypt({
+                const value = await ACE.IBE_Solana.decryptCustomFlow({
                     ciphertext,
                     label: effLabel,
                     encPk,
@@ -190,7 +190,7 @@ describe("custom-acl", () => {
 
         // ── Helper: attempt decrypt using a versioned (v1) transaction ────────
         async function tryDecryptV1(payload: Buffer): Promise<{ ok: boolean; value?: Uint8Array }> {
-            const requestBytes = ACE.SolanaCustomFlow.buildCustomRequestBytes({
+            const requestBytes = ACE.IBE_Solana.buildCustomRequestBytes({
                 keypairId,
                 epoch,
                 encPk,
@@ -213,7 +213,7 @@ describe("custom-acl", () => {
             versionedTxn.sign([payer]);
 
             try {
-                const value = await ACE.SolanaCustomFlow.decrypt({
+                const value = await ACE.IBE_Solana.decryptCustomFlow({
                     ciphertext,
                     label,
                     encPk,

@@ -61,7 +61,8 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 | Package | Description |
 |---------|-------------|
-| [`docs`](./docs) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
+| [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide) | App developer how-tos for on-chain access policies and contract-gated derivation |
+| [`docs/auditor`](./docs/auditor) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
 | [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
 | [`cli`](./cli) | Operator CLI (`ace`) for node onboarding and management |
 | [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
@@ -75,153 +76,19 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 ## App Developer Guide
 
-Your job as an app developer is to deploy a Move contract with a single `#[view]` function that decides whether a given decryption request is allowed. ACE calls that function on-chain; if it returns `true`, the key is released. You also use the TypeScript SDK to encrypt and decrypt.
+App developers write the on-chain policy that ACE checks before decrypting data or deriving values scoped to a contract, account, and label, then use the TypeScript SDK from the client.
 
-ACE supports two flows depending on what your contract needs to verify:
+Start with the guide that matches your flow:
 
-- **Basic Flow** — your contract receives the requestor's Aptos address (extracted from their signature). Good for allowlists, time-locks, and pay-to-download.
-- **Custom Flow** — your contract receives an arbitrary `payload` byte string submitted by the requestor. Good for ZK proofs, Merkle witnesses, and other cryptographic credentials.
+| Guide | What it covers |
+|-------|----------------|
+| [`Aptos account access`](./docs/developers/app-developer-guide/ibe-aptos-basic.md) | Your Aptos contract decides whether Aptos account X can access object Y |
+| [`Solana account access`](./docs/developers/app-developer-guide/ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y |
+| [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
+| [`Solana off-chain identity access`](./docs/developers/app-developer-guide/ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y |
+| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract, account, and label |
 
-### Account-Type Compatibility (Aptos)
-
-ACE's basic flow supports every cryptographic signature scheme the upstream `@aptos-labs/ts-sdk` produces — legacy Ed25519, `SingleKey` (Ed25519, Secp256k1, Secp256r1+WebAuthn passkeys, Keyless, FederatedKeyless), legacy `MultiEd25519`, and modern `MultiKey` K-of-N. If your users hold any of these, point them at the basic flow.
-
-Aptos's Account Abstraction (AA, `Scheme::Abstraction = 4`) and Derivable AA (DAA, `Scheme::DeriveDomainAbstraction = 5`) authenticate via a Move `authenticate(signer, AbstractionAuthData): signer` function rather than a cryptographic primitive — they have no "public key" the SDK can plug into a basic-flow `(pk_scheme, sig_scheme)` pair. AA-authenticated dapps should route through the **custom flow**: your `on_ace_decryption_request_custom_flow` view plays the same role as `authenticate` and can re-run the same credential check on the `payload` bytes (after binding `payload` to the request via `label` / `enc_pk`).
-
-### The Contract Interface
-
-This is the most important part. Your view function is the sole access gate — get the signature right.
-
-**Basic Flow** — fixed signature, three parameters:
-
-```move
-#[view]
-public fun on_ace_decryption_request(
-    label: vector<u8>,     // the domain the ciphertext was encrypted under
-    account: address,      // Aptos address that signed the decryption request
-    origin: String,        // dapp origin extracted from the signed wallet/WebAuthn message
-): bool
-```
-
-- `label` identifies what is being decrypted — it equals the `domain` bytes you passed to `encrypt`. Use it to look up your access records.
-- `account` is who is asking. Check your payment table, allowlist, etc. against this.
-- `origin` is the dapp origin ACE extracted from the wallet/WebAuthn signed message. Check it when your contract is meant to serve only specific application domains.
-
-**Custom Flow** — fixed signature, three parameters:
-
-```move
-#[view]
-public fun on_ace_decryption_request_custom_flow(
-    label: vector<u8>,     // the domain the ciphertext was encrypted under
-    enc_pk: vector<u8>,    // requestor's ephemeral public key for this session
-    payload: vector<u8>,   // arbitrary bytes submitted by the requestor
-): bool
-```
-
-- `label` and `enc_pk` are the same as above.
-- `payload` is whatever the requestor sends — a Groth16 proof, a Merkle proof, a signed attestation, etc. Your contract is fully responsible for deserializing and verifying it. A ZK proof should bind to `enc_pk` so that a captured proof cannot be replayed by a different requestor.
-
-Aptos hook names are fixed by ACE. Basic flow uses `on_ace_decryption_request`; custom flow uses `on_ace_decryption_request_custom_flow`.
-
-### SDK Usage
-
-```typescript
-import * as ACE from "@aptos-labs/ace-sdk";
-import { AccountAddress } from "@aptos-labs/ts-sdk";
-
-const aceDeployment = new ACE.AceDeployment({
-    apiEndpoint: "https://fullnode.mainnet.aptoslabs.com/v1",
-    contractAddr: AccountAddress.fromString("0x<ace-contract-addr>"),
-});
-```
-
-For testnet, the SDK ships a registry of known deployments — skip the manual setup:
-
-```typescript
-const { aceDeployment, keypairId, chainId } = ACE.knownDeployments.preview20260506;
-```
-
-**Encrypt (both flows)**
-
-```typescript
-const ciphertext = (await ACE.AptosBasicFlow.encrypt({   // or AptosCustomFlow.encrypt
-    aceDeployment,
-    keypairId: AccountAddress.fromString("0x<keypair-id>"),
-    chainId: 1,
-    moduleAddr: AccountAddress.fromString("0xcafe"),
-    moduleName: "album_store",
-    domain: new TextEncoder().encode("album-001"),        // becomes `label` in your contract
-    plaintext: albumData,
-})).unwrapOrThrow("encryption failed");
-```
-
-**Decrypt — Basic Flow**
-
-The requestor signs a challenge message that proves their identity:
-
-```typescript
-const session = ACE.AptosBasicFlow.DecryptionSession.create({
-    aceDeployment,
-    keypairId: AccountAddress.fromString("0x<keypair-id>"),
-    chainId: 1,
-    moduleAddr: AccountAddress.fromString("0xcafe"),
-    moduleName: "album_store",
-    domain: new TextEncoder().encode("album-001"),
-    ciphertext,
-});
-
-const messageToSign = await session.getRequestToSign();
-const { signature, fullMessage } = await wallet.signMessage({
-    message: messageToSign,
-    nonce: crypto.randomUUID(),
-    application: true,
-    chainId: 1,
-    address: bob.accountAddress,
-});
-const plaintext = (await session.decryptWithProof({
-    userAddr: bob.accountAddress,
-    publicKey: bob.publicKey,
-    signature,
-    fullMessage,
-})).unwrapOrThrow("decryption failed");
-```
-
-**Decrypt — Custom Flow**
-
-The requestor builds a payload (e.g., a ZK proof) and supplies an ephemeral keypair that the payload should be bound to:
-
-```typescript
-const { encryptionKey, decryptionKey } = ACE.pke.keygen();
-const encPk = new Uint8Array(encryptionKey.toBytes());
-const encSk = new Uint8Array(decryptionKey.toBytes());
-
-const payload: Uint8Array = buildMyPayload(encPk, ...); // bind proof to encPk
-
-const plaintext = await ACE.AptosCustomFlow.decrypt({
-    ciphertext,
-    label: new TextEncoder().encode("my-label"),
-    encPk,
-    encSk,
-    payload,
-    aceDeployment,
-    keypairId: AccountAddress.fromString("0x<keypair-id>"),
-    chainId: 1,
-    moduleAddr: AccountAddress.fromString("0xcafe"),
-    moduleName: "my_verifier",
-});
-```
-
-### Local Development
-
-Start a full ACE network locally (3 workers + Aptos localnet):
-
-```bash
-cd scenarios
-pnpm install
-pnpm run-local-network-forever
-```
-
-Wait for the `ACE local network is READY` banner. The network writes `contractAddr` and `keypairId` to `/tmp/ace-localnet-config.json`.
+The full guide index is at [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide).
 
 ---
 
@@ -318,10 +185,11 @@ pnpm dev deployment default <alias>       # set the default deployment profile
 
 | Example | Flow | Chain | Description |
 |---------|------|-------|-------------|
-| [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — a minimal pay-to-download marketplace; demonstrates per-item domain-binding. One faucet click for Alice and go. |
+| [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — a minimal pay-to-download marketplace; demonstrates per-item label binding. One faucet click for Alice and go. |
 | [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
 | [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
 | [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |
+| [presigned-access-aptos](./examples/presigned-access-aptos) | Custom + VRF | Aptos | Pre-signed access grants backed by ACE VRF-derived per-blob keys |
 
 ## License
 

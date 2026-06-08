@@ -13,9 +13,9 @@ import {
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { Result } from "../../result";
-import * as pke from "../../pke";
-import { State as NetworkState } from "../../network";
+import { Result } from "../result";
+import * as pke from "../pke";
+import { State as NetworkState } from "../network";
 import {
     AceDeployment,
     ContractID,
@@ -25,9 +25,9 @@ import {
     fetchNetworkStateAndBuildRequest,
     decryptCore,
     buildPerNodeRequestCore,
-} from "../../_internal/common";
+} from "../_internal/common";
 
-export class DecryptionSession {
+export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
     fullDecryptionDomain: FullDecryptionDomain;
     ciphertext: Uint8Array;
@@ -37,7 +37,7 @@ export class DecryptionSession {
     networkState: NetworkState | undefined;
 
     private constructor({
-        aceDeployment, keypairId, chainId, moduleAddr, moduleName, domain, ciphertext,
+        aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, ciphertext,
         ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
@@ -45,14 +45,14 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        domain: Uint8Array,
+        label: Uint8Array,
         ciphertext: Uint8Array,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
         this.aceDeployment = aceDeployment;
         const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
-        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, domain});
+        this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, label});
         this.ciphertext = ciphertext;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
@@ -64,11 +64,11 @@ export class DecryptionSession {
         chainId: number,
         moduleAddr: AccountAddress,
         moduleName: string,
-        domain: Uint8Array,
+        label: Uint8Array,
         ciphertext: Uint8Array,
-    }): Promise<DecryptionSession> {
+    }): Promise<BasicDecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
-        return new DecryptionSession({
+        return new BasicDecryptionSession({
             ...params,
             ephemeralEncryptionKey: encryptionKey,
             ephemeralDecryptionKey: decryptionKey,
@@ -76,9 +76,10 @@ export class DecryptionSession {
     }
 
     /**
-     * Returns the UTF-8 pretty-printed `DecryptionRequestPayload` string that
-     * the wallet fullMessage must cover. Use this for account types whose
-     * signature scheme digests the wallet fullMessage directly:
+     * Returns the canonical `"0x" || hex(BCS(DecryptionRequestPayload))` string
+     * that the wallet's `fullMessage` must contain. Pass this as the `message`
+     * field to AIP-62 `signMessage`. Use this for account types whose signature
+     * scheme digests the wallet fullMessage directly:
      *
      *   - bare Ed25519              (`pk_scheme=0`)
      *   - bare Keyless              (`pk_scheme=4`)
@@ -86,17 +87,19 @@ export class DecryptionSession {
      *   - `AnyPublicKey` wrapping any of `Ed25519`, `Secp256k1Ecdsa`,
      *     `Keyless`, or `FederatedKeyless` (`pk_scheme=1` inner 0/1/3/4)
      *
+     * Hex (`[0-9a-f]`) is injection-safe — no separator, whitespace, or
+     * Unicode-normalization concerns when embedded in the AIP-62 wrapper.
+     *
      * For passkeys (`AnyPublicKey<Secp256r1Ecdsa>+AnySignature<WebAuthn>`),
      * use [`getRequestToSignForWebAuthn`] instead — that path signs a
-     * WebAuthn-shaped challenge derived from the BCS body, not the pretty
-     * string.
+     * WebAuthn-shaped challenge derived from the BCS body, not this hex.
      */
     async getRequestToSign(): Promise<string> {
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
             this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
         this.networkState = networkState;
         this.request = request;
-        return request.toPrettyMessage();
+        return '0x' + bytesToHex(request.toBytes());
     }
 
     /**

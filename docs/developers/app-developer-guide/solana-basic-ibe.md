@@ -11,13 +11,13 @@ You need to:
 - Encrypt with `ACE.IBE_Solana.encrypt`, binding the ciphertext to the hook program id.
 - Decrypt with `ACE.IBE_Solana.BasicDecryptionSession`, signing a transaction that embeds the request bytes.
 
-## Walkthrough
+## Example walkthrough: Receipt-gated downloads
 
-### 1. Write the Solana Hook Program
+This example app is a receipt-gated download app. It stores `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid, then asks the reader to sign a transaction that proves the matching receipt exists.
 
 This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
-Design the policy first. A pay-to-download app might store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid.
+### 1. Write the Solana Hook Program
 
 The hook instruction should do only the access proof. Its important input is `full_request_bytes`, the exact ACE request bytes that the user will sign into a transaction.
 

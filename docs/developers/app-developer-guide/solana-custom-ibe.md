@@ -12,13 +12,13 @@ You need to:
 - Encrypt with `ACE.IBE_Solana.encrypt`.
 - Build custom request bytes with `ACE.IBE_Solana.buildCustomRequestBytes`, sign a transaction containing those bytes, then call `ACE.IBE_Solana.decryptCustomFlow`.
 
-## Walkthrough
+## Example walkthrough: Code-gated custom ACL
 
-### 1. Write the Solana Hook Program
+This example app is a code-gated custom ACL. It stores `CodeEntry` PDAs by label and accepts a custom payload only when it matches the stored code. A production app could replace that comparison with a ZK verifier, signed credential check, or richer ACL.
 
 This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
-Define your policy state and payload. A simple code-gated example stores `CodeEntry` PDAs by label and accepts a payload only when it matches the stored code. A production app would replace that comparison with a ZK verifier, signed credential check, or richer ACL.
+### 1. Write the Solana Hook Program
 
 The hook instruction receives `full_request_bytes`. Decode it first; the decoded request carries the `label`, the reader's response key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
 

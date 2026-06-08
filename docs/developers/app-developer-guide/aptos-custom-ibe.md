@@ -12,15 +12,11 @@ You need to:
 - Encrypt with `ACE.IBE_Aptos.encrypt`.
 - Generate a per-request PKE keypair and call `ACE.IBE_Aptos.decryptCustomFlow`.
 
-## Walkthrough
+## Example walkthrough: Pre-signed access grants
 
-### 1. Write the Move Contract
+This example app implements pre-signed access grants. The owner registers an access public key for each encrypted object, and a reader proves possession of the matching private key by signing a custom decryption payload. The reader does not need an Aptos account; possession of `accessPrivateKey` is the grant.
 
-Start by deciding what the payload proves. In custom IBE, ACE does not interpret the payload and does not require a normal Aptos wallet identity proof. Workers pass three values to your hook: the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload`. Your contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
-
-The payload should be an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
-
-This walkthrough uses the pre-signed-access pattern:
+The app flow is:
 
 ```text
 owner registers: access_public_keys[label] = accessPublicKey
@@ -31,7 +27,13 @@ hook checks:     registered public key verifies sig for this label,
                  this response key, and this app origin
 ```
 
-The concrete design idea is that possession of `accessPrivateKey` is the grant. The reader does not need an Aptos account. To decrypt, the reader generates a fresh PKE keypair, signs a statement that binds the grant to the object and to that fresh response key, and sends the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
+To decrypt, the reader generates a fresh PKE keypair, signs a statement that binds the grant to the object and to that fresh response key, and sends the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
+
+### 1. Write the Move Contract
+
+Start by deciding what the payload proves. In custom IBE, ACE does not interpret the payload and does not require a normal Aptos wallet identity proof. Workers pass three values to your hook: the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload`. Your contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
+
+The payload should be an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
 
 The hook has a fixed name and fixed shape:
 

@@ -14,11 +14,9 @@ You need to:
 - Use a stable, domain-separated derivation label such as `access-key:v1:<blob_id>`.
 - Map the returned bytes into your app's key material and register the public half where later access checks can find it.
 
-## Walkthrough
+## Example walkthrough: Per-blob access keys
 
-### 1. Write the Move Contract
-
-Design the derivation policy around the key you want to create. In the pre-signed-access pattern, each encrypted blob has a canonical `blob_id`, and the owner derives an access keypair from the ACE VRF tuple:
+This example app derives per-blob access keypairs. Each encrypted blob has a canonical `blob_id`, and the owner derives an access keypair from the ACE VRF tuple:
 
 ```text
 (keypairId, contractId, ownerAddress, accessKeyLabel)
@@ -26,6 +24,8 @@ where accessKeyLabel = "access-key:v1:" || blob_id
 ```
 
 The 32-byte VRF output is not sent to the reader directly. The owner maps it into an access private key, computes the matching public key, registers that public key on-chain, and later gives the private key or a grant containing it to the reader. The custom IBE hook then verifies reader proofs against the registered public key.
+
+### 1. Write the Move Contract
 
 The contract below gates who may derive each access-key label. `account` is the Aptos account that signed the derivation request, and `origin` pins the request to your deployed client.
 

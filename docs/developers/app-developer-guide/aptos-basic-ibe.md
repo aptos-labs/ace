@@ -12,11 +12,11 @@ You need to:
 - Decrypt with `ACE.IBE_Aptos.BasicDecryptionSession`, asking the user's wallet to sign the session request.
 - Lock the hook to the deployed web app origin once the origin is stable.
 
-## Walkthrough
+## Example walkthrough: Allowlisted content catalog
+
+This example app is an allowlist-style content catalog. Each encrypted object has a `label`, and the contract stores which Aptos accounts may decrypt that label.
 
 ### 1. Write the Move Contract
-
-This walkthrough uses an allowlist-style content catalog. Each encrypted object has a `label`, and the contract stores which Aptos accounts may decrypt that label.
 
 The ACE hook is a view function with this fixed shape:
 

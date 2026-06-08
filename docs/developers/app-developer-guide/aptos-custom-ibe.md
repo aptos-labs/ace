@@ -14,9 +14,9 @@ You need to:
 
 ## Example walkthrough: Pre-signed access grants
 
-This example app implements pre-signed access grants. The owner registers an access public key for each encrypted object, and a reader proves possession of the matching private key by signing a custom decryption payload. The reader does not need an Aptos account; possession of `accessPrivateKey` is the grant.
+In this example, we show how to build pre-signed access grants with ACE custom IBE. The high-level idea is to encrypt content with ACE, register an access public key for each encrypted object, and let a reader prove possession of the matching private key through an app-defined payload.
 
-The app flow is:
+The reader does not need an Aptos account in this pattern. Possession of `accessPrivateKey` is the grant, so we make the payload prove that capability for one object, one response key, and one deployed app origin:
 
 ```text
 owner registers: access_public_keys[label] = accessPublicKey
@@ -27,15 +27,13 @@ hook checks:     registered public key verifies sig for this label,
                  this response key, and this app origin
 ```
 
-To decrypt, the reader generates a fresh PKE keypair, signs a statement that binds the grant to the object and to that fresh response key, and sends the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
+To decrypt, we have the reader generate a fresh PKE keypair, sign a statement that binds the grant to the object and to that fresh response key, and send the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
 
 ### 1. Write the Move Contract
 
-Start by deciding what the payload proves. In custom IBE, ACE does not interpret the payload and does not require a normal Aptos wallet identity proof. Workers pass three values to your hook: the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload`. Your contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
+In the contract, we need to define the statement the grant key signs, store the registered public key for each content label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the payload.
 
-The payload should be an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
-
-The hook has a fixed name and fixed shape:
+To work with ACE custom IBE, we expose a hook with a fixed name and fixed shape:
 
 ```move
 public fun on_ace_decryption_request_custom_flow(
@@ -45,7 +43,11 @@ public fun on_ace_decryption_request_custom_flow(
 ): bool
 ```
 
-Define the exact statement that the reader's grant key signs. This statement is what binds the grant to one object, one response key, and one deployed app origin:
+ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. Workers pass the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
+
+First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
+
+In this example, the statement signed by the reader's grant key binds the grant to one object, one response key, and one deployed app origin:
 
 ```move
 const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
@@ -58,7 +60,7 @@ struct SignableRequest has copy, drop {
 }
 ```
 
-First, store the public half of each grant. In this example, each encrypted object `label` has one registered BLS public key:
+Next, we store the public half of each grant. In this example, each encrypted object `label` has one registered BLS public key:
 
 ```move
 struct Registry has key {
@@ -80,7 +82,7 @@ public entry fun register(
 }
 ```
 
-Next, keep app origin as app-level config, separate from the per-label public keys:
+Then we keep app origin as app-level config, separate from the per-label public keys:
 
 ```move
 struct AppConfig has key {
@@ -233,9 +235,9 @@ module admin::presigned_access {
 }
 ```
 
-The hook name and signature are fixed. The internals are app-defined. This example stores one access public key per `label`, decodes `payload = BCS(origin) || BCS(sig)`, checks that `origin` matches app-level config, and verifies that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
+The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode `payload = BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
 
-Before readers decrypt, create or derive the access keypair for each `label`. The [Aptos VRF guide](./aptos-vrf.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
+Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos VRF guide](./aptos-vrf.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
 
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
@@ -245,7 +247,7 @@ Deploy the Move package, initialize verifier state, and register the access publ
 
 ### 2. Call the TypeScript SDK
 
-Encrypt exactly as in basic Aptos IBE, using the module that contains the custom hook:
+In the client, we first encrypt exactly as in basic Aptos IBE, using the module that contains the custom hook:
 
 ```typescript
 const ciphertext = (await ACE.IBE_Aptos.encrypt({
@@ -259,7 +261,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, generate a fresh PKE keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, we generate a fresh PKE keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
 import { Serializer } from "@aptos-labs/ts-sdk";

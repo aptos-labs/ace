@@ -16,20 +16,22 @@ You need to:
 
 ## Example walkthrough: Per-blob access keys
 
-This example app derives per-blob access keypairs. Each encrypted blob has a canonical `blob_id`, and the owner derives an access keypair from the ACE VRF tuple:
+In this example, we show how to derive per-blob access keypairs with ACE VRF. The high-level idea is to let an owner derive deterministic secret bytes for a blob, map those bytes into an access keypair, register the public key on-chain, and use the private key as grant material in a later custom IBE flow.
+
+For each encrypted blob, we define a canonical `blob_id`, then derive an access keypair from the ACE VRF tuple:
 
 ```text
 (keypairId, contractId, ownerAddress, accessKeyLabel)
 where accessKeyLabel = "access-key:v1:" || blob_id
 ```
 
-The 32-byte VRF output is not sent to the reader directly. The owner maps it into an access private key, computes the matching public key, registers that public key on-chain, and later gives the private key or a grant containing it to the reader. The custom IBE hook then verifies reader proofs against the registered public key.
+We do not send the 32-byte VRF output to the reader directly. The owner maps it into an access private key, computes the matching public key, registers that public key on-chain, and later gives the private key or a grant containing it to the reader. The custom IBE hook then verifies reader proofs against the registered public key.
 
 ### 1. Write the Move Contract
 
-The contract below gates who may derive each access-key label. `account` is the Aptos account that signed the derivation request, and `origin` pins the request to your deployed client.
+In the contract, we need to store who may derive each access-key label, expose an entry function to configure that policy, and expose `on_ace_vrf_request` so ACE workers can approve or reject derivation requests.
 
-The hook name and signature are fixed:
+To work with ACE VRF, we expose a hook with a fixed name and signature:
 
 ```move
 public fun on_ace_vrf_request(
@@ -39,7 +41,7 @@ public fun on_ace_vrf_request(
 ): bool
 ```
 
-First, store the owner allowed to derive each access-key label. This is the derivation policy: only that owner account can ask ACE workers to produce VRF shares for that label.
+First, we store the owner allowed to derive each access-key label. This is the derivation policy: only that owner account can ask ACE workers to produce VRF shares for that label.
 
 ```move
 struct AccessKeyPolicy has key {
@@ -57,7 +59,7 @@ public entry fun allow_deriver(
 }
 ```
 
-Next, store the expected client origin in app-level config, separate from the per-label derivation policy:
+Next, we store the expected client origin in app-level config, separate from the per-label derivation policy:
 
 ```move
 struct AppConfig has key {
@@ -166,7 +168,7 @@ module admin::vrf_access {
 }
 ```
 
-If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes. Your app then turns those bytes into the access key material it needs.
+If the hook returns `true`, workers return threshold VRF shares. The SDK verifies the shares, reconstructs the VRF output, and returns 32 bytes. We then turn those bytes into the access key material the app needs.
 
 Deploy the Move package, initialize policy, and configure which owner accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
 
@@ -176,7 +178,7 @@ Deploy the Move package, initialize policy, and configure which owner accounts m
 
 ### 2. Call the TypeScript SDK
 
-For a wallet or web app, prefer the session API:
+In the client, we construct the same access-key label, ask the owner wallet to sign the canonical VRF request, derive bytes, map them into key material, and register the public half on-chain. For a wallet or web app, prefer the session API:
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
@@ -219,7 +221,7 @@ const { accessPrivateKey, accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes)
 // presigned_access::register(blob_id_suffix, accessPublicKey)
 ```
 
-`vrfOutputToAccessKeypair` is your app's documented mapping from 32 VRF bytes into the target key type. In the pre-signed-access example, it reduces the bytes into a BLS12-381 scalar for `accessPrivateKey` and computes the matching G1 public key. The public key is stored on-chain for later custom IBE checks; the private key becomes the bearer capability that can sign reader grants.
+`vrfOutputToAccessKeypair` is your app's documented mapping from 32 VRF bytes into the target key type. In the pre-signed-access example, we reduce the bytes into a BLS12-381 scalar for `accessPrivateKey` and compute the matching G1 public key. The public key is stored on-chain for later custom IBE checks; the private key becomes the bearer capability that can sign reader grants.
 
 For CLIs or server-side jobs that already know how to sign, use the one-shot helper instead of the session API:
 
@@ -243,7 +245,7 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
 });
 ```
 
-The remaining order is the same: map `vrfBytes` into the access keypair, register the public key on-chain, and put the private key only in the grant or controlled client that is supposed to use it.
+The remaining order is the same: we map `vrfBytes` into the access keypair, register the public key on-chain, and put the private key only in the grant or controlled client that is supposed to use it.
 
 As with Aptos basic IBE, deploy the client first, learn the stable origin, then update the app config resource once to accept only that origin.
 

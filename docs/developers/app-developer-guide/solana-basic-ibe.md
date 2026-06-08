@@ -13,22 +13,26 @@ You need to:
 
 ## Example walkthrough: Receipt-gated downloads
 
-This example app is a receipt-gated download app. It stores `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid, then asks the reader to sign a transaction that proves the matching receipt exists.
+In this example, we show how to build a receipt-gated download app with ACE Solana basic IBE. The high-level idea is to encrypt content with ACE, store receipt or payment policy in Solana PDAs, and make the reader sign a transaction that ACE workers can simulate before releasing decryption shares.
 
-This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+In this app, we store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid, then ask the reader to sign a transaction that proves the matching receipt exists.
+
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
 ### 1. Write the Solana Hook Program
 
+In the hook program, we need to decode the ACE request bytes, use the decoded label to find the policy PDAs, and return `Ok(())` only when the transaction proves access.
+
 The hook instruction should do only the access proof. Its important input is `full_request_bytes`, the exact ACE request bytes that the user will sign into a transaction.
 
-First, decode the label from `full_request_bytes`. That label is the object id the client used when encrypting:
+First, we decode the label from `full_request_bytes`. That label is the object id the client used when encrypting:
 
 ```rust
 let label = ace_sdk::decode_blob_name(&full_request_bytes)
     .map_err(|_| ErrorCode::InvalidBlobName)?;
 ```
 
-Then verify the Solana policy state for that label. In a receipt-based app, that usually means checking PDA derivation, PDA ownership, receipt freshness, and the user signer:
+Then we verify the Solana policy state for that label. In a receipt-based app, that usually means checking PDA derivation, PDA ownership, receipt freshness, and the user signer:
 
 ```rust
 // Pseudocode inside assert_access:
@@ -62,7 +66,9 @@ Deploy the programs and initialize policy state. Record:
 
 ### 2. Call the TypeScript SDK
 
-Encrypt with the hook program id and label:
+In the client, we encrypt under the hook program id, then build and sign a transaction that calls the hook with the exact request bytes from the session.
+
+First, encrypt with the hook program id and label:
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
@@ -79,7 +85,7 @@ const ciphertext = (await ACE.IBE_Solana.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, use the session API so the user can sign the exact request bytes the workers will verify:
+For decryption, we use the session API so the user can sign the exact request bytes the workers will verify:
 
 ```typescript
 const session = await ACE.IBE_Solana.BasicDecryptionSession.create({

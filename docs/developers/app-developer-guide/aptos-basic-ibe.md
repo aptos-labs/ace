@@ -14,11 +14,13 @@ You need to:
 
 ## Example walkthrough: Allowlisted content catalog
 
-This example app is an allowlist-style content catalog. Each encrypted object has a `label`, and the contract stores which Aptos accounts may decrypt that label.
+In this example, we show how to build an allowlist-style content catalog with ACE. The high-level idea is to encrypt each content item with ACE, maintain the access policy on-chain, and let that policy gate whether ACE workers may release decryption shares for a user.
 
 ### 1. Design the contract
 
-The ACE hook is a view function with this fixed shape:
+In the contract, we need three pieces: a table that stores the allowlist for each content label, entry functions that update that table, and the ACE view function `on_ace_decryption_request`, which reads the table and approves or rejects each request.
+
+To work with ACE basic IBE, we expose a hook with this fixed shape:
 
 ```move
 public fun on_ace_decryption_request(
@@ -28,9 +30,9 @@ public fun on_ace_decryption_request(
 ): bool
 ```
 
-ACE workers call this hook before releasing decryption shares. If it returns `true`, the requester may decrypt. If it returns `false`, workers withhold shares.
+ACE workers call this hook before releasing decryption shares. If the hook returns `true`, the requester may decrypt. If it returns `false`, workers withhold shares.
 
-Start with the access decision itself. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`. Each item stores the accounts that may decrypt it:
+First, we define the access policy. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`, and each item stores the accounts that may decrypt it:
 
 ```move
 struct Item has store, drop {
@@ -42,7 +44,7 @@ struct Catalog has key {
 }
 ```
 
-Your app writes that state with entry functions such as `register_item` and `grant`. In a real subscription or pay-to-download app, `grant` would usually be called by purchase or subscription logic; this example keeps the state writer simple so the ACE hook is easy to see.
+Then we expose entry functions that create catalog items and grant readers access. In a real subscription or pay-to-download app, the grant write would usually happen inside purchase or subscription logic; here we keep the writer simple so the ACE hook is easy to see.
 
 ```move
 public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
@@ -64,7 +66,7 @@ public entry fun grant(admin: &signer, label: vector<u8>, reader: address) acqui
 }
 ```
 
-The core hook logic is then straightforward: find the item by `label`, then check whether the requesting `account` is in `readers`.
+Finally, the hook consumes that state: it finds the item by `label`, then checks whether the requesting `account` is in `readers`.
 
 ```move
 #[view]
@@ -81,11 +83,11 @@ public fun on_ace_decryption_request(
 }
 ```
 
-This is not the final hook yet. It ignores `origin` while we focus on the access policy. The client step below shows where `origin` comes from; the final step adds the origin check.
+At this point, the hook only models the business policy. It ignores `origin` while we focus on the allowlist; the client step below shows where `origin` comes from, and the final step adds that check.
 
 ### 2. Use the SDK in the client
 
-When you wire the client, it has two jobs: encrypt content under the same `label` the contract uses for lookup, then ask the user's wallet to sign a decryption request for that label.
+In the client, we use the same `label` that the contract uses for lookup. We first encrypt the content under that label, then ask the user's wallet to sign a decryption request for the same label.
 
 Encrypt before or after listing the item on-chain, but use the same `label` in both places:
 
@@ -106,7 +108,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-The parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
+These parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
 
 For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
 
@@ -140,13 +142,13 @@ const plaintext = (await session.decryptWithProof({
 
 For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
 
-For Aptos wallet messages, ACE workers extract the application origin from `signed.fullMessage` and pass it to `on_ace_decryption_request` as the `origin` argument. That means the contract can reject requests signed for the wrong app.
+The important detail for the next step is that ACE workers extract the application origin from the Aptos wallet message in `signed.fullMessage` and pass it to `on_ace_decryption_request` as the `origin` argument. That gives the contract enough information to reject requests signed for the wrong app.
 
 ### 3. Check request origin
 
-Now add the app-level origin check. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
+Now that the client signs an application-scoped wallet message, we can harden the contract by checking the request origin. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
 
-Store the expected client origin in a separate config resource:
+To do that, we store the expected client origin in a separate config resource:
 
 ```move
 struct AppConfig has key {
@@ -164,7 +166,7 @@ public entry fun set_client_origin(
 }
 ```
 
-Then make the hook reject requests whose wallet-signed origin does not match that app-level config:
+Then we make the hook reject requests whose wallet-signed origin does not match that app-level config:
 
 ```move
 #[view]

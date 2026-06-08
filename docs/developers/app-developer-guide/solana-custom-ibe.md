@@ -14,20 +14,24 @@ You need to:
 
 ## Example walkthrough: Code-gated custom ACL
 
-This example app is a code-gated custom ACL. It stores `CodeEntry` PDAs by label and accepts a custom payload only when it matches the stored code. A production app could replace that comparison with a ZK verifier, signed credential check, or richer ACL.
+In this example, we show how to build a code-gated custom ACL with ACE Solana custom IBE. The high-level idea is to encrypt content with ACE, encode an app-defined payload in the custom request, and make a Solana instruction verify both the ACE request fields and the app payload during worker simulation.
 
-This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+In this app, we store `CodeEntry` PDAs by label and accept a custom payload only when it matches the stored code. A production app could replace that comparison with a ZK verifier, signed credential check, or richer ACL.
+
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
 ### 1. Write the Solana Hook Program
 
-The hook instruction receives `full_request_bytes`. Decode it first; the decoded request carries the `label`, the reader's response key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
+In the hook program, we need to decode the custom ACE request, validate the supplied accounts from the decoded label, and verify the payload against our policy.
+
+The hook instruction's input is `full_request_bytes`. We decode it first; the decoded request carries the `label`, the reader's response key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
 
 ```rust
 let decoded = ace_sdk::decode_custom_request(&full_request_bytes)
     .map_err(|_| ErrorCode::InvalidRequestBytes)?;
 ```
 
-Then validate the accounts that the client supplied. In this code-gated example, the label determines the `CodeEntry` PDA:
+Then we validate the accounts that the client supplied. In this code-gated example, the label determines the `CodeEntry` PDA:
 
 ```rust
 let (expected_pda, _) = Pubkey::find_program_address(
@@ -37,7 +41,7 @@ let (expected_pda, _) = Pubkey::find_program_address(
 require_keys_eq!(ctx.accounts.code_entry.key(), expected_pda);
 ```
 
-Finally, verify the custom payload against your policy. The toy example compares the payload to a stored code; a production app might verify a proof, signature, credential, or issuer statement. If your payload authorizes one response key, bind it to `decoded.enc_pk` so it cannot be replayed with another user's response key.
+Finally, we verify the custom payload against the policy. The toy example compares the payload to a stored code; a production app might verify a proof, signature, credential, or issuer statement. If your payload authorizes one response key, bind it to `decoded.enc_pk` so it cannot be replayed with another user's response key.
 
 Putting those pieces together, the hook looks like this:
 
@@ -69,7 +73,9 @@ Deploy the Anchor program and record:
 
 ### 2. Call the TypeScript SDK
 
-Encrypt under the hook program id:
+In the client, we encrypt under the hook program id, build custom request bytes with `encPk`, `label`, and `payload`, then sign a transaction that passes those bytes to the hook.
+
+First, encrypt under the hook program id:
 
 ```typescript
 const ciphertext = (await ACE.IBE_Solana.encrypt({
@@ -82,7 +88,7 @@ const ciphertext = (await ACE.IBE_Solana.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, create a fresh PKE keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls your hook:
+For decryption, we create a fresh PKE keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
 
 ```typescript
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();

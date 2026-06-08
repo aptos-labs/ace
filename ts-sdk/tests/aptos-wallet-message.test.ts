@@ -3,18 +3,19 @@
 
 import { AccountAddress } from "@aptos-labs/ts-sdk";
 import { describe, expect, it } from "vitest";
-import { IBE_Aptos } from "../src";
+import { IBE_Aptos, VRF_Aptos } from "../src";
 
 describe("Aptos wallet fullMessage helper", () => {
     it("builds the wallet-style message shape used by ACE service signing", () => {
         const accountAddress = "0x0000000000000000000000000000000000000000000000000000000000000abc";
-        const fullMessage = IBE_Aptos.buildAptosWalletFullMessage({
+        const args = {
             accountAddress: AccountAddress.fromString(accountAddress),
             application: "https://app.example",
             chainId: 2,
             message: "0x1234",
             nonce: "nonce-1",
-        });
+        };
+        const fullMessage = IBE_Aptos.buildAptosWalletFullMessage(args);
 
         expect(fullMessage).toBe([
             "APTOS",
@@ -24,5 +25,6 @@ describe("Aptos wallet fullMessage helper", () => {
             "message: 0x1234",
             "nonce: nonce-1",
         ].join("\n"));
+        expect(VRF_Aptos.buildAptosWalletFullMessage(args)).toBe(fullMessage);
     });
 });

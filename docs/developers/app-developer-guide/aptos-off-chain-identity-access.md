@@ -2,19 +2,17 @@
 
 ## TLDR
 
-Use this flow when an Aptos contract needs to verify an application-defined payload instead of a normal wallet identity proof. Typical examples are ZK proofs, Merkle witnesses, signed attestations, pre-signed access tokens, and account-abstraction style credentials.
+ACE lets your app answer "can off-chain identity X access object Y?" from an Aptos contract. Use this guide when readers should prove access with an app-defined credential, such as a signed grant, ZK proof, Merkle witness, or attestation, instead of an Aptos wallet login.
 
-You need to:
+To use it, you will:
 
-- Write a Move module with `on_ace_decryption_request_custom_flow(label, enc_pk, payload): bool`.
-- Define and document the payload encoding.
-- Bind the payload to `label`, `enc_pk`, and any app origin or audience you care about.
-- Encrypt with `ACE.IBE_Aptos.encrypt`.
-- Generate a per-request PKE keypair and call `ACE.IBE_Aptos.decryptCustomFlow`.
+- In your Move module, expose `on_ace_decryption_request_custom_flow(...)` as the source of truth for access decisions.
+- Define the payload your off-chain identity or credential will present.
+- In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Aptos` custom-flow APIs.
 
-## Example walkthrough: Pre-signed access grants
+## Example: pre-signed access grants
 
-In this example, we show how to build pre-signed access grants with ACE custom IBE. The high-level idea is to encrypt content with ACE, register an access public key for each encrypted object, and let a reader prove possession of the matching private key through an app-defined payload.
+In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
 
 The reader does not need an Aptos account in this pattern. Possession of `accessPrivateKey` is the grant, so we make the payload prove that capability for one object, one response key, and one deployed app origin:
 
@@ -27,13 +25,15 @@ hook checks:     registered public key verifies sig for this label,
                  this response key, and this app origin
 ```
 
-To decrypt, we have the reader generate a fresh PKE keypair, sign a statement that binds the grant to the object and to that fresh response key, and send the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
+To decrypt, we have the reader generate a fresh response key, sign a statement that binds the grant to the object and to that response key, and send the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key. Binding `origin` keeps the grant scoped to the deployed app.
 
-### 1. Write the Move Contract
+### Contract changes
 
-In the contract, we need to define the statement the grant key signs, store the registered public key for each content label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the payload.
+In this example, the Move module is named `presigned_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"presigned_access"`.
 
-To work with ACE custom IBE, we expose a hook with a fixed name and fixed shape:
+In the contract, we define the statement the grant key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the payload.
+
+ACE calls the contract through a view function with this fixed name and shape:
 
 ```move
 public fun on_ace_decryption_request_custom_flow(
@@ -43,7 +43,7 @@ public fun on_ace_decryption_request_custom_flow(
 ): bool
 ```
 
-ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. Workers pass the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
+ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. During decryption, ACE passes the encrypted object's `label`, the reader's response key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload is valid for this object.
 
 First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
 
@@ -242,31 +242,49 @@ Before readers decrypt, we create or derive the access keypair for each `label`.
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName` for the module with the hook.
-- `aceDeployment` and `keypairId`.
+- `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
 - Your payload version and encoding.
 
-### 2. Call the TypeScript SDK
+### Client changes
 
-In the client, we first encrypt exactly as in basic Aptos IBE, using the module that contains the custom hook:
+Before the SDK calls, fill in the ACE deployment values and the app module identity:
 
 ```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
+import { bls12_381 } from "@noble/curves/bls12-381";
+
+const aceDeployment = new ACE.AceDeployment({
+  apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
+  contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
+});
+const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const chainId = 2; // Aptos testnet
+
+const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
+const moduleName = "presigned_access"; // matches module <publisher>::presigned_access
+```
+
+In the client, encrypt under the module that contains the custom hook. The SDK calls the object ID bytes `label`; this example uses `objectId` as that label.
+
+```typescript
+const objectId = new TextEncoder().encode("0x<owner-address>/album/song-001");
+const label = objectId;
+
 const ciphertext = (await ACE.IBE_Aptos.encrypt({
   aceDeployment,
   keypairId,
   chainId,
   moduleAddr,
-  moduleName: "presigned_access",
+  moduleName,
   label,
   plaintext: privateContent,
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we generate a fresh PKE keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, we generate a fresh response keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
-import { Serializer } from "@aptos-labs/ts-sdk";
-import { bls12_381 } from "@noble/curves/bls12-381";
-
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
 const encPk = encryptionKey.toBytes();
 const encSk = decryptionKey.toBytes();
@@ -299,17 +317,17 @@ const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
   keypairId,
   chainId,
   moduleAddr,
-  moduleName: "presigned_access",
+  moduleName,
 });
 ```
 
-Custom Aptos IBE is a one-call SDK flow today. If your UI has multiple phases, keep `encPk`, `encSk`, and the payload inputs in your own session state until the user finishes the proof step.
+This custom SDK flow is one call today. If your UI has multiple phases, keep `encPk`, `encSk`, and the payload inputs in your own session state until the user finishes the proof step.
 
-Unlike basic Aptos IBE, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, put it in the payload and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
+Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, put it in the payload and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
 
 ## Remarks
 
-In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid payload for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the payload prove the reader's identity or use the basic Aptos IBE flow.
+In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid payload for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the payload prove the reader's identity or use the Aptos account access flow.
 
 ## Ready-To-Run Examples
 

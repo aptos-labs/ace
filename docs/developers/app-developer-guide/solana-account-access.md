@@ -1,29 +1,28 @@
-# Solana Account Access: Can account X access object Y?
+# Solana Account Access: Can Solana account X access object Y?
 
 ## TLDR
 
-Use this flow when a Solana program can prove access by successfully simulating a signed transaction. It is a natural fit for receipt-based pay-to-download, PDA-backed allowlists, and policies where the requestor should sign a Solana transaction that calls a dedicated access-check instruction.
+ACE lets your app answer "can Solana account X access object Y?" from a Solana program. Use this guide when your users have Solana accounts and your app can prove access with a signed transaction.
 
-You need to:
+To use it, you will:
 
-- Write the normal Solana business program that stores policy state.
-- Write a hook program, usually with a single `assert_access(full_request_bytes)` instruction, that verifies the policy.
-- Encrypt with `ACE.IBE_Solana.encrypt`, binding the ciphertext to the hook program id.
-- Decrypt with `ACE.IBE_Solana.BasicDecryptionSession`, signing a transaction that embeds the request bytes.
+- In your Solana program, expose an access-check instruction such as `assert_access(full_request_bytes)`.
+- Store enough policy state to decide whether the signer can access the requested object.
+- In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Solana` APIs.
 
-## Example walkthrough: Receipt-gated downloads
+## Example: receipt-gated downloads
 
-In this example, we show how to build a receipt-gated download app with ACE Solana basic IBE. The high-level idea is to encrypt content with ACE, store receipt or payment policy in Solana PDAs, and make the reader sign a transaction that ACE workers can simulate before releasing decryption shares.
+In this example, we show how to build a receipt-gated download app with ACE. The high-level idea is to encrypt content under an object ID, store receipt or payment policy in Solana PDAs, and make the reader sign a transaction that proves access to that object.
 
 In this app, we store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid, then ask the reader to sign a transaction that proves the matching receipt exists.
 
-This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that can be checked and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
-### 1. Write the Solana Hook Program
+### Program changes
 
 In the hook program, we need to decode the ACE request bytes, use the decoded label to find the policy PDAs, and return `Ok(())` only when the transaction proves access.
 
-The hook instruction should do only the access proof. Its important input is `full_request_bytes`, the exact ACE request bytes that the user will sign into a transaction.
+The hook instruction should do only the access proof. Its important input is `full_request_bytes`, the exact ACE request bytes that the user signs into a transaction.
 
 First, we decode the label from `full_request_bytes`. That label is the object id the client used when encrypting:
 
@@ -32,14 +31,46 @@ let label = ace_sdk::decode_blob_name(&full_request_bytes)
     .map_err(|_| ErrorCode::InvalidBlobName)?;
 ```
 
-Then we verify the Solana policy state for that label. In a receipt-based app, that usually means checking PDA derivation, PDA ownership, receipt freshness, and the user signer:
+Then we verify the Solana policy state for that label. In a receipt-based app, that usually means checking PDA derivation, PDA ownership, receipt validity, and the user signer. `BlobMetadata` and `Receipt` are app-defined accounts; this example uses the following minimal fields:
 
 ```rust
-// Pseudocode inside assert_access:
-// - blobMetadata PDA is derived from label and owned by the expected program.
-// - receipt PDA is derived from (user, label).
-// - receipt proves this user paid for this label.
-// - user is the signer of the transaction being simulated.
+#[account]
+pub struct BlobMetadata {
+    pub label: Vec<u8>,
+}
+
+#[account]
+pub struct Receipt {
+    pub user: Pubkey,
+    pub label: Vec<u8>,
+    pub paid: bool,
+}
+```
+
+The access check can then validate the submitted accounts against the decoded label:
+
+```rust
+let user = &ctx.accounts.user;
+require!(user.is_signer, ErrorCode::MissingSigner);
+
+let (expected_blob_metadata, _) = Pubkey::find_program_address(
+    &[b"blob", label.as_ref()],
+    &crate::ID,
+);
+require_keys_eq!(ctx.accounts.blob_metadata.key(), expected_blob_metadata);
+let metadata = &ctx.accounts.blob_metadata;
+require!(metadata.label.as_slice() == label.as_slice(), ErrorCode::BlobLabelMismatch);
+
+let (expected_receipt, _) = Pubkey::find_program_address(
+    &[b"receipt", user.key().as_ref(), label.as_ref()],
+    &crate::ID,
+);
+require_keys_eq!(ctx.accounts.receipt.key(), expected_receipt);
+
+let receipt = &ctx.accounts.receipt;
+require_keys_eq!(receipt.user, user.key());
+require!(receipt.label.as_slice() == label.as_slice(), ErrorCode::ReceiptLabelMismatch);
+require!(receipt.paid, ErrorCode::AccessDenied);
 ```
 
 Putting those pieces together, the hook looks like this:
@@ -49,50 +80,82 @@ pub fn assert_access(ctx: Context<AssertAccess>, full_request_bytes: Vec<u8>) ->
     let label = ace_sdk::decode_blob_name(&full_request_bytes)
         .map_err(|_| ErrorCode::InvalidBlobName)?;
 
-    // Verify PDA ownership, PDA derivation, receipt freshness, and signer.
-    // Return Ok(()) only when the transaction proves access.
+    let user = &ctx.accounts.user;
+    require!(user.is_signer, ErrorCode::MissingSigner);
+
+    let (expected_blob_metadata, _) = Pubkey::find_program_address(
+        &[b"blob", label.as_ref()],
+        &crate::ID,
+    );
+    require_keys_eq!(ctx.accounts.blob_metadata.key(), expected_blob_metadata);
+    let metadata = &ctx.accounts.blob_metadata;
+    require!(metadata.label.as_slice() == label.as_slice(), ErrorCode::BlobLabelMismatch);
+
+    let (expected_receipt, _) = Pubkey::find_program_address(
+        &[b"receipt", user.key().as_ref(), label.as_ref()],
+        &crate::ID,
+    );
+    require_keys_eq!(ctx.accounts.receipt.key(), expected_receipt);
+
+    let receipt = &ctx.accounts.receipt;
+    require_keys_eq!(receipt.user, user.key());
+    require!(receipt.label.as_slice() == label.as_slice(), ErrorCode::ReceiptLabelMismatch);
+    require!(receipt.paid, ErrorCode::AccessDenied);
     Ok(())
 }
 ```
 
-Use a dedicated hook program when possible. Workers verify and simulate the proof transaction; a single-purpose hook makes it clear which instruction is the access boundary.
+Use a dedicated hook program when possible. A single-purpose hook makes it clear which instruction is the access boundary.
 
 Deploy the programs and initialize policy state. Record:
 
 - `knownChainName`: for example `devnet`, `testnet`, or `mainnet-beta`.
 - `programId`: the hook program id, not necessarily your main business program id.
-- `aceDeployment` and `keypairId`: from your ACE deployment or localnet config.
+- `aceDeployment` and `keypairId`: from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
 - `label`: the bytes your hook decodes from the ACE request and uses to find policy state.
 
-### 2. Call the TypeScript SDK
+### Client changes
 
 In the client, we encrypt under the hook program id, then build and sign a transaction that calls the hook with the exact request bytes from the session.
+
+Before the SDK calls, fill in the ACE deployment values and the hook program id. The `aceDeployment` values identify the ACE deployment, not your Solana program; `programId` is your hook program:
+
+```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress } from "@aptos-labs/ts-sdk";
+
+const aceDeployment = new ACE.AceDeployment({
+  apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
+  contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
+});
+const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const knownChainName = "testnet";
+const programId = aceHookProgram.programId.toBase58();
+```
 
 First, encrypt with the hook program id and label:
 
 ```typescript
-import * as ACE from "@aptos-labs/ace-sdk";
-
-const label = new TextEncoder().encode("0x<owner-aptos-address>/song.mp3");
+const label = new TextEncoder().encode("<owner-solana-address>/song.mp3");
 
 const ciphertext = (await ACE.IBE_Solana.encrypt({
   aceDeployment,
   keypairId,
   knownChainName,
-  programId: aceHookProgram.programId.toBase58(),
+  programId,
   label,
   plaintext: songBytes,
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we use the session API so the user can sign the exact request bytes the workers will verify:
+For decryption, we use the session API so the user can sign a transaction for the exact object request:
 
 ```typescript
 const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
   aceDeployment,
   keypairId,
   knownChainName,
-  programId: aceHookProgram.programId.toBase58(),
+  programId,
   label,
   ciphertext,
 });
@@ -122,11 +185,11 @@ Solana basic proofs do not currently pass a browser `origin` string to the hook.
 
 ## Remarks
 
-- The signed transaction should call the access hook and should not rely on off-chain checks that workers cannot simulate.
+- The signed transaction should call the access hook and should not rely on off-chain checks that ACE cannot verify.
 - Validate PDA owners and seeds inside the hook. Do not trust accounts just because the client supplied them.
 - Bind the hook to `full_request_bytes`; otherwise a user could sign a transaction that proves something other than the ACE request being served.
 - Keep ciphertext delivery separate from access proof. ACE encrypts the payload directly; the chain only needs policy state and whatever metadata your app wants on-chain.
-- Use a stable label encoding and document it. Changing label encoding changes the IBE identity and makes old ciphertexts undecryptable under the new label.
+- Use a stable label encoding and document it. Changing label encoding changes the object ID and makes old ciphertexts undecryptable under the new label.
 
 ## Ready-To-Run Examples
 

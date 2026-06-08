@@ -33,6 +33,8 @@ import {
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 import { frInv, frMod, frMul } from "../group/bls12381fr";
 
+export { buildAptosWalletFullMessage } from "../ibe-for-aptos/aptos-wallet-message";
+
 export const PURPOSE = "ace.threshold-vrf.derive.v1";
 const DST_THRESHOLD_VRF_G1 = new TextEncoder().encode("ACE_THRESHOLD_VRF_BLS12381G1/HASH_TO_CURVE/v1");
 

@@ -2,25 +2,23 @@
 
 ## TLDR
 
-Use this flow when a Solana instruction must verify app-defined request bytes and payload before workers release decryption shares. It is useful for custom ACLs, ZK proofs, coupon codes, signed credentials, and policies where the proof naturally belongs in a Solana transaction.
+ACE lets your app answer "can off-chain identity X access object Y?" from a Solana program. Use this guide when access is proven by an app-defined payload, such as a code, ZK proof, coupon, signed credential, or custom ACL, inside a signed Solana transaction.
 
-You need to:
+To use it, you will:
 
-- Write an Anchor instruction such as `assert_custom_acl(full_request_bytes)`.
-- Decode the ACE custom request bytes inside that instruction.
-- Verify the embedded `label`, `enc_pk`, `payload`, and any relevant accounts.
-- Encrypt with `ACE.IBE_Solana.encrypt`.
-- Build custom request bytes with `ACE.IBE_Solana.buildCustomRequestBytes`, sign a transaction containing those bytes, then call `ACE.IBE_Solana.decryptCustomFlow`.
+- In your Solana program, expose an access-check instruction such as `assert_custom_acl(full_request_bytes)`.
+- Decode the request bytes inside that instruction and verify your app-defined payload.
+- In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Solana` custom-flow APIs.
 
-## Example walkthrough: Code-gated custom ACL
+## Example: code-gated custom ACL
 
-In this example, we show how to build a code-gated custom ACL with ACE Solana custom IBE. The high-level idea is to encrypt content with ACE, encode an app-defined payload in the custom request, and make a Solana instruction verify both the ACE request fields and the app payload during worker simulation.
+In this example, we show how to build a code-gated custom ACL with ACE. The high-level idea is to encrypt content under an object ID, put an app-defined payload in the access request, and make a Solana instruction verify that payload before decrypting.
 
-In this app, we store `CodeEntry` PDAs by label and accept a custom payload only when it matches the stored code. A production app could replace that comparison with a ZK verifier, signed credential check, or richer ACL.
+In this app, we store `CodeEntry` PDAs by label and accept a custom payload only when it matches the stored payload hash. A production app could replace that hash check with a ZK verifier, signed credential check, or richer ACL.
 
-This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
+This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. ACE does not require Anchor; it requires a signed Solana transaction that can be checked and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
-### 1. Write the Solana Hook Program
+### Program changes
 
 In the hook program, we need to decode the custom ACE request, validate the supplied accounts from the decoded label, and verify the payload against our policy.
 
@@ -41,11 +39,27 @@ let (expected_pda, _) = Pubkey::find_program_address(
 require_keys_eq!(ctx.accounts.code_entry.key(), expected_pda);
 ```
 
-Finally, we verify the custom payload against the policy. The toy example compares the payload to a stored code; a production app might verify a proof, signature, credential, or issuer statement. If your payload authorizes one response key, bind it to `decoded.enc_pk` so it cannot be replayed with another user's response key.
+Finally, we verify the custom payload against the policy. This example compares a hash of the payload to the value stored in a `CodeEntry` account:
+
+```rust
+use solana_program::hash::hashv;
+
+#[account]
+pub struct CodeEntry {
+    pub payload_hash: [u8; 32],
+}
+
+let payload_hash = hashv(&[decoded.payload.as_slice()]).to_bytes();
+require!(payload_hash == ctx.accounts.code_entry.payload_hash, ErrorCode::AccessDenied);
+```
+
+A production app might verify a proof, signature, credential, or issuer statement instead. Design that payload as a canonical statement, not loose bytes: include a version or domain-separation string, the object label, the response key `decoded.enc_pk` if the payload is meant for one request, the program or app audience, and any expiry or nonce your policy needs. The signature, proof, or credential must cover every field the hook relies on.
 
 Putting those pieces together, the hook looks like this:
 
 ```rust
+use solana_program::hash::hashv;
+
 pub fn assert_custom_acl(
     ctx: Context<AssertCustomAcl>,
     full_request_bytes: Vec<u8>,
@@ -59,7 +73,8 @@ pub fn assert_custom_acl(
     );
     require_keys_eq!(ctx.accounts.code_entry.key(), expected_pda);
 
-    require!(decoded.payload == stored_payload, ErrorCode::AccessDenied);
+    let payload_hash = hashv(&[decoded.payload.as_slice()]).to_bytes();
+    require!(payload_hash == ctx.accounts.code_entry.payload_hash, ErrorCode::AccessDenied);
     Ok(())
 }
 ```
@@ -68,27 +83,45 @@ Deploy the Anchor program and record:
 
 - `knownChainName`: for example `devnet`, `testnet`, or `mainnet-beta`.
 - `programId`: the hook program id.
-- `aceDeployment` and `keypairId`.
+- `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
 - The label and payload encoding.
 
-### 2. Call the TypeScript SDK
+### Client changes
 
 In the client, we encrypt under the hook program id, build custom request bytes with `encPk`, `label`, and `payload`, then sign a transaction that passes those bytes to the hook.
+
+Before the SDK calls, fill in the ACE deployment values and the hook program id. The `aceDeployment` values identify the ACE deployment, not your Solana program; `programId` is your hook program:
+
+```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress } from "@aptos-labs/ts-sdk";
+
+const aceDeployment = new ACE.AceDeployment({
+  apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
+  contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
+});
+const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const knownChainName = "testnet";
+const programId = customAclProgram.programId.toBase58();
+```
 
 First, encrypt under the hook program id:
 
 ```typescript
+const label = new TextEncoder().encode("<object-id>");
+const payload = new TextEncoder().encode("<code-or-proof>");
+
 const ciphertext = (await ACE.IBE_Solana.encrypt({
   aceDeployment,
   keypairId,
   knownChainName,
-  programId: customAclProgram.programId.toBase58(),
+  programId,
   label,
   plaintext,
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we create a fresh PKE keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
+For decryption, we create a fresh response keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
 
 ```typescript
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
@@ -122,11 +155,11 @@ const plaintext = await ACE.IBE_Solana.decryptCustomFlow({
   aceDeployment,
   keypairId,
   knownChainName,
-  programId: customAclProgram.programId.toBase58(),
+  programId,
 });
 ```
 
-Workers verify that the signed transaction matches the outer request fields and that simulation succeeds. If the instruction aborts, the worker withholds its share.
+ACE checks that the signed transaction matches the request fields and that the access instruction succeeds. If the instruction aborts, decryption fails.
 
 Solana custom flow does not automatically carry a browser origin. If your web app needs origin binding, include an origin or audience field in `payload` or instruction data, sign it as part of the proof, and reject any value except your deployed app's origin. After the client is deployed, update that allowlist or payload issuer configuration.
 
@@ -135,7 +168,8 @@ Solana custom flow does not automatically carry a browser origin. If your web ap
 - Use the same `epoch` in `buildCustomRequestBytes` and `decryptCustomFlow`.
 - Bind payloads to `encPk` where possible; otherwise a valid payload may be replayed with a different response key.
 - Validate account owners, seeds, and program ids in the hook.
-- Keep the hook narrowly focused. A single-purpose hook is easier for workers and auditors to reason about.
+- Keep the hook narrowly focused. A single-purpose hook is easier for developers and auditors to reason about.
+- Do not store reusable plaintext secrets on-chain. If the payload is a human-entered code, use a high-entropy value or a signed/one-time credential; a hash alone does not make a weak code hard to guess.
 - Treat `label` encoding as part of the wire contract with your clients.
 
 ## Ready-To-Run Examples

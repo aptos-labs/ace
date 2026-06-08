@@ -82,11 +82,11 @@ Start with the guide that matches your flow:
 
 | Guide | What it covers |
 |-------|----------------|
-| [`Aptos account access`](./docs/developers/app-developer-guide/aptos-account-access.md) | Your Aptos contract decides whether Aptos account X can access object Y |
-| [`Solana account access`](./docs/developers/app-developer-guide/solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y |
-| [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
-| [`Solana off-chain identity access`](./docs/developers/app-developer-guide/solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y |
-| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/aptos-approved-derivation.md) | Your Aptos contract decides who can derive app-specific deterministic values |
+| [`Aptos account access`](./docs/developers/app-developer-guide/ibe-aptos-basic.md) | Your Aptos contract decides whether Aptos account X can access object Y |
+| [`Solana account access`](./docs/developers/app-developer-guide/ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y |
+| [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
+| [`Solana off-chain identity access`](./docs/developers/app-developer-guide/ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y |
+| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/vrf-aptos.md) | Your Aptos contract decides who can derive app-specific deterministic values |
 
 The full guide index is at [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide).
 

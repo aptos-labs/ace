@@ -4,11 +4,11 @@ ACE lets an app encrypt data or derive app-specific values, then ask an on-chain
 
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
-| [`aptos-account-access.md`](./aptos-account-access.md) | Your Aptos contract decides whether Aptos account X can access object Y | pay-to-download, allowlists, time locks, subscriptions |
-| [`solana-account-access.md`](./solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
-| [`aptos-off-chain-identity-access.md`](./aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
-| [`solana-off-chain-identity-access.md`](./solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
-| [`aptos-approved-derivation.md`](./aptos-approved-derivation.md) | Your Aptos contract decides who can derive app-specific deterministic values | per-object signing keys, deterministic grants, app-scoped randomness |
+| [`ibe-aptos-basic.md`](./ibe-aptos-basic.md) | Your Aptos contract decides whether Aptos account X can access object Y | pay-to-download, allowlists, time locks, subscriptions |
+| [`ibe-solana-basic.md`](./ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
+| [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
+| [`ibe-solana-custom.md`](./ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
+| [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive app-specific deterministic values | per-object signing keys, deterministic grants, app-scoped randomness |
 
 ## Vocabulary
 

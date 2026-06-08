@@ -17,6 +17,8 @@ The high-level idea is to use a full object ID as the catalog lookup key, encryp
 
 ### Contract changes
 
+In this example, the Move module is named `content_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"content_access"`.
+
 First, we can store the object ID-to-allowlist mapping in a table.
 
 ```move
@@ -80,12 +82,26 @@ NOTE: parameter `origin` is currently ignored. We will worry about it later.
 
 In the client, we use the same object ID bytes that the contract uses for lookup. The SDK calls those bytes the `label`; in this app, we simply use `full_object_id` as the IBE `label`.
 
-Encrypt before or after listing the item on-chain, but use the same bytes for `full_object_id` in Move and `label` in the SDK:
+Before the SDK calls, fill in the ACE deployment values. These are not derived from your app contract. During preview, use the `aceDeployment` and `keypairId` provided by the ACE team or by a ready-to-run example/localnet config; once public deployments are available, this should point to the public registry.
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
 import { AccountAddress } from "@aptos-labs/ts-sdk";
 
+const aceDeployment = new ACE.AceDeployment({
+  apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
+  contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
+});
+const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const chainId = 2; // Aptos testnet
+
+const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
+const moduleName = "content_access"; // matches module <publisher>::content_access
+```
+
+Encrypt before or after listing the item on-chain, but use the same bytes for `full_object_id` in Move and `label` in the SDK:
+
+```typescript
 const fullObjectId = new TextEncoder().encode("0x<owner-address>/album/song-001");
 const label = fullObjectId;
 
@@ -93,8 +109,8 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
   aceDeployment,
   keypairId,
   chainId,
-  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "content_access",
+  moduleAddr,
+  moduleName,
   label,
   plaintext: songBytes,
 })).unwrapOrThrow("ACE encrypt failed");
@@ -109,8 +125,8 @@ const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
   aceDeployment,
   keypairId,
   chainId,
-  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "content_access",
+  moduleAddr,
+  moduleName,
   label,
   ciphertext,
 });
@@ -132,7 +148,34 @@ const plaintext = (await session.decryptWithProof({
 })).unwrapOrThrow("ACE decrypt failed");
 ```
 
-For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
+For scripts or backend services that sign directly with an Aptos account, build the same wallet-style `fullMessage` before signing. Do not sign `message` by itself; sign the full string returned by `buildAptosWalletFullMessage`.
+
+```typescript
+const plaintext = (await ACE.IBE_Aptos.decryptBasicFlow({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr,
+  moduleName,
+  label,
+  ciphertext,
+  accountAddress: serviceAccount.accountAddress,
+  sign: async (message) => {
+    const fullMessage = ACE.IBE_Aptos.buildAptosWalletFullMessage({
+      accountAddress: serviceAccount.accountAddress,
+      application: "https://<your-deployed-app-origin>",
+      chainId,
+      message,
+      nonce: crypto.randomUUID(),
+    });
+    return {
+      pubKey: serviceAccount.publicKey,
+      signature: serviceAccount.sign(fullMessage),
+      fullMessage,
+    };
+  },
+})).unwrapOrThrow("ACE decrypt failed");
+```
 
 The important detail for the next step is that the signed wallet message includes the application origin. ACE passes that value to `on_ace_decryption_request` as the `origin` argument, so the contract can reject requests signed for the wrong app.
 
@@ -277,7 +320,7 @@ Deploy the Move package, run `init`, register your object IDs, and grant whateve
 - `chainId`: the Aptos chain id.
 - `moduleAddr`: the account that published your module.
 - `moduleName`: the Move module containing `on_ace_decryption_request`.
-- `aceDeployment` and `keypairId`: from `ACE.knownDeployments` or your local ACE network config.
+- `aceDeployment` and `keypairId`: from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
 
 ## Remarks
 

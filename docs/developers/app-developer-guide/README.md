@@ -12,11 +12,11 @@ ACE lets an app encrypt or derive secrets now, then ask an on-chain policy later
 
 ## Vocabulary
 
-- `aceDeployment`: the ACE network endpoint and ACE contract address. Use a known deployment from `ACE.knownDeployments` or construct `new ACE.AceDeployment(...)`.
-- `keypairId`: the on-chain ACE DKG session address for the threshold keypair.
+- `aceDeployment`: the ACE network endpoint and ACE contract address. During preview, use the value provided by the ACE team or by a ready-to-run example/localnet config.
+- `keypairId`: the ACE encryption key identifier, provided by the same ACE deployment or localnet config.
 - `label`: app-chosen bytes that identify the encrypted object or VRF derivation. Your contract usually uses this as the lookup key.
-- `contract id`: the app contract that workers call or simulate. Aptos uses `(chainId, moduleAddr, moduleName)`. Solana uses `(knownChainName, programId)`.
-- `origin`: an Aptos wallet/WebAuthn application origin extracted by ACE workers from the signed message. Solana proofs do not currently include this field automatically.
+- `contract id`: the app contract or program ACE checks for access decisions. Aptos uses `(chainId, moduleAddr, moduleName)`. Solana uses `(knownChainName, programId)`.
+- `origin`: an Aptos wallet/WebAuthn application origin extracted by ACE from the signed message. Solana proofs do not currently include this field automatically.
 
 ## Common Build Order
 

@@ -12,6 +12,9 @@ import { BasicDecryptionSession } from "./basic-decryption-session";
  * server-side jobs that already know how to sign and don't need to
  * keep the session object around between phases.
  *
+ * If your signer is not an Aptos wallet, use `buildAptosWalletFullMessage`
+ * to wrap the callback's `msgToSign` before signing.
+ *
  * Use the two-phase `BasicDecryptionSession` API directly when a wallet
  * UI needs to render the canonical request message to the user before
  * the signature happens.

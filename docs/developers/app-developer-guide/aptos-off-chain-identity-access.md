@@ -14,18 +14,18 @@ To use it, you will:
 
 In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
 
-The reader does not need an Aptos account in this pattern. Possession of `accessPrivateKey` is the grant, so we make the payload prove that capability for one object, one response key, and one deployed app origin:
+The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time response key, then use `accessPrivateKey` to sign a request that says: "I am asking for this object, with this response key, from this deployed app origin."
 
 ```text
 owner registers: access_public_keys[label] = accessPublicKey
-reader proves:   sig = Sign(accessPrivateKey,
+reader signs:    sig = Sign(accessPrivateKey,
                             BCS(dst, label, enc_pk, origin))
 payload:         BCS(origin, sig)
 hook checks:     registered public key verifies sig for this label,
                  this response key, and this app origin
 ```
 
-To decrypt, we have the reader generate a fresh response key, sign a statement that binds the grant to the object and to that response key, and send the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key. Binding `origin` keeps the grant scoped to the deployed app.
+The signature becomes the custom payload. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key. Including `origin` keeps the grant scoped to the deployed app.
 
 ### Contract changes
 
@@ -47,7 +47,7 @@ ACE does not interpret the payload and does not require a normal Aptos wallet id
 
 First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
 
-In this example, the statement signed by the reader's grant key binds the grant to one object, one response key, and one deployed app origin:
+In this example, the statement signed by the reader's grant key includes one object, one response key, and one deployed app origin:
 
 ```move
 const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";

@@ -13,9 +13,32 @@ You need to:
 
 ## Walkthrough
 
+### 1. Write the Solana Hook Program
+
 This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
-Design the policy first. A pay-to-download app might store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid. The hook instruction should do only the access proof:
+Design the policy first. A pay-to-download app might store `BlobMetadata` PDAs for listed content and `Receipt` PDAs for users who paid.
+
+The hook instruction should do only the access proof. Its important input is `full_request_bytes`, the exact ACE request bytes that the user will sign into a transaction.
+
+First, decode the label from `full_request_bytes`. That label is the object id the client used when encrypting:
+
+```rust
+let label = ace_sdk::decode_blob_name(&full_request_bytes)
+    .map_err(|_| ErrorCode::InvalidBlobName)?;
+```
+
+Then verify the Solana policy state for that label. In a receipt-based app, that usually means checking PDA derivation, PDA ownership, receipt freshness, and the user signer:
+
+```rust
+// Pseudocode inside assert_access:
+// - blobMetadata PDA is derived from label and owned by the expected program.
+// - receipt PDA is derived from (user, label).
+// - receipt proves this user paid for this label.
+// - user is the signer of the transaction being simulated.
+```
+
+Putting those pieces together, the hook looks like this:
 
 ```rust
 pub fn assert_access(ctx: Context<AssertAccess>, full_request_bytes: Vec<u8>) -> Result<()> {
@@ -36,6 +59,8 @@ Deploy the programs and initialize policy state. Record:
 - `programId`: the hook program id, not necessarily your main business program id.
 - `aceDeployment` and `keypairId`: from your ACE deployment or localnet config.
 - `label`: the bytes your hook decodes from the ACE request and uses to find policy state.
+
+### 2. Call the TypeScript SDK
 
 Encrypt with the hook program id and label:
 

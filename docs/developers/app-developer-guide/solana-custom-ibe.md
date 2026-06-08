@@ -14,11 +14,32 @@ You need to:
 
 ## Walkthrough
 
+### 1. Write the Solana Hook Program
+
 This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. The ACE requirement is not Anchor itself; it is a signed Solana transaction that workers can simulate and that calls your access-check instruction with the custom ACE request bytes. If you use native Solana Rust or another framework, build the equivalent instruction and transaction with your own client code.
 
 Define your policy state and payload. A simple code-gated example stores `CodeEntry` PDAs by label and accepts a payload only when it matches the stored code. A production app would replace that comparison with a ZK verifier, signed credential check, or richer ACL.
 
-The hook instruction should decode the ACE request and validate that supplied accounts match what the request says:
+The hook instruction receives `full_request_bytes`. Decode it first; the decoded request carries the `label`, the reader's response key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
+
+```rust
+let decoded = ace_sdk::decode_custom_request(&full_request_bytes)
+    .map_err(|_| ErrorCode::InvalidRequestBytes)?;
+```
+
+Then validate the accounts that the client supplied. In this code-gated example, the label determines the `CodeEntry` PDA:
+
+```rust
+let (expected_pda, _) = Pubkey::find_program_address(
+    &[b"code", decoded.label.as_ref()],
+    &crate::ID,
+);
+require_keys_eq!(ctx.accounts.code_entry.key(), expected_pda);
+```
+
+Finally, verify the custom payload against your policy. The toy example compares the payload to a stored code; a production app might verify a proof, signature, credential, or issuer statement. If your payload authorizes one response key, bind it to `decoded.enc_pk` so it cannot be replayed with another user's response key.
+
+Putting those pieces together, the hook looks like this:
 
 ```rust
 pub fn assert_custom_acl(
@@ -45,6 +66,8 @@ Deploy the Anchor program and record:
 - `programId`: the hook program id.
 - `aceDeployment` and `keypairId`.
 - The label and payload encoding.
+
+### 2. Call the TypeScript SDK
 
 Encrypt under the hook program id:
 

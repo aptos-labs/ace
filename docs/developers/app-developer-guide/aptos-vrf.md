@@ -16,6 +16,8 @@ You need to:
 
 ## Walkthrough
 
+### 1. Write the Move Contract
+
 Design the derivation policy around the key you want to create. In the pre-signed-access pattern, each encrypted blob has a canonical `blob_id`, and the owner derives an access keypair from the ACE VRF tuple:
 
 ```text
@@ -28,6 +30,71 @@ The 32-byte VRF output is not sent to the reader directly. The owner maps it int
 The contract below gates who may derive each access-key label. `account` is the Aptos account that signed the derivation request, and `origin` pins the request to your deployed client.
 
 The hook name and signature are fixed:
+
+```move
+public fun on_ace_vrf_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool
+```
+
+First, store the owner allowed to derive each access-key label. This is the derivation policy: only that owner account can ask ACE workers to produce VRF shares for that label.
+
+```move
+struct AccessKeyPolicy has key {
+    owners: Table<vector<u8>, address>,
+}
+
+public entry fun allow_deriver(
+    admin: &signer,
+    access_key_label: vector<u8>,
+    owner: address,
+) acquires AccessKeyPolicy {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    let policy = borrow_global_mut<AccessKeyPolicy>(@admin);
+    policy.owners.upsert(access_key_label, owner);
+}
+```
+
+Next, store the expected client origin in app-level config, separate from the per-label derivation policy:
+
+```move
+struct AppConfig has key {
+    client_origin: vector<u8>,
+}
+
+public entry fun set_client_origin(
+    admin: &signer,
+    origin: vector<u8>,
+) acquires AppConfig {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
+    let config = borrow_global_mut<AppConfig>(@admin);
+    config.client_origin = origin;
+}
+```
+
+Then the hook checks both facts: the wallet-signed origin matches your deployed client, and the account that signed the derivation request is the owner recorded for that access-key label.
+
+```move
+#[view]
+public fun on_ace_vrf_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool acquires AccessKeyPolicy, AppConfig {
+    if (!exists<AccessKeyPolicy>(@admin)) return false;
+    if (!exists<AppConfig>(@admin)) return false;
+    let policy = borrow_global<AccessKeyPolicy>(@admin);
+    let config = borrow_global<AppConfig>(@admin);
+    if (origin.bytes() != &config.client_origin) return false;
+    if (!policy.owners.contains(label)) return false;
+    *policy.owners.borrow(label) == account
+}
+```
+
+Putting those pieces together, the full module looks like this:
 
 ```move
 module admin::vrf_access {
@@ -106,6 +173,8 @@ Deploy the Move package, initialize policy, and configure which owner accounts m
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId`.
 - The label construction for each derivation, for example `access-key:v1:<blob_id>`.
+
+### 2. Call the TypeScript SDK
 
 For a wallet or web app, prefer the session API:
 

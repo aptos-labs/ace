@@ -14,6 +14,8 @@ You need to:
 
 ## Walkthrough
 
+### 1. Write the Move Contract
+
 Start by deciding what the payload proves. In custom IBE, ACE does not interpret the payload and does not require a normal Aptos wallet identity proof. Workers pass three values to your hook: the encrypted object's `label`, the reader's per-request response key `enc_pk`, and your opaque `payload`. Your contract decides whether that payload authorizes workers to release decryption shares encrypted to `enc_pk`.
 
 The payload should be an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
@@ -30,6 +32,100 @@ hook checks:     registered public key verifies sig for this label,
 ```
 
 The concrete design idea is that possession of `accessPrivateKey` is the grant. The reader does not need an Aptos account. To decrypt, the reader generates a fresh PKE keypair, signs a statement that binds the grant to the object and to that fresh response key, and sends the signature as the custom payload. Binding `label` prevents a grant for one object from authorizing another object. Binding `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key and receiving shares encrypted to themselves. Binding `origin` keeps the grant scoped to the deployed app.
+
+The hook has a fixed name and fixed shape:
+
+```move
+public fun on_ace_decryption_request_custom_flow(
+    label: vector<u8>,
+    enc_pk: vector<u8>,
+    payload: vector<u8>,
+): bool
+```
+
+Define the exact statement that the reader's grant key signs. This statement is what binds the grant to one object, one response key, and one deployed app origin:
+
+```move
+const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
+
+struct SignableRequest has copy, drop {
+    dst: vector<u8>,
+    label: vector<u8>,
+    user_epk: vector<u8>,
+    origin: vector<u8>,
+}
+```
+
+First, store the public half of each grant. In this example, each encrypted object `label` has one registered BLS public key:
+
+```move
+struct Registry has key {
+    access_public_keys: Table<vector<u8>, vector<u8>>,
+}
+
+public entry fun register(
+    admin: &signer,
+    label: vector<u8>,
+    access_public_key: vector<u8>,
+) acquires Registry {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
+    let pk_opt = bls12381::public_key_from_bytes(access_public_key);
+    assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
+
+    let registry = borrow_global_mut<Registry>(@admin);
+    registry.access_public_keys.upsert(label, access_public_key);
+}
+```
+
+Next, keep app origin as app-level config, separate from the per-label public keys:
+
+```move
+struct AppConfig has key {
+    client_origin: vector<u8>,
+}
+
+public entry fun set_client_origin(
+    admin: &signer,
+    origin: vector<u8>,
+) acquires AppConfig {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
+    let config = borrow_global_mut<AppConfig>(@admin);
+    config.client_origin = origin;
+}
+```
+
+Finally, the hook decodes the payload, rejects the wrong origin, rebuilds the signed statement, and verifies the signature under the public key registered for `label`:
+
+```move
+if (!exists<Registry>(@admin)) return false;
+if (!exists<AppConfig>(@admin)) return false;
+let registry = borrow_global<Registry>(@admin);
+let config = borrow_global<AppConfig>(@admin);
+if (!registry.access_public_keys.contains(label)) return false;
+let access_public_key_bytes = *registry.access_public_keys.borrow(label);
+
+let stream = bcs_stream::new(payload);
+let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+let sig_bytes = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+if (bcs_stream::has_remaining(&mut stream)) return false;
+if (&claimed_origin != &config.client_origin) return false;
+
+let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
+if (!option::is_some(&pk_opt)) return false;
+let pk = option::extract(&mut pk_opt);
+let sig = bls12381::signature_from_bytes(sig_bytes);
+let msg = bcs::to_bytes(&SignableRequest {
+    dst: SIGNABLE_REQUEST_DST,
+    label,
+    user_epk: enc_pk,
+    origin: claimed_origin,
+});
+bls12381::verify_normal_signature(&sig, &pk, msg)
+```
+
+Putting those pieces together, the full module looks like this:
 
 ```move
 module admin::presigned_access {
@@ -144,6 +240,8 @@ Deploy the Move package, initialize verifier state, and register the access publ
 - `chainId`, `moduleAddr`, and `moduleName` for the module with the hook.
 - `aceDeployment` and `keypairId`.
 - Your payload version and encoding.
+
+### 2. Call the TypeScript SDK
 
 Encrypt exactly as in basic Aptos IBE, using the module that contains the custom hook:
 

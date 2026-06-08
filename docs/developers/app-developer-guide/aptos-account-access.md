@@ -1,8 +1,8 @@
-# Aptos Account Access: Can account X access object Y?
+# Aptos Account Access: Can Aptos account X access object Y?
 
 ## TLDR
 
-Use this flow when an Aptos contract can decide decryption from three values: the encrypted object's `label`, the requestor's Aptos account address, and the application `origin` that the user signed for. It is the right default for allowlists, subscriptions, time locks, and pay-to-download flows where a purchase function writes entitlement state on-chain.
+ACE lets you control "can user X access object Y?" with an Aptos contract. Use this guide when each user who needs access has an Aptos account, and your app can answer access questions from policy state stored on-chain.
 
 You need to:
 

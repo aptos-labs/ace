@@ -16,7 +16,7 @@ You need to:
 
 This example app is an allowlist-style content catalog. Each encrypted object has a `label`, and the contract stores which Aptos accounts may decrypt that label.
 
-### 1. Write the Move Contract
+### 1. Design the contract
 
 The ACE hook is a view function with this fixed shape:
 
@@ -30,7 +30,7 @@ public fun on_ace_decryption_request(
 
 ACE workers call this hook before releasing decryption shares. If it returns `true`, the requester may decrypt. If it returns `false`, workers withhold shares.
 
-First, model the allowlist itself. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`. Each item stores the accounts that may decrypt it:
+Start with the access decision itself. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`. Each item stores the accounts that may decrypt it:
 
 ```move
 struct Item has store, drop {
@@ -42,7 +42,29 @@ struct Catalog has key {
 }
 ```
 
-The core allowlist check is just: find the item by `label`, then check whether the requesting `account` is in `readers`.
+Your app writes that state with entry functions such as `register_item` and `grant`. In a real subscription or pay-to-download app, `grant` would usually be called by purchase or subscription logic; this example keeps the state writer simple so the ACE hook is easy to see.
+
+```move
+public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    let catalog = borrow_global_mut<Catalog>(@admin);
+    if (!catalog.items.contains(label)) {
+        catalog.items.add(label, Item { readers: vector::empty() });
+    };
+}
+
+public entry fun grant(admin: &signer, label: vector<u8>, reader: address) acquires Catalog {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    let catalog = borrow_global_mut<Catalog>(@admin);
+    assert!(catalog.items.contains(label), error::not_found(E_ITEM_NOT_FOUND));
+    let item = catalog.items.borrow_mut(label);
+    if (!item.readers.contains(&reader)) {
+        item.readers.push_back(reader);
+    };
+}
+```
+
+The core hook logic is then straightforward: find the item by `label`, then check whether the requesting `account` is in `readers`.
 
 ```move
 #[view]
@@ -59,7 +81,70 @@ public fun on_ace_decryption_request(
 }
 ```
 
-Next, add an app-level origin check. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
+This is not the final hook yet. It ignores `origin` while we focus on the access policy. The client step below shows where `origin` comes from; the final step adds the origin check.
+
+### 2. Use the SDK in the client
+
+When you wire the client, it has two jobs: encrypt content under the same `label` the contract uses for lookup, then ask the user's wallet to sign a decryption request for that label.
+
+Encrypt before or after listing the item on-chain, but use the same `label` in both places:
+
+```typescript
+import * as ACE from "@aptos-labs/ace-sdk";
+import { AccountAddress } from "@aptos-labs/ts-sdk";
+
+const label = new TextEncoder().encode("album/song-001");
+
+const ciphertext = (await ACE.IBE_Aptos.encrypt({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
+  moduleName: "content_access",
+  label,
+  plaintext: songBytes,
+})).unwrapOrThrow("ACE encrypt failed");
+```
+
+The parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
+
+For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
+
+```typescript
+const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
+  moduleName: "content_access",
+  label,
+  ciphertext,
+});
+
+const message = await session.getRequestToSign();
+const signed = await wallet.signMessage({
+  message,
+  nonce: crypto.randomUUID(),
+  application: true,
+  chainId,
+  address: userAddress,
+});
+
+const plaintext = (await session.decryptWithProof({
+  userAddr: userAddress,
+  publicKey: signed.publicKey,
+  signature: signed.signature,
+  fullMessage: signed.fullMessage,
+})).unwrapOrThrow("ACE decrypt failed");
+```
+
+For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
+
+For Aptos wallet messages, ACE workers extract the application origin from `signed.fullMessage` and pass it to `on_ace_decryption_request` as the `origin` argument. That means the contract can reject requests signed for the wrong app.
+
+### 3. Check request origin
+
+Now add the app-level origin check. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
 
 Store the expected client origin in a separate config resource:
 
@@ -99,7 +184,7 @@ public fun on_ace_decryption_request(
 }
 ```
 
-Putting those pieces together, the full module looks like this:
+Putting those pieces together, the final module looks like this:
 
 ```move
 module admin::content_access {
@@ -193,65 +278,6 @@ Deploy the Move package, run `init`, register your items, and grant whatever tes
 - `moduleAddr`: the account that published your module.
 - `moduleName`: the Move module containing `on_ace_decryption_request`.
 - `aceDeployment` and `keypairId`: from `ACE.knownDeployments` or your local ACE network config.
-
-### 2. Call the TypeScript SDK
-
-After the Move policy is deployed, the client has two jobs: encrypt content under the same `label` the contract uses for lookup, then ask the user's wallet to sign a decryption request for that label.
-
-Encrypt before or after listing the item on-chain, but use the same `label` in both places:
-
-```typescript
-import * as ACE from "@aptos-labs/ace-sdk";
-import { AccountAddress } from "@aptos-labs/ts-sdk";
-
-const label = new TextEncoder().encode("album/song-001");
-
-const ciphertext = (await ACE.IBE_Aptos.encrypt({
-  aceDeployment,
-  keypairId,
-  chainId,
-  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "content_access",
-  label,
-  plaintext: songBytes,
-})).unwrapOrThrow("ACE encrypt failed");
-```
-
-The parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
-
-For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
-
-```typescript
-const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
-  aceDeployment,
-  keypairId,
-  chainId,
-  moduleAddr: AccountAddress.fromString("0x<app-module-address>"),
-  moduleName: "content_access",
-  label,
-  ciphertext,
-});
-
-const message = await session.getRequestToSign();
-const signed = await wallet.signMessage({
-  message,
-  nonce: crypto.randomUUID(),
-  application: true,
-  chainId,
-  address: userAddress,
-});
-
-const plaintext = (await session.decryptWithProof({
-  userAddr: userAddress,
-  publicKey: signed.publicKey,
-  signature: signed.signature,
-  fullMessage: signed.fullMessage,
-})).unwrapOrThrow("ACE decrypt failed");
-```
-
-For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
-
-After the client is deployed, make the origin check final. For Aptos wallet messages, ACE workers extract the application origin from the signed full message and pass it to your hook. A contract that does not check `origin` can be tricked into serving requests signed for another app.
 
 ## Remarks
 

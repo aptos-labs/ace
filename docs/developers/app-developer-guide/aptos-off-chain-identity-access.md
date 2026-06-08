@@ -45,11 +45,11 @@ public fun on_ace_decryption_request_custom_flow(
 ): bool
 ```
 
-The third hook argument, `payload`, is the app-defined bytes for this flow. In this example, it contains `origin` and `sig`. ACE does not interpret those bytes or require a normal Aptos wallet identity proof. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and `payload` to the hook; the contract decides whether the request is valid for this object.
+The third hook argument, `payload`, is the app-defined bytes for this flow. In this example, it contains `origin` and `sig`. ACE does not interpret those bytes or require a normal Aptos wallet identity proof. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and `payload` to the hook; the contract decides whether decryption should be allowed for this object.
 
-First, we design the proof data as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the one-time `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
+Before writing the hook, define exactly what the reader signs. In this app, the signature should mean: the holder of `accessPrivateKey` approves decrypting this `label`, for this `enc_pk`, from this deployed app origin.
 
-In this example, the statement signed by the reader's grant key includes one object, one `enc_pk`, and one deployed app origin:
+We encode that meaning as `SignableRequest`. The `dst` field is a version tag for this app and message format:
 
 ```move
 const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";

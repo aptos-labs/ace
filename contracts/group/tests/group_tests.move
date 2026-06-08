@@ -125,4 +125,5 @@ module ace::group_tests {
         let g2 = group::element_from_hash(group::scheme_bls12381_g2(), &b"x");
         group::element_add(&g1, &g2);
     }
+
 }

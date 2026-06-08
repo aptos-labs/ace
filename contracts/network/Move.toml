@@ -9,6 +9,9 @@ ace = "0xcafe"
 [dependencies.Group]
 local = "../group"
 
+[dependencies.SecretUsage]
+local = "../secret-usage"
+
 [dependencies.WorkerConfig]
 local = "../worker_config"
 

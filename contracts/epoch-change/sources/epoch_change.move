@@ -3,6 +3,7 @@ module ace::epoch_change {
     use aptos_framework::object::{Self, ExtendRef};
     use ace::dkg;
     use ace::group;
+    use ace::secret_usage;
     use std::error;
 
     const E_SESSION_NOT_COMPLETED: u64 = 1;
@@ -20,7 +21,7 @@ module ace::epoch_change {
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
         secrets_to_reshare: vector<address>,
-        new_secret_schemes: vector<u8>,
+        new_secret_requests: vector<secret_usage::SecretRequest>,
         state_code: u8,
         dkgs: vector<address>,
         dkrs: vector<address>,
@@ -39,8 +40,12 @@ module ace::epoch_change {
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
         secrets_to_reshare: vector<address>,
-        new_secret_schemes: vector<u8>,
+        new_secret_requests: vector<secret_usage::SecretRequest>,
     ): address {
+        new_secret_requests.for_each_ref(|request| {
+            secret_usage::validate_request(request);
+        });
+
         let caller_addr = caller.address_of();
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
@@ -55,7 +60,7 @@ module ace::epoch_change {
             nxt_threshold,
             nxt_epoch_duration_micros,
             secrets_to_reshare,
-            new_secret_schemes,
+            new_secret_requests,
             state_code: STATE__START_DKRS,
             dkgs: vector[],
             dkrs: vector[],
@@ -84,13 +89,22 @@ module ace::epoch_change {
             session.dkrs.push_back(dkr);
         } else if (session.state_code == STATE__START_DKGS) {
             let idx = session.dkgs.length();
-            if (idx >= session.new_secret_schemes.length()) {
+            if (idx >= session.new_secret_requests.length()) {
                 session.state_code = STATE__AWAIT_SUBSESSION_COMPLETION;
                 return;
             };
             let signer_store = &SignerStore[session_addr];
             let caller = signer_store.extend_ref.generate_signer_for_extending();
-            let dkg = dkg::new_session(&caller, session.nxt_nodes, session.nxt_threshold, group::rand_element(session.new_secret_schemes[idx]));
+            let request = &session.new_secret_requests[idx];
+            let group_scheme = secret_usage::request_group_scheme(request);
+            let dkg = dkg::new_session(
+                &caller,
+                session.nxt_nodes,
+                session.nxt_threshold,
+                group::rand_element(group_scheme),
+                secret_usage::request_expected_usage(request),
+                secret_usage::request_note(request),
+            );
             session.dkgs.push_back(dkg);
         } else if (session.state_code == STATE__AWAIT_SUBSESSION_COMPLETION) {
             let all_dkr_completed = session.dkrs.all(|dkr| dkr::completed(*dkr));

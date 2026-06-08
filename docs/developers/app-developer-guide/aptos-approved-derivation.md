@@ -1,28 +1,28 @@
-# Aptos Derived Access Keys: Can Aptos account X create an access key for object Y?
+# Derive app-specific values with Aptos approval
 
 ## TLDR
 
-ACE lets your app answer "can Aptos account X create an access key for object Y?" from an Aptos contract. Use this guide when your app wants a stable per-object access key that an owner can recreate later without storing the private key.
+ACE VRF lets your app derive the same 32 bytes again later, but only when an Aptos contract approves the caller. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
 
-The SDK calls this a VRF derivation. You do not need to understand VRF cryptography to use the pattern: think of it as deterministic private bytes. The same approved account and object ID produce the same bytes, and your app maps those bytes into the key material it needs.
+Use this guide when the app needs a value that is stable for the same account and label, but should not be derivable unless your Aptos policy says yes.
 
 To use it, you will:
 
 - In your Move module, expose `on_ace_vrf_request(...)` as the source of truth for derivation decisions.
-- Use a stable object-specific derivation ID, such as `access-key:v1:<blob_id>`.
-- In your client, derive bytes with `ACE.VRF_Aptos`, map them into an access keypair, and register the public half on-chain.
+- Choose a stable derivation label, such as `access-key:v1:<blob_id>` or another app-specific label.
+- In your client, derive bytes with `ACE.VRF_Aptos` and map them into whatever your app needs.
 
 ## Example: per-blob access keys
 
-In this example, we show how to create per-blob access keypairs with ACE. The high-level idea is to let an owner recreate the same private key for a blob, register the matching public key on-chain, and use the private key as grant material in a later off-chain identity access flow.
+In this example, we show one concrete use of ACE VRF: creating per-blob access keypairs. The high-level idea is to let an owner recreate the same private key for a blob, register the matching public key on-chain, and use the private key as grant material in a later off-chain identity access flow.
 
-For each encrypted blob, we define a canonical `blob_id`, then derive an access keypair from this app-level input:
+For each encrypted blob, we define a canonical `blob_id`, then derive 32 bytes from this app-level input:
 
 ```text
 where accessKeyLabel = "access-key:v1:" || blob_id
 ```
 
-Conceptually, `derive(owner, accessKeyLabel)` is the seed for the access keypair. We do not send the 32 derived bytes to the reader directly. The owner maps them into an access private key, computes the matching public key, registers that public key on-chain for the encrypted object, and later gives the private key or a grant containing it to the reader. The off-chain identity access hook then verifies reader proofs against the registered public key.
+Conceptually, `derive(owner, accessKeyLabel)` produces deterministic private bytes for the owner and label. In this example, we map those bytes into an access private key, compute the matching public key, register that public key on-chain for the encrypted object, and later give the private key or a grant containing it to the reader. The off-chain identity access hook then verifies reader proofs against the registered public key.
 
 ### Contract changes
 
@@ -167,13 +167,13 @@ module admin::vrf_access {
 }
 ```
 
-If the hook returns `true`, the SDK returns 32 bytes. We then turn those bytes into the access key material the app needs.
+If the hook returns `true`, the SDK returns 32 bytes. In this example, we turn those bytes into access key material.
 
 Deploy the Move package, initialize policy, and configure which owner accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
-- The object ID used by your access hook, and the derivation label built from it, for example `access-key:v1:<blob_id>`.
+- The object ID used by your follow-on access hook, and the derivation label built from it, for example `access-key:v1:<blob_id>`.
 
 ### Client changes
 
@@ -194,7 +194,7 @@ const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
 const moduleName = "vrf_access"; // matches module <publisher>::vrf_access
 ```
 
-In the client, we construct the same access-key label, ask the owner wallet to sign the derivation request, derive bytes, map them into key material, and register the public half on-chain. For a wallet or web app, prefer the session API:
+In the client, we construct the same derivation label, ask the owner wallet to sign the derivation request, derive bytes, map them into key material, and register the public half on-chain. For a wallet or web app, prefer the session API:
 
 ```typescript
 const blobId = `@${ownerAddress.toStringLong().slice(2)}/song-1.mp3`;
@@ -272,9 +272,9 @@ As with Aptos account access, deploy the client first, learn the stable origin, 
 
 ## Remarks
 
-The derived access private key is a bearer capability. Anyone who obtains it can sign whatever reader proof your follow-on access flow accepts, so do not log it, publish it on-chain, or put it in a client that should not be able to grant access.
+If you map the derived bytes into a private key, that private key is a bearer capability. Anyone who obtains it can sign whatever reader proof your follow-on access flow accepts, so do not log it, publish it on-chain, or put it in a client that should not be able to grant access.
 
-Derivation is reproducible only for the exact ACE deployment key identifier, contract id, owner account, and label. Use a canonical, domain-separated label such as `access-key:v1:<blob_id>`. Re-running the same tuple gives the same private key; rotating access requires changing the derivation inputs or registering a different public key, not re-deriving the same tuple.
+Derivation is reproducible only for the exact ACE deployment key identifier, contract id, account, and label. Use a canonical, app-specific label such as `access-key:v1:<blob_id>`. Re-running the same tuple gives the same bytes; rotating the result requires changing the derivation inputs, not deriving the same tuple again.
 
 ## Ready-To-Run Examples
 

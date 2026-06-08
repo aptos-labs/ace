@@ -61,7 +61,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 | Package | Description |
 |---------|-------------|
-| [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide) | App developer how-tos for on-chain access policies and derived access keys |
+| [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide) | App developer how-tos for on-chain access policies and contract-gated derivation |
 | [`docs/auditor`](./docs/auditor) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
 | [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
 | [`cli`](./cli) | Operator CLI (`ace`) for node onboarding and management |
@@ -76,7 +76,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 ## App Developer Guide
 
-App developers write the on-chain policy that decides when ACE workers may release decryption shares or VRF shares, then use the TypeScript SDK from the client.
+App developers write the on-chain policy that ACE checks before decrypting data or deriving app-specific values, then use the TypeScript SDK from the client.
 
 Start with the guide that matches your flow:
 
@@ -86,7 +86,7 @@ Start with the guide that matches your flow:
 | [`Solana account access`](./docs/developers/app-developer-guide/solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y |
 | [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
 | [`Solana off-chain identity access`](./docs/developers/app-developer-guide/solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y |
-| [`Aptos derived access keys`](./docs/developers/app-developer-guide/aptos-derived-access-keys.md) | Your Aptos contract decides whether account X can create the access key for object Y |
+| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/aptos-approved-derivation.md) | Your Aptos contract decides who can derive app-specific deterministic values |
 
 The full guide index is at [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide).
 

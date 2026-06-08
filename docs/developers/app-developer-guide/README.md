@@ -1,6 +1,6 @@
 # App Developer Guide
 
-ACE lets an app encrypt or derive secrets now, then ask an on-chain policy later whether a user may receive the key material needed to decrypt or derive. Pick the guide that matches your chain and proof style.
+ACE lets an app encrypt data or derive app-specific values, then ask an on-chain policy whether a user is allowed to receive the result. Pick the guide that matches your chain and proof style.
 
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
@@ -8,7 +8,7 @@ ACE lets an app encrypt or derive secrets now, then ask an on-chain policy later
 | [`solana-account-access.md`](./solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
 | [`aptos-off-chain-identity-access.md`](./aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
 | [`solana-off-chain-identity-access.md`](./solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
-| [`aptos-derived-access-keys.md`](./aptos-derived-access-keys.md) | Your Aptos contract decides whether account X can create the access key for object Y | per-object signing keys, deterministic grants, app-scoped randomness |
+| [`aptos-approved-derivation.md`](./aptos-approved-derivation.md) | Your Aptos contract decides who can derive app-specific deterministic values | per-object signing keys, deterministic grants, app-scoped randomness |
 
 ## Vocabulary
 

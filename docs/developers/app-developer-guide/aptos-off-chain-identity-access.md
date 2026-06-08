@@ -14,7 +14,7 @@ To use it, you will:
 
 In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
 
-The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time response key, then use `accessPrivateKey` to sign a request that says: "I am asking for this object, with this response key, from this deployed app origin."
+The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a request that says: "I am asking for this object, from this deployed app origin, and the returned data should be encrypted to this `enc_pk`."
 
 ```text
 owner registers: access_public_keys[label] = accessPublicKey
@@ -22,10 +22,10 @@ reader signs:    sig = Sign(accessPrivateKey,
                             BCS(dst, label, enc_pk, origin))
 payload:         BCS(origin, sig)
 hook checks:     registered public key verifies sig for this label,
-                 this response key, and this app origin
+                 the same enc_pk, and this app origin
 ```
 
-The signature becomes the custom payload. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with their own response key. Including `origin` keeps the grant scoped to the deployed app.
+The signature becomes the custom payload. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
 
 ### Contract changes
 
@@ -43,11 +43,11 @@ public fun on_ace_decryption_request_custom_flow(
 ): bool
 ```
 
-ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. During decryption, ACE passes the encrypted object's `label`, the reader's response key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload is valid for this object.
+ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload is valid for this object.
 
-First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the per-request `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
+First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the one-time `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
 
-In this example, the statement signed by the reader's grant key includes one object, one response key, and one deployed app origin:
+In this example, the statement signed by the reader's grant key includes one object, one `enc_pk`, and one deployed app origin:
 
 ```move
 const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
@@ -282,7 +282,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we generate a fresh response keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, we generate a fresh one-time encryption keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();

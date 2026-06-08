@@ -22,7 +22,7 @@ This walkthrough assumes an Anchor hook program and Anchor's TypeScript client. 
 
 In the hook program, we need to decode the custom ACE request, validate the supplied accounts from the decoded label, and verify the payload against our policy.
 
-The hook instruction's input is `full_request_bytes`. We decode it first; the decoded request carries the `label`, the reader's response key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
+The hook instruction's input is `full_request_bytes`. We decode it first; the decoded request carries the `label`, the reader's one-time public encryption key `enc_pk`, the app-defined `payload`, and the ACE epoch used by the request:
 
 ```rust
 let decoded = ace_sdk::decode_custom_request(&full_request_bytes)
@@ -53,7 +53,7 @@ let payload_hash = hashv(&[decoded.payload.as_slice()]).to_bytes();
 require!(payload_hash == ctx.accounts.code_entry.payload_hash, ErrorCode::AccessDenied);
 ```
 
-A production app might verify a proof, signature, credential, or issuer statement instead. Design that payload as a canonical statement, not loose bytes: include a version or domain-separation string, the object label, the response key `decoded.enc_pk` if the payload is meant for one request, the program or app audience, and any expiry or nonce your policy needs. The signature, proof, or credential must cover every field the hook relies on.
+A production app might verify a proof, signature, credential, or issuer statement instead. Design that payload as a canonical statement, not loose bytes: include a version or domain-separation string, the object label, `decoded.enc_pk` if the payload is meant for one request, the program or app audience, and any expiry or nonce your policy needs. The signature, proof, or credential must cover every field the hook relies on.
 
 Putting those pieces together, the hook looks like this:
 
@@ -121,7 +121,7 @@ const ciphertext = (await ACE.IBE_Solana.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we create a fresh response keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
+For decryption, we create a fresh one-time encryption keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
 
 ```typescript
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
@@ -166,7 +166,7 @@ Solana custom flow does not automatically carry a browser origin. If your web ap
 ## Remarks
 
 - Use the same `epoch` in `buildCustomRequestBytes` and `decryptCustomFlow`.
-- Bind payloads to `encPk` where possible; otherwise a valid payload may be replayed with a different response key.
+- Bind payloads to `encPk` where possible; otherwise a valid payload may be replayed with a different `encPk`.
 - Validate account owners, seeds, and program ids in the hook.
 - Keep the hook narrowly focused. A single-purpose hook is easier for developers and auditors to reason about.
 - Do not store reusable plaintext secrets on-chain. If the payload is a human-entered code, use a high-entropy value or a signed/one-time credential; a hash alone does not make a weak code hard to guess.

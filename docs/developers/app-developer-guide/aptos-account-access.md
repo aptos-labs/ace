@@ -2,19 +2,18 @@
 
 ## TLDR
 
-ACE lets you control "can user X access object Y?" with an Aptos contract. Use this guide when each user who needs access has an Aptos account, and your app can answer access questions from policy state stored on-chain.
+ACE lets your app answer "can Aptos account X access object Y?" from an Aptos contract. Use this guide when your users have Aptos accounts and your app can store its access policy on-chain.
 
-You need to:
+To use it, you will:
 
-- Write a Move module with `on_ace_decryption_request(label, account, origin): bool`.
-- Store enough policy state to answer that view function.
-- Encrypt with `ACE.IBE_Aptos.encrypt`.
-- Decrypt with `ACE.IBE_Aptos.BasicDecryptionSession`, asking the user's wallet to sign the session request.
-- Lock the hook to the deployed web app origin once the origin is stable.
+- In your Move module, expose `on_ace_decryption_request(...)` as the source of truth for access decisions.
+- In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Aptos` APIs.
+- After deploying the client, configure the contract to accept requests only from that deployed app.
 
 ## Example walkthrough: Allowlisted content catalog
 
-In this example, we show how to build an allowlist-style content catalog with ACE. The high-level idea is to encrypt each content item with ACE, maintain the access policy on-chain, and let that policy gate whether ACE workers may release decryption shares for a user.
+In this example, we show how to build an allowlist-style content catalog with ACE.
+The high-level idea is to encrypt each content item with ACE, maintain the access policy on-chain, and let that policy gate whether ACE workers may release decryption shares for a user.
 
 ### 1. Design the contract
 

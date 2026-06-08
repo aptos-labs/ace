@@ -14,15 +14,15 @@ To use it, you will:
 
 In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
 
-The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the signed request needs to name the object, the deployed app origin, and that `enc_pk`.
+The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a small statement that names the object, the deployed app origin, and that `enc_pk`.
 
-Concretely, we turn that request into these fields:
+Concretely, the signed statement has these fields:
 
 | Field | Meaning |
 | --- | --- |
 | `label` | The object ID for the encrypted content. |
-| `enc_pk` | The one-time public encryption key for this decrypt request. |
-| `origin` | The deployed app origin that should be allowed to make the request. |
+| `enc_pk` | The one-time public encryption key for this decryption. |
+| `origin` | The deployed app origin that should be allowed. |
 | `sig` | `Sign(accessPrivateKey, BCS(dst, label, enc_pk, origin))`. |
 
 The payload sent to ACE is `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.

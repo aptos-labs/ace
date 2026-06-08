@@ -2,7 +2,7 @@
 
 ## TLDR
 
-ACE VRF lets your app derive the same 32 bytes again later for the same app contract, Aptos account, and label, but only when the app contract approves the caller. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
+ACE VRF lets your app derive the same 32 bytes again later for the same app contract, Aptos account, and label, but only when the app contract approves the derivation request. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
 
 Use this guide when the app needs a value that is stable for a specific `(contract, account, label)` tuple, but should not be derivable unless your Aptos policy says yes.
 
@@ -29,9 +29,9 @@ Conceptually, `derive(contractId, ownerAddress, accessKeyLabel)` produces determ
 
 In this example, the Move module is named `vrf_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"vrf_access"`.
 
-This walkthrough uses a minimal allowlist policy. For each access-key label, the contract stores the Aptos account allowed to derive it. A real app can replace this allowlist with ownership, purchase, subscription, or any other policy.
+The Move contract does not need to store who can derive each access key. The owner account is already part of the VRF input: deriving with `(contractId, ownerAddress, accessKeyLabel)` gives different bytes from deriving with `(contractId, anotherAddress, accessKeyLabel)`. In this example, the contract only checks that the wallet signature was made for your deployed app origin.
 
-To work with ACE VRF, the module also exposes `on_ace_vrf_request` so ACE can ask the contract before deriving.
+To work with ACE VRF, the module exposes `on_ace_vrf_request` so ACE can ask the contract before deriving.
 
 ACE calls the contract through a view function with this fixed name and signature:
 
@@ -43,25 +43,7 @@ public fun on_ace_vrf_request(
 ): bool
 ```
 
-First, we store the allowlist: one approved account per access-key label.
-
-```move
-struct DerivationAllowlist has key {
-    allowed_accounts: Table<vector<u8>, address>,
-}
-
-public entry fun allow_deriver(
-    admin: &signer,
-    access_key_label: vector<u8>,
-    allowed_account: address,
-) acquires DerivationAllowlist {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-    let allowlist = borrow_global_mut<DerivationAllowlist>(@admin);
-    allowlist.allowed_accounts.upsert(access_key_label, allowed_account);
-}
-```
-
-Next, we store the expected client origin in app-level config, separate from the per-label allowlist:
+First, we store the expected client origin in app-level config:
 
 ```move
 struct AppConfig has key {
@@ -79,7 +61,7 @@ public entry fun set_client_origin(
 }
 ```
 
-Then the hook checks both facts: the wallet-signed origin matches your deployed client, and the account that signed the derivation request is allowlisted for that access-key label.
+Then the hook checks that the wallet-signed origin matches your deployed client. It does not need to inspect `label` or `account` for this example; ACE already includes them in the derivation input.
 
 ```move
 #[view]
@@ -87,14 +69,10 @@ public fun on_ace_vrf_request(
     label: vector<u8>,
     account: address,
     origin: String,
-): bool acquires DerivationAllowlist, AppConfig {
-    if (!exists<DerivationAllowlist>(@admin)) return false;
+): bool acquires AppConfig {
     if (!exists<AppConfig>(@admin)) return false;
-    let allowlist = borrow_global<DerivationAllowlist>(@admin);
     let config = borrow_global<AppConfig>(@admin);
-    if (origin.bytes() != &config.client_origin) return false;
-    if (!allowlist.allowed_accounts.contains(label)) return false;
-    *allowlist.allowed_accounts.borrow(label) == account
+    origin.bytes() == &config.client_origin
 }
 ```
 
@@ -102,8 +80,6 @@ Putting those pieces together, the full module looks like this:
 
 ```move
 module admin::vrf_access {
-    use aptos_std::table;
-    use aptos_std::table::Table;
     use std::error;
     use std::signer;
     use std::string::String;
@@ -111,21 +87,12 @@ module admin::vrf_access {
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
 
-    struct DerivationAllowlist has key {
-        allowed_accounts: Table<vector<u8>, address>,
-    }
-
     struct AppConfig has key {
         client_origin: vector<u8>,
     }
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        if (!exists<DerivationAllowlist>(@admin)) {
-            move_to(admin, DerivationAllowlist {
-                allowed_accounts: table::new(),
-            });
-        };
         if (!exists<AppConfig>(@admin)) {
             move_to(admin, AppConfig {
                 client_origin: vector::empty(),
@@ -143,36 +110,22 @@ module admin::vrf_access {
         config.client_origin = origin;
     }
 
-    public entry fun allow_deriver(
-        admin: &signer,
-        access_key_label: vector<u8>,
-        allowed_account: address,
-    ) acquires DerivationAllowlist {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        let allowlist = borrow_global_mut<DerivationAllowlist>(@admin);
-        allowlist.allowed_accounts.upsert(access_key_label, allowed_account);
-    }
-
     #[view]
     public fun on_ace_vrf_request(
         label: vector<u8>,
         account: address,
         origin: String,
-    ): bool acquires DerivationAllowlist, AppConfig {
-        if (!exists<DerivationAllowlist>(@admin)) return false;
+    ): bool acquires AppConfig {
         if (!exists<AppConfig>(@admin)) return false;
-        let allowlist = borrow_global<DerivationAllowlist>(@admin);
         let config = borrow_global<AppConfig>(@admin);
-        if (origin.bytes() != &config.client_origin) return false;
-        if (!allowlist.allowed_accounts.contains(label)) return false;
-        *allowlist.allowed_accounts.borrow(label) == account
+        origin.bytes() == &config.client_origin
     }
 }
 ```
 
 If the hook returns `true`, the SDK returns 32 bytes. In this example, we turn those bytes into access key material.
 
-Deploy the Move package, initialize policy, and configure which accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from the per-label allowlist. Record:
+Deploy the Move package and run `init`. After deploying the client, call `set_client_origin` once with the client's stable origin. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.

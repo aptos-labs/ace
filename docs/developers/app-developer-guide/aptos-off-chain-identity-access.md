@@ -14,18 +14,20 @@ To use it, you will:
 
 In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
 
-The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a request that says: "I am asking for this object, from this deployed app origin, and the returned data should be encrypted to this `enc_pk`."
+The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the signed request needs to name the object, the deployed app origin, and that `enc_pk`.
 
-```text
-owner registers: access_public_keys[label] = accessPublicKey
-reader signs:    sig = Sign(accessPrivateKey,
-                            BCS(dst, label, enc_pk, origin))
-payload:         BCS(origin, sig)
-hook checks:     registered public key verifies sig for this label,
-                 the same enc_pk, and this app origin
-```
+Concretely, we turn that request into these fields:
 
-The signature becomes the custom payload. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
+| Field | Meaning |
+| --- | --- |
+| `label` | The object ID for the encrypted content. |
+| `enc_pk` | The one-time public encryption key for this decrypt request. |
+| `origin` | The deployed app origin that should be allowed to make the request. |
+| `sig` | `Sign(accessPrivateKey, BCS(dst, label, enc_pk, origin))`. |
+
+The payload sent to ACE is `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.
+
+Each signed field has a job. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
 
 ### Contract changes
 

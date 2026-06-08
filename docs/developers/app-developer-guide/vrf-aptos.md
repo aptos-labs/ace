@@ -29,7 +29,9 @@ Conceptually, `derive(contractId, ownerAddress, accessKeyLabel)` produces determ
 
 In this example, the Move module is named `vrf_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"vrf_access"`.
 
-In the contract, we store who may derive each access-key label, expose an entry function to configure that policy, and expose `on_ace_vrf_request` so ACE can ask the contract before deriving.
+This walkthrough uses a minimal allowlist policy. For each access-key label, the contract stores the Aptos account allowed to derive it. A real app can replace this allowlist with ownership, purchase, subscription, or any other policy.
+
+To work with ACE VRF, the module also exposes `on_ace_vrf_request` so ACE can ask the contract before deriving.
 
 ACE calls the contract through a view function with this fixed name and signature:
 
@@ -41,25 +43,25 @@ public fun on_ace_vrf_request(
 ): bool
 ```
 
-First, we store the owner allowed to derive each access-key label. This is the derivation policy: only that owner account can derive bytes for that label.
+First, we store the allowlist: one approved account per access-key label.
 
 ```move
-struct AccessKeyPolicy has key {
-    owners: Table<vector<u8>, address>,
+struct DerivationAllowlist has key {
+    allowed_accounts: Table<vector<u8>, address>,
 }
 
 public entry fun allow_deriver(
     admin: &signer,
     access_key_label: vector<u8>,
-    owner: address,
-) acquires AccessKeyPolicy {
+    allowed_account: address,
+) acquires DerivationAllowlist {
     assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-    let policy = borrow_global_mut<AccessKeyPolicy>(@admin);
-    policy.owners.upsert(access_key_label, owner);
+    let allowlist = borrow_global_mut<DerivationAllowlist>(@admin);
+    allowlist.allowed_accounts.upsert(access_key_label, allowed_account);
 }
 ```
 
-Next, we store the expected client origin in app-level config, separate from the per-label derivation policy:
+Next, we store the expected client origin in app-level config, separate from the per-label allowlist:
 
 ```move
 struct AppConfig has key {
@@ -77,7 +79,7 @@ public entry fun set_client_origin(
 }
 ```
 
-Then the hook checks both facts: the wallet-signed origin matches your deployed client, and the account that signed the derivation request is the owner recorded for that access-key label.
+Then the hook checks both facts: the wallet-signed origin matches your deployed client, and the account that signed the derivation request is allowlisted for that access-key label.
 
 ```move
 #[view]
@@ -85,14 +87,14 @@ public fun on_ace_vrf_request(
     label: vector<u8>,
     account: address,
     origin: String,
-): bool acquires AccessKeyPolicy, AppConfig {
-    if (!exists<AccessKeyPolicy>(@admin)) return false;
+): bool acquires DerivationAllowlist, AppConfig {
+    if (!exists<DerivationAllowlist>(@admin)) return false;
     if (!exists<AppConfig>(@admin)) return false;
-    let policy = borrow_global<AccessKeyPolicy>(@admin);
+    let allowlist = borrow_global<DerivationAllowlist>(@admin);
     let config = borrow_global<AppConfig>(@admin);
     if (origin.bytes() != &config.client_origin) return false;
-    if (!policy.owners.contains(label)) return false;
-    *policy.owners.borrow(label) == account
+    if (!allowlist.allowed_accounts.contains(label)) return false;
+    *allowlist.allowed_accounts.borrow(label) == account
 }
 ```
 
@@ -109,8 +111,8 @@ module admin::vrf_access {
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
 
-    struct AccessKeyPolicy has key {
-        owners: Table<vector<u8>, address>,
+    struct DerivationAllowlist has key {
+        allowed_accounts: Table<vector<u8>, address>,
     }
 
     struct AppConfig has key {
@@ -119,9 +121,9 @@ module admin::vrf_access {
 
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        if (!exists<AccessKeyPolicy>(@admin)) {
-            move_to(admin, AccessKeyPolicy {
-                owners: table::new(),
+        if (!exists<DerivationAllowlist>(@admin)) {
+            move_to(admin, DerivationAllowlist {
+                allowed_accounts: table::new(),
             });
         };
         if (!exists<AppConfig>(@admin)) {
@@ -144,11 +146,11 @@ module admin::vrf_access {
     public entry fun allow_deriver(
         admin: &signer,
         access_key_label: vector<u8>,
-        owner: address,
-    ) acquires AccessKeyPolicy {
+        allowed_account: address,
+    ) acquires DerivationAllowlist {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-        let policy = borrow_global_mut<AccessKeyPolicy>(@admin);
-        policy.owners.upsert(access_key_label, owner);
+        let allowlist = borrow_global_mut<DerivationAllowlist>(@admin);
+        allowlist.allowed_accounts.upsert(access_key_label, allowed_account);
     }
 
     #[view]
@@ -156,21 +158,21 @@ module admin::vrf_access {
         label: vector<u8>,
         account: address,
         origin: String,
-    ): bool acquires AccessKeyPolicy, AppConfig {
-        if (!exists<AccessKeyPolicy>(@admin)) return false;
+    ): bool acquires DerivationAllowlist, AppConfig {
+        if (!exists<DerivationAllowlist>(@admin)) return false;
         if (!exists<AppConfig>(@admin)) return false;
-        let policy = borrow_global<AccessKeyPolicy>(@admin);
+        let allowlist = borrow_global<DerivationAllowlist>(@admin);
         let config = borrow_global<AppConfig>(@admin);
         if (origin.bytes() != &config.client_origin) return false;
-        if (!policy.owners.contains(label)) return false;
-        *policy.owners.borrow(label) == account
+        if (!allowlist.allowed_accounts.contains(label)) return false;
+        *allowlist.allowed_accounts.borrow(label) == account
     }
 }
 ```
 
 If the hook returns `true`, the SDK returns 32 bytes. In this example, we turn those bytes into access key material.
 
-Deploy the Move package, initialize policy, and configure which owner accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label derivation policy. Record:
+Deploy the Move package, initialize policy, and configure which accounts may derive each access-key label. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from the per-label allowlist. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName`.
 - `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.

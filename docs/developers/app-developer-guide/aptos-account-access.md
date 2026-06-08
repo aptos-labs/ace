@@ -1,4 +1,4 @@
-# Aptos Basic IBE: Move-Gated Decryption
+# Aptos Account Access: Can account X access object Y?
 
 ## TLDR
 

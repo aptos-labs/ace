@@ -61,7 +61,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 | Package | Description |
 |---------|-------------|
-| [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide) | App developer how-tos for Aptos/Solana IBE and Aptos VRF |
+| [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide) | App developer how-tos for on-chain access policies and derived access keys |
 | [`docs/auditor`](./docs/auditor) | Protocol specifications (cryptography, trust model, protocols, wire formats) — start here for audit |
 | [`ts-sdk`](./ts-sdk) | TypeScript SDK (`@aptos-labs/ace-sdk`) |
 | [`cli`](./cli) | Operator CLI (`ace`) for node onboarding and management |
@@ -82,11 +82,11 @@ Start with the guide that matches your flow:
 
 | Guide | What it covers |
 |-------|----------------|
-| [`Aptos Basic IBE`](./docs/developers/app-developer-guide/aptos-basic-ibe.md) | IBE decryption controlled by an Aptos Move view over `(label, account, origin)` |
-| [`Solana Basic IBE`](./docs/developers/app-developer-guide/solana-basic-ibe.md) | IBE decryption controlled by a signed Solana transaction that workers simulate |
-| [`Aptos Custom IBE`](./docs/developers/app-developer-guide/aptos-custom-ibe.md) | IBE decryption controlled by an Aptos Move view over an app-defined payload |
-| [`Solana Custom IBE`](./docs/developers/app-developer-guide/solana-custom-ibe.md) | IBE decryption controlled by Solana custom request bytes and an app-defined payload |
-| [`Aptos VRF`](./docs/developers/app-developer-guide/aptos-vrf.md) | Threshold VRF derivation controlled by an Aptos Move view |
+| [`Aptos account access`](./docs/developers/app-developer-guide/aptos-account-access.md) | Your Aptos contract decides whether Aptos account X can access object Y |
+| [`Solana account access`](./docs/developers/app-developer-guide/solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y |
+| [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
+| [`Solana off-chain identity access`](./docs/developers/app-developer-guide/solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y |
+| [`Aptos derived access keys`](./docs/developers/app-developer-guide/aptos-derived-access-keys.md) | Your Aptos contract decides whether account X can create the access key for object Y |
 
 The full guide index is at [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide).
 

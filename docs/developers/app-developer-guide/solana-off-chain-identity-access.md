@@ -1,4 +1,4 @@
-# Solana Custom IBE: Payload-Gated Transactions
+# Solana Off-Chain Identity Access: Can off-chain identity X access object Y?
 
 ## TLDR
 

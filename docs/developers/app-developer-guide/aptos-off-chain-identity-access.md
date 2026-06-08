@@ -1,4 +1,4 @@
-# Aptos Custom IBE: Payload-Gated Decryption
+# Aptos Off-Chain Identity Access: Can off-chain identity X access object Y?
 
 ## TLDR
 
@@ -237,7 +237,7 @@ module admin::presigned_access {
 
 The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode `payload = BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
 
-Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos VRF guide](./aptos-vrf.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
+Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos-derived access keys guide](./aptos-derived-access-keys.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
 
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 

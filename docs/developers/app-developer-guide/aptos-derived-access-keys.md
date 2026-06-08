@@ -1,4 +1,4 @@
-# Aptos VRF: Move-Gated Derivation
+# Aptos Derived Access Keys: Can account X create the key for object Y?
 
 ## TLDR
 

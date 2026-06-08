@@ -4,11 +4,11 @@ ACE lets an app encrypt or derive secrets now, then ask an on-chain policy later
 
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
-| [`aptos-basic-ibe.md`](./aptos-basic-ibe.md) | An Aptos Move view can decide access from `(label, account, origin)` | pay-to-download, allowlists, time locks, subscriptions |
-| [`solana-basic-ibe.md`](./solana-basic-ibe.md) | A signed Solana transaction can prove access by simulating an Anchor instruction | pay-to-download, receipt-based access, PDA-backed ACLs |
-| [`aptos-custom-ibe.md`](./aptos-custom-ibe.md) | An Aptos Move view must verify an app-defined payload | ZK-gated access, signed attestations, bearer-token style grants |
-| [`solana-custom-ibe.md`](./solana-custom-ibe.md) | A Solana instruction must verify app-defined request bytes and payload | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
-| [`aptos-vrf.md`](./aptos-vrf.md) | An Aptos Move view should gate deterministic threshold VRF bytes | per-object signing keys, deterministic grants, app-scoped randomness |
+| [`aptos-account-access.md`](./aptos-account-access.md) | Your Aptos contract decides whether Aptos account X can access object Y | pay-to-download, allowlists, time locks, subscriptions |
+| [`solana-account-access.md`](./solana-account-access.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
+| [`aptos-off-chain-identity-access.md`](./aptos-off-chain-identity-access.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
+| [`solana-off-chain-identity-access.md`](./solana-off-chain-identity-access.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
+| [`aptos-derived-access-keys.md`](./aptos-derived-access-keys.md) | Your Aptos contract decides whether account X can create the access key for object Y | per-object signing keys, deterministic grants, app-scoped randomness |
 
 ## Vocabulary
 

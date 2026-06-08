@@ -1,4 +1,4 @@
-# Solana Basic IBE: Transaction-Gated Decryption
+# Solana Account Access: Can account X access object Y?
 
 ## TLDR
 

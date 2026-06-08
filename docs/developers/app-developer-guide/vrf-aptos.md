@@ -60,12 +60,11 @@ public entry fun set_client_origin(
 ```
 
 Then the hook checks that the wallet-signed origin matches your deployed client.
-
 ```move
 #[view]
 public fun on_ace_vrf_request(
-    label: vector<u8>,
-    account: address,
+    _label: vector<u8>,
+    _account: address,
     origin: String,
 ): bool acquires AppConfig {
     if (!exists<AppConfig>(@admin)) return false;
@@ -110,8 +109,8 @@ module admin::vrf_access {
 
     #[view]
     public fun on_ace_vrf_request(
-        label: vector<u8>,
-        account: address,
+        _label: vector<u8>,
+        _account: address,
         origin: String,
     ): bool acquires AppConfig {
         if (!exists<AppConfig>(@admin)) return false;

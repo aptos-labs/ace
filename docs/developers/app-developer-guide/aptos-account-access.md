@@ -13,7 +13,7 @@ To use it, you will:
 ## Example: allowlisted content catalog
 
 In this example, we show how to build an allowlist-style content catalog with ACE.
-The high-level idea is to use a full object ID as the catalog lookup key, encrypt each content item under that same ID, store the allowlist on-chain, and let ACE ask the contract before releasing decryption shares.
+The high-level idea is to use a full object ID as the catalog lookup key, encrypt each content item under that same ID, store the allowlist on-chain, and let ACE ask the contract before decrypting for a user.
 
 ### Contract changes
 
@@ -78,7 +78,7 @@ NOTE: parameter `origin` is currently ignored. We will worry about it later.
 
 ### Client changes
 
-In the client, we use the same object ID bytes that the contract uses for lookup. ACE IBE calls those bytes the `label`; in this app, we simply use `full_object_id` as the IBE `label`.
+In the client, we use the same object ID bytes that the contract uses for lookup. The SDK calls those bytes the `label`; in this app, we simply use `full_object_id` as the IBE `label`.
 
 Encrypt before or after listing the item on-chain, but use the same bytes for `full_object_id` in Move and `label` in the SDK:
 
@@ -100,7 +100,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-These parameters bind the ciphertext to one ACE keypair, one app contract, and one label. In this example, that label is the full object ID, so workers will only release shares for a request about the same object ID.
+These parameters tell ACE which app contract and object ID this ciphertext belongs to. In this example, the SDK `label` is the full object ID, so decrypting the content will check access for that same object ID.
 
 For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
 
@@ -134,7 +134,7 @@ const plaintext = (await session.decryptWithProof({
 
 For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryptBasicFlow` wraps the same sequence in one function.
 
-The important detail for the next step is that ACE workers extract the application origin from the Aptos wallet message in `signed.fullMessage` and pass it to `on_ace_decryption_request` as the `origin` argument. That gives the contract enough information to reject requests signed for the wrong app.
+The important detail for the next step is that the signed wallet message includes the application origin. ACE passes that value to `on_ace_decryption_request` as the `origin` argument, so the contract can reject requests signed for the wrong app.
 
 ### Check request origin
 

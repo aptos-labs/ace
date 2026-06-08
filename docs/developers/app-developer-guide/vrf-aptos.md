@@ -1,10 +1,10 @@
-# Derive app-specific values with Aptos approval
+# Derive per-app, per-account, per-label values with Aptos approval
 
 ## TLDR
 
-ACE VRF lets your app derive the same 32 bytes again later, but only when an Aptos contract approves the caller. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
+ACE VRF lets your app derive the same 32 bytes again later for the same app contract, Aptos account, and label, but only when the app contract approves the caller. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
 
-Use this guide when the app needs a value that is stable for the same account and label, but should not be derivable unless your Aptos policy says yes.
+Use this guide when the app needs a value that is stable for a specific `(contract, account, label)` tuple, but should not be derivable unless your Aptos policy says yes.
 
 To use it, you will:
 
@@ -16,13 +16,14 @@ To use it, you will:
 
 In this example, we show one concrete use of ACE VRF: creating per-blob access keypairs. The high-level idea is to let an owner recreate the same private key for a blob, register the matching public key on-chain, and use the private key as grant material in a later off-chain identity access flow.
 
-For each encrypted blob, we define a canonical `blob_id`, then derive 32 bytes from this app-level input:
+For each encrypted blob, we define a canonical `blob_id`, then derive 32 bytes from this tuple:
 
 ```text
+(contractId, ownerAddress, accessKeyLabel)
 where accessKeyLabel = "access-key:v1:" || blob_id
 ```
 
-Conceptually, `derive(owner, accessKeyLabel)` produces deterministic private bytes for the owner and label. In this example, we map those bytes into an access private key, compute the matching public key, register that public key on-chain for the encrypted object, and later give the private key or a grant containing it to the reader. The off-chain identity access hook then verifies reader proofs against the registered public key.
+Conceptually, `derive(contractId, ownerAddress, accessKeyLabel)` produces deterministic private bytes scoped to that app contract, owner, and label. In this example, we map those bytes into an access private key, compute the matching public key, register that public key on-chain for the encrypted object, and later give the private key or a grant containing it to the reader. The off-chain identity access hook then verifies reader proofs against the registered public key.
 
 ### Contract changes
 

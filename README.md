@@ -76,7 +76,7 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 
 ## App Developer Guide
 
-App developers write the on-chain policy that ACE checks before decrypting data or deriving app-specific values, then use the TypeScript SDK from the client.
+App developers write the on-chain policy that ACE checks before decrypting data or deriving values scoped to a contract, account, and label, then use the TypeScript SDK from the client.
 
 Start with the guide that matches your flow:
 
@@ -86,7 +86,7 @@ Start with the guide that matches your flow:
 | [`Solana account access`](./docs/developers/app-developer-guide/ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y |
 | [`Aptos off-chain identity access`](./docs/developers/app-developer-guide/ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y |
 | [`Solana off-chain identity access`](./docs/developers/app-developer-guide/ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y |
-| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/vrf-aptos.md) | Your Aptos contract decides who can derive app-specific deterministic values |
+| [`Aptos-approved derivation`](./docs/developers/app-developer-guide/vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract, account, and label |
 
 The full guide index is at [`docs/developers/app-developer-guide`](./docs/developers/app-developer-guide).
 

@@ -1,6 +1,6 @@
 # App Developer Guide
 
-ACE lets an app encrypt data or derive app-specific values, then ask an on-chain policy whether a user is allowed to receive the result. Pick the guide that matches your chain and proof style.
+ACE lets an app encrypt data or derive values scoped to a contract, account, and label, then ask an on-chain policy whether a user is allowed to receive the result. Pick the guide that matches your chain and proof style.
 
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
@@ -8,7 +8,7 @@ ACE lets an app encrypt data or derive app-specific values, then ask an on-chain
 | [`ibe-solana-basic.md`](./ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
 | [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
 | [`ibe-solana-custom.md`](./ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
-| [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive app-specific deterministic values | per-object signing keys, deterministic grants, app-scoped randomness |
+| [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract, account, and label | per-object signing keys, deterministic grants, app-scoped randomness |
 
 ## Vocabulary
 

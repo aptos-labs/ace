@@ -29,9 +29,7 @@ Conceptually, `derive(contractId, ownerAddress, accessKeyLabel)` produces determ
 
 In this example, the Move module is named `vrf_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"vrf_access"`.
 
-The Move contract does not need to store who can derive each access key. The owner account is already part of the VRF input: deriving with `(contractId, ownerAddress, accessKeyLabel)` gives different bytes from deriving with `(contractId, anotherAddress, accessKeyLabel)`. In this example, the contract only checks that the wallet signature was made for your deployed app origin.
-
-To work with ACE VRF, the module exposes `on_ace_vrf_request` so ACE can ask the contract before deriving.
+The contract's job is to expose `on_ace_vrf_request` and allow requests signed for your deployed app origin.
 
 ACE calls the contract through a view function with this fixed name and signature:
 
@@ -61,7 +59,7 @@ public entry fun set_client_origin(
 }
 ```
 
-Then the hook checks that the wallet-signed origin matches your deployed client. It does not need to inspect `label` or `account` for this example; ACE already includes them in the derivation input.
+Then the hook checks that the wallet-signed origin matches your deployed client.
 
 ```move
 #[view]

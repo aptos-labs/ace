@@ -14,7 +14,92 @@ You need to:
 
 ## Walkthrough
 
-Start with the access policy. This walkthrough uses an allowlist-style content catalog keyed by `label`, where each item records the accounts that may decrypt it. The ACE hook is a view function with a fixed name and fixed signature. This minimal module defines the entitlement state the hook reads:
+### 1. Write the Move Contract
+
+This walkthrough uses an allowlist-style content catalog. Each encrypted object has a `label`, and the contract stores which Aptos accounts may decrypt that label.
+
+The ACE hook is a view function with this fixed shape:
+
+```move
+public fun on_ace_decryption_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool
+```
+
+ACE workers call this hook before releasing decryption shares. If it returns `true`, the requester may decrypt. If it returns `false`, workers withhold shares.
+
+First, model the allowlist itself. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`. Each item stores the accounts that may decrypt it:
+
+```move
+struct Item has store, drop {
+    readers: vector<address>,
+}
+
+struct Catalog has key {
+    items: Table<vector<u8>, Item>,
+}
+```
+
+The core allowlist check is just: find the item by `label`, then check whether the requesting `account` is in `readers`.
+
+```move
+#[view]
+public fun on_ace_decryption_request(
+    label: vector<u8>,
+    account: address,
+    _origin: String,
+): bool acquires Catalog {
+    if (!exists<Catalog>(@admin)) return false;
+    let catalog = borrow_global<Catalog>(@admin);
+    if (!catalog.items.contains(label)) return false;
+    let item = catalog.items.borrow(label);
+    item.readers.contains(&account)
+}
+```
+
+Next, add an app-level origin check. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
+
+Store the expected client origin in a separate config resource:
+
+```move
+struct AppConfig has key {
+    client_origin: vector<u8>,
+}
+
+public entry fun set_client_origin(
+    admin: &signer,
+    origin: vector<u8>,
+) acquires AppConfig {
+    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
+    let config = borrow_global_mut<AppConfig>(@admin);
+    config.client_origin = origin;
+}
+```
+
+Then make the hook reject requests whose wallet-signed origin does not match that app-level config:
+
+```move
+#[view]
+public fun on_ace_decryption_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool acquires Catalog, AppConfig {
+    if (!exists<Catalog>(@admin)) return false;
+    if (!exists<AppConfig>(@admin)) return false;
+    let catalog = borrow_global<Catalog>(@admin);
+    let config = borrow_global<AppConfig>(@admin);
+    if (origin.bytes() != &config.client_origin) return false;
+    if (!catalog.items.contains(label)) return false;
+    let item = catalog.items.borrow(label);
+    item.readers.contains(&account)
+}
+```
+
+Putting those pieces together, the full module looks like this:
 
 ```move
 module admin::content_access {
@@ -108,6 +193,10 @@ Deploy the Move package, run `init`, register your items, and grant whatever tes
 - `moduleAddr`: the account that published your module.
 - `moduleName`: the Move module containing `on_ace_decryption_request`.
 - `aceDeployment` and `keypairId`: from `ACE.knownDeployments` or your local ACE network config.
+
+### 2. Call the TypeScript SDK
+
+After the Move policy is deployed, the client has two jobs: encrypt content under the same `label` the contract uses for lookup, then ask the user's wallet to sign a decryption request for that label.
 
 Encrypt before or after listing the item on-chain, but use the same `label` in both places:
 

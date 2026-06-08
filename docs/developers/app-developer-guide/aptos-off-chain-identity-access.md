@@ -7,12 +7,12 @@ ACE lets your app answer "can off-chain identity X access object Y?" from an Apt
 To use it, you will:
 
 - In your Move module, expose `on_ace_decryption_request_custom_flow(...)` as the source of truth for access decisions.
-- Define the payload your off-chain identity or credential will present.
+- Define the proof data your off-chain identity or credential will present.
 - In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Aptos` custom-flow APIs.
 
 ## Example: pre-signed access grants
 
-In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key through an app-defined payload.
+In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key when decrypting.
 
 The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a small statement that names the object, the deployed app origin, and that `enc_pk`.
 
@@ -25,15 +25,15 @@ Concretely, the signed statement has these fields:
 | `origin` | The deployed app origin that should be allowed. |
 | `sig` | `Sign(accessPrivateKey, BCS(dst, label, enc_pk, origin))`. |
 
-The payload sent to ACE is `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.
+The client sends `origin` and `sig` to ACE, encoded as `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.
 
-Each signed field has a job. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid payload from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
+Each signed field has a job. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid `origin` and `sig` pair from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
 
 ### Contract changes
 
 In this example, the Move module is named `presigned_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"presigned_access"`.
 
-In the contract, we define the statement the grant key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the payload.
+In the contract, we define the statement the grant key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the decryption request.
 
 ACE calls the contract through a view function with this fixed name and shape:
 
@@ -45,9 +45,9 @@ public fun on_ace_decryption_request_custom_flow(
 ): bool
 ```
 
-ACE does not interpret the payload and does not require a normal Aptos wallet identity proof in this flow. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and your opaque `payload` to the hook; the contract decides whether that payload is valid for this object.
+The third hook argument, `payload`, is the app-defined bytes for this flow. In this example, it contains `origin` and `sig`. ACE does not interpret those bytes or require a normal Aptos wallet identity proof. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and `payload` to the hook; the contract decides whether the request is valid for this object.
 
-First, we design the payload as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the one-time `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
+First, we design the proof data as an authenticated statement, not just bytes that the hook happens to parse. A typical statement includes a version or domain-separation string, the object `label`, the one-time `enc_pk`, the app audience or origin if relevant, any expiry or nonce your policy needs, and policy-specific claims. A signature, ZK proof, Merkle witness, or other authenticator must cover the canonical encoding of every field the hook relies on.
 
 In this example, the statement signed by the reader's grant key includes one object, one `enc_pk`, and one deployed app origin:
 
@@ -102,7 +102,7 @@ public entry fun set_client_origin(
 }
 ```
 
-Finally, the hook decodes the payload, rejects the wrong origin, rebuilds the signed statement, and verifies the signature under the public key registered for `label`:
+Finally, the hook decodes `origin` and `sig`, rejects the wrong origin, rebuilds the signed statement, and verifies the signature under the public key registered for `label`:
 
 ```move
 if (!exists<Registry>(@admin)) return false;
@@ -237,15 +237,15 @@ module admin::presigned_access {
 }
 ```
 
-The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode `payload = BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
+The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode the third argument as `BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
 
-Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos-derived access keys guide](./aptos-derived-access-keys.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access payloads.
+Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos-derived access keys guide](./aptos-derived-access-keys.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access statements.
 
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName` for the module with the hook.
 - `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
-- Your payload version and encoding.
+- The version and encoding for your proof data.
 
 ### Client changes
 
@@ -284,7 +284,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we generate a fresh one-time encryption keypair, build the signed statement, put the signature into the payload, and submit it. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, we generate a fresh one-time encryption keypair, build the signed statement, encode `origin` and `sig` for the SDK, and submit them. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
 const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
@@ -323,16 +323,16 @@ const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
 });
 ```
 
-This custom SDK flow is one call today. If your UI has multiple phases, keep `encPk`, `encSk`, and the payload inputs in your own session state until the user finishes the proof step.
+This custom SDK flow is one call today. If your UI has multiple phases, keep `encPk`, `encSk`, and the proof inputs in your own session state until the user finishes the proof step.
 
-Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, put it in the payload and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
+Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, include it in the app-defined bytes passed as the SDK `payload` argument, and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
 
 ## Remarks
 
-In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid payload for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the payload prove the reader's identity or use the Aptos account access flow.
+In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid statement for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the signed statement or proof identify the reader, or use the Aptos account access flow.
 
 ## Ready-To-Run Examples
 
 - [`examples/zk-kyc`](../../../examples/zk-kyc): Groth16 age-gated decryption.
-- [`examples/presigned-access-aptos`](../../../examples/presigned-access-aptos): pre-signed access grants with payload-origin binding.
+- [`examples/presigned-access-aptos`](../../../examples/presigned-access-aptos): pre-signed access grants with origin-bound signatures.
 - [`scenarios/custom-flow-aptos`](../../../scenarios/custom-flow-aptos): small code-based custom-flow scenario.

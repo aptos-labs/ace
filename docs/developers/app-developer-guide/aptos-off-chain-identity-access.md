@@ -105,30 +105,37 @@ public entry fun set_client_origin(
 Finally, the hook decodes `origin` and `sig`, rejects the wrong origin, rebuilds the signed statement, and verifies the signature under the public key registered for `label`:
 
 ```move
-if (!exists<Registry>(@admin)) return false;
-if (!exists<AppConfig>(@admin)) return false;
-let registry = borrow_global<Registry>(@admin);
-let config = borrow_global<AppConfig>(@admin);
-if (!registry.access_public_keys.contains(label)) return false;
-let access_public_key_bytes = *registry.access_public_keys.borrow(label);
+#[view]
+public fun on_ace_decryption_request_custom_flow(
+    label: vector<u8>,
+    enc_pk: vector<u8>,
+    payload: vector<u8>,
+): bool acquires Registry, AppConfig {
+    if (!exists<Registry>(@admin)) return false;
+    if (!exists<AppConfig>(@admin)) return false;
+    let registry = borrow_global<Registry>(@admin);
+    let config = borrow_global<AppConfig>(@admin);
+    if (!registry.access_public_keys.contains(label)) return false;
+    let access_public_key_bytes = *registry.access_public_keys.borrow(label);
 
-let stream = bcs_stream::new(payload);
-let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
-let sig_bytes = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
-if (bcs_stream::has_remaining(&mut stream)) return false;
-if (&claimed_origin != &config.client_origin) return false;
+    let stream = bcs_stream::new(payload);
+    let claimed_origin = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+    let sig_bytes = bcs_stream::deserialize_vector(&mut stream, |s| bcs_stream::deserialize_u8(s));
+    if (bcs_stream::has_remaining(&mut stream)) return false;
+    if (&claimed_origin != &config.client_origin) return false;
 
-let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
-if (!option::is_some(&pk_opt)) return false;
-let pk = option::extract(&mut pk_opt);
-let sig = bls12381::signature_from_bytes(sig_bytes);
-let msg = bcs::to_bytes(&SignableRequest {
-    dst: SIGNABLE_REQUEST_DST,
-    label,
-    user_epk: enc_pk,
-    origin: claimed_origin,
-});
-bls12381::verify_normal_signature(&sig, &pk, msg)
+    let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
+    if (!option::is_some(&pk_opt)) return false;
+    let pk = option::extract(&mut pk_opt);
+    let sig = bls12381::signature_from_bytes(sig_bytes);
+    let msg = bcs::to_bytes(&SignableRequest {
+        dst: SIGNABLE_REQUEST_DST,
+        label,
+        user_epk: enc_pk,
+        origin: claimed_origin,
+    });
+    bls12381::verify_normal_signature(&sig, &pk, msg)
+}
 ```
 
 Putting those pieces together, the full module looks like this:

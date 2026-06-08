@@ -2,99 +2,92 @@
 
 ## TLDR
 
-ACE lets your app answer "can Aptos account X access object Y?" from an Aptos contract. Use this guide when your users have Aptos accounts and your app can store its access policy on-chain.
+ACE lets your app answer "can Aptos account X access object Y?" from an Aptos contract.
+Use this guide when your users have Aptos accounts and your app can store its access policy on-chain.
 
 To use it, you will:
 
 - In your Move module, expose `on_ace_decryption_request(...)` as the source of truth for access decisions.
 - In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Aptos` APIs.
-- After deploying the client, configure the contract to accept requests only from that deployed app.
 
-## Example walkthrough: Allowlisted content catalog
+## Example: allowlisted content catalog
 
 In this example, we show how to build an allowlist-style content catalog with ACE.
-The high-level idea is to encrypt each content item with ACE, maintain the access policy on-chain, and let that policy gate whether ACE workers may release decryption shares for a user.
+The high-level idea is to use a full object ID as the catalog lookup key, encrypt each content item under that same ID, store the allowlist on-chain, and let ACE ask the contract before releasing decryption shares.
 
-### 1. Design the contract
+### Contract changes
 
-In the contract, we need three pieces: a table that stores the allowlist for each content label, entry functions that update that table, and the ACE view function `on_ace_decryption_request`, which reads the table and approves or rejects each request.
-
-To work with ACE basic IBE, we expose a hook with this fixed shape:
+First, we can store the object ID-to-allowlist mapping in a table.
 
 ```move
-public fun on_ace_decryption_request(
-    label: vector<u8>,
-    account: address,
-    origin: String,
-): bool
-```
-
-ACE workers call this hook before releasing decryption shares. If the hook returns `true`, the requester may decrypt. If it returns `false`, workers withhold shares.
-
-First, we define the access policy. The catalog is keyed by the same `label` that the client passes to `ACE.IBE_Aptos.encrypt`, and each item stores the accounts that may decrypt it:
-
-```move
-struct Item has store, drop {
-    readers: vector<address>,
+struct ItemInfo has store, drop {
+    allowlist: vector<address>,
 }
 
 struct Catalog has key {
-    items: Table<vector<u8>, Item>,
+    items: Table<vector<u8>, ItemInfo>,
 }
 ```
 
-Then we expose entry functions that create catalog items and grant readers access. In a real subscription or pay-to-download app, the grant write would usually happen inside purchase or subscription logic; here we keep the writer simple so the ACE hook is easy to see.
+We allow the owner of an object to update its allowlist using the following entry functions.
 
 ```move
-public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+/// We assume the full object ID contains owner info.
+fun extract_owner_from_full_object_id(object_id: vector<u8>): address;
+
+public entry fun register_item(owner: &signer, full_object_id: vector<u8>) acquires Catalog {
+    assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
     let catalog = borrow_global_mut<Catalog>(@admin);
-    if (!catalog.items.contains(label)) {
-        catalog.items.add(label, Item { readers: vector::empty() });
+    if (!catalog.items.contains(full_object_id)) {
+        catalog.items.add(full_object_id, ItemInfo { allowlist: vector::empty() });
     };
 }
 
-public entry fun grant(admin: &signer, label: vector<u8>, reader: address) acquires Catalog {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) acquires Catalog {
+    assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
     let catalog = borrow_global_mut<Catalog>(@admin);
-    assert!(catalog.items.contains(label), error::not_found(E_ITEM_NOT_FOUND));
-    let item = catalog.items.borrow_mut(label);
-    if (!item.readers.contains(&reader)) {
-        item.readers.push_back(reader);
+    assert!(catalog.items.contains(full_object_id), error::not_found(E_ITEM_NOT_FOUND));
+    let item = catalog.items.borrow_mut(full_object_id);
+    if (!item.allowlist.contains(&reader)) {
+        item.allowlist.push_back(reader);
     };
 }
 ```
 
-Finally, the hook consumes that state: it finds the item by `label`, then checks whether the requesting `account` is in `readers`.
+Finally, as required by ACE, we implement the fixed-shape view function to correctly execute the access policy based on the contract state.
 
 ```move
 #[view]
 public fun on_ace_decryption_request(
-    label: vector<u8>,
-    account: address,
-    _origin: String,
+    full_object_id: vector<u8>,
+    user: address,
+    origin: String,
 ): bool acquires Catalog {
+    // Owner should always have access.
+    if (extract_owner_from_full_object_id(full_object_id) == user) return true;
+
     if (!exists<Catalog>(@admin)) return false;
     let catalog = borrow_global<Catalog>(@admin);
-    if (!catalog.items.contains(label)) return false;
-    let item = catalog.items.borrow(label);
-    item.readers.contains(&account)
+    if (!catalog.items.contains(full_object_id)) return false;
+    let item = catalog.items.borrow(full_object_id);
+    item.allowlist.contains(&user)
 }
 ```
 
-At this point, the hook only models the business policy. It ignores `origin` while we focus on the allowlist; the client step below shows where `origin` comes from, and the final step adds that check.
+NOTE: parameter `origin` is currently ignored. We will worry about it later.
 
-### 2. Use the SDK in the client
+### Client changes
 
-In the client, we use the same `label` that the contract uses for lookup. We first encrypt the content under that label, then ask the user's wallet to sign a decryption request for the same label.
+In the client, we use the same object ID bytes that the contract uses for lookup. ACE IBE calls those bytes the `label`; in this app, we simply use `full_object_id` as the IBE `label`.
 
-Encrypt before or after listing the item on-chain, but use the same `label` in both places:
+Encrypt before or after listing the item on-chain, but use the same bytes for `full_object_id` in Move and `label` in the SDK:
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
 import { AccountAddress } from "@aptos-labs/ts-sdk";
 
-const label = new TextEncoder().encode("album/song-001");
+const fullObjectId = new TextEncoder().encode("0x<owner-address>/album/song-001");
+const label = fullObjectId;
 
 const ciphertext = (await ACE.IBE_Aptos.encrypt({
   aceDeployment,
@@ -107,7 +100,7 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-These parameters bind the ciphertext to one ACE keypair, one app contract, and one label. Workers will only release shares for a request with the same tuple.
+These parameters bind the ciphertext to one ACE keypair, one app contract, and one label. In this example, that label is the full object ID, so workers will only release shares for a request about the same object ID.
 
 For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:
 
@@ -143,7 +136,7 @@ For scripts or backend jobs that already know how to sign, `ACE.IBE_Aptos.decryp
 
 The important detail for the next step is that ACE workers extract the application origin from the Aptos wallet message in `signed.fullMessage` and pass it to `on_ace_decryption_request` as the `origin` argument. That gives the contract enough information to reject requests signed for the wrong app.
 
-### 3. Check request origin
+### Check request origin
 
 Now that the client signs an application-scoped wallet message, we can harden the contract by checking the request origin. This is separate from item policy: it is one deployed-client setting, not one value per item. The goal is to prevent a malicious app from tricking a user into signing a decryption request for your contract from the wrong origin.
 
@@ -170,8 +163,8 @@ Then we make the hook reject requests whose wallet-signed origin does not match 
 ```move
 #[view]
 public fun on_ace_decryption_request(
-    label: vector<u8>,
-    account: address,
+    full_object_id: vector<u8>,
+    user: address,
     origin: String,
 ): bool acquires Catalog, AppConfig {
     if (!exists<Catalog>(@admin)) return false;
@@ -179,9 +172,10 @@ public fun on_ace_decryption_request(
     let catalog = borrow_global<Catalog>(@admin);
     let config = borrow_global<AppConfig>(@admin);
     if (origin.bytes() != &config.client_origin) return false;
-    if (!catalog.items.contains(label)) return false;
-    let item = catalog.items.borrow(label);
-    item.readers.contains(&account)
+    if (extract_owner_from_full_object_id(full_object_id) == user) return true;
+    if (!catalog.items.contains(full_object_id)) return false;
+    let item = catalog.items.borrow(full_object_id);
+    item.allowlist.contains(&user)
 }
 ```
 
@@ -198,13 +192,14 @@ module admin::content_access {
     const E_NOT_ADMIN: u64 = 1;
     const E_ITEM_NOT_FOUND: u64 = 2;
     const E_NOT_INITIALIZED: u64 = 3;
+    const E_NOT_OWNER: u64 = 4;
 
-    struct Item has store, drop {
-        readers: vector<address>,
+    struct ItemInfo has store, drop {
+        allowlist: vector<address>,
     }
 
     struct Catalog has key {
-        items: Table<vector<u8>, Item>,
+        items: Table<vector<u8>, ItemInfo>,
     }
 
     struct AppConfig has key {
@@ -225,6 +220,9 @@ module admin::content_access {
         };
     }
 
+    /// We assume the full object ID contains owner info.
+    fun extract_owner_from_full_object_id(object_id: vector<u8>): address;
+
     public entry fun set_client_origin(
         admin: &signer,
         origin: vector<u8>,
@@ -235,28 +233,28 @@ module admin::content_access {
         config.client_origin = origin;
     }
 
-    public entry fun register_item(admin: &signer, label: vector<u8>) acquires Catalog {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    public entry fun register_item(owner: &signer, full_object_id: vector<u8>) acquires Catalog {
+        assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
         let catalog = borrow_global_mut<Catalog>(@admin);
-        if (!catalog.items.contains(label)) {
-            catalog.items.add(label, Item { readers: vector::empty() });
+        if (!catalog.items.contains(full_object_id)) {
+            catalog.items.add(full_object_id, ItemInfo { allowlist: vector::empty() });
         };
     }
 
-    public entry fun grant(admin: &signer, label: vector<u8>, reader: address) acquires Catalog {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) acquires Catalog {
+        assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
         let catalog = borrow_global_mut<Catalog>(@admin);
-        assert!(catalog.items.contains(label), error::not_found(E_ITEM_NOT_FOUND));
-        let item = catalog.items.borrow_mut(label);
-        if (!item.readers.contains(&reader)) {
-            item.readers.push_back(reader);
+        assert!(catalog.items.contains(full_object_id), error::not_found(E_ITEM_NOT_FOUND));
+        let item = catalog.items.borrow_mut(full_object_id);
+        if (!item.allowlist.contains(&reader)) {
+            item.allowlist.push_back(reader);
         };
     }
 
     #[view]
     public fun on_ace_decryption_request(
-        label: vector<u8>,
-        account: address,
+        full_object_id: vector<u8>,
+        user: address,
         origin: String,
     ): bool acquires Catalog, AppConfig {
         if (!exists<Catalog>(@admin)) return false;
@@ -264,16 +262,17 @@ module admin::content_access {
         let catalog = borrow_global<Catalog>(@admin);
         let config = borrow_global<AppConfig>(@admin);
         if (origin.bytes() != &config.client_origin) return false;
-        if (!catalog.items.contains(label)) return false;
-        let item = catalog.items.borrow(label);
-        item.readers.contains(&account)
+        if (extract_owner_from_full_object_id(full_object_id) == user) return true;
+        if (!catalog.items.contains(full_object_id)) return false;
+        let item = catalog.items.borrow(full_object_id);
+        item.allowlist.contains(&user)
     }
 }
 ```
 
-Use `label` as the object id that your client also passes to `encrypt`. Use `account` as the authenticated requester. Use `origin` to reject signatures made for another app. `AppConfig.client_origin` is one app-level value, not item policy. Keep it empty while the client is not ready, then call `set_client_origin` once after deploying the web app or CLI wrapper and learning the real production origin.
+Use `full_object_id` as the object ID in the contract and pass the same bytes as `label` to `encrypt`. Use `user` as the authenticated requester. Use `origin` to reject signatures made for another app. `AppConfig.client_origin` is one app-level value, not item policy. Keep it empty while the client is not ready, then call `set_client_origin` once after deploying the web app or CLI wrapper and learning the real production origin.
 
-Deploy the Move package, run `init`, register your items, and grant whatever test access you need. Once the client is deployed, call `set_client_origin` with its stable origin. Do not repeat this per label. Record:
+Deploy the Move package, run `init`, register your object IDs, and grant whatever test access you need. Once the client is deployed, call `set_client_origin` with its stable origin. Do not repeat this per object ID. Record:
 
 - `chainId`: the Aptos chain id.
 - `moduleAddr`: the account that published your module.

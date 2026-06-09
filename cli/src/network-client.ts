@@ -21,7 +21,7 @@ export type ProposalInput = {
     threshold: number;
     epochDurationMicros: bigint;
     secretsToRetain: AccountAddress[];
-    newSecrets: number[];
+    newSecrets: aceNetwork.SecretRequest[];
     description: string;
     targetEpoch: number;
 };
@@ -35,7 +35,10 @@ export function serializeProposal(proposal: ProposalInput): number[] {
     ser.serializeU32AsUleb128(proposal.secretsToRetain.length);
     for (const s of proposal.secretsToRetain) ser.serialize(s);
     ser.serializeU32AsUleb128(proposal.newSecrets.length);
-    for (const s of proposal.newSecrets) ser.serializeU8(s);
+    for (const s of proposal.newSecrets) {
+        ser.serializeU64(s.expectedUsage);
+        ser.serializeStr(s.note);
+    }
     ser.serializeStr(proposal.description);
     ser.serializeU64(proposal.targetEpoch);
     return Array.from(ser.toUint8Array());

@@ -7,6 +7,7 @@ import type { DiffRow } from './deployment-check.js';
 import { deriveRpcLabel } from './config.js';
 import { CLI } from './cli-name.js';
 import { isLocalNodeAlive } from './local-process.js';
+import { secretInfoLabel, secretRequestLabel } from './secret-usage.js';
 
 const R = '\x1b[0m', D = '\x1b[2m', B = '\x1b[1m';
 const G = '\x1b[32m', E = '\x1b[31m', C = '\x1b[36m', Y = '\x1b[33m';
@@ -114,13 +115,13 @@ function proposalChanges(
     if (dropped.length > 0) {
         out.push(`  Drop secrets:`);
         for (const s of dropped) {
-            out.push(`    ${E}- keypair ${shortAddr(s.keypairId.toStringLong())}  (${s.schemeName()})${R}`);
+            out.push(`    ${E}- keypair ${shortAddr(s.keypairId.toStringLong())}  (${secretInfoLabel(s)})${R}`);
         }
     }
     if (p.newSecrets.length > 0) {
         out.push(`  New secrets:`);
-        for (const scheme of p.newSecrets) {
-            out.push(`    ${G}+ fresh DKG  (${aceNetwork.schemeName(scheme)})${R}`);
+        for (const request of p.newSecrets) {
+            out.push(`    ${G}+ fresh DKG  (${secretRequestLabel(request)})${R}`);
         }
     }
 
@@ -159,7 +160,7 @@ export function renderNetworkState(
     if (state.secrets.length > 0) {
         lines.push(`${B}Keypairs${R}  (${state.secrets.length})`);
         for (const s of state.secrets) {
-            lines.push(`  ${s.keypairId.toStringLong()}  ${D}(${s.schemeName()})${R}`);
+            lines.push(`  ${s.keypairId.toStringLong()}  ${D}(${secretInfoLabel(s)})${R}`);
             lines.push(`  ${D}    last DKG/DKR: ${s.currentSession.toStringLong()}${R}`);
         }
         lines.push('');

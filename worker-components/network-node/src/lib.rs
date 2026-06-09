@@ -22,6 +22,7 @@
 
 pub mod crypto;
 mod http_server;
+mod secret_usage;
 pub mod secrets;
 pub mod verify;
 
@@ -53,7 +54,7 @@ macro_rules! wlog {
 }
 
 use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, RwLock, Semaphore};
@@ -208,12 +209,19 @@ pub struct HandlerLocalConfig {
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize)]
+struct BcsSecretRequest {
+    expected_usage: u64,
+    note: String,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Deserialize)]
 struct BcsProposedEpochConfig {
     nodes: Vec<[u8; 32]>,
     threshold: u64,
     epoch_duration_micros: u64,
     secrets_to_retain: Vec<[u8; 32]>,
-    new_secrets: Vec<u8>,
+    new_secrets: Vec<BcsSecretRequest>,
     description: String,
     target_epoch: u64,
 }
@@ -243,6 +251,8 @@ struct BcsSecretInfo {
     current_session: [u8; 32],
     keypair_id: [u8; 32],
     scheme: u8,
+    expected_usage: u64,
+    note: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -337,7 +347,7 @@ async fn run_with_maintainer(
     );
 
     // `(keypair_id, epoch) → ShareEntry` — flat map, one lookup per request.
-    // `eval_point` and `group_scheme` are captured per-entry at URH
+    // `eval_point`, `group_scheme`, and `expected_usage` are captured per-entry at URH
     // registration time so stale buffer-window entries from a previous epoch
     // use the right values even after committee membership changes.
     //
@@ -535,13 +545,22 @@ async fn run_with_maintainer(
             .position(|n| addr_bytes_to_string(n) == account_addr)
             .map(|i| (i + 1) as u64);
 
-        let active_secrets: HashSet<String> = if in_cur_nodes {
-            state.secrets.iter().map(|s| addr_bytes_to_string(&s.current_session)).collect()
+        let active_secrets: HashMap<String, (u64, String)> = if in_cur_nodes {
+            state
+                .secrets
+                .iter()
+                .map(|s| {
+                    (
+                        addr_bytes_to_string(&s.current_session),
+                        (s.expected_usage, s.note.clone()),
+                    )
+                })
+                .collect()
         } else {
-            HashSet::new()
+            HashMap::new()
         };
 
-        for secret_addr in &active_secrets {
+        for (secret_addr, (expected_usage, note)) in &active_secrets {
             if urh_tasks.contains_key(secret_addr) {
                 continue;
             }
@@ -556,6 +575,8 @@ async fn run_with_maintainer(
             let shares2 = shares.clone();
             let expiry = expiry_queue.clone();
             let epoch = state.epoch;
+            let expected_usage = *expected_usage;
+            let note = note.clone();
             // eval_point at the time this share is being registered — sourced from
             // the just-observed `cur_nodes`. Stored with the share so future
             // requests (including stale-buffer-window ones after a committee
@@ -577,20 +598,21 @@ async fn run_with_maintainer(
                 match vss_common::reconstruct_share(&rpc2, &ace2, &secret, &my, &pke_dk).await {
                     Ok((scalar_le32, keypair_id, group_scheme)) => {
                         // Maintainer stays out of the t-IBE business — store the
-                        // raw group_scheme; handler picks the right t-IBE scheme
-                        // at request time (either from the client-asserted V2
-                        // field or via the V1 fallback mapping).
+                        // raw group_scheme plus on-chain usage policy; handler
+                        // validates the request's primitive before deriving.
                         shares2.write().await.insert(
                             (keypair_id.clone(), epoch),
                             ShareEntry {
                                 scalar_le32,
                                 group_scheme,
+                                expected_usage,
                                 eval_point,
+                                note,
                             },
                         );
                         wlog!(
-                            "network-node: [urh] registered keypair_id={} epoch={} group_scheme={} eval_point={}",
-                            keypair_id, epoch, group_scheme, eval_point
+                            "network-node: [urh] registered keypair_id={} epoch={} group_scheme={} expected_usage={} eval_point={}",
+                            keypair_id, epoch, group_scheme, expected_usage, eval_point
                         );
                         let _ = rx.await;
                         let deadline = Instant::now() + Duration::from_secs(30);
@@ -613,7 +635,7 @@ async fn run_with_maintainer(
 
         let stale_secrets: Vec<String> = urh_tasks
             .keys()
-            .filter(|k| !active_secrets.contains(*k))
+            .filter(|k| !active_secrets.contains_key(*k))
             .cloned()
             .collect();
         for k in stale_secrets {

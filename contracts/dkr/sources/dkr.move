@@ -9,11 +9,14 @@ module ace::dkr {
     use ace::vss;
     use aptos_framework::event;
     use ace::group;
+    use ace::secret_usage;
     use std::option;
+    use std::string::String;
     use std::vector::range;
 
     const E_SECRET_SRC_NOT_COMPLETED: u64 = 1;
     const E_INVALID_SECRET_SRC: u64 = 2;
+    const E_SECRET_USAGE_GROUP_MISMATCH: u64 = 3;
 
     /// VSS sessions are being created one per touch().
     const STATE__START_VSSS: u8 = 0;
@@ -31,6 +34,8 @@ module ace::dkr {
         original_session: address,
         // Can be a DKR or a DKG.
         previous_session: address,
+        expected_usage: u64,
+        note: String,
         current_nodes: vector<address>,
         current_threshold: u64,
         new_nodes: vector<address>,
@@ -79,12 +84,24 @@ module ace::dkr {
             let (base_point, pk, nodes, thresh, share_pks) = dkg::params_for_resharing(previous_session);
             (previous_session, base_point, pk, nodes, thresh, share_pks)
         };
+        let (expected_usage, note) = if (is_dkr) {
+            usage_and_note(previous_session)
+        } else {
+            dkg::usage_and_note(previous_session)
+        };
+        let expected_group_scheme = secret_usage::validate_metadata(expected_usage, &note);
+        assert!(
+            group::element_scheme(&public_base_element) == expected_group_scheme,
+            error::invalid_argument(E_SECRET_USAGE_GROUP_MISMATCH),
+        );
 
         // VSS sessions are created lazily via touch() to stay within per-tx gas limits.
         let session = Session {
             caller: caller_addr,
             original_session,
             previous_session,
+            expected_usage,
+            note,
             current_nodes,
             current_threshold,
             new_nodes,
@@ -197,6 +214,16 @@ module ace::dkr {
     public fun keypair_id_and_scheme(addr: address): (address, u8) {
         let s = &Session[addr];
         (s.original_session, group::element_scheme(&s.public_base_element))
+    }
+
+    public fun keypair_id_scheme_usage_and_note(addr: address): (address, u8, u64, String) {
+        let s = &Session[addr];
+        (s.original_session, group::element_scheme(&s.public_base_element), s.expected_usage, s.note)
+    }
+
+    public fun usage_and_note(addr: address): (u64, String) {
+        let s = &Session[addr];
+        (s.expected_usage, s.note)
     }
 
     /// Compute Lagrange interpolation coefficients at x=0 for the given evaluation points.

@@ -8,6 +8,11 @@ import { network as aceNetwork } from '@aptos-labs/ace-sdk';
 
 import { buildFromEditor } from '../editor.js';
 import type { ProposalInput } from '../network-client.js';
+import {
+    parseSecretRequestSpec,
+    primitiveCatalogLines,
+    secretInfoLabel,
+} from '../secret-usage.js';
 
 // ── Template generation ───────────────────────────────────────────────────────
 
@@ -21,11 +26,11 @@ function generateTemplate(state: aceNetwork.State): string {
         .join('\n');
 
     // Note for editors: the address inside the array is the *currentSession* (must use
-    // this for secrets_to_retain on-chain), but we surface keypair_id and scheme as comments
-    // since keypair_id is what apps recognize and the scheme tells you which t-IBE variant.
+    // this for secrets_to_retain on-chain), but we surface keypair_id and expected usage
+    // as comments since keypair_id is what apps recognize and usage prevents key reuse.
     const secretsLines = state.secrets.length > 0
         ? state.secrets
-            .map(s => `    "${s.currentSession.toStringLong()}",  # keypair id ${s.keypairId.toStringLong()}  (${s.schemeName()})`)
+            .map(s => `    "${s.currentSession.toStringLong()}",  # keypair id ${s.keypairId.toStringLong()}  (${secretInfoLabel(s)})`)
             .join('\n')
         : '';
 
@@ -57,12 +62,13 @@ function generateTemplate(state: aceNetwork.State): string {
             ? `secrets_to_retain = [\n${secretsLines}\n]`
             : `secrets_to_retain = []`,
         ``,
-        `# new_secrets: generate a new DKG for each listed group-scheme code.`,
-        `# Supported schemes:`,
-        `#   0 = bls12381_g1   →  legacy t-IBE (BFIBE-shortpk-otp-hmac)`,
-        `#   1 = bls12381_g2   →  default t-IBE (BFIBE-shortsig-aead)`,
-        `# Use 1 unless you have a specific reason to use 0. Example: \`new_secrets = [1]\``,
-        `# generates one fresh master secret over BLS12-381 G2.`,
+        `# new_secrets: generate one fresh DKG secret for each listed primitive id.`,
+        `# Supported primitive ids:`,
+        ...primitiveCatalogLines(),
+        `# Example: \`new_secrets = [1]\` creates a BFIBE-ShortSig-AEAD secret.`,
+        `# A request may list multiple same-group primitives for one shared secret:`,
+        `#   new_secrets = [{ primitives = [1, 2], note = "BFIBE + VRF" }]`,
+        `# Cross-group requests such as [0, 1] are rejected.`,
         `new_secrets = []`,
         ``,
     ].join('\n');
@@ -83,12 +89,6 @@ function parseU64(raw: unknown, field: string): bigint {
     if (typeof raw === 'number') return BigInt(Math.trunc(raw));
     if (typeof raw === 'bigint') return raw;
     throw new Error(`${field}: expected a number, got ${typeof raw}`);
-}
-
-function parseU8(raw: unknown, field: string): number {
-    if (typeof raw !== 'number') throw new Error(`${field}: expected a number, got ${typeof raw}`);
-    if (!Number.isInteger(raw) || raw < 0 || raw > 255) throw new Error(`${field}: must be an integer 0–255`);
-    return raw;
 }
 
 function tomlToProposalInput(doc: Record<string, unknown>, targetEpoch: number): ProposalInput {
@@ -116,8 +116,9 @@ function tomlToProposalInput(doc: Record<string, unknown>, targetEpoch: number):
     const secretsToRetain = rawRetain.map((v, i) => parseAddr(v, `secrets_to_retain[${i}]`));
 
     const rawNew = doc['new_secrets'];
-    if (!Array.isArray(rawNew)) throw new Error('new_secrets: must be an array of scheme numbers');
-    const newSecrets = rawNew.map((v, i) => parseU8(v, `new_secrets[${i}]`));
+    if (!Array.isArray(rawNew))
+        throw new Error('new_secrets: must be an array of primitive ids or SecretRequest objects');
+    const newSecrets = rawNew.map((v, i) => parseSecretRequestSpec(v, `new_secrets[${i}]`));
 
     return {
         nodes,

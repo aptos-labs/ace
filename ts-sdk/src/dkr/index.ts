@@ -15,6 +15,8 @@ export class Session {
         readonly secretlyScaledElement: PublicPoint,
         readonly originalSession: AccountAddress,
         readonly previousSession: AccountAddress,
+        readonly expectedUsage: bigint,
+        readonly note: string,
         readonly currentNodes: AccountAddress[],
         readonly currentThreshold: number,
         readonly newNodes: AccountAddress[],
@@ -43,6 +45,8 @@ export class Session {
 
                 const originalSession = AccountAddress.deserialize(deserializer);
                 const previousSession = AccountAddress.deserialize(deserializer);
+                const expectedUsage = deserializer.deserializeU64();
+                const note = deserializer.deserializeStr();
 
                 const currentNodesLen = deserializer.deserializeUleb128AsU32();
                 const currentNodes: AccountAddress[] = [];
@@ -97,6 +101,8 @@ export class Session {
                     secretlyScaledElement,
                     originalSession,
                     previousSession,
+                    expectedUsage,
+                    note,
                     currentNodes,
                     currentThreshold,
                     newNodes,

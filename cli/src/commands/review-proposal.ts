@@ -8,6 +8,7 @@ import { resolveProfile } from '../resolve-profile.js';
 import { NetworkClient } from '../network-client.js';
 import { formatError } from '../format-error.js';
 import { fmtSecs } from '../render-state.js';
+import { secretInfoLabel, secretRequestLabel } from '../secret-usage.js';
 
 const R = '\x1b[0m', D = '\x1b[2m', B = '\x1b[1m';
 const G = '\x1b[32m', E = '\x1b[31m', C = '\x1b[36m', Y = '\x1b[33m';
@@ -75,10 +76,10 @@ function proposalDiff(p: aceNetwork.ProposedEpochConfig, state: aceNetwork.State
         lines.push('  Secrets');
         for (const s of state.secrets) {
             const kept = retainSet.has(s.currentSession.toStringLong());
-            lines.push(`    ${kept ? EQ : REM} keypair ${shortAddr(s.keypairId.toStringLong())}  ${D}(${s.schemeName()})${R}${kept ? '' : `  ${E}(deactivating)${R}`}`);
+            lines.push(`    ${kept ? EQ : REM} keypair ${shortAddr(s.keypairId.toStringLong())}  ${D}(${secretInfoLabel(s)})${R}${kept ? '' : `  ${E}(deactivating)${R}`}`);
         }
-        for (const scheme of p.newSecrets) {
-            lines.push(`    ${ADD} new DKG  ${G}${aceNetwork.schemeName(scheme)}${R}`);
+        for (const request of p.newSecrets) {
+            lines.push(`    ${ADD} new DKG  ${G}${secretRequestLabel(request)}${R}`);
         }
         lines.push('');
     }

@@ -1,5 +1,5 @@
 [package]
-name = "EpochChange"
+name = "SecretUsage"
 version = "1.0.0"
 authors = []
 
@@ -8,21 +8,6 @@ ace = "0xcafe"
 
 [dependencies.Group]
 local = "../group"
-
-[dependencies.SecretUsage]
-local = "../secret-usage"
-
-[dependencies.WorkerConfig]
-local = "../worker_config"
-
-[dependencies.VSS]
-local = '../vss'
-
-[dependencies.DKG]
-local = '../dkg'
-
-[dependencies.DKR]
-local = '../dkr'
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

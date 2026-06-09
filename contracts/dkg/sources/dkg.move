@@ -26,7 +26,9 @@ module ace::dkg {
     use std::signer::address_of;
     use std::error;
     use std::bcs;
+    use std::string::String;
     use std::vector::range;
+    use ace::secret_usage;
 
     /// VSS sessions are being created one per touch().
     const STATE__START_VSSS: u8 = 0;
@@ -39,12 +41,15 @@ module ace::dkg {
 
     const E_ONLY_CALLER_CAN_DO_THIS: u64 = 1;
     const E_SESSION_NOT_COMPLETED: u64 = 2;
+    const E_SECRET_USAGE_GROUP_MISMATCH: u64 = 3;
 
     struct Session has key {
         caller: address,
         workers: vector<address>,
         threshold: u64,
         public_base_element: group::Element,
+        expected_usage: u64,
+        note: String,
         state: u8,
         vss_sessions: vector<address>,
         /// Which VSS sessions contributed when we finalised. Empty until state >= AGGREGATE_SHARE_PKS.
@@ -65,7 +70,20 @@ module ace::dkg {
     }
 
     #[lint::allow_unsafe_randomness]
-    public fun new_session(caller: &signer, workers: vector<address>, threshold: u64, public_base_element: group::Element): address {
+    public fun new_session(
+        caller: &signer,
+        workers: vector<address>,
+        threshold: u64,
+        public_base_element: group::Element,
+        expected_usage: u64,
+        note: String,
+    ): address {
+        let expected_group_scheme = secret_usage::validate_metadata(expected_usage, &note);
+        assert!(
+            group::element_scheme(&public_base_element) == expected_group_scheme,
+            error::invalid_argument(E_SECRET_USAGE_GROUP_MISMATCH),
+        );
+
         let caller_addr = address_of(caller);
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
@@ -77,6 +95,8 @@ module ace::dkg {
             workers,
             threshold,
             public_base_element,
+            expected_usage,
+            note,
             state: STATE__START_VSSS,
             vss_sessions: vector[],
             done_flags: vector[],
@@ -90,9 +110,16 @@ module ace::dkg {
     }
 
     #[randomness]
-    entry fun new_session_entry(caller: &signer, workers: vector<address>, threshold: u64, base_point_bytes: vector<u8>) {
+    entry fun new_session_entry(
+        caller: &signer,
+        workers: vector<address>,
+        threshold: u64,
+        base_point_bytes: vector<u8>,
+        expected_usage: u64,
+        note: String,
+    ) {
         let base_point = group::element_from_bytes(base_point_bytes);
-        new_session(caller, workers, threshold, base_point);
+        new_session(caller, workers, threshold, base_point, expected_usage, note);
     }
 
     #[event]
@@ -206,6 +233,16 @@ module ace::dkg {
     public fun keypair_id_and_scheme(addr: address): (address, u8) {
         let s = &Session[addr];
         (addr, group::element_scheme(&s.public_base_element))
+    }
+
+    public fun keypair_id_scheme_usage_and_note(addr: address): (address, u8, u64, String) {
+        let s = &Session[addr];
+        (addr, group::element_scheme(&s.public_base_element), s.expected_usage, s.note)
+    }
+
+    public fun usage_and_note(addr: address): (u64, String) {
+        let s = &Session[addr];
+        (s.expected_usage, s.note)
     }
 
     #[view]

@@ -6,7 +6,7 @@
  *
  * Scenario:
  *   Committee: [A, B, C]  threshold=2  resharing_interval_secs=120 (2 min)
- *   Secrets: 1 (scheme=0, BLS12-381 G1)
+ *   Secrets: 1 (primitive=1, BFIBE shortsig/G2)
  *
  * Flow:
  *   1. Start localnet.
@@ -80,7 +80,7 @@ async function main() {
 
     // ── Deploy contracts ─────────────────────────────────────────────────────
     log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 19000;
@@ -149,7 +149,7 @@ async function main() {
     })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
     // ── Propose new_secret ───────────────────────────────────────────────────
-    log('Admin: propose new_secret(scheme=0); A,B approve...');
+    log('Admin: propose new_secret(primitive=1); A,B approve...');
     {
         const approvers = workerAccounts.slice(0, threshold);
         await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));

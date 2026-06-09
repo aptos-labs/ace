@@ -53,23 +53,23 @@ export interface MintConfig {
  */
 export async function buildOnce(cfg: MintConfig): Promise<Pool> {
     const plaintext = new TextEncoder().encode('loadtest-mint');
-    const ciphertext = (await ACE.AptosBasicFlow.encrypt({
+    const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment: cfg.aceDeployment,
         keypairId: cfg.keypairId,
         chainId: cfg.chainId,
         moduleAddr: cfg.moduleAddr,
         moduleName: cfg.moduleName,
-        domain: cfg.domain,
+        label: cfg.domain,
         plaintext,
     })).unwrapOrThrow('loadtest mint: encrypt failed');
 
-    const session = await ACE.AptosBasicFlow.DecryptionSession.create({
+    const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment: cfg.aceDeployment,
         keypairId: cfg.keypairId,
         chainId: cfg.chainId,
         moduleAddr: cfg.moduleAddr,
         moduleName: cfg.moduleName,
-        domain: cfg.domain,
+        label: cfg.domain,
         ciphertext,
     });
     const msg = await session.getRequestToSign();
@@ -77,6 +77,7 @@ export async function buildOnce(cfg: MintConfig): Promise<Pool> {
         userAddr: cfg.loadtester.accountAddress,
         publicKey: cfg.loadtester.publicKey,
         signature: cfg.loadtester.sign(msg),
+        fullMessage: msg,
         targetEndpoint: cfg.targetEndpoint,
     })).unwrapOrThrow('loadtest mint: build per-node request failed');
 

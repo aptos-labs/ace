@@ -26,6 +26,8 @@ export class Session {
         readonly workers: AccountAddress[],
         readonly threshold: number,
         readonly basePoint: PublicPoint,
+        readonly expectedUsage: bigint,
+        readonly note: string,
         readonly state: number,
         readonly vssSessions: AccountAddress[],
         readonly doneFlags: boolean[],
@@ -53,6 +55,9 @@ export class Session {
 
                 const basePoint = PublicPoint.deserialize(deserializer)
                     .unwrapOrThrow('basePoint deserialize failed');
+
+                const expectedUsage = deserializer.deserializeU64();
+                const note = deserializer.deserializeStr();
 
                 const state = deserializer.deserializeU8();
 
@@ -82,7 +87,7 @@ export class Session {
                     sharePks.push(PublicPoint.deserialize(deserializer).unwrapOrThrow(`sharePks[${i}] deserialize failed`));
                 }
 
-                return new Session(caller, workers, threshold, basePoint, state, vssSessions, doneFlags, resultPk, sharePks);
+                return new Session(caller, workers, threshold, basePoint, expectedUsage, note, state, vssSessions, doneFlags, resultPk, sharePks);
             },
         });
     }

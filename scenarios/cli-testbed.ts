@@ -63,7 +63,7 @@ async function main() {
 
     log('Deploying contracts...');
     await deployContracts(adminAccount, [
-        'pke', 'worker_config', 'group', 'fiat-shamir-transform',
+        'pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform',
         'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
     ]);
 

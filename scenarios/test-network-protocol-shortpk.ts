@@ -65,7 +65,7 @@ async function main() {
         const threshold = 2;
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys for A, B, C.');
         for (let i = 0; i < numWorkers; i++) {
@@ -99,7 +99,7 @@ async function main() {
 
         // ── Epoch 0→1: new_secret proposal (DKG) ────────────────────────────
 
-        log('Node A: propose new_secret(scheme=0); B approves (A self-approves in new_proposal).');
+        log('Node A: propose new_secret(primitive=0); B approves (A self-approves in new_proposal).');
         const approvers = committee.slice(0, threshold);
         await proposeAndApprove(
             approvers[0]!,
@@ -147,7 +147,7 @@ async function main() {
 
         // ── Epoch 2→3: new_secret proposal (DKR reshare + DKG for new secret) ─
 
-        log('Node A: propose new_secret(scheme=0) in epoch 2; B approves.');
+        log('Node A: propose new_secret(primitive=0) in epoch 2; B approves.');
         await proposeAndApprove(
             approvers[0]!,
             approvers,

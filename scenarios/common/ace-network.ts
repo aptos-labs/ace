@@ -37,7 +37,7 @@ import { buildRustWorkspace, spawnNetworkNodeMaybeSplit } from './network-client
  *  full set; mirrors what every access-failure scenario has historically
  *  duplicated inline. */
 export const ACE_CONTRACTS: readonly string[] = [
-    'pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment',
+    'pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment',
     'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
 ];
 
@@ -187,9 +187,9 @@ export async function setupAceNetworkAndWorkers(
  * (the secret appears) before the next is proposed, or the network state
  * `secrets` count will be ambiguous.
  *
- * `scheme` is the PKE/keypair scheme code (matches
- * `serializeNewSecretProposal(scheme)`). Pass `1` for the default in the
- * access-failure scenarios.
+ * `dkgPrimitive` is the ACE primitive id passed to
+ * `serializeNewSecretProposal`. Defaults to shortsig IBE, which is the normal
+ * access-failure scenario key usage.
  */
 export interface SetupAceOnLocalnetOpts {
     totalWorkers: number;
@@ -203,6 +203,8 @@ export interface SetupAceOnLocalnetOpts {
      *  keyless whose Step A uses a real-but-wrong keypair (keypair-1 against
      *  keypair-0 ciphertext). */
     numKeypairs: number;
+    /** ACE primitive id for each DKG'd keypair. */
+    dkgPrimitive?: number;
     /** Optional hook to run *after* `startLocalnet()` but *before* any ACE
      *  setup. The keyless scenarios use this to invoke their framework
      *  bootstrap (clear JWKs / install Groth16 VK / patch Configuration),
@@ -260,6 +262,7 @@ export async function setupAceOnLocalnet(
             adminAddr: actors.adminAddr,
             adminAccountAddress: ace.adminAccountAddress,
             expectedSecretsCountAfter: i + 1,
+            primitive: opts.dkgPrimitive,
             label: `keypair-${i}`,
         });
         keypairIds.push(id);
@@ -273,12 +276,12 @@ export async function runDkg(opts: {
     adminAddr: string;
     adminAccountAddress: AccountAddress;
     expectedSecretsCountAfter: number;
-    scheme?: number;
+    primitive?: number;
     timeoutMs?: number;
     label?: string;
 }): Promise<AccountAddress> {
     const { approvers, adminAddr, adminAccountAddress } = opts;
-    const scheme = opts.scheme ?? 1;
+    const primitive = opts.primitive ?? ACE.network.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD;
     const timeoutMs = opts.timeoutMs ?? 90_000;
     const label = opts.label ?? `keypair-${opts.expectedSecretsCountAfter - 1}`;
 
@@ -286,7 +289,7 @@ export async function runDkg(opts: {
         approvers[0]!,
         approvers,
         adminAddr,
-        serializeNewSecretProposal(scheme),
+        serializeNewSecretProposal(primitive),
     );
     await waitFor(
         `${label} DKG done`,

@@ -5,16 +5,17 @@ module ace::network {
     use ace::dkr;
     use std::option::{Option, Self};
     use ace::dkg;
-    use ace::group;
+    use ace::secret_usage;
     use ace::epoch_change;
     use std::bcs;
     use aptos_framework::object::{Self, ExtendRef};
     use aptos_std::bcs_stream;
     use std::vector::range;
     use ace::voting;
-    use std::string::String;
+    use std::string::{Self, String};
 
     const MIN_RESHARING_INTERVAL_SECS: u64 = 30;
+    const MAX_DESCRIPTION_BYTES: u64 = 1024;
 
     const E_ONLY_ADMIN_CAN_DO_THIS: u64 = 1;
     const E_INVALID_NODE: u64 = 2;
@@ -33,6 +34,7 @@ module ace::network {
     const E_INVALID_RESHARING_INTERVAL: u64 = 17;
     const E_PROPOSAL_IS_NOT_CURRENT: u64 = 18;
     const E_YOU_ALREADY_PROPOSED_IN_THIS_EPOCH: u64 = 19;
+    const E_DESCRIPTION_TOO_LONG: u64 = 20;
 
     struct ProposalState has store, drop {
         proposal: ProposedEpochConfig,
@@ -67,7 +69,7 @@ module ace::network {
         /// can only be a subset of the currently active secret set.
         secrets_to_retain: vector<address>,
         /// Each results in a DKG in epoch change.
-        new_secrets: vector<u8>,
+        new_secrets: vector<secret_usage::SecretRequest>,
         /// limit: 1024 bytes
         description: String,
         /// Must match state.epoch at submission time; prevents stale proposals from firing.
@@ -78,6 +80,8 @@ module ace::network {
         current_session: address,
         keypair_id: address,
         scheme: u8,
+        expected_usage: u64,
+        note: String,
     }
 
     #[view]
@@ -115,7 +119,6 @@ module ace::network {
 
     // Single BCS-encoded snapshot covering network::State plus all sub-protocol data nodes
     // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
-    // Versioned so new fields can be added in StateViewV1, V2, etc.
     #[view]
     public fun state_view_v0_bcs(): vector<u8> {
         let state = &State[@ace];
@@ -164,12 +167,12 @@ module ace::network {
             let result = vector[];
             while (i < n) {
                 let addr = state.secrets[i];
-                let (keypair_id, scheme) = if (dkg::is_session(addr)) {
-                    dkg::keypair_id_and_scheme(addr)
+                let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
+                    dkg::keypair_id_scheme_usage_and_note(addr)
                 } else {
-                    dkr::keypair_id_and_scheme(addr)
+                    dkr::keypair_id_scheme_usage_and_note(addr)
                 };
-                result.push_back(SecretInfo { current_session: addr, keypair_id, scheme });
+                result.push_back(SecretInfo { current_session: addr, keypair_id, scheme, expected_usage, note });
                 i += 1;
             };
             result
@@ -341,7 +344,12 @@ module ace::network {
             threshold: bcs_stream::deserialize_u64(&mut stream),
             epoch_duration_micros: bcs_stream::deserialize_u64(&mut stream),
             secrets_to_retain: bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_address(stream)),
-            new_secrets: bcs_stream::deserialize_vector(&mut stream, |stream| bcs_stream::deserialize_u8(stream)),
+            new_secrets: bcs_stream::deserialize_vector(&mut stream, |stream| {
+                secret_usage::new_request(
+                    bcs_stream::deserialize_u64(stream),
+                    bcs_stream::deserialize_string(stream),
+                )
+            }),
             description: bcs_stream::deserialize_string(&mut stream),
             target_epoch: bcs_stream::deserialize_u64(&mut stream),
         };
@@ -352,6 +360,7 @@ module ace::network {
     fun validate_proposal(state: &State, proposal: &ProposedEpochConfig) {
         // Validate target epoch — reject stale proposals.
         assert!(proposal.target_epoch == state.epoch, error::invalid_argument(E_PROPOSAL_IS_NOT_CURRENT));
+        assert!(string::length(&proposal.description) <= MAX_DESCRIPTION_BYTES, error::invalid_argument(E_DESCRIPTION_TOO_LONG));
 
         // Validate nodes and threshold.
         let n = proposal.nodes.length();
@@ -365,8 +374,8 @@ module ace::network {
         assert!(proposal.epoch_duration_micros >= MIN_RESHARING_INTERVAL_SECS * 1_000_000, error::invalid_argument(E_INVALID_RESHARING_INTERVAL));
 
         // Validate new secrets.
-        proposal.new_secrets.for_each_ref(|scheme| {
-            assert!(group::scheme_supported(*scheme), error::invalid_argument(E_UNSUPPORTED_SECRET_SCHEME));
+        proposal.new_secrets.for_each_ref(|request| {
+            secret_usage::validate_request(request);
         });
 
         // Validate secrets.

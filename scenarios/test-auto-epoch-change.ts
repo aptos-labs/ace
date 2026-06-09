@@ -57,7 +57,7 @@ async function main() {
         const threshold = 2;
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys for all workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -89,7 +89,7 @@ async function main() {
             ],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        log('Admin: propose new_secret(scheme=0); A,B approve.');
+        log('Admin: propose new_secret(primitive=1); A,B approve.');
         {
             const approvers = committee.slice(0, threshold);
             await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));

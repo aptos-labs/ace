@@ -37,7 +37,7 @@ async function main() {
         const newCommitteeEncKeypairIndices = [1, 2, 3, 4];
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {
@@ -63,6 +63,8 @@ async function main() {
                 oldCommittee.map(w => w.accountAddress),
                 oldThreshold,
                 basePointBytes,
+                ace.network.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD,
+                '',
             ],
         });
         const dkgCommittedTxn = dkgMaybeCommittedTxn.unwrapOrThrow('Failed to get committed DKG transaction.').asSuccessOrThrow();

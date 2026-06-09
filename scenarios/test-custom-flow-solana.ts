@@ -48,7 +48,7 @@ const SOLANA_EXAMPLE_DIR = path.join(REPO_ROOT, 'scenarios', 'custom-flow-solana
 const NUM_WORKERS = 3;
 // Two DKG'd secrets in a single epoch change; happy-path uses keypair[0],
 // failures step-A uses keypair[1] as the mismatching id.
-const SCHEMES = [1, 1];
+const PRIMITIVES = [1, 1];
 
 interface AceLocalnet {
     localnetProc: ChildProcess;
@@ -71,7 +71,7 @@ async function main() {
         const networkState = await startInitialEpochAndDkgSecrets({
             admin: setup.adminAccount, workers: setup.workerAccounts,
             aceContract: setup.aceContract, threshold: 2,
-            reshareIntervalSecs: 3600, schemes: SCHEMES, timeoutMs: 300_000,
+            reshareIntervalSecs: 3600, primitives: PRIMITIVES, timeoutMs: 300_000,
         });
         const keypairIds = networkState.secrets.map(s => s.keypairId.toStringLong());
         log(`DKG complete. keypairIds=[${keypairIds.join(', ')}]`);
@@ -103,7 +103,7 @@ async function bringUpAceLocalnetWithWorkers(numWorkers: number): Promise<AceLoc
     const aceContract = adminAccount.accountAddress.toStringLong();
     log('Deploying ACE contracts...');
     await deployContracts(adminAccount, [
-        'pke', 'worker_config', 'group', 'fiat-shamir-transform',
+        'pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform',
         'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
     ]);
     await registerWorkersOnChain(workerAccounts, encKeypairs, aceContract);
@@ -152,13 +152,13 @@ function spawnAceWorkers(
 }
 
 /** Drive the on-chain ACE state machine through `start_initial_epoch` →
- *  propose `schemes.length` new secrets in one epoch change → wait for the
+ *  propose `primitives.length` new secrets in one epoch change → wait for the
  *  DKGs to complete. Returns the network-state snapshot at the moment all
  *  DKGs are done. */
 async function startInitialEpochAndDkgSecrets(args: {
     admin: Account; workers: Account[]; aceContract: string;
     threshold: number; reshareIntervalSecs: number;
-    schemes: number[]; timeoutMs: number;
+    primitives: number[]; timeoutMs: number;
 }): Promise<ace.network.State> {
     log(`Admin: start_initial_epoch (resharing_interval_secs=${args.reshareIntervalSecs})...`);
     (await submitTxn({
@@ -166,23 +166,23 @@ async function startInitialEpochAndDkgSecrets(args: {
         entryFunction: `${args.aceContract}::network::start_initial_epoch`,
         args: [args.workers.map(w => w.accountAddress), args.threshold, args.reshareIntervalSecs],
     })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
-    log(`Admin: propose ${args.schemes.length} new_secret entries; workers 0,1 approve...`);
+    log(`Admin: propose ${args.primitives.length} new_secret entries; workers 0,1 approve...`);
     await proposeAndApprove(
         args.workers[0]!, args.workers.slice(0, 2),
-        args.aceContract, serializeNewSecretsProposal(args.schemes),
+        args.aceContract, serializeNewSecretsProposal(args.primitives),
     );
-    log(`Waiting for DKG (${args.schemes.length} secrets) to complete...`);
+    log(`Waiting for DKG (${args.primitives.length} secrets) to complete...`);
     const deadline = Date.now() + args.timeoutMs;
     let networkState: ace.network.State | undefined;
     while (Date.now() < deadline) {
         const maybe = await getNetworkState(args.admin.accountAddress);
         if (maybe.isOk) {
             networkState = maybe.okValue!;
-            if (networkState.epochChangeInfo === null && networkState.secrets.length >= args.schemes.length) break;
+            if (networkState.epochChangeInfo === null && networkState.secrets.length >= args.primitives.length) break;
         }
         await sleep(5_000);
     }
-    if (!networkState || networkState.secrets.length < args.schemes.length) {
+    if (!networkState || networkState.secrets.length < args.primitives.length) {
         throw `DKG did not complete within ${args.timeoutMs / 1000}s.`;
     }
     return networkState;

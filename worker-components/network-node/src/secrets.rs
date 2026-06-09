@@ -50,8 +50,10 @@ pub enum SecretsSnapshotWire {
 /// right value for the epoch they belong to.
 ///
 /// `group_scheme` is the underlying VSS group (e.g. BLS12381G1). The handler
-/// uses it to derive (or validate) the t-IBE scheme to format the share for —
-/// the maintainer itself never touches t-IBE.
+/// validates it against the requested primitive's implementation group.
+///
+/// `expected_usage` is the on-chain ACE primitive usage mask. Handlers must
+/// check it before deriving either IBE or VRF shares.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ShareWire {
     pub keypair_id: String,
@@ -60,6 +62,8 @@ pub struct ShareWire {
     /// 32-byte BLS scalar (little-endian), `0x`-prefixed hex.
     pub scalar_le32_hex: String,
     pub group_scheme: u8,
+    pub expected_usage: u64,
+    pub note: String,
 }
 
 /// Parsed, in-memory form of a snapshot.
@@ -68,18 +72,20 @@ pub struct Snapshot {
     pub entries: Arc<HashMap<(String, u64), ShareEntry>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ShareEntry {
     pub scalar_le32: [u8; 32],
     pub group_scheme: u8,
+    pub expected_usage: u64,
     pub eval_point: u64,
+    pub note: String,
 }
 
 impl Snapshot {
     pub fn lookup(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
         // `HashMap<(String, u64), _>::get` needs an owned key here — there's
         // no `Borrow<(String, u64)>` impl for `(&str, u64)`.
-        self.entries.get(&(keypair_id.to_string(), epoch)).copied()
+        self.entries.get(&(keypair_id.to_string(), epoch)).cloned()
     }
 }
 
@@ -109,6 +115,8 @@ impl LocalSecrets {
                 eval_point: e.eval_point,
                 scalar_le32_hex: format!("0x{}", hex::encode(e.scalar_le32)),
                 group_scheme: e.group_scheme,
+                expected_usage: e.expected_usage,
+                note: e.note.clone(),
             })
             .collect();
         shares.sort_by_key(|s| (s.epoch, s.keypair_id.clone()));
@@ -202,7 +210,9 @@ impl RemoteSecrets {
                 ShareEntry {
                     scalar_le32: scalar,
                     group_scheme: sh.group_scheme,
+                    expected_usage: sh.expected_usage,
                     eval_point: sh.eval_point,
+                    note: sh.note,
                 },
             );
         }
@@ -240,7 +250,9 @@ mod tests {
             ShareEntry {
                 scalar_le32: [0xab; 32],
                 group_scheme: 0,
+                expected_usage: crate::secret_usage::USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
                 eval_point: 2,
+                note: "legacy ibe".to_string(),
             },
         );
         shares.insert(
@@ -248,7 +260,9 @@ mod tests {
             ShareEntry {
                 scalar_le32: [0xcd; 32],
                 group_scheme: 1,
+                expected_usage: crate::secret_usage::USAGE_BFIBE_BLS12381_SHORTSIG_AEAD,
                 eval_point: 2,
+                note: "default ibe".to_string(),
             },
         );
 
@@ -266,8 +280,18 @@ mod tests {
         assert_eq!(shares.len(), 2);
         assert_eq!(shares[0].epoch, 5);
         assert_eq!(shares[0].group_scheme, 0);
+        assert_eq!(
+            shares[0].expected_usage,
+            crate::secret_usage::USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC
+        );
+        assert_eq!(shares[0].note, "legacy ibe");
         assert_eq!(shares[1].epoch, 6);
         assert_eq!(shares[1].group_scheme, 1);
+        assert_eq!(
+            shares[1].expected_usage,
+            crate::secret_usage::USAGE_BFIBE_BLS12381_SHORTSIG_AEAD
+        );
+        assert_eq!(shares[1].note, "default ibe");
     }
 
     #[tokio::test]

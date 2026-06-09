@@ -49,7 +49,7 @@ async function main() {
         const threshold = 2;
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys.');
         for (let i = 0; i < numWorkers; i++) {
@@ -77,9 +77,9 @@ async function main() {
             args: [committee.map(w => w.accountAddress), threshold, 60],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        // ── Epoch 0→1: new_secret(scheme=1) — DKG over G2, t-IBE = shortsig-aead ─
+        // ── Epoch 0→1: new_secret(primitive=1) — DKG over G2, t-IBE = shortsig-aead ─
 
-        log('Propose new_secret(scheme=1) — DKG over BLS12-381 G2 → t-IBE = shortsig-aead.');
+        log('Propose new_secret(primitive=1) — DKG over BLS12-381 G2 → t-IBE = shortsig-aead.');
         const approvers = committee.slice(0, threshold);
         await proposeAndApprove(
             approvers[0]!,
@@ -131,7 +131,7 @@ async function main() {
 
         // ── Epoch 2→3: new_secret proposal (DKR reshare + DKG for new secret) ─
 
-        log('Propose new_secret(scheme=1) again in epoch 2.');
+        log('Propose new_secret(primitive=1) again in epoch 2.');
         await proposeAndApprove(
             approvers[0]!,
             approvers,

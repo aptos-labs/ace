@@ -91,7 +91,7 @@ async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlowSetup> 
     const adminAddr = adminAccount.accountAddress;
     log('Deploying ACE contracts...');
     await deployContracts(adminAccount, [
-        'pke', 'worker_config', 'group', 'fiat-shamir-transform',
+        'pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform',
         'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
     ]);
     await registerWorkersOnChain(workerAccounts, encKeypairs, aceContract);

@@ -675,7 +675,7 @@ function serializeProposedEpochConfig(state: ace.network.State, override: Partia
     threshold: number;
     epochDurationMicros: bigint;
     secretsToRetain: AccountAddress[];
-    newSecrets: number[];
+    newSecrets: ace.network.SecretRequest[];
     description: string;
 }>): Uint8Array {
     const nodes = override.nodes ?? state.curNodes;
@@ -693,22 +693,35 @@ function serializeProposedEpochConfig(state: ace.network.State, override: Partia
     ser.serializeU32AsUleb128(secretsToRetain.length);
     for (const s of secretsToRetain) ser.serialize(s);
     ser.serializeU32AsUleb128(newSecrets.length);
-    for (const s of newSecrets) ser.serializeU8(s);
+    for (const request of newSecrets) {
+        ser.serializeU64(request.expectedUsage);
+        ser.serializeStr(request.note);
+    }
     ser.serializeStr(description);
     ser.serializeU64(state.epoch);
     return ser.toUint8Array();
 }
 
-export function serializeNewSecretProposal(scheme: number): (state: ace.network.State) => Uint8Array {
-    return (state) => serializeProposedEpochConfig(state, { newSecrets: [scheme] });
+export function serializeNewSecretUsageProposal(expectedUsage: bigint, note = ''): (state: ace.network.State) => Uint8Array {
+    return (state) => serializeProposedEpochConfig(state, {
+        newSecrets: [new ace.network.SecretRequest(expectedUsage, note)],
+    });
+}
+
+export function serializeNewSecretProposal(primitive: number, note = ''): (state: ace.network.State) => Uint8Array {
+    return serializeNewSecretUsageProposal(ace.network.usageForPrimitive(primitive), note);
 }
 
 /** Same as [`serializeNewSecretProposal`] but proposes multiple new secrets
  *  in a single epoch change (ACE's `newSecrets` wire field is a list).
- *  All `schemes` get DKG'd as part of one epoch transition; faster than
+ *  All `primitives` get DKG'd as part of one epoch transition; faster than
  *  N sequential `serializeNewSecretProposal` proposals. */
-export function serializeNewSecretsProposal(schemes: number[]): (state: ace.network.State) => Uint8Array {
-    return (state) => serializeProposedEpochConfig(state, { newSecrets: schemes });
+export function serializeNewSecretsProposal(primitives: number[], note = ''): (state: ace.network.State) => Uint8Array {
+    return (state) => serializeProposedEpochConfig(state, {
+        newSecrets: primitives.map((primitive) =>
+            new ace.network.SecretRequest(ace.network.usageForPrimitive(primitive), note),
+        ),
+    });
 }
 
 export function serializeCommitteeChangeProposal(nodes: AccountAddress[], threshold: number): (state: ace.network.State) => Uint8Array {

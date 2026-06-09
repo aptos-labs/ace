@@ -122,7 +122,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────
@@ -202,7 +202,7 @@ async function main() {
 
         // ── Step 7: Worker 0 proposes keypair-0 (new_secret, epoch 0→1) ──────
         // Proposer and approvers are all from committee A (workers 0,1,2; threshold=2).
-        step(7, `Worker 0 proposes keypair-0 (scheme=0, BLS12-381 G1); workers 0,1 approve`);
+        step(7, `Worker 0 proposes keypair-0 (primitive=1, BFIBE shortsig/G2); workers 0,1 approve`);
         const committeeAApprovers = COMMITTEE_A_INDICES.slice(0, COMMITTEE_A_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
             committeeAApprovers[0]!,

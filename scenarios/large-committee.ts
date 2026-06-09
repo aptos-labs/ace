@@ -44,7 +44,7 @@ async function main() {
         log(`Large-committee smoke test: NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
         log('Register PKE enc keys.');
         for (let i = 0; i < NUM_WORKERS; i++) {
@@ -72,7 +72,7 @@ async function main() {
             args: [workerAccounts.map(w => w.accountAddress), THRESHOLD, 600],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        log('Admin: propose new_secret(scheme=0); threshold approvers sign.');
+        log('Admin: propose new_secret(primitive=1); threshold approvers sign.');
         {
             const approvers = workerAccounts.slice(0, THRESHOLD);
             await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));

@@ -44,7 +44,7 @@ async function main() {
         const newCommitteeEncKeypairIndices = [1, 2, 3, 4];
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
+        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
 
         log('Register workers.');
         for (let i = 0; i < numWorkers; i++) {

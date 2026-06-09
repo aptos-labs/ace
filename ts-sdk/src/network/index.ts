@@ -4,6 +4,27 @@
 import { AccountAddress, Deserializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 
+export const PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 0;
+export const PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD = 1;
+export const PRIMITIVE_BLS12381_THRESHOLD_VRF = 2;
+
+export const USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 1n;
+export const USAGE_BFIBE_BLS12381_SHORTSIG_AEAD = 2n;
+export const USAGE_BLS12381_THRESHOLD_VRF = 4n;
+
+export function usageForPrimitive(primitive: number): bigint {
+    switch (primitive) {
+        case PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC:
+            return USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC;
+        case PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD:
+            return USAGE_BFIBE_BLS12381_SHORTSIG_AEAD;
+        case PRIMITIVE_BLS12381_THRESHOLD_VRF:
+            return USAGE_BLS12381_THRESHOLD_VRF;
+        default:
+            throw new Error(`unsupported ACE primitive ${primitive}`);
+    }
+}
+
 const SCHEME_NAMES: Record<number, string> = {
     0: 'BLS12-381 G1 / BFIBE-shortpk-otp-hmac (legacy)',
     1: 'BLS12-381 G2 / BFIBE-shortsig-aead (default)',
@@ -21,6 +42,8 @@ export class SecretInfo {
         /** Address of the original DKG session that created this secret lineage. */
         readonly keypairId: AccountAddress,
         readonly scheme: number,
+        readonly expectedUsage: bigint,
+        readonly note: string,
     ) {}
 
     schemeName(): string { return schemeName(this.scheme); }
@@ -29,7 +52,23 @@ export class SecretInfo {
         const currentSession = AccountAddress.deserialize(deserializer);
         const keypairId = AccountAddress.deserialize(deserializer);
         const scheme = deserializer.deserializeU8();
-        return new SecretInfo(currentSession, keypairId, scheme);
+        const expectedUsage = deserializer.deserializeU64();
+        const note = deserializer.deserializeStr();
+        return new SecretInfo(currentSession, keypairId, scheme, expectedUsage, note);
+    }
+}
+
+/** Mirrors `ace::secret_usage::SecretRequest` inside `ProposedEpochConfig`. */
+export class SecretRequest {
+    constructor(
+        readonly expectedUsage: bigint,
+        readonly note: string = '',
+    ) {}
+
+    static deserialize(deserializer: Deserializer): SecretRequest {
+        const expectedUsage = deserializer.deserializeU64();
+        const note = deserializer.deserializeStr();
+        return new SecretRequest(expectedUsage, note);
     }
 }
 
@@ -39,7 +78,7 @@ export type ProposedEpochConfig = {
     threshold: number;
     epochDurationMicros: bigint;
     secretsToRetain: AccountAddress[];
-    newSecrets: number[];
+    newSecrets: SecretRequest[];
     description: string;
     targetEpoch: number;
 };
@@ -76,8 +115,8 @@ export class ProposalView {
         for (let i = 0; i < retainLen; i++) secretsToRetain.push(AccountAddress.deserialize(deserializer));
 
         const newSecretsLen = deserializer.deserializeUleb128AsU32();
-        const newSecrets: number[] = [];
-        for (let i = 0; i < newSecretsLen; i++) newSecrets.push(deserializer.deserializeU8());
+        const newSecrets: SecretRequest[] = [];
+        for (let i = 0; i < newSecretsLen; i++) newSecrets.push(SecretRequest.deserialize(deserializer));
 
         const description = deserializer.deserializeStr();
         const targetEpoch = Number(deserializer.deserializeU64());

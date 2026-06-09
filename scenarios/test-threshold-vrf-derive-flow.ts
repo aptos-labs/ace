@@ -80,6 +80,7 @@ async function main() {
             epoch0Threshold: THRESHOLD,
             fundAccount,
             numKeypairs: 1,
+            dkgPrimitive: ACE.network.PRIMITIVE_BLS12381_THRESHOLD_VRF,
         });
         const { actors, ace, keypairIds } = scenario;
         const owner = actors.alice;

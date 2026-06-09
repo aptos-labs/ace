@@ -62,6 +62,7 @@ use vss_common::crypto::pke_encrypt;
 use vss_common::normalize_account_addr;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
+use crate::secret_usage;
 use crate::secrets::{LocalSecrets, SecretsProvider, SecretsSnapshotWire};
 use crate::verify::{
     self, BasicFlowRequest, CustomFlowRequest, ThresholdVrfRequest, WorkerRequest,
@@ -145,6 +146,67 @@ async fn serve(port: u16, app: Router, label: &str) {
     wlog!("{}: listening on {}", label, addr);
     if let Err(e) = axum::serve(listener, app).await {
         wlog!("{}: serve error: {}", label, e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    use crate::secrets::{ShareEntry, Snapshot};
+    use vss_common::group::SCHEME_BLS12381G2;
+    use vss_common::pke::EncryptionKey;
+    use vss_common::pke_hpke_x25519_chacha20poly1305 as hpke;
+
+    fn dummy_response_enc_key() -> EncryptionKey {
+        EncryptionKey::HpkeX25519ChaCha20Poly1305(hpke::EncryptionKey { pk: vec![0u8; 32] })
+    }
+
+    fn snapshot_with_share(keypair_id: &str, epoch: u64, entry: ShareEntry) -> Snapshot {
+        let mut entries = HashMap::new();
+        entries.insert((keypair_id.to_string(), epoch), entry);
+        Snapshot {
+            entries: Arc::new(entries),
+        }
+    }
+
+    #[test]
+    fn extract_rejects_vrf_only_share_for_tibe() {
+        let keypair_id = "0xkp";
+        let epoch = 7;
+        let snapshot = snapshot_with_share(
+            keypair_id,
+            epoch,
+            ShareEntry {
+                scalar_le32: [1u8; 32],
+                group_scheme: SCHEME_BLS12381G2,
+                expected_usage: secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
+                eval_point: 2,
+                note: "vrf only".to_string(),
+            },
+        );
+
+        let outcome = extract_and_respond(
+            &snapshot,
+            keypair_id,
+            epoch,
+            b"identity",
+            &dummy_response_enc_key(),
+            crate::crypto::SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+        );
+
+        match outcome {
+            Outcome::Rejected {
+                reason: Reason::BadRequest,
+                detail,
+            } => {
+                assert!(detail
+                    .unwrap_or_default()
+                    .contains("does not allow tibe_scheme"));
+            }
+            _ => panic!("expected BadRequest rejection for VRF-only share"),
+        }
     }
 }
 
@@ -490,6 +552,19 @@ async fn handle_threshold_vrf(
             };
         }
     };
+    if !secret_usage::allows_usage(
+        entry.expected_usage,
+        secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
+    ) {
+        ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+        return Outcome::Rejected {
+            reason: Reason::BadRequest,
+            detail: Some(format!(
+                "keypair_id={} epoch={} usage mask {} does not allow threshold VRF",
+                keypair_id, req.payload.epoch, entry.expected_usage
+            )),
+        };
+    }
 
     let share_bytes = match crate::crypto::partial_derive_threshold_vrf_share(
         &req.payload.keypair_id,
@@ -572,6 +647,25 @@ fn extract_and_respond(
                 detail: Some(format!("unknown tibe_scheme {}: {:#}", tibe_scheme, e)),
             };
         }
+    }
+
+    let required_usage = match secret_usage::usage_for_tibe_scheme(tibe_scheme) {
+        Ok(u) => u,
+        Err(e) => {
+            return Outcome::Rejected {
+                reason: Reason::BadRequest,
+                detail: Some(format!("unknown tibe_scheme {}: {:#}", tibe_scheme, e)),
+            };
+        }
+    };
+    if !secret_usage::allows_usage(entry.expected_usage, required_usage) {
+        return Outcome::Rejected {
+            reason: Reason::BadRequest,
+            detail: Some(format!(
+                "keypair_id={} epoch={} usage mask {} does not allow tibe_scheme {}",
+                keypair_id, epoch, entry.expected_usage, tibe_scheme
+            )),
+        };
     }
 
     let share_hex = match crate::crypto::partial_extract_idk_share(

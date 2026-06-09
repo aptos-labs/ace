@@ -95,7 +95,7 @@ pub struct DecryptionBasicFlowRequest {
     pub payload: DecryptionRequestPayload,
     pub proof: ProofOfPermission,
     /// Client-asserted t-IBE scheme the share should be formatted for.
-    /// The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme`.
+    /// The handler validates both the share's group and its on-chain usage mask.
     pub tibe_scheme: u8,
 }
 

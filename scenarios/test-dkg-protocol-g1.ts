@@ -52,6 +52,8 @@ async function main() {
                 workerAccounts.map(w => w.accountAddress),
                 3, // threshold
                 basePointBytes,
+                ace.network.USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+                '',
             ],
         });
         const committedTxn = maybeCommittedTxn.unwrapOrThrow('Failed to get committed transaction.').asSuccessOrThrow();

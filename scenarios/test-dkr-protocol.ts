@@ -63,6 +63,8 @@ async function main() {
                 oldCommittee.map(w => w.accountAddress),
                 oldThreshold,
                 basePointBytes,
+                ace.network.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD,
+                '',
             ],
         });
         const dkgCommittedTxn = dkgMaybeCommittedTxn.unwrapOrThrow('Failed to get committed DKG transaction.').asSuccessOrThrow();

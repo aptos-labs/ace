@@ -215,7 +215,7 @@ export async function loadtestRunCommand(opts: {
             '--contract, --keypair, and --chain-id must be passed together (or all omitted).',
         );
     }
-    const rpcUrl = DEFAULT_RPC[network] ?? DEFAULT_RPC[DEFAULT_NETWORK];
+    const rpcUrl = state.rpcUrl ?? DEFAULT_RPC[network] ?? DEFAULT_RPC[DEFAULT_NETWORK];
     let aceDeployment: ACE.AceDeployment;
     let keypairId: AccountAddress;
     let chainId: number;
@@ -350,4 +350,3 @@ export function loadtestResetCommand(opts: { network?: string }): void {
     console.log(`✓ Cleared load-test state for ${network} (~/.ace/config.json).`);
     console.log(`  Note: any APT in the test account and the on-chain ACL module are NOT deleted.`);
 }
-

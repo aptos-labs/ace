@@ -65,6 +65,8 @@ const CHAIN_RPC_FLAGS: Record<string, keyof ChainRpcOverrides> = {
     'aptos-testnet-apikey':    'aptosTestnetApikey',
     'aptos-localnet-api':      'aptosLocalnetApi',
     'aptos-localnet-apikey':   'aptosLocalnetApikey',
+    'aptos-shelby-private-beta-api':    'aptosShelbyPrivateBetaApi',
+    'aptos-shelby-private-beta-apikey': 'aptosShelbyPrivateBetaApikey',
     'solana-mainnet-beta-rpc': 'solanaMainnetBetaRpc',
     'solana-testnet-rpc':      'solanaTestnetRpc',
     'solana-devnet-rpc':       'solanaDevnetRpc',
@@ -74,12 +76,14 @@ const CHAIN_RPC_SECRET: Partial<Record<keyof ChainRpcOverrides, boolean>> = {
     aptosMainnetApikey:  true,
     aptosTestnetApikey:  true,
     aptosLocalnetApikey: true,
+    aptosShelbyPrivateBetaApikey: true,
 };
 
 const CHAIN_RPC_SECRET_ENVS: Partial<Record<keyof ChainRpcOverrides, string>> = {
     aptosMainnetApikey:  GCP_SECRET_ENV.aptosMainnetApiKey,
     aptosTestnetApikey:  GCP_SECRET_ENV.aptosTestnetApiKey,
     aptosLocalnetApikey: GCP_SECRET_ENV.aptosLocalnetApiKey,
+    aptosShelbyPrivateBetaApikey: GCP_SECRET_ENV.aptosShelbyPrivateBetaApiKey,
 };
 
 function parseNodeArgs(args: string[]): ParsedArgs {

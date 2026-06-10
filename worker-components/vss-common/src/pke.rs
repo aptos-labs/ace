@@ -1,7 +1,9 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! PKE types mirroring `ts-sdk/src/pke/index.ts` and `contracts/pke/sources/pke.move`.
+//! PKE types mirroring `contracts/pke/sources/pke.move`.
+//! Schemes 0/1/2 are also mirrored in `ts-sdk/src/pke/index.ts`; scheme 2 is a
+//! post-quantum/hybrid prototype and is not production-audited.
 //!
 //! `EncryptionKey` and `Ciphertext` are serde-derived enums. BCS encodes an enum as
 //! `[ULEB128 variant tag][variant fields...]`; for tags 0/1 the ULEB128 is a single
@@ -13,10 +15,12 @@ use anyhow::{anyhow, Result};
 use curve25519_dalek::{ristretto::CompressedRistretto, Scalar};
 use serde::{Deserialize, Serialize};
 
+use crate::pke_hybrid_x25519_mlkem768_chacha20poly1305 as hybrid_pq_scheme;
 use crate::pke_hpke_x25519_chacha20poly1305 as hpke_scheme;
 
 pub const SCHEME_ELGAMAL_OTP_RISTRETTO255: u8 = 0;
 pub const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305: u8 = 1;
+pub const SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305: u8 = 2;
 
 // ── EncryptionKey ─────────────────────────────────────────────────────────────
 
@@ -24,6 +28,7 @@ pub const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305: u8 = 1;
 pub enum EncryptionKey {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey),
     HpkeX25519ChaCha20Poly1305(hpke_scheme::EncryptionKey),
+    HybridX25519MlKem768ChaCha20Poly1305(hybrid_pq_scheme::EncryptionKey),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,6 +43,7 @@ pub struct ElGamalOtpRistretto255EncKey {
 pub enum Ciphertext {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255Ciphertext),
     HpkeX25519ChaCha20Poly1305(hpke_scheme::Ciphertext),
+    HybridX25519MlKem768ChaCha20Poly1305(hybrid_pq_scheme::Ciphertext),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,6 +81,16 @@ pub fn pke_decrypt(dk_bytes: &[u8], ct: &Ciphertext) -> Result<Vec<u8>> {
             }
             let dk = hpke_scheme::DecryptionKey::from_bytes(&dk_bytes[1..])?;
             hpke_scheme::decrypt(&dk, inner, b"")
+        }
+        Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(inner) => {
+            if dk_bytes[0] != SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305 {
+                return Err(anyhow!(
+                    "PKE scheme mismatch: dk={}, ct=HybridX25519MlKem768ChaCha20Poly1305",
+                    dk_bytes[0]
+                ));
+            }
+            let dk = hybrid_pq_scheme::DecryptionKey::from_bytes(&dk_bytes[1..])?;
+            hybrid_pq_scheme::decrypt(&dk, inner, b"")
         }
     }
 }
@@ -132,4 +148,34 @@ fn elgamal_otp_ristretto255_decrypt(
     // Decrypt
     let otp = crate::crypto::kdf(&seed, b"OTP/ELGAMAL_OTP_RISTRETTO255", ct.sym_ciph.len());
     Ok(otp.iter().zip(ct.sym_ciph.iter()).map(|(a, b)| a ^ b).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hybrid_scheme_dispatch_round_trip() {
+        let (ek_inner, dk_inner) = hybrid_pq_scheme::keygen();
+        let ek = EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(ek_inner);
+        let ct = crate::crypto::pke_encrypt(&ek, b"hybrid dispatch plaintext");
+
+        let mut dk_bytes = vec![SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305];
+        dk_bytes.extend_from_slice(&dk_inner.to_bytes());
+
+        let got = pke_decrypt(&dk_bytes, &ct).unwrap();
+        assert_eq!(got, b"hybrid dispatch plaintext");
+    }
+
+    #[test]
+    fn hybrid_scheme_mismatch_rejected() {
+        let (ek_inner, dk_inner) = hybrid_pq_scheme::keygen();
+        let ek = EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(ek_inner);
+        let ct = crate::crypto::pke_encrypt(&ek, b"hybrid dispatch plaintext");
+
+        let mut dk_bytes = vec![SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305];
+        dk_bytes.extend_from_slice(&dk_inner.to_bytes());
+
+        assert!(pke_decrypt(&dk_bytes, &ct).is_err());
+    }
 }

@@ -39,16 +39,19 @@ Defined in `worker-components/vss-common/src/pke.rs`, mirrored in `ts-sdk/src/pk
 enum EncryptionKey {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey),    // tag 0
     HpkeX25519ChaCha20Poly1305(HpkeEncryptionKey),           // tag 1
+    HybridX25519MlKem768ChaCha20Poly1305(HybridEncryptionKey), // tag 2
 }
 
 struct ElGamalOtpRistretto255EncKey { enc_base: Vec<u8>, public_point: Vec<u8> }
 struct HpkeEncryptionKey { pk: Vec<u8> }   // (pke_hpke_x25519_chacha20poly1305::EncryptionKey)
+struct HybridEncryptionKey { hpke_x25519: HpkeEncryptionKey, mlkem768_ek: Vec<u8> }
 ```
 
 | Variant | Wire bytes (total) |
 |---------|---------------------|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B enc_base \| 20 \| 32B public_point` = **67 B** |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B pk` = **34 B** |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| 20 \| 32B x25519_pk \| a0 09 \| 1184B mlkem768_ek` = **1220 B** |
 
 Where `20` = ULEB128(32). Inner `Vec<u8>` is sized but variable in principle; canonical lengths are 32 for all current uses.
 
@@ -58,6 +61,7 @@ Where `20` = ULEB128(32). Inner `Vec<u8>` is sized but variable in principle; ca
 enum Ciphertext {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255Ciphertext),  // tag 0
     HpkeX25519ChaCha20Poly1305(HpkeCiphertext),                // tag 1
+    HybridX25519MlKem768ChaCha20Poly1305(HybridCiphertext),    // tag 2
 }
 
 struct ElGamalOtpRistretto255Ciphertext {
@@ -66,12 +70,16 @@ struct ElGamalOtpRistretto255Ciphertext {
 struct HpkeCiphertext {
     enc: Vec<u8>, aead_ct: Vec<u8>
 }
+struct HybridCiphertext {
+    mlkem768_ct: Vec<u8>, aead_nonce: Vec<u8>, aead_ct: Vec<u8>
+}
 ```
 
 | Variant | Wire bytes |
 |---------|------------|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B c0 \| 20 \| 32B c1 \| ULEB(L) \| L B sym_ciph \| 20 \| 32B mac` |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B enc \| ULEB(L) \| L B aead_ct` (aead_ct = ct \|\| 16B Poly1305 tag) |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| c0 08 \| 1088B mlkem768_ct \| 0c \| 12B nonce \| ULEB(L) \| L B outer_aead_ct` |
 
 ### 1.3 `pke::DecryptionKey` (per scheme)
 
@@ -81,6 +89,7 @@ These never appear on the wire as part of a request — they live only on the wo
 |--------|--------|------:|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B enc_base \| 20 \| 32B priv_scalar` | **67 B** |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B sk` | **34 B** |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| 20 \| 32B x25519_sk \| 40 \| 64B mlkem768_seed` | **99 B** |
 
 The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/vss-common/src/pke.rs`) to dispatch.
 

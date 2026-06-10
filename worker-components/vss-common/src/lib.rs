@@ -7,6 +7,7 @@ pub mod aptos;
 pub mod crypto;
 pub mod group;
 pub mod pke;
+pub mod pke_hybrid_x25519_mlkem768_chacha20poly1305;
 pub mod pke_hpke_x25519_chacha20poly1305;
 pub mod session;
 pub mod share_reconstruction;

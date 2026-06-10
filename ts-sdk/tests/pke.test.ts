@@ -112,3 +112,41 @@ describe("PKE (ElGamal OTP Ristretto255)", () => {
         expect(pke.DecryptionKey.fromHex(`${GOLDEN_DEC_KEY_HEX}00`).isOk).toBe(false);
     });
 });
+
+describe("PKE hybrid scheme dispatch", () => {
+    it("keygen(2), encrypt, decrypt round-trip", async () => {
+        const { encryptionKey, decryptionKey } = await pke.keygen(
+            pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305,
+        );
+        const plaintext = new TextEncoder().encode("hello hybrid pke dispatch");
+
+        const ciphertext = await pke.encrypt({ encryptionKey, plaintext });
+        const result = await pke.decrypt({ decryptionKey, ciphertext });
+
+        expect(encryptionKey.scheme).toBe(pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305);
+        expect(ciphertext.scheme).toBe(pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305);
+        expect(result.isOk).toBe(true);
+        expect(new Uint8Array(result.okValue!)).toEqual(plaintext);
+    });
+
+    it("hybrid keys and ciphertexts round-trip through outer BCS", async () => {
+        const { encryptionKey, decryptionKey } = await pke.keygen(
+            pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305,
+        );
+        const ciphertext = await pke.encrypt({
+            encryptionKey,
+            plaintext: new TextEncoder().encode("outer wire"),
+        });
+
+        expect(encryptionKey.toBytes()[0]).toBe(pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305);
+        expect(decryptionKey.toBytes()[0]).toBe(pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305);
+        expect(ciphertext.toBytes()[0]).toBe(pke.SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305);
+
+        expect(pke.EncryptionKey.fromBytes(encryptionKey.toBytes()).unwrapOrThrow("ek").toBytes())
+            .toEqual(encryptionKey.toBytes());
+        expect(pke.DecryptionKey.fromBytes(decryptionKey.toBytes()).unwrapOrThrow("dk").toBytes())
+            .toEqual(decryptionKey.toBytes());
+        expect(pke.Ciphertext.fromBytes(ciphertext.toBytes()).unwrapOrThrow("ct").toBytes())
+            .toEqual(ciphertext.toBytes());
+    });
+});

@@ -159,6 +159,13 @@ pub fn pke_encrypt(key: &pke::EncryptionKey, plaintext: &[u8]) -> pke::Ciphertex
                 .expect("HPKE encrypt: invalid public key");
             pke::Ciphertext::HpkeX25519ChaCha20Poly1305(ct)
         }
+        pke::EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(ek) => {
+            let ct = crate::pke_hybrid_x25519_mlkem768_chacha20poly1305::encrypt(
+                ek, plaintext, b"",
+            )
+            .expect("hybrid PKE encrypt: invalid public key");
+            pke::Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(ct)
+        }
     }
 }
 

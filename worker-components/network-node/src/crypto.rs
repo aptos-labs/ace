@@ -290,7 +290,7 @@ mod tests {
         let contract_id = ContractId::Aptos(crate::verify::AptosContractId {
             chain_id: 4,
             module_addr: [0xef; 32],
-            module_name: "shelby_s3".to_string(),
+            module_name: "presigned_access".to_string(),
         });
         let share = partial_derive_threshold_vrf_share(
             &[0xab; 32],

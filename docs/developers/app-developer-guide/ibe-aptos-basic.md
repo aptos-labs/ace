@@ -329,4 +329,3 @@ Once a user is allowed to decrypt something, assume they can keep the plaintext.
 ## Ready-To-Run Examples
 
 - [`examples/tutorial-aptos`](../../../examples/tutorial-aptos): minimal pay-to-download marketplace.
-- [`examples/shelby-explorer-acl-aptos`](../../../examples/shelby-explorer-acl-aptos): allowlist, time lock, and pay-to-download policies.

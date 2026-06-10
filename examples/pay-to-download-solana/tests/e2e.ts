@@ -24,23 +24,29 @@
  *
  * Prerequisites:
  * - ACE global network running (Aptos localnet + workers):
- *   cd scenarios && pnpm run-local-network-forever
- *   (wait for "ACE local network is READY" banner)
+ *   `cd scenarios && pnpm run-local-network-forever`
+ *   (wait until the terminal prints "ACE local network is READY")
  * - Then in a second terminal:
- *   cd examples/pay-to-download-solana
- *   anchor test --provider.cluster localnet
+ *   `cd examples/pay-to-download-solana && pnpm test:localnet`
  */
 
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { AccessControl } from "../target/types/access_control";
 import { AceHook } from "../target/types/ace_hook";
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import { expect } from "chai";
 import * as ACE from "@aptos-labs/ace-sdk";
 import { Result } from "@aptos-labs/ace-sdk";
 import { AccountAddress, Serializer, DerivableAbstractedAccount } from "@aptos-labs/ts-sdk";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 
 // ============================================================================
 // Test Suite
@@ -110,10 +116,10 @@ describe("access-control", () => {
 
     // Load ACE config (aceDeployment, keypair_ids, knownChainName) via the
     // shared loader — same one the failures suite uses below.
-    const { aceDeployment, keypairIds, knownChainName } = loadAceLocalnetConfig(connection);
+    const { aceDeployment, keypairIds, knownChainName } = loadAceConfig(connection);
     const keypairId = keypairIds[0]!;
     console.log(`ACE contract: ${aceDeployment.contractAddr.toStringLong()}`);
-    console.log(`Keypair ID:   ${keypairId.toString()}`);
+    console.log(`IBE keypair:  ${keypairId.toString()}`);
     
     // ========================================================================
     // Step 3: Alice Encrypts Content with ACE
@@ -135,14 +141,14 @@ describe("access-control", () => {
 
     // Encrypt the content directly with ACE. The ciphertext can only be
     // decrypted by users who pass the on-chain access check.
-    const ciphertext = (await ACE.IBE_Solana.encrypt({
+    const ciphertext: Uint8Array = unwrapResult(await ACE.IBE_Solana.encrypt({
       aceDeployment,
       keypairId,
       knownChainName,
       programId: accessControlProgram.programId.toBase58(),
       label: fullBlobNameBytes,
       plaintext: secretContent,
-    })).unwrapOrThrow('failed to encrypt');
+    }), `failed to encrypt via ACE at ${aceDeployment.apiEndpoint}`);
 
     // ========================================================================
     // Step 4: Alice Registers the Listing On-Chain
@@ -158,18 +164,14 @@ describe("access-control", () => {
 
     const price = new anchor.BN(0.0005 * LAMPORTS_PER_SOL);  // 0.0005 SOL
 
-    const fileRegTxn = await program.methods
-      .registerBlob(
-        Array.from(aliceAptosAddrBytes),  // Owner's Aptos address
-        fileName,                          // Blob name (used in PDA seed)
-        price                              // Price in lamports
-      )
-      .accounts({
-        owner: alice.publicKey,
-      })
-      .signers([alice])
-      .rpc();
-    await confirmTransaction(connection, fileRegTxn);
+    await registerBlobListing({
+      owner: alice,
+      ownerAptosAddrBytes: aliceAptosAddrBytes,
+      fileName,
+      price,
+      program,
+      connection,
+    });
     console.log("✓ Listing registered on-chain (ciphertext kept off-chain)");
 
     // ========================================================================
@@ -374,7 +376,7 @@ describe("access-control failures (worker-side rejection)", () => {
   // check rather than the SDK's pre-flight `fetchCurrentSessionPks` throw).
   // Populated by `test-solana-example.ts` (writes the list into the config).
   let keypairId: AccountAddress;
-  let mismatchingKeypairId: AccountAddress;
+  let mismatchingKeypairId: AccountAddress | undefined;
   let knownChainName: string;
 
   // Distinct from the happy-path file name so the two suites' PDAs don't
@@ -389,8 +391,12 @@ describe("access-control failures (worker-side rejection)", () => {
     aliceAptosAddrBytes = solanaAddrToAptosAddr(alice.publicKey).toUint8Array();
     await fundAccounts(connection, [alice, bob], 0.1 * LAMPORTS_PER_SOL);
     let keypairIds: AccountAddress[];
-    ({ aceDeployment, keypairIds, knownChainName } = loadAceLocalnetConfig(connection));
-    [keypairId, mismatchingKeypairId] = keypairIds;
+    ({ aceDeployment, keypairIds, knownChainName } = loadAceConfig(connection));
+    if (!keypairIds[0]) {
+      throw new Error("ACE config must include at least one IBE keypair ID");
+    }
+    keypairId = keypairIds[0];
+    mismatchingKeypairId = keypairIds[1];
     ({ ciphertext, domain } = await aliceEncryptAndRegisterBlob({
       alice, aliceAptosAddrBytes, fileName: FILE_NAME,
       aceDeployment, keypairId, knownChainName,
@@ -445,6 +451,10 @@ describe("access-control failures (worker-side rejection)", () => {
     // past the SDK's pre-flight network-state check and into the actual
     // share-aggregation / TIBE-decrypt path; the resulting IDK is for the
     // wrong identity, so decrypt fails on the integrity check.
+    if (!mismatchingKeypairId) {
+      this.skip();
+      return;
+    }
     const { session, txnBytes } = await buildBobAccessTxn({ sessionKeypairId: mismatchingKeypairId });
     const result = await session.decryptWithProof({ txn: txnBytes });
     expect(result.isOk).to.equal(
@@ -515,7 +525,7 @@ async function fundAccounts(
   accounts: Keypair[],
   minBalance: number
 ): Promise<void> {
-  const isLocalnet = connection.rpcEndpoint.includes('localhost') || connection.rpcEndpoint.includes('127.0.0.1');
+  const isLocalnet = isLocalnetConnection(connection);
   console.log('Network:', isLocalnet ? 'localnet' : 'testnet');
   
   if (isLocalnet) {
@@ -686,42 +696,70 @@ function solanaAddrToAptosAddr(solanaAddr: PublicKey): AccountAddress {
   return AccountAddress.from(addressBytes);
 }
 
-/** Load ACE-localnet config (aceDeployment + the list of DKG'd keypair_ids +
+function isLocalnetConnection(connection: Connection): boolean {
+  return connection.rpcEndpoint.includes('localhost') ||
+    connection.rpcEndpoint.includes('127.0.0.1');
+}
+
+/** Load ACE config (aceDeployment + the list of DKG'd IBE keypair IDs +
  *  knownChainName). Sources, in order:
- *    - env vars: ACE_CONTRACT + KEYPAIR_IDS (comma-separated) OR KEYPAIR_ID
- *      (singular; legacy single-keypair callers like
- *      `run-local-network-forever`).
- *    - /tmp/ace-localnet-config.json written by either `test-solana-example.ts`
- *      (writes `keypairIds: string[]`, two entries) or
- *      `run-local-network-forever.ts` (writes `keypairId: string`, one).
+ *    - env vars: ACE_CONTRACT + KEYPAIR_IDS (comma-separated), IBE_KEYPAIR_ID,
+ *      or legacy KEYPAIR_ID.
+ *    - testnet: SDK known deployment preview20260610.
+ *    - localnet: /tmp/ace-localnet-config.json written by either
+ *      `test-solana-example.ts` (writes `keypairIds: string[]`, two entries)
+ *      or `run-local-network-forever.ts` (writes `keypairId: string`, one).
  *  Returns a `keypairIds: AccountAddress[]` list; callers index per their own
- *  convention (happy-path uses [0]; failures step A uses [1]). */
-function loadAceLocalnetConfig(connection: Connection): {
+ *  convention (happy-path uses [0]; failures step A uses [1] when present). */
+function loadAceConfig(connection: Connection): {
   aceDeployment: ACE.AceDeployment;
   keypairIds: AccountAddress[];
   knownChainName: string;
 } {
-  const isLocalnet = connection.rpcEndpoint.includes('localhost') ||
-    connection.rpcEndpoint.includes('127.0.0.1');
+  const isLocalnet = isLocalnetConnection(connection);
   const knownChainName = isLocalnet ? "localnet" : "testnet";
-  if (process.env.ACE_CONTRACT && (process.env.KEYPAIR_IDS || process.env.KEYPAIR_ID)) {
-    const raw = process.env.KEYPAIR_IDS ?? process.env.KEYPAIR_ID!;
+  const envKeypairIds = process.env.KEYPAIR_IDS ?? process.env.IBE_KEYPAIR_ID ?? process.env.KEYPAIR_ID;
+  if (process.env.ACE_CONTRACT && envKeypairIds) {
     return {
       aceDeployment: new ACE.AceDeployment({
-        apiEndpoint: "http://localhost:8080/v1",
+        apiEndpoint: process.env.ACE_API_ENDPOINT ??
+          (isLocalnet ? "http://localhost:8080/v1" : "https://api.testnet.aptoslabs.com/v1"),
         contractAddr: AccountAddress.fromString(process.env.ACE_CONTRACT),
       }),
-      keypairIds: raw.split(',').map(s => AccountAddress.fromString(s.trim())),
+      keypairIds: envKeypairIds.split(',').map(s => AccountAddress.fromString(s.trim())),
       knownChainName,
     };
   }
-  const cfg = JSON.parse(readFileSync('/tmp/ace-localnet-config.json', 'utf8')) as
-    Partial<{ apiEndpoint: string; contractAddr: string; keypairIds: string[]; keypairId: string }>;
-  const idStrings = cfg.keypairIds ?? (cfg.keypairId ? [cfg.keypairId] : []);
+
+  if (!isLocalnet) {
+    const known = ACE.knownDeployments.preview20260610;
+    return {
+      aceDeployment: known.aceDeployment,
+      keypairIds: [known.ibeKeypairId],
+      knownChainName,
+    };
+  }
+
+  const localnetConfigPath = '/tmp/ace-localnet-config.json';
+  if (!existsSync(localnetConfigPath)) {
+    throw new Error(
+      `Missing ${localnetConfigPath}. Start ACE with ` +
+      '`cd scenarios && pnpm run-local-network-forever` before running `pnpm test:localnet`.',
+    );
+  }
+  const cfg = JSON.parse(readFileSync(localnetConfigPath, 'utf8')) as
+    Partial<{ apiEndpoint: string; contractAddr: string; keypairIds: string[]; ibeKeypairId: string; keypairId: string }>;
+  const idStrings = cfg.keypairIds ?? (cfg.ibeKeypairId ? [cfg.ibeKeypairId] : cfg.keypairId ? [cfg.keypairId] : []);
+  if (!cfg.apiEndpoint || !cfg.contractAddr || idStrings.length === 0) {
+    throw new Error(
+      'Malformed /tmp/ace-localnet-config.json. Start ACE with ' +
+      '`cd scenarios && pnpm run-local-network-forever` before running `pnpm test:localnet`.',
+    );
+  }
   return {
     aceDeployment: new ACE.AceDeployment({
-      apiEndpoint: cfg.apiEndpoint!,
-      contractAddr: AccountAddress.fromString(cfg.contractAddr!),
+      apiEndpoint: cfg.apiEndpoint,
+      contractAddr: AccountAddress.fromString(cfg.contractAddr),
     }),
     keypairIds: idStrings.map(s => AccountAddress.fromString(s)),
     knownChainName,
@@ -751,26 +789,69 @@ async function aliceEncryptAndRegisterBlob(args: {
     Buffer.from("0x"), Buffer.from(args.aliceAptosAddrBytes),
     Buffer.from("/"), Buffer.from(args.fileName),
   ]);
-  const ciphertext = (await ACE.IBE_Solana.encrypt({
+  const ciphertext: Uint8Array = unwrapResult(await ACE.IBE_Solana.encrypt({
     aceDeployment: args.aceDeployment,
     keypairId: args.keypairId,
     knownChainName: args.knownChainName,
     programId: args.accessControlProgramId.toBase58(),
     label: domain,
     plaintext,
-  })).unwrapOrThrow('aliceEncryptAndRegisterBlob: encrypt failed');
+  }), `aliceEncryptAndRegisterBlob: encrypt failed via ACE at ${args.aceDeployment.apiEndpoint}`);
   // Only the listing (price + seqnum) goes on-chain; the ciphertext stays
   // in-memory (returned to caller so it can be handed to Bob — modeling
   // the "Alice delivers ciphertext to Bob off-chain" step).
-  const txn = await args.program.methods
-    .registerBlob(
-      Array.from(args.aliceAptosAddrBytes), args.fileName,
-      new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
-    )
-    .accounts({ owner: args.alice.publicKey })
-    .signers([args.alice]).rpc();
-  await confirmTransaction(args.connection, txn);
+  await registerBlobListing({
+    owner: args.alice,
+    ownerAptosAddrBytes: args.aliceAptosAddrBytes,
+    fileName: args.fileName,
+    price: new anchor.BN(0.0005 * LAMPORTS_PER_SOL),
+    program: args.program,
+    connection: args.connection,
+  });
   return { ciphertext, domain };
+}
+
+async function registerBlobListing(args: {
+  owner: Keypair;
+  ownerAptosAddrBytes: Uint8Array;
+  fileName: string;
+  price: anchor.BN;
+  program: Program<AccessControl>;
+  connection: Connection;
+}): Promise<void> {
+  const signature = await args.program.methods
+    .registerBlob(
+      Array.from(args.ownerAptosAddrBytes),
+      args.fileName,
+      args.price,
+    )
+    .accounts({ owner: args.owner.publicKey })
+    .signers([args.owner])
+    .rpc();
+  await confirmTransaction(args.connection, signature);
+}
+
+function unwrapResult<T>(result: Result<T>, context: string): T {
+  if (result.isOk) return result.okValue!;
+  const detail = formatError(result.errValue);
+  const hint = detail.includes('ECONNREFUSED')
+    ? ' Hint: start ACE with `cd scenarios && pnpm run-local-network-forever`, wait until the terminal prints `ACE local network is READY`, then run `pnpm test:localnet` in this example.'
+    : '';
+  throw new Error(`${context}: ${detail}${hint}`);
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    const code = 'code' in err ? ` ${(err as { code?: string }).code}` : '';
+    return `${err.name}${code}: ${err.message}`;
+  }
+  if (typeof err === 'object' && err !== null) {
+    const maybe = err as { name?: string; code?: string; message?: string };
+    if (maybe.name || maybe.code || maybe.message) {
+      return [maybe.name, maybe.code, maybe.message].filter(Boolean).join(' ');
+    }
+  }
+  return String(err);
 }
 
 /** Bob calls `purchase` on `access_control` (transfers SOL to Alice +

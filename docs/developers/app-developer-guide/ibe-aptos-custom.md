@@ -340,6 +340,5 @@ In the pre-signed-access pattern, the private key is a bearer capability. Anyone
 
 ## Ready-To-Run Examples
 
-- [`examples/zk-kyc`](../../../examples/zk-kyc): Groth16 age-gated decryption.
 - [`examples/presigned-access-aptos`](../../../examples/presigned-access-aptos): pre-signed access grants with origin-bound signatures.
 - [`scenarios/custom-flow-aptos`](../../../scenarios/custom-flow-aptos): small code-based custom-flow scenario.

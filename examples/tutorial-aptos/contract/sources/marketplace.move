@@ -10,7 +10,6 @@
 /// when the request was signed for this app's origin (anti-replay across dapps).
 module admin::marketplace {
     use std::error;
-    use std::signer::address_of;
     use std::string::String;
     use std::vector;
     use aptos_std::table;
@@ -41,7 +40,7 @@ module admin::marketplace {
 
     /// Initialize an empty catalog. Must be called once by the admin after deploy.
     public entry fun initialize(admin: &signer) {
-        assert!(@admin == address_of(admin), error::permission_denied(E_NOT_ADMIN));
+        assert!(@admin == admin.address_of(), error::permission_denied(E_NOT_ADMIN));
         if (!exists<Catalog>(@admin)) {
             move_to(admin, Catalog { items: table::new() });
         };
@@ -49,21 +48,21 @@ module admin::marketplace {
 
     /// List a new item at `price` octas (1 APT = 100_000_000 octas).
     /// Aborts if an item with the same name is already listed.
-    public entry fun list_item(admin: &signer, name: vector<u8>, price: u64) acquires Catalog {
-        assert!(@admin == address_of(admin), error::permission_denied(E_NOT_ADMIN));
-        let catalog = borrow_global_mut<Catalog>(@admin);
+    public entry fun list_item(admin: &signer, name: vector<u8>, price: u64) {
+        assert!(@admin == admin.address_of(), error::permission_denied(E_NOT_ADMIN));
+        let catalog = &mut Catalog[@admin];
         assert!(!catalog.items.contains(name), error::already_exists(E_ITEM_ALREADY_LISTED));
         catalog.items.add(name, Item { price, buyers: vector::empty() });
     }
 
     /// Pay the item's price in APT to the admin, then join its buyer list.
     /// After this, `on_ace_decryption_request(name, buyer, origin)` returns true.
-    public entry fun buy(buyer: &signer, name: vector<u8>) acquires Catalog {
-        let catalog = borrow_global_mut<Catalog>(@admin);
+    public entry fun buy(buyer: &signer, name: vector<u8>) {
+        let catalog = &mut Catalog[@admin];
         assert!(catalog.items.contains(name), error::invalid_argument(E_ITEM_NOT_FOUND));
         let item = catalog.items.borrow_mut(name);
         aptos_account::transfer(buyer, @admin, item.price);
-        let buyer_addr = address_of(buyer);
+        let buyer_addr = buyer.address_of();
         if (!item.buyers.contains(&buyer_addr)) {
             item.buyers.push_back(buyer_addr);
         };
@@ -77,10 +76,10 @@ module admin::marketplace {
         label: vector<u8>,
         account: address,
         origin: String,
-    ): bool acquires Catalog {
+    ): bool {
         if (origin.bytes() != &EXPECTED_APP_ORIGIN) return false;
         if (account == @admin) return true;
-        let catalog = borrow_global<Catalog>(@admin);
+        let catalog = &Catalog[@admin];
         if (!catalog.items.contains(label)) return false;
         let item = catalog.items.borrow(label);
         item.buyers.contains(&account)

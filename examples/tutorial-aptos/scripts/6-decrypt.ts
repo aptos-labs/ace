@@ -6,7 +6,7 @@
  *
  * This is the punchline of the tutorial. Bob runs the same decryption flow
  * twice, against two ciphertexts produced by the same Alice with the same
- * keypair. Buying song-1 grants Bob exactly song-1: the on-chain
+ * IBE keypair. Buying song-1 grants Bob exactly song-1: the on-chain
  * `on_ace_decryption_request` is bound to the item name (the encryption "domain"),
  * and Bob did not pay for song-2.
  */
@@ -18,8 +18,9 @@ import * as ACE from '@aptos-labs/ace-sdk';
 
 import {
     BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogEntry, CatalogFile, ConfigFile, AccountFile, ITEMS,
-    buildAptosWalletFullMessage, log, readJson,
-    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
+    log, readJson,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_IBE_KEYPAIR_ID,
+    TUTORIAL_APP_ORIGIN,
 } from './common.js';
 
 async function main() {
@@ -31,12 +32,12 @@ async function main() {
 
     const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const chainId       = TUTORIAL_CHAIN_ID;
-    const keypairId     = TUTORIAL_KEYPAIR_ID;
+    const ibeKeypairId  = TUTORIAL_IBE_KEYPAIR_ID;
 
     async function tryDecrypt(entry: CatalogEntry): Promise<{ ok: boolean; plaintext?: string }> {
         const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
             aceDeployment,
-            keypairId,
+            keypairId: ibeKeypairId,
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',
@@ -44,8 +45,9 @@ async function main() {
             ciphertext: Buffer.from(entry.ciphertextHex, 'hex'),
         });
         const msgToSign = await session.getRequestToSign();
-        const fullMessage = buildAptosWalletFullMessage({
+        const fullMessage = ACE.IBE_Aptos.buildAptosWalletFullMessage({
             accountAddress: bob.accountAddress,
+            application: TUTORIAL_APP_ORIGIN,
             chainId,
             message: msgToSign,
             nonce: `tutorial-step-6-${entry.name}`,

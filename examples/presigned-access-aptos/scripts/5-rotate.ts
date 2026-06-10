@@ -10,30 +10,28 @@
  *
  * The rotation does NOT have to go through tVRF — the contract only
  * checks that `accessPublicKey` is a well-formed G1 point. Alice could re-derive
- * via tVRF (under a different keypair_id, say), pick a random scalar
+ * via tVRF (under a different vrfKeypairId, say), pick a random scalar
  * locally, or use any other process. Here we just derive a fresh
  * deterministic-but-different scalar so the demo stays self-contained.
  */
 
-import {
-    Account, Aptos, AptosConfig, Ed25519PrivateKey, Network,
-} from '@aptos-labs/ts-sdk';
+import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile,
-    log, readJson, readLocalnetConfig, vrfOutputToAccessKeypair,
+    aptosFromConfig, log, readAceConfig, readJson, vrfOutputToAccessKeypair,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
 
 async function main() {
-    const cfg = readLocalnetConfig();
+    const cfg = readAceConfig();
     const conf = readJson<ConfigFile>(CONFIG_FILE);
     const aliceFile = readJson<AccountFile>(ALICE_FILE);
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
 
-    const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
+    const aptos = aptosFromConfig(cfg);
 
     // Any 32 bytes work; using deterministic-but-different bytes so the
     // demo doesn't depend on system randomness.

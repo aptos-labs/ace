@@ -19,8 +19,9 @@ import * as ACE from '@aptos-labs/ace-sdk';
 
 import {
     ALICE_FILE, AccountFile, BOB_FILE, CATALOG_FILE, CONFIG_FILE, CatalogFile, ConfigFile, ITEMS,
-    buildAptosWalletFullMessage, ensureDataDir, log, readJson, writeJson,
-    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
+    ensureDataDir, log, readJson, writeJson,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_IBE_KEYPAIR_ID,
+    TUTORIAL_APP_ORIGIN,
 } from './common.js';
 
 const BOB_ALLOWANCE_OCTAS = 20_000_000; // 0.2 APT — covers song-1 price + gas
@@ -41,7 +42,7 @@ async function main() {
 
     const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const chainId       = TUTORIAL_CHAIN_ID;
-    const keypairId     = TUTORIAL_KEYPAIR_ID;
+    const ibeKeypairId  = TUTORIAL_IBE_KEYPAIR_ID;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
 
     log(`Alice transferring ${BOB_ALLOWANCE_OCTAS / 100_000_000} APT to Bob...`);
@@ -66,7 +67,7 @@ async function main() {
     log(`Bob attempting to decrypt "${target.name}" (without buying)...`);
     const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
         aceDeployment,
-        keypairId,
+        keypairId: ibeKeypairId,
         chainId,
         moduleAddr: appContractAddr,
         moduleName: 'marketplace',
@@ -74,8 +75,9 @@ async function main() {
         ciphertext,
     });
     const msgToSign = await session.getRequestToSign();
-    const fullMessage = buildAptosWalletFullMessage({
+    const fullMessage = ACE.IBE_Aptos.buildAptosWalletFullMessage({
         accountAddress: bob.accountAddress,
+        application: TUTORIAL_APP_ORIGIN,
         chainId,
         message: msgToSign,
         nonce: 'tutorial-step-4',

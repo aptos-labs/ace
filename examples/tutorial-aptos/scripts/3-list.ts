@@ -4,7 +4,7 @@
 /**
  * Step 3 — Alice encrypts each item and lists it on the marketplace.
  *
- * Each ciphertext is bound to (keypairId, contractId(...::marketplace),
+ * Each ciphertext is bound to (IBE keypair ID, contractId(...::marketplace),
  * domain=itemName). ACE workers will only release a key share when a caller's
  * decryption attempt makes `on_ace_decryption_request(itemName, user, origin)` return true —
  * which happens exactly when that user has paid for that specific item.
@@ -18,7 +18,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ALICE_FILE, AccountFile, CATALOG_FILE, CONFIG_FILE, CatalogEntry, ConfigFile, ITEMS,
     ensureDataDir, log, readJson, writeJson,
-    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_KEYPAIR_ID,
+    TUTORIAL_ACE_DEPLOYMENT, TUTORIAL_CHAIN_ID, TUTORIAL_IBE_KEYPAIR_ID,
 } from './common.js';
 
 async function main() {
@@ -31,7 +31,7 @@ async function main() {
 
     const aceDeployment = TUTORIAL_ACE_DEPLOYMENT;
     const chainId       = TUTORIAL_CHAIN_ID;
-    const keypairId     = TUTORIAL_KEYPAIR_ID;
+    const ibeKeypairId  = TUTORIAL_IBE_KEYPAIR_ID;
     const aptos = new Aptos(new AptosConfig({ network: Network.CUSTOM, fullnode: aceDeployment.apiEndpoint }));
     const textEncoder = new TextEncoder();
 
@@ -42,7 +42,7 @@ async function main() {
         log(`Encrypting "${item.name}"...`);
         const ciphertext = (await ACE.IBE_Aptos.encrypt({
             aceDeployment,
-            keypairId,
+            keypairId: ibeKeypairId,
             chainId,
             moduleAddr: appContractAddr,
             moduleName: 'marketplace',

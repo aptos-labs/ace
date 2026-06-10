@@ -11,29 +11,29 @@
  * below threshold.
  */
 
-import { AccountAddress, Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
+import { AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { hexToBytes } from '@noble/hashes/utils';
 
 import {
     APP_ORIGIN, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile, ReaderProof, SignableRequest,
-    aceDeploymentFromConfig, log,
-    readJson, readLocalnetConfig, signWithAccessPrivateKey, vrfOutputToAccessKeypair,
+    accessPrivateKeyFromHex, aceDeploymentFromConfig, aptosFromConfig, log,
+    readAceConfig, readJson, signWithAccessPrivateKey,
 } from './common.js';
 
 async function main() {
-    const cfg = readLocalnetConfig();
+    const cfg = readAceConfig();
     const conf = readJson<ConfigFile>(CONFIG_FILE);
     const grant = readJson<GrantFile>(GRANT_FILE);
 
     const aceDeployment = aceDeploymentFromConfig(cfg);
-    const keypairId = AccountAddress.fromString(cfg.keypairId);
+    const ibeKeypairId = AccountAddress.fromString(cfg.ibeKeypairId);
     const moduleAddr = AccountAddress.fromString(conf.appContractAddr);
     const moduleName = 'presigned_access';
 
     const label = hexToBytes(grant.blobIdHex);
     const ciphertext = hexToBytes(grant.ciphertextHex);
-    const { accessPrivateKey } = vrfOutputToAccessKeypair(hexToBytes(grant.accessPrivateKeyHex));
+    const accessPrivateKey = accessPrivateKeyFromHex(grant.accessPrivateKeyHex);
 
     const { encryptionKey: epk, decryptionKey: edk } = await ACE.pke.keygen();
     const userEpkBytes = epk.toBytes();
@@ -44,7 +44,7 @@ async function main() {
     );
     const payload = new ReaderProof({ origin: originBytes, sig }).toBytes();
 
-    const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
+    const aptos = aptosFromConfig(cfg);
     const chainId = await aptos.getChainId();
 
     log('Attempting decrypt with the now-stale accessPrivateKey (should fail)...');
@@ -53,7 +53,7 @@ async function main() {
             ciphertext, label,
             encPk: userEpkBytes, encSk: edk.toBytes(),
             payload,
-            aceDeployment, keypairId, chainId, moduleAddr, moduleName,
+            aceDeployment, keypairId: ibeKeypairId, chainId, moduleAddr, moduleName,
         });
         console.error('UNEXPECTED: decrypt succeeded after rotation.');
         process.exit(1);

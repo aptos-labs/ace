@@ -9,13 +9,13 @@ import { AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 // ── ACE deployment targeted by this tutorial ──────────────────────────────────
-// Default: the public ACE testnet preview (`preview20260506`). To target a
+// Default: the public ACE testnet preview (`preview20260610`). To target a
 // different deployment — e.g. one you bootstrapped yourself — replace the
 // three constants below with literals (see the commented example).
-const _knownDeployment = ACE.knownDeployments.preview20260506;
+const _knownDeployment = ACE.knownDeployments.preview20260610;
 export const TUTORIAL_ACE_DEPLOYMENT = _knownDeployment.aceDeployment;
 export const TUTORIAL_CHAIN_ID       = _knownDeployment.chainId;
-export const TUTORIAL_KEYPAIR_ID     = _knownDeployment.keypairId;
+export const TUTORIAL_IBE_KEYPAIR_ID = _knownDeployment.ibeKeypairId;
 export const TUTORIAL_APP_ORIGIN     = 'https://tutorial.ace.aptos.dev';
 //
 // Example: pointing the tutorial at a self-bootstrapped devnet deployment.
@@ -27,7 +27,7 @@ export const TUTORIAL_APP_ORIGIN     = 'https://tutorial.ace.aptos.dev';
 //       contractAddr: AccountAddress.fromString('0xYOUR_ACE_CONTRACT_ADDR'),
 //   });
 //   export const TUTORIAL_CHAIN_ID   = 140;  // devnet
-//   export const TUTORIAL_KEYPAIR_ID = AccountAddress.fromString('0xYOUR_KEYPAIR_ID');
+//   export const TUTORIAL_IBE_KEYPAIR_ID = AccountAddress.fromString('0xYOUR_IBE_KEYPAIR_ID');
 // ──────────────────────────────────────────────────────────────────────────────
 
 const __filename = fileURLToPath(import.meta.url);
@@ -67,40 +67,6 @@ export function log(...args: unknown[]): void {
 export function waitForEnter(prompt: string): Promise<void> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return new Promise(resolve => rl.question(prompt, () => { rl.close(); resolve(); }));
-}
-
-/**
- * Builds the `fullMessage` an AIP-62 wallet would return from `aptos:signMessage`
- * for `{ message, nonce, address: true, application: true, chainId: true }`.
- *
- * Wire layout: literal prefix `APTOS`, then `<field>: <value>` lines joined by
- * `\n`, one per included field. This is the labeled multi-line encoding the
- * Aptos wallet-adapter implements; the canonical encoder/decoder pair lives at
- * https://github.com/aptos-labs/aptos-wallet-adapter/blob/294f5a49af55549a75e549ca0d303e45d70809bf/packages/derived-wallet-base/src/StructuredMessage.ts
- * (see `encodeStructuredMessage` / `decodeStructuredMessage`). The
- * `signMessage` API and `fullMessage` field are specified in AIP-62:
- * https://github.com/aptos-foundation/AIPs/blob/bb5b7ebcdb01b29622e968f785b03cd71cfb6c17/aips/aip-062-wallet-standard.md
- *
- * Worker-side parsing only requires the `APTOS` prefix and an `application:`
- * line (origin extraction); field ordering past that is not load-bearing.
- */
-export function buildAptosWalletFullMessage(args: {
-    accountAddress: AccountAddress | string;
-    chainId: number;
-    message: string;
-    nonce: string;
-}): string {
-    const address = typeof args.accountAddress === 'string'
-        ? args.accountAddress
-        : args.accountAddress.toStringLong();
-    return [
-        'APTOS',
-        `address: ${address}`,
-        `application: ${TUTORIAL_APP_ORIGIN}`,
-        `chainId: ${args.chainId}`,
-        `message: ${args.message}`,
-        `nonce: ${args.nonce}`,
-    ].join('\n');
 }
 
 export const ALICE_FILE = path.join(DATA_DIR, 'alice.json');

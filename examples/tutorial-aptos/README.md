@@ -12,7 +12,7 @@ minimal pay-to-download marketplace. You will:
    isolates each ciphertext to its specific item name.
 
 The whole tutorial uses the public ACE testnet deployment, bundled in the SDK
-as `ACE.knownDeployments.preview20260506`. You only need to visit the faucet
+as `ACE.knownDeployments.preview20260610`. You only need to visit the faucet
 once: a single click funds **Alice** with ~10 APT, and she will send Bob a
 small allowance on-chain when he shows up in step 4.
 
@@ -160,9 +160,7 @@ tutorial-aptos/
 ## What this tutorial intentionally does *not* cover
 
 - **Custom flows.** This tutorial uses the **basic flow** (proof of permission =
-  Ed25519 signature on the request). For ZK-proof-based ACLs see
-  [`examples/zk-kyc`](../zk-kyc/README.md).
+  Ed25519 signature on the request). For an Aptos custom-flow example, see
+  [`examples/presigned-access-aptos`](../presigned-access-aptos/README.md).
 - **Refunds, revocation, time locks.** A real marketplace would model these.
-  See [`examples/shelby-explorer-acl-aptos`](../shelby-explorer-acl-aptos/README.md)
-  for an access-control module with PayToDownload **and** TimeLock policies.
 - **Solana.** See [`examples/pay-to-download-solana`](../pay-to-download-solana/README.md).

@@ -7,9 +7,9 @@
  * Three things happen here:
  *   - Encrypt the plaintext under ACE custom flow with `domain = blob_id`.
  *   - Derive a deterministic BLS keypair `(accessPrivateKey, accessPublicKey)` from
- *     `(keypair_id, contract_id, alice_addr, blob_suffix)` via threshold
- *     VRF. The owner reproduces the same `accessPrivateKey` later by re-running
- *     this derive — no key to memorize.
+ *     `(vrfKeypairId, contract_id, alice_addr, blob_suffix)` via threshold
+ *     VRF. `accessPrivateKey` is the bearer token Alice hands to Bob; Alice can
+ *     reproduce it later by re-running this derive if needed.
  *   - Register `accessPublicKey` on-chain. Bob (= whoever) decrypts in step 4 by
  *     signing requests under `accessPrivateKey`.
  *
@@ -18,16 +18,15 @@
  */
 
 import {
-    Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network,
+    Account, AccountAddress, Ed25519PrivateKey,
 } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import {
-    ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
-    aceDeploymentFromConfig,
-    buildAptosWalletFullMessage,
-    ensureDataDir, log, readJson, readLocalnetConfig,
+    ALICE_FILE, APP_ORIGIN, AccountFile, CONFIG_FILE, ConfigFile, GRANT_FILE, GrantFile,
+    accessPrivateKeyToHex, aceDeploymentFromConfig, aptosFromConfig,
+    ensureDataDir, log, readAceConfig, readJson,
     vrfOutputToAccessKeypair, writeJson,
 } from './common.js';
 
@@ -36,17 +35,18 @@ const PLAINTEXT = 'Lyrics for song 1: hello sunshine!';
 
 async function main() {
     ensureDataDir();
-    const cfg = readLocalnetConfig();
+    const cfg = readAceConfig();
     const conf = readJson<ConfigFile>(CONFIG_FILE);
     const aliceFile = readJson<AccountFile>(ALICE_FILE);
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
 
     const aceDeployment = aceDeploymentFromConfig(cfg);
-    const keypairId = AccountAddress.fromString(cfg.keypairId);
+    const ibeKeypairId = AccountAddress.fromString(cfg.ibeKeypairId);
+    const vrfKeypairId = AccountAddress.fromString(cfg.vrfKeypairId);
     const moduleAddr = AccountAddress.fromString(conf.appContractAddr);
     const moduleName = 'presigned_access';
 
-    const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
+    const aptos = aptosFromConfig(cfg);
     const chainId = await aptos.getChainId();
 
     // Canonical blob_id, matching what the contract builds with
@@ -59,7 +59,7 @@ async function main() {
     log('Encrypting plaintext via ACE custom flow...');
     const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment,
-        keypairId,
+        keypairId: ibeKeypairId,
         chainId,
         moduleAddr,
         moduleName,
@@ -69,8 +69,9 @@ async function main() {
     log(`Ciphertext (${ciphertext.length} B) ready`);
 
     async function signAsAlice(message: string) {
-        const fullMessage = buildAptosWalletFullMessage({
+        const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
             accountAddress: alice.accountAddress,
+            application: APP_ORIGIN,
             chainId,
             message,
             nonce: `presigned-derive-${BLOB_SUFFIX}`,
@@ -85,13 +86,13 @@ async function main() {
     log('Deriving (accessPrivateKey, accessPublicKey) via threshold VRF...');
     const vrfBytes = await ACE.VRF_Aptos.derive({
         aceDeployment,
-        keypairId,
+        keypairId: vrfKeypairId,
         chainId, moduleAddr, moduleName,
         label: new TextEncoder().encode(BLOB_SUFFIX),
         accountAddress: alice.accountAddress,
         sign: signAsAlice,
     });
-    const { accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
+    const { accessPrivateKey, accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
     log(`  accessPublicKey = 0x${bytesToHex(accessPublicKey)}`);
 
     log('Registering accessPublicKey on-chain...');
@@ -111,7 +112,7 @@ async function main() {
         blobSuffix: BLOB_SUFFIX,
         blobIdHex: bytesToHex(labelBytes),
         ciphertextHex: bytesToHex(ciphertext),
-        accessPrivateKeyHex: vrfBytes ? bytesToHex(vrfBytes) : '',
+        accessPrivateKeyHex: accessPrivateKeyToHex(accessPrivateKey),
     } satisfies GrantFile);
     log(`Wrote pre-signed grant to ${GRANT_FILE}`);
     log('');

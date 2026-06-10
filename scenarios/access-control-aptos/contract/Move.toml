@@ -1,5 +1,5 @@
 [package]
-name = "ShelbyAccessControl"
+name = "ScenarioAccessControl"
 version = "1.0.0"
 authors = []
 
@@ -14,4 +14,3 @@ rev = "mainnet"
 subdir = "aptos-framework"
 
 [dev-dependencies]
-

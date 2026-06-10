@@ -188,17 +188,12 @@ async function main() {
     log('');
     log('  Run the Solana example:');
     log('    cd examples/pay-to-download-solana');
-    log('    anchor test --provider.cluster localnet');
-    log('');
-    log('  Run the Aptos example:');
-    log('    cd examples/shelby-explorer-acl-aptos/demo-cli-flow');
     log('    pnpm test:localnet');
     log('');
-    log('  Run the ZK-KYC example (Groth16 proof of jurisdiction):');
-    log('    cd examples/zk-kyc');
-    log('    pnpm install && cd circuit && ./setup.sh && cd ..');
-    log('    pnpm 1-provider-setup && pnpm 2-deploy-contract');
-    log('    pnpm 3-issue-credential && pnpm 4-encrypt && pnpm 5-decrypt');
+    log('  Run the Aptos custom-flow example:');
+    log('    cd examples/presigned-access-aptos');
+    log('    pnpm 1-setup:localnet && pnpm 2-deploy-contract:localnet');
+    log('    pnpm 3-grant:localnet && pnpm 4-decrypt:localnet');
     log('══════════════════════════════════════════════');
     log('');
 

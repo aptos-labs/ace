@@ -15,17 +15,17 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { Account, Aptos, AptosConfig, Ed25519PrivateKey, Network } from '@aptos-labs/ts-sdk';
+import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, CONTRACT_DIR, ConfigFile,
-    ensureDataDir, log, readJson, readLocalnetConfig, writeJson,
+    aptosFromConfig, ensureDataDir, log, readAceConfig, readJson, writeJson,
 } from './common.js';
 
 async function main() {
     ensureDataDir();
 
-    const cfg = readLocalnetConfig();
+    const cfg = readAceConfig();
     const aliceFile = readJson<AccountFile>(ALICE_FILE);
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
     const adminAddress = alice.accountAddress.toStringLong();
@@ -56,7 +56,7 @@ async function main() {
     }
     log('Module published.');
 
-    const aptos = new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: cfg.apiEndpoint }));
+    const aptos = aptosFromConfig(cfg);
     log('Calling presigned_access::init...');
     const txn = await aptos.transaction.build.simple({
         sender: alice.accountAddress,

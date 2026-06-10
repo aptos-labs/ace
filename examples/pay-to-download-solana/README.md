@@ -79,12 +79,12 @@ cd scenarios
 pnpm run-local-network-forever
 ```
 
-Wait for the `ACE local network is READY` banner. This deploys the ACE contract to Aptos localnet,
-runs DKG, and starts the workers — writing `aceContract` and `keypairId` to
-`/tmp/ace-localnet-config.json`.
+Wait until the terminal prints `ACE local network is READY`. This deploys the
+ACE contract to Aptos localnet, runs DKG, starts the workers, and writes the
+local ACE config to `/tmp/ace-localnet-config.json`.
 
-> **Note:** This does **not** start a Solana validator. The Solana validator is started automatically
-> by `anchor test` in Step 2.
+> **Note:** This does **not** start a Solana validator. The Solana validator is
+> started automatically by `anchor test` in Step 2.
 
 ### Step 2: Run the Test
 
@@ -94,22 +94,23 @@ pnpm install
 pnpm test:localnet
 ```
 
-This will:
-1. Start a local Solana validator
-2. Build and deploy both Anchor programs
-3. Run the e2e test with automatic airdrop funding
+This will start a local Solana validator, build and deploy both Anchor programs,
+and run the e2e test with automatic airdrop funding.
 
-### Run e2e against testnet
+### Solana testnet status
 
-If the programs are already deployed on testnet, run the same e2e test against testnet (no local validator, no deploy):
+The Solana testnet flow is not currently a supported path for this example.
+The deployed Solana programs in `Anchor.toml` predate the current ACE origin
+checks:
 
-```bash
-cd examples/pay-to-download-solana
-solana config set --url https://api.testnet.solana.com
-pnpm test:testnet
+```text
+access_control = Csx54S8XVLHgY5KW3peJiMaeYUgTirDoTAAGjqcjq1wu
+ace_hook       = CUM2ENS7vKsMLvJ9Njsa1qmvwQwBC6ki1YPvrrcTYv8U
 ```
 
-Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.testnet]`, and ACE workers running (see Step 1). The test will print two addresses (Alice and Bob) to fund on testnet and wait until they have enough SOL, or you can airdrop: `solana airdrop 2 <ADDRESS>`.
+Use the localnet flow above for now. Testnet support should be re-enabled only
+after the Solana SDK flow, worker verifier, Anchor request bytes, and deployed
+programs all support the same origin-bound request format.
 
 ## How It Works
 
@@ -120,7 +121,7 @@ Prerequisites: programs deployed at the IDs in `Anchor.toml` under `[programs.te
 │                      UPLOAD FLOW (Alice - Content Owner)                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  1. Encrypt the content payload directly with ACE → ciphertext              │
-│     - Uses keypairId, aceContract, contractId, and fullBlobName             │
+│     - Uses ibeKeypairId, aceContract, contractId, and fullBlobName          │
 │  2. Register the ciphertext on-chain via access_control::register_blob      │
 │     - Creates BlobMetadata PDA with price                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -196,9 +197,10 @@ This allows the same logical identity to be used across both chains.
 
 ```typescript
 // 1. Encrypt the content payload directly with ACE.
+const { aceDeployment, ibeKeypairId } = ACE.knownDeployments.preview20260610;
 const ciphertext = (await ACE.IBE_Solana.encrypt({
   aceDeployment,
-  keypairId,
+  keypairId: ibeKeypairId,
   knownChainName,
   programId: aceHookProgram.programId.toBase58(),
   label: fullBlobNameBytes,
@@ -227,7 +229,7 @@ await program.methods
 
 // Build proof-of-permission transaction (calls ace_hook::assert_access)
 const session = await ACE.IBE_Solana.BasicDecryptionSession.create({
-  aceDeployment, keypairId, knownChainName,
+  aceDeployment, keypairId: ibeKeypairId, knownChainName,
   programId: aceHookProgram.programId.toBase58(),
   label: fullBlobNameBytes, ciphertext,
 });

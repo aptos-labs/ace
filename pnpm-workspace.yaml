@@ -3,7 +3,5 @@ packages:
   - "worker"
   - "cli"
   - "examples/*"
-  - "examples/*/demo-cli-flow"
   - "scenarios"
   - "scenarios/custom-flow-solana"
-

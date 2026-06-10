@@ -1,5 +1,5 @@
 {
-  "name": "presigned-access-aptos-demo-cli-flow",
+  "name": "presigned-access-aptos",
   "version": "0.1.0",
   "description": "Step-by-step demo of the pre-signed-URL / bearer-token access pattern on Aptos.",
   "private": true,
@@ -11,7 +11,13 @@
     "3-grant": "tsx scripts/3-grant.ts",
     "4-decrypt": "tsx scripts/4-decrypt.ts",
     "5-rotate": "tsx scripts/5-rotate.ts",
-    "6-decrypt-after-rotate": "tsx scripts/6-decrypt-after-rotate.ts"
+    "6-decrypt-after-rotate": "tsx scripts/6-decrypt-after-rotate.ts",
+    "1-setup:localnet": "ACE_NETWORK=localnet tsx scripts/1-setup.ts",
+    "2-deploy-contract:localnet": "ACE_NETWORK=localnet tsx scripts/2-deploy-contract.ts",
+    "3-grant:localnet": "ACE_NETWORK=localnet tsx scripts/3-grant.ts",
+    "4-decrypt:localnet": "ACE_NETWORK=localnet tsx scripts/4-decrypt.ts",
+    "5-rotate:localnet": "ACE_NETWORK=localnet tsx scripts/5-rotate.ts",
+    "6-decrypt-after-rotate:localnet": "ACE_NETWORK=localnet tsx scripts/6-decrypt-after-rotate.ts"
   },
   "dependencies": {
     "@aptos-labs/ts-sdk": "^5.2.0",

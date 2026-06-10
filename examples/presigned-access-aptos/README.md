@@ -11,25 +11,25 @@ You will:
 1. Deploy a small Move contract (`presigned_access`) that stores one BLS12-381
    pubkey per blob and exposes the ACE custom-flow + tVRF hooks.
 2. Encrypt a blob, derive a deterministic `(accessPrivateKey, accessPublicKey)`
-   from `(keypair_id, contract_id, owner_addr, blob_suffix)` via ACE's
+   from `(vrfKeypairId, contract_id, owner_addr, blob_suffix)` via ACE's
    threshold VRF, and register `accessPublicKey` on-chain.
 3. Hand the resulting grant (a single JSON file) to a reader and watch them
    decrypt with no Aptos account of their own.
 4. Rotate the on-chain pubkey and watch the old grant stop working.
 
-The demo runs against a **local** ACE network (you'll bring it up with
-`pnpm --filter ace-scenarios run-local-network-forever`).
+The demo runs against Aptos testnet by default, using
+`ACE.knownDeployments.preview20260610`.
 
 ## How it works
 
 The owner-side flow:
 
 ```text
-encrypt(plaintext) ──→ ciphertext        (ACE custom flow t-IBE)
-tVRF(keypair_id, contract_id, owner, blob_suffix)
+encrypt(plaintext, ibeKeypairId) ──→ ciphertext        (ACE custom flow t-IBE)
+tVRF(vrfKeypairId, contract_id, owner, blob_suffix)
    └─→ vrfBytes ──→ (accessPrivateKey, accessPublicKey)  (BLS12-381)
 register(blob_suffix, accessPublicKey)   (on-chain)
-grant.json = { blobIdHex, ciphertextHex, accessPrivateKeyHex }
+grant.json = { blobIdHex, ciphertextHex, accessPrivateKeyHex }  (bearer token)
 ```
 
 The reader-side flow:
@@ -49,7 +49,7 @@ Three properties:
 
 - **Deterministic derivation.** Re-running step 3 produces the exact same
   `accessPrivateKey` — the owner never has to store it. The VRF binds it to
-  `(keypair_id, contract_id, owner, blob_suffix)`; same inputs → same scalar.
+  `(vrfKeypairId, contract_id, owner, blob_suffix)`; same inputs → same scalar.
 - **Bearer-token semantics.** The reader needs no on-chain identity. Whoever
   holds the key can sign and decrypt.
 - **Revocation by overwrite.** Re-registering a new `accessPublicKey` under
@@ -71,21 +71,27 @@ Three properties:
 
 - **Node.js ≥ 18** and **pnpm**
 - **Aptos CLI** — `cargo install aptos` or download from [aptos.dev](https://aptos.dev/tools/aptos-cli/)
-- **A running ACE localnet.** From the repo root:
+- **For testnet:** no ACE localnet is needed. The demo uses the public ACE
+  testnet deployment from the SDK. To target a different ACE deployment, set
+  `ACE_CONTRACT`, `IBE_KEYPAIR_ID`, and `VRF_KEYPAIR_ID` (or `KEYPAIR_IDS`
+  as `IBE,VRF`) before running the steps.
+
+- **For localnet:** set `ACE_NETWORK=localnet` or use the `*:localnet` scripts.
+  From the repo root:
 
   ```bash
   pnpm install
   pnpm --filter ace-scenarios run-local-network-forever
   ```
 
-  Wait for the `ACE local network is READY` banner. Leave it running in
-  another terminal. The script writes `/tmp/ace-localnet-config.json`,
-  which the demo steps below read.
+  Wait until the terminal prints `ACE local network is READY`. Leave it running
+  in another terminal. The script writes `/tmp/ace-localnet-config.json`, which
+  the demo steps below read.
 
 In a separate terminal:
 
 ```bash
-cd examples/presigned-access-aptos/demo-cli-flow
+cd examples/presigned-access-aptos
 ```
 
 ## Walkthrough
@@ -96,9 +102,9 @@ cd examples/presigned-access-aptos/demo-cli-flow
 pnpm 1-setup
 ```
 
-Generates a fresh Aptos keypair for Alice, funds her from the localnet faucet
-(~2 APT — enough to deploy + register + rotate), and writes
-`data/alice.json`. Idempotent: skips both if she's already provisioned.
+Generates a fresh Aptos keypair for Alice, prompts you to fund her on testnet,
+and writes `data/alice.json`. Idempotent: skips both if she's already
+provisioned.
 
 ### Step 2 — Alice deploys `presigned_access`
 
@@ -124,14 +130,15 @@ Three things happen:
 2. **Derive** `(accessPrivateKey, accessPublicKey)` via ACE's threshold VRF.
    The owner signs the canonical request bytes (`"0x" + hex(BCS(payload))`)
    with her Aptos account; workers verify her identity, return their VRF
-   shares, and the SDK reconstructs 32 deterministic bytes. The first 32-bit
-   chunk reduces mod the BLS Fr order to give `accessPrivateKey`;
+   shares, and the SDK reconstructs 32 deterministic bytes. That VRF output is
+   reduced mod the BLS Fr order to give `accessPrivateKey`;
    `accessPublicKey = accessPrivateKey · G1`.
 3. **Register** the public half on-chain at
    `<alice>::presigned_access::register("song-1.mp3", accessPublicKey)`.
 4. **Emit** `data/grant.json` — `{ blobSuffix, blobIdHex, ciphertextHex,
-   accessPrivateKeyHex }`. This single file is the pre-signed URL: hand it
-   to whoever should be able to read.
+   accessPrivateKeyHex }`. `accessPrivateKeyHex` is the actual bearer token,
+   serialized as a 32-byte BLS Fr scalar. This single file is the pre-signed
+   URL: hand it to whoever should be able to read.
 
 ### Step 4 — Bob decrypts
 
@@ -177,6 +184,20 @@ looks up the new `accessPublicKey`, finds the BLS sig doesn't verify under
 it, and refuses to release shares (HTTP 403 from each worker). The script
 asserts the expected failure.
 
+### Localnet Variant
+
+To run the same walkthrough against a local ACE network, use the localnet
+scripts:
+
+```bash
+pnpm 1-setup:localnet
+pnpm 2-deploy-contract:localnet
+pnpm 3-grant:localnet
+pnpm 4-decrypt:localnet
+pnpm 5-rotate:localnet
+pnpm 6-decrypt-after-rotate:localnet
+```
+
 ## Layout
 
 ```
@@ -186,17 +207,16 @@ examples/presigned-access-aptos/
 │   ├── Move.toml                    # admin = "0xcafe" placeholder
 │   └── sources/
 │       └── presigned_access.move    # Registry + register + custom-flow hook
-└── demo-cli-flow/
-    ├── package.json                 # pnpm 1-setup, 2-deploy-contract, …
-    ├── tsconfig.json
-    └── scripts/
-        ├── common.ts                # shared config + bearer-token crypto
-        ├── 1-setup.ts
-        ├── 2-deploy-contract.ts
-        ├── 3-grant.ts
-        ├── 4-decrypt.ts
-        ├── 5-rotate.ts
-        └── 6-decrypt-after-rotate.ts
+├── package.json                     # pnpm 1-setup, 2-deploy-contract, …
+├── tsconfig.json
+└── scripts/
+    ├── common.ts                    # shared config + bearer-token crypto
+    ├── 1-setup.ts
+    ├── 2-deploy-contract.ts
+    ├── 3-grant.ts
+    ├── 4-decrypt.ts
+    ├── 5-rotate.ts
+    └── 6-decrypt-after-rotate.ts
 ```
 
 State flows via JSON files under `data/` (created on first run, gitignored):
@@ -211,7 +231,7 @@ State flows via JSON files under `data/` (created on first run, gitignored):
   pin the BLS sig binding, DST domain separation, BCS-encoded `SignableRequest`
   layout, origin check, and rotation behavior. Run them with
   `cd contract && aptos move test --skip-fetch-latest-git-deps`.
-- **Bearer-token crypto**: `demo-cli-flow/scripts/common.ts`. Mirrors the Move
+- **Bearer-token crypto**: `scripts/common.ts`. Mirrors the Move
   side byte-for-byte: `SignableRequest`/`ReaderProof` classes with
   `serialize` + `toBytes`, the BLS hash-to-curve DST
   (`BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`), and the VRF-output →

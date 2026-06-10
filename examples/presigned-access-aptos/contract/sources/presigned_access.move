@@ -44,13 +44,12 @@
 module admin::presigned_access {
     use std::bcs;
     use std::error;
-    use std::option;
-    use std::signer;
     use std::string::{Self, String};
     use aptos_std::bcs_stream;
     use aptos_std::bls12381;
     use aptos_std::string_utils;
-    use aptos_std::table::{Self, Table};
+    use aptos_std::table;
+    use aptos_std::table::Table;
 
     /// Domain-separation tag for the BLS signed message. Bumping it
     /// invalidates every outstanding `access_private_key` even if the registered `access_public_key`
@@ -90,7 +89,7 @@ module admin::presigned_access {
 
     /// Create the singleton registry. Idempotent.
     public entry fun init(admin: &signer) {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<Registry>(@admin)) {
             move_to(admin, Registry { entries: table::new() });
         };
@@ -105,15 +104,15 @@ module admin::presigned_access {
         owner: &signer,
         blob_name_suffix: String,
         access_public_key: vector<u8>,
-    ) acquires Registry {
+    ) {
         assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
         // Fail closed on garbage pubkeys at write-time rather than later
         // at every verify call.
         let pk_opt = bls12381::public_key_from_bytes(access_public_key);
-        assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_APK));
+        assert!(pk_opt.is_some(), error::invalid_argument(E_INVALID_APK));
 
-        let blob_id = create_full_blob_name(signer::address_of(owner), blob_name_suffix);
-        let registry = borrow_global_mut<Registry>(@admin);
+        let blob_id = create_full_blob_name(owner.address_of(), blob_name_suffix);
+        let registry = &mut Registry[@admin];
         registry.entries.upsert(*blob_id.bytes(), access_public_key);
     }
 
@@ -130,9 +129,9 @@ module admin::presigned_access {
         label: vector<u8>,
         user_epk: vector<u8>,
         payload: vector<u8>,
-    ): bool acquires Registry {
+    ): bool {
         if (!exists<Registry>(@admin)) return false;
-        let registry = borrow_global<Registry>(@admin);
+        let registry = &Registry[@admin];
         if (!registry.entries.contains(label)) return false;
         let access_public_key_bytes = *registry.entries.borrow(label);
 
@@ -143,8 +142,8 @@ module admin::presigned_access {
         if (claimed_origin != EXPECTED_APP_ORIGIN) return false;
 
         let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
-        if (!option::is_some(&pk_opt)) return false; // unreachable: register() validates
-        let pk = option::extract(&mut pk_opt);
+        if (!pk_opt.is_some()) return false; // unreachable: register() validates
+        let pk = pk_opt.extract();
         let sig = bls12381::signature_from_bytes(sig_bytes);
         let msg = bcs::to_bytes(&SignableRequest {
             dst: SIGNABLE_REQUEST_DST,
@@ -171,8 +170,8 @@ module admin::presigned_access {
     }
 
     /// Canonical blob_id constructor — `@<canonical-64-hex-owner>/<suffix>`.
-    /// Matches the convention `shelby-explorer-acl-aptos` and other ACE
-    /// examples use for `@<owner>/<path>`-style object names.
+    /// Matches the convention ACE examples use for
+    /// `@<owner>/<path>`-style object names.
     public fun create_full_blob_name(owner_address: address, blob_name_suffix: String): String {
         let full_blob_name = string_utils::to_string_with_canonical_addresses(&owner_address);
         full_blob_name.append_utf8(b"/");
@@ -189,7 +188,7 @@ module admin::presigned_access {
     //   owner  = @0xcafe   suffix = "song.mp3"
     //   origin = "https://example.com"   user_epk = 0xdeadbeefcafebabe
     #[test(admin = @admin)]
-    fun happy_path_verifies(admin: &signer) acquires Registry {
+    fun happy_path_verifies(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
         let access_public_key = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
@@ -203,7 +202,7 @@ module admin::presigned_access {
 
     // Tamper with one byte of user_epk — sig should no longer verify.
     #[test(admin = @admin)]
-    fun mismatched_user_epk_rejected(admin: &signer) acquires Registry {
+    fun mismatched_user_epk_rejected(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
         let access_public_key = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
@@ -221,7 +220,7 @@ module admin::presigned_access {
     // — the contract still rejects on the `claimed_origin` check before
     // even getting to the sig verify.
     #[test(admin = @admin)]
-    fun wrong_origin_rejected(admin: &signer) acquires Registry {
+    fun wrong_origin_rejected(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
         let access_public_key = x"96a20bb9485ff6d8950955a629e8043a43775968ac133eb7b19c5f0389a2253676abdd6c86c7b68d38a1b7f6af8650e7";
@@ -236,7 +235,7 @@ module admin::presigned_access {
 
     // Unregistered blob_id → hook returns false (no abort).
     #[test(admin = @admin)]
-    fun unknown_blob_returns_false(admin: &signer) acquires Registry {
+    fun unknown_blob_returns_false(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
         let label   = b"@deadbeef/never-registered";
@@ -248,7 +247,7 @@ module admin::presigned_access {
     // Garbage access_public_key bytes → register aborts; nothing is stored.
     #[test(admin = @admin)]
     #[expected_failure(abort_code = 0x10003, location = Self)]
-    fun register_rejects_garbage_access_public_key(admin: &signer) acquires Registry {
+    fun register_rejects_garbage_access_public_key(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
         let garbage = x"00112233";
@@ -258,7 +257,7 @@ module admin::presigned_access {
     // Re-registering with a new access_public_key under the same suffix overwrites
     // (= revokes the old access_private_key). Sig from the old access_public_key should now reject.
     #[test(admin = @admin)]
-    fun overwrite_revokes_previous_access_public_key(admin: &signer) acquires Registry {
+    fun overwrite_revokes_previous_access_public_key(admin: &signer) {
         account::create_account_for_test(@admin);
         init(admin);
 

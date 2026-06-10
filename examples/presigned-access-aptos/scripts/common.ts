@@ -4,30 +4,47 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { AccountAddress, Serializer } from '@aptos-labs/ts-sdk';
+import * as readline from 'readline';
+import { AccountAddress, Aptos, AptosConfig, Network, Serializer } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { bls12_381 } from '@noble/curves/bls12-381';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 
 // ── Deployment target ────────────────────────────────────────────────────────
 //
-// This demo is localnet-only. Bring up an ACE localnet via
-// `pnpm --filter ace-scenarios run-local-network-forever` (wait for the
-// "ACE local network is READY" banner) and the steps below read the chain
-// RPC + ACE worker contract + DKG'd keypair_id from /tmp/ace-localnet-config.json.
+// Default: testnet + the SDK's public ACE preview. Set ACE_NETWORK=localnet
+// (or use the package's *:localnet scripts) to target a local ACE network.
 
 export const LOCALNET_CONFIG_PATH = '/tmp/ace-localnet-config.json';
 
-interface LocalnetConfig {
+export type AceNetwork = 'localnet' | 'testnet';
+
+export interface AceConfig {
+    network: AceNetwork;
     apiEndpoint: string;
     contractAddr: string;
-    keypairId: string;
+    ibeKeypairId: string;
+    vrfKeypairId: string;
 }
 
-/** Different scenario harnesses write the localnet config under slightly
- *  different schemas (singular `keypairId` vs plural `keypairIds[0]`).
- *  Accept either. */
-export function readLocalnetConfig(): LocalnetConfig {
+function targetNetwork(): AceNetwork {
+    const raw = (process.env.ACE_NETWORK ?? 'testnet').toLowerCase();
+    if (raw === 'localnet' || raw === 'testnet') return raw;
+    throw new Error(`Unsupported ACE_NETWORK="${raw}" (expected localnet or testnet).`);
+}
+
+function idsFromEnv(): { ibeKeypairId: string; vrfKeypairId: string } | undefined {
+    const splitIds = process.env.KEYPAIR_IDS?.split(',').map(s => s.trim()).filter(Boolean);
+    const ibeKeypairId = process.env.IBE_KEYPAIR_ID ?? process.env.KEYPAIR_ID ?? splitIds?.[0];
+    const vrfKeypairId = process.env.VRF_KEYPAIR_ID ?? splitIds?.[1] ?? ibeKeypairId;
+    if (!ibeKeypairId || !vrfKeypairId) return undefined;
+    return { ibeKeypairId, vrfKeypairId };
+}
+
+/** Different localnet harnesses write slightly different schemas:
+ *  singular `keypairId`, explicit `ibeKeypairId`/`vrfKeypairId`, or plural
+ *  `keypairIds`. Accept all of them. */
+function readLocalnetConfig(): AceConfig {
     let raw: any;
     try {
         raw = JSON.parse(readFileSync(LOCALNET_CONFIG_PATH, 'utf8'));
@@ -35,14 +52,46 @@ export function readLocalnetConfig(): LocalnetConfig {
         throw new Error(
             `Could not read ${LOCALNET_CONFIG_PATH}. Bring up an ACE localnet first via ` +
             `\`pnpm --filter ace-scenarios run-local-network-forever\` and wait ` +
-            `for the "ACE local network is READY" banner.`,
+            `until the terminal prints "ACE local network is READY".`,
         );
     }
-    const keypairId = raw.keypairId ?? (Array.isArray(raw.keypairIds) ? raw.keypairIds[0] : undefined);
-    if (!raw.apiEndpoint || !raw.contractAddr || !keypairId) {
-        throw new Error(`Malformed ${LOCALNET_CONFIG_PATH}: need {apiEndpoint, contractAddr, keypairId|keypairIds[]}`);
+    const splitIds = Array.isArray(raw.keypairIds) ? raw.keypairIds : undefined;
+    const ibeKeypairId = raw.ibeKeypairId ?? raw.keypairId ?? splitIds?.[0];
+    const vrfKeypairId = raw.vrfKeypairId ?? splitIds?.[1] ?? ibeKeypairId;
+    if (!raw.apiEndpoint || !raw.contractAddr || !ibeKeypairId || !vrfKeypairId) {
+        throw new Error(
+            `Malformed ${LOCALNET_CONFIG_PATH}: need {apiEndpoint, contractAddr, ` +
+            `ibeKeypairId|keypairId|keypairIds[]}`,
+        );
     }
-    return { apiEndpoint: raw.apiEndpoint, contractAddr: raw.contractAddr, keypairId };
+    return { network: 'localnet', apiEndpoint: raw.apiEndpoint, contractAddr: raw.contractAddr, ibeKeypairId, vrfKeypairId };
+}
+
+export function readAceConfig(): AceConfig {
+    const network = targetNetwork();
+    const envIds = idsFromEnv();
+    if (process.env.ACE_CONTRACT && envIds) {
+        return {
+            network,
+            apiEndpoint: process.env.ACE_API_ENDPOINT ??
+                (network === 'testnet' ? 'https://api.testnet.aptoslabs.com/v1' : 'http://localhost:8080/v1'),
+            contractAddr: process.env.ACE_CONTRACT,
+            ...envIds,
+        };
+    }
+
+    if (network === 'testnet') {
+        const known = ACE.knownDeployments.preview20260610;
+        return {
+            network,
+            apiEndpoint: process.env.ACE_API_ENDPOINT ?? known.aceDeployment.apiEndpoint,
+            contractAddr: known.aceDeployment.contractAddr.toStringLong(),
+            ibeKeypairId: known.ibeKeypairId.toStringLong(),
+            vrfKeypairId: known.vrfKeypairId.toStringLong(),
+        };
+    }
+
+    return readLocalnetConfig();
 }
 
 export const LOCALNET_FAUCET_URL = 'http://localhost:8081';
@@ -63,13 +112,9 @@ export const BLS_HASH_DST = 'BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/** This package layout is one level deeper than tutorial-aptos: scripts
- *  live under `demo-cli-flow/scripts/`, so `..` from here is the demo-cli
- *  package root, and `../..` is the example root where `contract/` lives. */
-export const DEMO_ROOT = path.join(__dirname, '..');
-export const EXAMPLE_ROOT = path.join(DEMO_ROOT, '..');
-export const CONTRACT_DIR = path.join(EXAMPLE_ROOT, 'contract');
-export const DATA_DIR = path.join(DEMO_ROOT, 'data');
+export const ROOT = path.join(__dirname, '..');
+export const CONTRACT_DIR = path.join(ROOT, 'contract');
+export const DATA_DIR = path.join(ROOT, 'data');
 
 export const ALICE_FILE  = path.join(DATA_DIR, 'alice.json');
 export const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
@@ -91,7 +136,7 @@ export interface GrantFile {
     blobSuffix: string;
     blobIdHex: string;        // utf8 hex of `@<canon-owner>/<suffix>`
     ciphertextHex: string;
-    accessPrivateKeyHex: string;   // 32-byte hex; reduced mod r when used as a scalar
+    accessPrivateKeyHex: string;   // 32-byte BLS Fr scalar hex; this is the bearer token
 }
 
 export function ensureDataDir(): void {
@@ -110,9 +155,14 @@ export function log(...args: unknown[]): void {
     console.log(`[${new Date().toISOString()}]`, ...args);
 }
 
+export function waitForEnter(prompt: string): Promise<void> {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise(resolve => rl.question(prompt, () => { rl.close(); resolve(); }));
+}
+
 // ── Faucet ───────────────────────────────────────────────────────────────────
 
-export async function fundViaFaucet(addr: AccountAddress, octas: number): Promise<void> {
+export async function fundViaLocalnetFaucet(addr: AccountAddress, octas: number): Promise<void> {
     const r = await fetch(
         `${LOCALNET_FAUCET_URL}/mint?amount=${octas}&address=${addr.toStringLong()}`,
         { method: 'POST' },
@@ -133,8 +183,30 @@ export function vrfOutputToAccessKeypair(vrfBytes: Uint8Array): {
 } {
     if (vrfBytes.length !== 32) throw new Error(`vrfBytes: expected 32, got ${vrfBytes.length}`);
     const accessPrivateKey = BigInt('0x' + bytesToHex(vrfBytes)) % bls12_381.fields.Fr.ORDER;
+    if (accessPrivateKey === 0n) throw new Error('vrfBytes reduced to the zero BLS scalar');
     const accessPublicKey = bls12_381.G1.ProjectivePoint.BASE.multiply(accessPrivateKey).toRawBytes(true);
     return { accessPrivateKey, accessPublicKey };
+}
+
+export function accessPrivateKeyToHex(accessPrivateKey: bigint): string {
+    if (accessPrivateKey <= 0n || accessPrivateKey >= bls12_381.fields.Fr.ORDER) {
+        throw new Error('accessPrivateKey must be a non-zero BLS Fr scalar');
+    }
+    return accessPrivateKey.toString(16).padStart(64, '0');
+}
+
+export function accessPrivateKeyFromHex(accessPrivateKeyHex: string): bigint {
+    const normalized = accessPrivateKeyHex.startsWith('0x')
+        ? accessPrivateKeyHex.slice(2)
+        : accessPrivateKeyHex;
+    if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
+        throw new Error('accessPrivateKeyHex must be a 32-byte hex string');
+    }
+    const accessPrivateKey = BigInt(`0x${normalized}`);
+    if (accessPrivateKey <= 0n || accessPrivateKey >= bls12_381.fields.Fr.ORDER) {
+        throw new Error('accessPrivateKeyHex is not a valid non-zero BLS Fr scalar');
+    }
+    return accessPrivateKey;
 }
 
 /** What the bearer's `accessPrivateKey` actually signs. Mirrors the
@@ -198,32 +270,18 @@ export function signWithAccessPrivateKey(accessPrivateKey: bigint, msg: Uint8Arr
         .toRawBytes(true);
 }
 
-/** Mirrors AIP-62 `aptos:signMessage` output for the labeled multi-line layout
- *  the ACE worker parses (`APTOS` prefix + `<field>: <value>\n` lines). The
- *  same helper lives in `examples/tutorial-aptos/scripts/common.ts`; pulled
- *  inline here so the demo has no cross-package import. */
-export function buildAptosWalletFullMessage(args: {
-    accountAddress: AccountAddress;
-    chainId: number;
-    message: string;
-    nonce: string;
-}): string {
-    return [
-        'APTOS',
-        `address: ${args.accountAddress.toStringLong()}`,
-        `application: ${APP_ORIGIN}`,
-        `chainId: ${args.chainId}`,
-        `message: ${args.message}`,
-        `nonce: ${args.nonce}`,
-    ].join('\n');
-}
+// ── Aptos + ACE handles from config ──────────────────────────────────────────
 
-// ── ACE deployment handle from the localnet config ───────────────────────────
-
-export function aceDeploymentFromConfig(cfg: LocalnetConfig): ACE.AceDeployment {
+export function aceDeploymentFromConfig(cfg: AceConfig): ACE.AceDeployment {
     return new ACE.AceDeployment({
         apiEndpoint: cfg.apiEndpoint,
         contractAddr: AccountAddress.fromString(cfg.contractAddr),
     });
 }
 
+export function aptosFromConfig(cfg: AceConfig): Aptos {
+    return new Aptos(new AptosConfig({
+        network: cfg.network === 'testnet' ? Network.TESTNET : Network.LOCAL,
+        fullnode: cfg.apiEndpoint,
+    }));
+}

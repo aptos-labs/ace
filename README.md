@@ -68,9 +68,8 @@ Steps 1–2 happen once per piece of content. Steps 3–6 happen each time a use
 | [`worker-components`](./worker-components) | Rust worker binaries (HTTP server, DKG/DKR participants) |
 | [`scenarios`](./scenarios) | Local network setup scripts |
 | [`examples/tutorial-aptos`](./examples/tutorial-aptos) | Step-by-step ACE walkthrough on Aptos testnet — start here |
-| [`examples/shelby-explorer-acl-aptos`](./examples/shelby-explorer-acl-aptos) | ACE ACL module from Shelby Explorer (allowlist / time-lock / pay-to-download) |
+| [`examples/presigned-access-aptos`](./examples/presigned-access-aptos) | Aptos custom-flow example with pre-signed bearer access grants |
 | [`examples/pay-to-download-solana`](./examples/pay-to-download-solana) | Pay-to-download example on Solana |
-| [`examples/zk-kyc`](./examples/zk-kyc) | Age-gated decryption with Groth16 ZK proofs |
 
 ---
 
@@ -186,10 +185,8 @@ pnpm dev deployment default <alias>       # set the default deployment profile
 | Example | Flow | Chain | Description |
 |---------|------|-------|-------------|
 | [tutorial-aptos](./examples/tutorial-aptos) | Basic | Aptos | Step-by-step tutorial — a minimal pay-to-download marketplace; demonstrates per-item label binding. One faucet click for Alice and go. |
-| [shelby-explorer-acl-aptos](./examples/shelby-explorer-acl-aptos) | Basic | Aptos | ACE ACL module from [Shelby Explorer](https://explorer.shelby.xyz/) — allowlist / time-lock / pay-to-download |
-| [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
-| [zk-kyc](./examples/zk-kyc) | Custom | Aptos | Age-gated decryption with Groth16 ZK proofs |
 | [presigned-access-aptos](./examples/presigned-access-aptos) | Custom + VRF | Aptos | Pre-signed access grants backed by ACE VRF-derived per-blob keys |
+| [pay-to-download-solana](./examples/pay-to-download-solana) | Basic | Solana | Pay-to-download with Anchor programs |
 
 ## License
 

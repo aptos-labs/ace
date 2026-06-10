@@ -38,6 +38,7 @@ export const ACE_CONTRACT_PACKAGES: readonly string[] = [
     'pke',
     'worker_config',
     'group',
+    'secret-usage',
     'fiat-shamir-transform',
     'sigma-dlog-linear',
     'pedersen-polynomial-commitment',

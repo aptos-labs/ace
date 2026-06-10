@@ -37,6 +37,20 @@ aad    = b""       (empty by default; callers do NOT pass AAD)
 
 Nested hybrid PKE for harvest-now-decrypt-later protection of long-lived on-chain share ciphertexts. TS and Rust encrypt the plaintext first with scheme `0x01`, then encapsulate with ML-KEM-768, derive an outer ChaCha20-Poly1305 key via HKDF-SHA256, and encrypt the serialized inner HPKE ciphertext. Move is decoder-only.
 
-**Security intent.** Historical ciphertext confidentiality should survive if either X25519 remains secure or ML-KEM-768 remains secure. The Rust ML-KEM implementation is the unaudited RustCrypto `ml-kem` crate; this scheme is not production-audited.
+**Sources / standards.**
+- Inner encryption is HPKE base mode from [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), using DHKEM(X25519, HKDF-SHA256) and ChaCha20-Poly1305.
+- Outer encapsulation uses ML-KEM-768 from [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final).
+- The outer KDF is HKDF-SHA256 from [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869); the outer AEAD is ChaCha20-Poly1305 from [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439).
+
+**Security model / intent.** This exact nested construction is not a standardized HPKE hybrid, HPKE-X-Wing, or a scheme with an ACE-specific production proof. Treat it as a prototype KEM-DEM composition in the public-key IND-CCA confidentiality setting: inner HPKE relies on the RFC 9180 HPKE security analysis; outer confidentiality relies on ML-KEM-768 IND-CCA KEM security, HKDF as a KDF, and ChaCha20-Poly1305 AEAD security. The intended harvest-now-decrypt-later property is that historical ciphertext confidentiality survives if the outer ML-KEM-768 layer remains secure against quantum adversaries; the nested inner HPKE layer is a classical fallback if the ML-KEM layer were later broken. The Rust ML-KEM implementation is the unaudited RustCrypto `ml-kem` crate; this scheme is not production-audited.
+
+**Ciphertext size.** For a plaintext of `P` bytes, the inner HPKE ciphertext struct is `33 + uleb_len(P + 16) + P + 16` bytes, where `uleb_len(x)` is the byte length of the BCS ULEB128 length prefix for `x`. The outer AEAD plaintext is that inner struct, and the outer AEAD adds a 16-byte tag. Including the scheme byte, ML-KEM ciphertext, nonce, and BCS length prefixes, scheme `0x02` ciphertext size is:
+
+```
+1104 + uleb_len(outer_len) + outer_len
+where outer_len = 49 + uleb_len(P + 16) + P + 16
+```
+
+Examples: `P=32` -> **1203 B**, `P=1024` -> **2197 B**, `P=65536` -> **66711 B**. See [`../wire-formats.md`](../wire-formats.md) §1.2 for the field-level byte layout.
 
 **Current limitations.** Scheme `0x02` is not standardized HPKE-X-Wing and is not audited. It is suitable for VSS share-transport prototyping and performance evaluation, not default production use.

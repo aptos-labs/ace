@@ -81,6 +81,16 @@ struct HybridCiphertext {
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B enc \| ULEB(L) \| L B aead_ct` (aead_ct = ct \|\| 16B Poly1305 tag) |
 | HybridX25519MlKem768ChaCha20Poly1305 | `02 \| c0 08 \| 1088B mlkem768_ct \| 0c \| 12B nonce \| ULEB(L) \| L B outer_aead_ct` |
 
+For the hybrid scheme, `outer_aead_ct` encrypts the serialized inner HPKE ciphertext and includes a 16-byte Poly1305 tag. For `P` plaintext bytes:
+
+```text
+inner_hpke_len = 33 + uleb_len(P + 16) + P + 16
+outer_aead_len = inner_hpke_len + 16
+total_len      = 1 + 2 + 1088 + 1 + 12 + uleb_len(outer_aead_len) + outer_aead_len
+```
+
+Examples: `P=32` -> **1203 B**, `P=1024` -> **2197 B**, `P=65536` -> **66711 B**.
+
 ### 1.3 `pke::DecryptionKey` (per scheme)
 
 These never appear on the wire as part of a request — they live only on the worker's disk / env-var — but they are BCS-encoded in their hex CLI form:

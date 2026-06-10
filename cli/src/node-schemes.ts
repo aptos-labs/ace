@@ -145,6 +145,8 @@ const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
     aptosTestnetApikey:   'AG-yourkey...',
     aptosLocalnetApi:     'http://127.0.0.1:8080/v1',
     aptosLocalnetApikey:  'AG-yourkey...',
+    aptosShelbyPrivateBetaApi:    'https://<your-shelby-private-beta-fullnode>/v1',
+    aptosShelbyPrivateBetaApikey: 'AG-yourkey...',
     solanaMainnetBetaRpc: 'https://api.mainnet-beta.solana.com',
     solanaTestnetRpc:     'https://api.testnet.solana.com',
     solanaDevnetRpc:      'https://api.devnet.solana.com',

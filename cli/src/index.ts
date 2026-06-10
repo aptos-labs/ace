@@ -308,7 +308,7 @@ const loadtestCmd = program.command('loadtest').description('Constant-rate load 
 loadtestCmd
     .command('setup')
     .description('Generate a test account, wait for faucet funding, deploy the loadtest-acl Move contract. Idempotent per --network.')
-    .option('--network <name>', 'Network name (testnet | mainnet | devnet | localnet)', 'testnet')
+    .option('--network <name>', 'Network name (testnet | mainnet | devnet | localnet | shelby-private-beta)', 'testnet')
     .option('--rpc-url <url>', 'Override the default RPC URL for this network')
     .action(async (opts: { network?: string; rpcUrl?: string }) => {
         try {

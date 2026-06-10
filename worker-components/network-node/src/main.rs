@@ -99,6 +99,10 @@ struct RunArgs {
     aptos_localnet_api: String,
     #[arg(long)]
     aptos_localnet_apikey: Option<String>,
+    #[arg(long)]
+    aptos_shelby_private_beta_api: Option<String>,
+    #[arg(long)]
+    aptos_shelby_private_beta_apikey: Option<String>,
     #[arg(long, default_value = "https://api.mainnet-beta.solana.com")]
     solana_mainnet_beta_rpc: String,
     #[arg(long, default_value = "https://api.testnet.solana.com")]
@@ -117,6 +121,7 @@ struct EnvConfig {
     aptos_mainnet_api_key: Option<String>,
     aptos_testnet_api_key: Option<String>,
     aptos_localnet_api_key: Option<String>,
+    aptos_shelby_private_beta_api_key: Option<String>,
 }
 
 fn env_nonempty(name: &str) -> Option<String> {
@@ -180,6 +185,11 @@ impl RunArgs {
             "ACE_APTOS_LOCALNET_APIKEY",
             cfg.aptos_localnet_api_key.clone(),
         );
+        self.aptos_shelby_private_beta_apikey = option_or_env_or_config(
+            self.aptos_shelby_private_beta_apikey,
+            "ACE_APTOS_SHELBY_PRIVATE_BETA_APIKEY",
+            cfg.aptos_shelby_private_beta_api_key.clone(),
+        );
         self
     }
 }
@@ -216,6 +226,9 @@ fn build_chain_rpc(args: &RunArgs) -> network_node::ChainRpcConfig {
             args.aptos_localnet_api.clone(),
             args.aptos_localnet_apikey.clone(),
         ),
+        aptos_shelby_private_beta: args.aptos_shelby_private_beta_api.as_ref().map(|api| {
+            AptosRpc::new_with_key(api.clone(), args.aptos_shelby_private_beta_apikey.clone())
+        }),
         solana_mainnet_beta: args.solana_mainnet_beta_rpc.clone(),
         solana_testnet: args.solana_testnet_rpc.clone(),
         solana_devnet: args.solana_devnet_rpc.clone(),

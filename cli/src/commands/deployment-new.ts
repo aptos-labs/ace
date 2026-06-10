@@ -49,11 +49,12 @@ import {
 } from '../deploy-contracts.js';
 import { CLI } from '../cli-name.js';
 
-const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
+const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'shelby-private-beta' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
     { name: 'mainnet',  rpcUrl: 'https://api.mainnet.aptoslabs.com/v1' },
     { name: 'testnet',  rpcUrl: 'https://api.testnet.aptoslabs.com/v1' },
     { name: 'devnet',   rpcUrl: 'https://api.devnet.aptoslabs.com/v1',  faucet: 'https://faucet.devnet.aptoslabs.com' },
     { name: 'localnet', rpcUrl: 'http://localhost:8080/v1',              faucet: 'http://localhost:8081' },
+    { name: 'shelby-private-beta' },
     { name: 'custom' },
 ];
 
@@ -194,17 +195,17 @@ async function promptNetwork(): Promise<{ network: typeof NETWORKS[number]['name
         choices: NETWORKS.map(n => ({ name: n.name, value: n.name })),
     });
     const def = NETWORKS.find(n => n.name === choice)!;
-    if (choice !== 'custom') {
+    if (choice !== 'custom' && def.rpcUrl) {
         return { network: choice, rpcUrl: def.rpcUrl!, faucet: def.faucet };
     }
     const rpcUrl = await input({
-        message: 'Custom fullnode REST API URL (e.g. https://my-aptos-node.example.com/v1):',
+        message: `${choice === 'custom' ? 'Custom' : choice} fullnode REST API URL (e.g. https://my-aptos-node.example.com/v1):`,
         validate: v => /^https?:\/\//.test(v.trim()) || 'must start with http:// or https://',
     });
     const faucetRaw = await input({
         message: 'Faucet URL (optional — leave blank to fund the admin manually):',
     });
-    return { network: 'custom', rpcUrl: rpcUrl.trim(), faucet: faucetRaw.trim() || undefined };
+    return { network: choice, rpcUrl: rpcUrl.trim(), faucet: faucetRaw.trim() || undefined };
 }
 
 async function promptAdminKey(): Promise<Account> {
@@ -251,7 +252,7 @@ export async function deploymentNewCommand(): Promise<void> {
     console.log();
 
     // 4. Fund.
-    if (network === 'mainnet' || network === 'testnet' || (network === 'custom' && !faucet)) {
+    if (!faucet && network !== 'devnet' && network !== 'localnet') {
         console.log(`This admin account needs APT to publish all ${ACE_CONTRACT_PACKAGES.length} packages.`);
         console.log(`Roughly 5 APT is enough on ${network} (each publish ≈ 0.05 APT in gas).`);
         console.log();

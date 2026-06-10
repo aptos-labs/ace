@@ -386,7 +386,7 @@ mod tests {
     }
 
     /// Easy-to-run benchmark.
-    ///   cargo test -p vss-common --release bench_hybrid_x25519_mlkem768 -- --ignored --nocapture
+    ///   cargo test -p ace-pke --release bench_hybrid_x25519_mlkem768 -- --ignored --nocapture
     #[test]
     #[ignore]
     fn bench_hybrid_x25519_mlkem768() {

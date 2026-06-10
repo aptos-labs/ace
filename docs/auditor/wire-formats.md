@@ -31,7 +31,7 @@ ULEB128 of 0..127 is exactly one byte. All ACE enum tags fit in one byte today.
 
 ## 1. PKE wire formats
 
-Defined in `worker-components/vss-common/src/pke.rs`, mirrored in `ts-sdk/src/pke/index.ts` and `contracts/pke/sources/pke.move`.
+Defined in `worker-components/pke/src/lib.rs`, mirrored in `ts-sdk/src/pke/index.ts` and `contracts/pke/sources/pke.move`.
 
 ### 1.1 `pke::EncryptionKey`
 
@@ -101,7 +101,7 @@ These never appear on the wire as part of a request — they live only on the wo
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B sk` | **34 B** |
 | HybridX25519MlKem768ChaCha20Poly1305 | `02 \| 20 \| 32B x25519_sk \| 40 \| 64B mlkem768_seed` | **99 B** |
 
-The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/vss-common/src/pke.rs`) to dispatch.
+The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/pke/src/lib.rs`) to dispatch.
 
 ---
 
@@ -542,7 +542,7 @@ Round-trip / cross-implementation tests that gate wire-format changes:
 
 | Test | Location | Asserts |
 |------|----------|---------|
-| `pke::tests::round_trip` (Rust) | `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:170-180` | HPKE encrypt then decrypt yields original plaintext |
+| `pke::tests::round_trip` (Rust) | `worker-components/pke/src/pke_hpke_x25519_chacha20poly1305.rs:170-180` | HPKE encrypt then decrypt yields original plaintext |
 | `pke::tests::*_bcs_round_trip` (Rust) | same | EncryptionKey / Ciphertext BCS round-trip with byte-count assertions |
 | Move `test_*_from_bytes_golden` | `contracts/pke/tests/` | Move decoder matches a TS-produced golden vector |
 | `pnpm vitest` (TS) | `ts-sdk/tests/` | t-IBE schemes 0 and 1 round-trip; AEAD tamper rejection; wire-shape size assertions |

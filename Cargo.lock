@@ -11,6 +11,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ace-pke"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bcs",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "hkdf",
+ "hpke",
+ "ml-kem",
+ "rand",
+ "serde",
+ "sha2",
+ "sha3 0.10.8",
+]
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,19 +2740,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vss-common"
 version = "0.1.0"
 dependencies = [
+ "ace-pke",
  "anyhow",
  "ark-bls12-381",
  "ark-ec",
  "ark-ff",
  "ark-serialize",
  "bcs",
- "chacha20poly1305",
- "curve25519-dalek",
  "ed25519-dalek",
  "hex",
- "hkdf",
- "hpke",
- "ml-kem",
  "rand",
  "reqwest",
  "serde",

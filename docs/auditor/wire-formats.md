@@ -31,7 +31,7 @@ ULEB128 of 0..127 is exactly one byte. All ACE enum tags fit in one byte today.
 
 ## 1. PKE wire formats
 
-Defined in `worker-components/vss-common/src/pke.rs`, mirrored in `ts-sdk/src/pke/index.ts` and `contracts/pke/sources/pke.move`.
+Defined in `worker-components/pke/src/lib.rs`, mirrored in `ts-sdk/src/pke/index.ts` and `contracts/pke/sources/pke.move`.
 
 ### 1.1 `pke::EncryptionKey`
 
@@ -39,16 +39,19 @@ Defined in `worker-components/vss-common/src/pke.rs`, mirrored in `ts-sdk/src/pk
 enum EncryptionKey {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255EncKey),    // tag 0
     HpkeX25519ChaCha20Poly1305(HpkeEncryptionKey),           // tag 1
+    HybridX25519MlKem768ChaCha20Poly1305(HybridEncryptionKey), // tag 2
 }
 
 struct ElGamalOtpRistretto255EncKey { enc_base: Vec<u8>, public_point: Vec<u8> }
 struct HpkeEncryptionKey { pk: Vec<u8> }   // (pke_hpke_x25519_chacha20poly1305::EncryptionKey)
+struct HybridEncryptionKey { hpke_x25519: HpkeEncryptionKey, mlkem768_ek: Vec<u8> }
 ```
 
 | Variant | Wire bytes (total) |
 |---------|---------------------|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B enc_base \| 20 \| 32B public_point` = **67 B** |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B pk` = **34 B** |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| 20 \| 32B x25519_pk \| a0 09 \| 1184B mlkem768_ek` = **1220 B** |
 
 Where `20` = ULEB128(32). Inner `Vec<u8>` is sized but variable in principle; canonical lengths are 32 for all current uses.
 
@@ -58,6 +61,7 @@ Where `20` = ULEB128(32). Inner `Vec<u8>` is sized but variable in principle; ca
 enum Ciphertext {
     ElGamalOtpRistretto255(ElGamalOtpRistretto255Ciphertext),  // tag 0
     HpkeX25519ChaCha20Poly1305(HpkeCiphertext),                // tag 1
+    HybridX25519MlKem768ChaCha20Poly1305(HybridCiphertext),    // tag 2
 }
 
 struct ElGamalOtpRistretto255Ciphertext {
@@ -66,12 +70,26 @@ struct ElGamalOtpRistretto255Ciphertext {
 struct HpkeCiphertext {
     enc: Vec<u8>, aead_ct: Vec<u8>
 }
+struct HybridCiphertext {
+    mlkem768_ct: Vec<u8>, aead_nonce: Vec<u8>, aead_ct: Vec<u8>
+}
 ```
 
 | Variant | Wire bytes |
 |---------|------------|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B c0 \| 20 \| 32B c1 \| ULEB(L) \| L B sym_ciph \| 20 \| 32B mac` |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B enc \| ULEB(L) \| L B aead_ct` (aead_ct = ct \|\| 16B Poly1305 tag) |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| c0 08 \| 1088B mlkem768_ct \| 0c \| 12B nonce \| ULEB(L) \| L B outer_aead_ct` |
+
+For the hybrid scheme, `outer_aead_ct` encrypts the serialized inner HPKE ciphertext and includes a 16-byte Poly1305 tag. For `P` plaintext bytes:
+
+```text
+inner_hpke_len = 33 + uleb_len(P + 16) + P + 16
+outer_aead_len = inner_hpke_len + 16
+total_len      = 1 + 2 + 1088 + 1 + 12 + uleb_len(outer_aead_len) + outer_aead_len
+```
+
+Examples: `P=32` -> **1203 B**, `P=1024` -> **2197 B**, `P=65536` -> **66711 B**.
 
 ### 1.3 `pke::DecryptionKey` (per scheme)
 
@@ -81,8 +99,9 @@ These never appear on the wire as part of a request — they live only on the wo
 |--------|--------|------:|
 | ElGamalOtpRistretto255 | `00 \| 20 \| 32B enc_base \| 20 \| 32B priv_scalar` | **67 B** |
 | HpkeX25519ChaCha20Poly1305 | `01 \| 20 \| 32B sk` | **34 B** |
+| HybridX25519MlKem768ChaCha20Poly1305 | `02 \| 20 \| 32B x25519_sk \| 40 \| 64B mlkem768_seed` | **99 B** |
 
-The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/vss-common/src/pke.rs`) to dispatch.
+The leading scheme byte is consumed by `pke_decrypt_bytes` (`worker-components/pke/src/lib.rs`) to dispatch.
 
 ---
 
@@ -524,7 +543,7 @@ Round-trip / cross-implementation tests that gate wire-format changes:
 
 | Test | Location | Asserts |
 |------|----------|---------|
-| `pke::tests::round_trip` (Rust) | `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:170-180` | HPKE encrypt then decrypt yields original plaintext |
+| `pke::tests::round_trip` (Rust) | `worker-components/pke/src/pke_hpke_x25519_chacha20poly1305.rs:170-180` | HPKE encrypt then decrypt yields original plaintext |
 | `pke::tests::*_bcs_round_trip` (Rust) | same | EncryptionKey / Ciphertext BCS round-trip with byte-count assertions |
 | Move `test_*_from_bytes_golden` | `contracts/pke/tests/` | Move decoder matches a TS-produced golden vector |
 | `pnpm vitest` (TS) | `ts-sdk/tests/` | t-IBE schemes 0 and 1 round-trip; AEAD tamper rejection; wire-shape size assertions |

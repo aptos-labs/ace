@@ -5,20 +5,25 @@ import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
 import * as ElGamalOtpRistretto255 from "./elgamal_otp_ristretto255";
+import * as HybridX25519MlKem768ChaCha20Poly1305 from "./hybrid_x25519_mlkem768_chacha20poly1305";
 import * as HpkeX25519ChaCha20Poly1305 from "./hpke_x25519_chacha20poly1305";
 
 export const SCHEME_ELGAMAL_OTP_RISTRETTO255 = 0;
 export const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305 = 1;
+export const SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305 = 2;
 
 type InnerEk =
     | ElGamalOtpRistretto255.EncryptionKey
-    | HpkeX25519ChaCha20Poly1305.EncryptionKey;
+    | HpkeX25519ChaCha20Poly1305.EncryptionKey
+    | HybridX25519MlKem768ChaCha20Poly1305.EncryptionKey;
 type InnerDk =
     | ElGamalOtpRistretto255.DecryptionKey
-    | HpkeX25519ChaCha20Poly1305.DecryptionKey;
+    | HpkeX25519ChaCha20Poly1305.DecryptionKey
+    | HybridX25519MlKem768ChaCha20Poly1305.DecryptionKey;
 type InnerCt =
     | ElGamalOtpRistretto255.Ciphertext
-    | HpkeX25519ChaCha20Poly1305.Ciphertext;
+    | HpkeX25519ChaCha20Poly1305.Ciphertext
+    | HybridX25519MlKem768ChaCha20Poly1305.Ciphertext;
 
 function hexStringToBytes(hex: string): Uint8Array {
     const h = hex.trim();
@@ -58,6 +63,11 @@ export class EncryptionKey {
                 if (scheme === SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
                     const inner = HpkeX25519ChaCha20Poly1305.EncryptionKey.deserialize(deserializer)
                         .unwrapOrThrow("EncryptionKey.deserialize: HPKE-X25519");
+                    return new EncryptionKey(scheme, inner);
+                }
+                if (scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+                    const inner = HybridX25519MlKem768ChaCha20Poly1305.EncryptionKey.deserialize(deserializer)
+                        .unwrapOrThrow("EncryptionKey.deserialize: Hybrid-X25519-MLKEM768");
                     return new EncryptionKey(scheme, inner);
                 }
                 throw new Error(`Unknown PKE scheme: ${scheme}`);
@@ -124,6 +134,11 @@ export class DecryptionKey {
                         .unwrapOrThrow("DecryptionKey.deserialize: HPKE-X25519");
                     return new DecryptionKey(scheme, inner);
                 }
+                if (scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+                    const inner = HybridX25519MlKem768ChaCha20Poly1305.DecryptionKey.deserialize(deserializer)
+                        .unwrapOrThrow("DecryptionKey.deserialize: Hybrid-X25519-MLKEM768");
+                    return new DecryptionKey(scheme, inner);
+                }
                 throw new Error(`Unknown PKE scheme: ${scheme}`);
             },
         });
@@ -188,6 +203,11 @@ export class Ciphertext {
                         .unwrapOrThrow("Ciphertext.deserialize: HPKE-X25519");
                     return new Ciphertext(scheme, inner);
                 }
+                if (scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+                    const inner = HybridX25519MlKem768ChaCha20Poly1305.Ciphertext.deserialize(deserializer)
+                        .unwrapOrThrow("Ciphertext.deserialize: Hybrid-X25519-MLKEM768");
+                    return new Ciphertext(scheme, inner);
+                }
                 throw new Error(`Unknown PKE scheme: ${scheme}`);
             },
         });
@@ -244,6 +264,12 @@ export async function deriveEncryptionKey(decryptionKey: DecryptionKey): Promise
         );
         return new EncryptionKey(decryptionKey.scheme, ek);
     }
+    if (decryptionKey.scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+        const ek = HybridX25519MlKem768ChaCha20Poly1305.deriveEncryptionKey(
+            decryptionKey.inner as HybridX25519MlKem768ChaCha20Poly1305.DecryptionKey,
+        );
+        return new EncryptionKey(decryptionKey.scheme, ek);
+    }
     throw new Error(`deriveEncryptionKey: unknown scheme ${decryptionKey.scheme}`);
 }
 
@@ -270,6 +296,14 @@ export async function keygen(
             encryptionKey: new EncryptionKey(scheme, ekInner),
         };
     }
+    if (scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+        const { encryptionKey: ekInner, decryptionKey: dkInner } =
+            await HybridX25519MlKem768ChaCha20Poly1305.keygen();
+        return {
+            decryptionKey: new DecryptionKey(scheme, dkInner),
+            encryptionKey: new EncryptionKey(scheme, ekInner),
+        };
+    }
     throw new Error(`keygen: unknown scheme ${scheme}`);
 }
 
@@ -290,6 +324,13 @@ export async function encrypt({
     if (encryptionKey.scheme === SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
         const ct = await HpkeX25519ChaCha20Poly1305.encrypt({
             encryptionKey: encryptionKey.inner as HpkeX25519ChaCha20Poly1305.EncryptionKey,
+            plaintext,
+        });
+        return new Ciphertext(encryptionKey.scheme, ct);
+    }
+    if (encryptionKey.scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+        const ct = await HybridX25519MlKem768ChaCha20Poly1305.encrypt({
+            encryptionKey: encryptionKey.inner as HybridX25519MlKem768ChaCha20Poly1305.EncryptionKey,
             plaintext,
         });
         return new Ciphertext(encryptionKey.scheme, ct);
@@ -326,6 +367,13 @@ export async function decrypt({
                     ciphertext.inner as HpkeX25519ChaCha20Poly1305.Ciphertext,
                 );
                 return r.unwrapOrThrow("HPKE-X25519.decrypt failed");
+            }
+            if (decryptionKey.scheme === SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+                const r = await HybridX25519MlKem768ChaCha20Poly1305.decrypt(
+                    decryptionKey.inner as HybridX25519MlKem768ChaCha20Poly1305.DecryptionKey,
+                    ciphertext.inner as HybridX25519MlKem768ChaCha20Poly1305.Ciphertext,
+                );
+                return r.unwrapOrThrow("Hybrid-X25519-MLKEM768.decrypt failed");
             }
             throw new Error(`decrypt: unknown scheme ${decryptionKey.scheme}`);
         },

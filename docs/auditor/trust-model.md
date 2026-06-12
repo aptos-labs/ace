@@ -150,6 +150,7 @@ Out of scope for the protocol-level trust model:
 |-----------|------------|---------|
 | ElGamal-OTP-Ristretto255 | DDH on Ristretto255 + ROM (KDF, HMAC) | PKE scheme 0 *(test-only; see [`cryptography/pke.md`](./cryptography/pke.md))* |
 | HPKE-X25519-HKDF-SHA256-ChaCha20Poly1305 | RFC 9180 base-mode security: GapDH on X25519, HKDF-SHA256, ChaCha20-Poly1305 IND-CCA | PKE scheme 1 *(production)* |
+| Hybrid-X25519-MLKEM768-HKDF-SHA256-ChaCha20Poly1305 | Nested hybrid confidentiality if either X25519 HPKE or ML-KEM-768 remains secure; RustCrypto `ml-kem` crate is unaudited | PKE scheme 2 *(prototype)* |
 | BFIBE-BLS12381-ShortPK-OTP-HMAC | BDH on BLS12-381 + ROM, threshold via Shamir | t-IBE scheme 0 *(test-only; see [`cryptography/t-ibe.md`](./cryptography/t-ibe.md))* |
 | BFIBE-BLS12381-ShortSig-AEAD | BDH on BLS12-381 + ROM, ChaCha20-Poly1305 IND-CCA | t-IBE scheme 1 *(production)* |
 | Pedersen PCS + sigma linear-DLog | DLog on BLS12-381, unknown log relation between PCS generators, Fiat-Shamir ROM | VSS opening verification and public-key binding |

@@ -257,7 +257,7 @@ mod tests {
     }
 
     /// Easy-to-run benchmark.
-    ///   cargo test -p vss-common --release bench_hpke -- --ignored --nocapture
+    ///   cargo test -p ace-pke --release bench_hpke -- --ignored --nocapture
     #[test]
     #[ignore]
     fn bench_hpke() {

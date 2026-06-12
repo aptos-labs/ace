@@ -256,11 +256,15 @@ async fn build_and_submit_dc0(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let dealer_enc_key = rpc
+        .get_pke_enc_key_bcs(ace, account_addr)
+        .await
+        .map_err(|e| anyhow!("failed to fetch dealer enc key for {}: {}", account_addr, e))?;
     let dealer_state = DealerState::bls12381_fr(
         n as u64,
         dealing.coefs_p.iter().map(|c| fr_to_le_bytes(*c)).collect(),
     );
-    let dealer_state_ct = pke_encrypt(&enc_keys[0], &dealer_state.to_bytes());
+    let dealer_state_ct = pke_encrypt(&dealer_enc_key, &dealer_state.to_bytes());
 
     let consistency_proof = if let Some(previous_public_key) = &bcs_session.previous_public_key {
         Some(

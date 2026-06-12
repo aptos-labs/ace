@@ -394,6 +394,7 @@ struct BcsDealerContribution1 {
 ```
 
 The Move-side struct is in `contracts/vss/sources/vss.move:75-104`; field order is identical.
+Current dealer workers encrypt `dealer_state` to the dealer's registered PKE key.
 
 **Plaintext shape of `private_share_messages[i]`** (after PKE decrypt):
 ```rust

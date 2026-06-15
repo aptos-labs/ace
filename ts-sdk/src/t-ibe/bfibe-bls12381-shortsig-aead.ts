@@ -17,7 +17,7 @@
  *
  * Compared with the existing `bfibe-bls12381-shortpk-otp-hmac`:
  *  - Group flip: master pk + c0 swap from G1 → G2; identity hash + IDK share swap
- *    from G2 → G1. This makes per-decryption shares 48 bytes instead of 96 bytes
+ *    from G2 → G1. This makes identity key shares 48 bytes instead of 96 bytes
  *    and aligns with the BLS-signature convention used by drand/tlock.
  *  - DEM upgrade: hand-rolled OTP + HMAC-SHA3-256 → standard HKDF-SHA256 keying
  *    a ChaCha20-Poly1305 AEAD. Same primitive set as the HPKE-X25519 PKE.

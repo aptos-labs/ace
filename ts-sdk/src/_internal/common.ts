@@ -728,8 +728,8 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
 /**
  * Fetch the basePoint and per-holder share PKs of the most-recent DKG/DKR session for `keypairId`.
  *
- * Used by `decryptCore` / `decryptCoreCustom` to verify that each returned IDK share is
- * `H_G2(id)^{f(i+1)}` where `share_pks[i] = basePoint^{f(i+1)}` — without this check, a single
+ * Used by identity-key-share fetchers to verify that each returned IDK share is
+ * `H_G2(id)^{f(i+1)}` where `share_pks[i] = basePoint^{f(i+1)}` - without this check, a single
  * corrupt node returning a syntactically-valid-but-wrong share corrupts the aggregate and forces
  * a MAC failure for everyone.
  *
@@ -768,14 +768,30 @@ export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, netwo
     }
 }
 
-export async function decryptCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, ciphertext}: {
+export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
+    ciphertext: Uint8Array,
+    identityKeyShares: tibe.IdentityDecryptionKeyShare[],
+}): Result<Uint8Array> {
+    return Result.capture({
+        task: (_extra) => {
+            return tibe.decrypt({
+                idkShares: identityKeyShares,
+                ciphertext: tibe.Ciphertext.fromBytes(ciphertext)
+                    .unwrapOrThrow('ACE.decryptWithIdentityKeyShares: parse ciphertext'),
+            }).unwrapOrThrow('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
+export async function fetchIdentityKeySharesCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, tibeScheme}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
     ephemeralDecryptionKey: pke.DecryptionKey,
-    ciphertext: Uint8Array,
-}): Promise<Result<Uint8Array>> {
+    tibeScheme: number,
+}): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
             const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
@@ -808,20 +824,16 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
                         }),
                     ]);
                     const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.decryptCore: parse pke enc key for ${addrStr}`);
+                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCore: parse pke enc key for ${addrStr}`);
                     return { endpoint: endpoint as string, nodeEncKey };
                 })),
                 fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
-                throw `ACE.decryptCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+                throw `ACE.fetchIdentityKeySharesCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            // The t-IBE scheme is part of the ciphertext (first byte is the
-            // scheme tag); the caller never has to re-supply it.
-            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
-                .unwrapOrThrow('ACE.decryptCore: parse ciphertext for scheme').scheme;
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
@@ -865,25 +877,47 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);
 
             if (idkShares.length < networkState.curThreshold) {
-                throw `ACE.decryptCore: need ${networkState.curThreshold} shares, got ${idkShares.length}`;
+                throw `ACE.fetchIdentityKeySharesCore: need ${networkState.curThreshold} identity key shares, got ${idkShares.length}`;
             }
 
-            return tibe.decrypt({
-                idkShares,
-                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ACE.decryptCore: parse ciphertext'),
-            }).unwrapOrThrow('ACE.decryptCore: tibe.decrypt failed');
+            return idkShares;
         },
         recordsExecutionTimeMs: true,
     });
 }
 
-export async function decryptCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, ciphertext}: {
+export async function decryptCore(args: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    request: DecryptionRequestPayload,
+    proof: ProofOfPermission,
+    ephemeralDecryptionKey: pke.DecryptionKey,
+    ciphertext: Uint8Array,
+}): Promise<Result<Uint8Array>> {
+    const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
+    if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
+    const identityKeySharesResult = await fetchIdentityKeySharesCore({
+        aceDeployment: args.aceDeployment,
+        networkState: args.networkState,
+        request: args.request,
+        proof: args.proof,
+        ephemeralDecryptionKey: args.ephemeralDecryptionKey,
+        tibeScheme: ciphertext.okValue!.scheme,
+    });
+    if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
+    return decryptWithIdentityKeyShares({
+        ciphertext: args.ciphertext,
+        identityKeyShares: identityKeySharesResult.okValue!,
+    });
+}
+
+export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, tibeScheme}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     customRequest: CustomFlowRequest,
     callerDecryptionKey: pke.DecryptionKey,
-    ciphertext: Uint8Array,
-}): Promise<Result<Uint8Array>> {
+    tibeScheme: number,
+}): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
             const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
@@ -916,18 +950,16 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
                         }),
                     ]);
                     const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.decryptCoreCustom: parse pke enc key for ${addrStr}`);
+                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCoreCustom: parse pke enc key for ${addrStr}`);
                     return { endpoint: endpoint as string, nodeEncKey };
                 })),
                 fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
-                throw `ACE.decryptCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+                throw `ACE.fetchIdentityKeySharesCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
-                .unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext for scheme').scheme;
             const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, tibeScheme).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
@@ -971,15 +1003,35 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);
 
             if (idkShares.length < networkState.curThreshold) {
-                throw `ACE.decryptCoreCustom: need ${networkState.curThreshold} shares, got ${idkShares.length}`;
+                throw `ACE.fetchIdentityKeySharesCoreCustom: need ${networkState.curThreshold} identity key shares, got ${idkShares.length}`;
             }
 
-            return tibe.decrypt({
-                idkShares,
-                ciphertext: tibe.Ciphertext.fromBytes(ciphertext).unwrapOrThrow('ACE.decryptCoreCustom: parse ciphertext'),
-            }).unwrapOrThrow('ACE.decryptCoreCustom: tibe.decrypt failed');
+            return idkShares;
         },
         recordsExecutionTimeMs: true,
+    });
+}
+
+export async function decryptCoreCustom(args: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    customRequest: CustomFlowRequest,
+    callerDecryptionKey: pke.DecryptionKey,
+    ciphertext: Uint8Array,
+}): Promise<Result<Uint8Array>> {
+    const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
+    if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
+    const identityKeySharesResult = await fetchIdentityKeySharesCoreCustom({
+        aceDeployment: args.aceDeployment,
+        networkState: args.networkState,
+        customRequest: args.customRequest,
+        callerDecryptionKey: args.callerDecryptionKey,
+        tibeScheme: ciphertext.okValue!.scheme,
+    });
+    if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
+    return decryptWithIdentityKeyShares({
+        ciphertext: args.ciphertext,
+        identityKeyShares: identityKeySharesResult.okValue!,
     });
 }
 
@@ -993,13 +1045,13 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
  * current committee member's registered endpoint equals `targetEndpoint`.
  */
 export async function buildPerNodeRequestCore({
-    aceDeployment, networkState, request, proof, ciphertext, targetEndpoint,
+    aceDeployment, networkState, request, proof, tibeScheme, targetEndpoint,
 }: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
-    ciphertext: Uint8Array,
+    tibeScheme: number,
     targetEndpoint: string,
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
@@ -1036,8 +1088,6 @@ export async function buildPerNodeRequestCore({
             }
             const { nodeEncKey } = nodeInfos[sdkIdx];
 
-            const tibeScheme = tibe.Ciphertext.fromBytes(ciphertext)
-                .unwrapOrThrow('ACE.buildPerNodeRequest: parse ciphertext for scheme').scheme;
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
             const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
             return { encReqHex, epoch: Number(networkState.epoch), sdkIdx };

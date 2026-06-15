@@ -198,6 +198,21 @@ const plaintext = (await session.decryptWithProof({
 })).unwrapOrThrow("ACE decrypt failed");
 ```
 
+To split worker access from local plaintext recovery, fetch identity key shares and complete the last step locally:
+
+```typescript
+const identityKeyShares = (await session.fetchIdentityKeySharesWithProof({
+  txn: txn.serialize(),
+})).unwrapOrThrow("ACE fetch identity key shares failed");
+
+const plaintext = ACE.IBE_Solana.decryptWithIdentityKeyShares({
+  ciphertext,
+  identityKeyShares,
+}).unwrapOrThrow("ACE local decrypt failed");
+```
+
+For key reuse before you have a specific ciphertext, create the session with `tibeScheme` instead of `ciphertext`.
+
 For scripts, `ACE.IBE_Solana.decryptBasicFlow` wraps the same session sequence and asks you for a `signTxn(fullRequestBytes)` callback.
 
 Solana basic proofs do not currently pass a browser `origin` string to the hook. Treat the hook `programId` as the app boundary, and include explicit app context in the instruction data or PDA design if you need stronger origin-style separation. After deploying the web client or CLI, make sure the client only builds transactions for your intended hook program.

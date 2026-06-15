@@ -178,6 +178,28 @@ const plaintext = await ACE.IBE_Solana.decryptCustomFlow({
 });
 ```
 
+For a two-step flow, fetch the worker results first and open the ciphertext locally later. If the ciphertext uses a non-default t-IBE scheme, pass the same `tibeScheme` to the fetch call.
+
+```typescript
+const identityKeyShares =
+  (await ACE.IBE_Solana.fetchIdentityKeySharesCustomFlow({
+    label,
+    encPk,
+    encSk,
+    epoch,
+    txn: txn.serialize(),
+    aceDeployment,
+    keypairId,
+    knownChainName,
+    programId,
+  })).unwrapOrThrow("ACE fetch identity key shares failed");
+
+const plaintext = ACE.IBE_Solana.decryptWithIdentityKeyShares({
+  ciphertext,
+  identityKeyShares,
+}).unwrapOrThrow("ACE local decrypt failed");
+```
+
 ACE checks that the signed transaction matches the request fields and that the access instruction succeeds. If the instruction aborts, decryption fails.
 
 Solana custom flow does not automatically carry a browser origin. If your web app needs origin binding, include an origin or audience field in `payload` or instruction data, sign it as part of the proof, and reject any value except your deployed app's origin. After the client is deployed, update that allowlist or payload issuer configuration.

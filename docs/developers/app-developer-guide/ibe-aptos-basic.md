@@ -168,6 +168,24 @@ const plaintext = (await session.decryptWithProof({
 })).unwrapOrThrow("ACE decrypt failed");
 ```
 
+If you need to store or pass around the worker results before opening the ciphertext, fetch the identity key shares first and finish locally:
+
+```typescript
+const identityKeyShares = (await session.fetchIdentityKeySharesWithProof({
+  userAddr: userAddress,
+  publicKey: signed.publicKey,
+  signature: signed.signature,
+  fullMessage: signed.fullMessage,
+})).unwrapOrThrow("ACE fetch identity key shares failed");
+
+const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
+  ciphertext,
+  identityKeyShares,
+}).unwrapOrThrow("ACE local decrypt failed");
+```
+
+For key reuse before you have a specific ciphertext, create the session with `tibeScheme` instead of `ciphertext`.
+
 For scripts or backend services that sign directly with an Aptos account, build the same wallet-style `fullMessage` before signing. Do not sign `message` by itself; sign the full string returned by `buildAptosWalletFullMessage`.
 
 ```typescript

@@ -15,6 +15,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { Result } from "../result";
 import * as pke from "../pke";
+import * as tibe from "../t-ibe";
 import { State as NetworkState } from "../network";
 import {
     AceDeployment,
@@ -23,21 +24,23 @@ import {
     ProofOfPermission,
     DecryptionRequestPayload,
     fetchNetworkStateAndBuildRequest,
-    decryptCore,
+    decryptWithIdentityKeyShares,
+    fetchIdentityKeySharesCore,
     buildPerNodeRequestCore,
 } from "../_internal/common";
 
 export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
     fullDecryptionDomain: FullDecryptionDomain;
-    ciphertext: Uint8Array;
+    ciphertext: Uint8Array | undefined;
+    tibeScheme: number | undefined;
     ephemeralDecryptionKey: pke.DecryptionKey;
     ephemeralEncryptionKey: pke.EncryptionKey;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
 
     private constructor({
-        aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, ciphertext,
+        aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, ciphertext, tibeScheme,
         ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
@@ -46,7 +49,8 @@ export class BasicDecryptionSession {
         moduleAddr: AccountAddress,
         moduleName: string,
         label: Uint8Array,
-        ciphertext: Uint8Array,
+        ciphertext?: Uint8Array,
+        tibeScheme?: number,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
@@ -54,6 +58,7 @@ export class BasicDecryptionSession {
         const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
         this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, label});
         this.ciphertext = ciphertext;
+        this.tibeScheme = tibeScheme;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
     }
@@ -65,7 +70,8 @@ export class BasicDecryptionSession {
         moduleAddr: AccountAddress,
         moduleName: string,
         label: Uint8Array,
-        ciphertext: Uint8Array,
+        ciphertext?: Uint8Array,
+        tibeScheme?: number,
     }): Promise<BasicDecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
         return new BasicDecryptionSession({
@@ -120,20 +126,59 @@ export class BasicDecryptionSession {
         return request.toWebAuthnChallenge();
     }
 
+    private getCiphertext(context: string): Result<Uint8Array> {
+        if (this.ciphertext === undefined) {
+            return Result.Err({error: `${context}: ciphertext is required`});
+        }
+        return Result.Ok({value: this.ciphertext});
+    }
+
+    private getTibeScheme(): Result<number> {
+        if (this.tibeScheme !== undefined) {
+            return Result.Ok({value: this.tibeScheme});
+        }
+        if (this.ciphertext === undefined) {
+            return Result.Ok({value: tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD});
+        }
+        const ciphertext = tibe.Ciphertext.fromBytes(this.ciphertext);
+        if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
+        return Result.Ok({value: ciphertext.okValue!.scheme, extra: ciphertext.extra});
+    }
+
     async decryptWithProof({userAddr, publicKey, signature, fullMessage}: {
         userAddr: AccountAddress,
         publicKey: PublicKey,
         signature: Signature,
         fullMessage: string,
     }): Promise<Result<Uint8Array>> {
+        const ciphertext = this.getCiphertext('ACE.IBE_Aptos.BasicDecryptionSession.decryptWithProof');
+        if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
+        const identityKeySharesResult = await this.fetchIdentityKeySharesWithProof({
+            userAddr, publicKey, signature, fullMessage,
+        });
+        if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
+        return decryptWithIdentityKeyShares({
+            ciphertext: ciphertext.okValue!,
+            identityKeyShares: identityKeySharesResult.okValue!,
+        });
+    }
+
+    async fetchIdentityKeySharesWithProof({userAddr, publicKey, signature, fullMessage}: {
+        userAddr: AccountAddress,
+        publicKey: PublicKey,
+        signature: Signature,
+        fullMessage: string,
+    }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
+        const tibeScheme = this.getTibeScheme();
+        if (!tibeScheme.isOk) return Result.Err({error: tibeScheme.errValue, extra: tibeScheme.extra});
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
-        return decryptCore({
+        return fetchIdentityKeySharesCore({
             aceDeployment: this.aceDeployment,
             networkState: this.networkState!,
             request: this.request!,
             proof,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
-            ciphertext: this.ciphertext,
+            tibeScheme: tibeScheme.okValue!,
         });
     }
 
@@ -168,17 +213,40 @@ export class BasicDecryptionSession {
         clientDataJSON: Uint8Array,
         signature: Uint8Array,
     }): Promise<Result<Uint8Array>> {
+        const ciphertext = this.getCiphertext('ACE.IBE_Aptos.BasicDecryptionSession.decryptWithWebAuthnAssertion');
+        if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
+        const identityKeySharesResult = await this.fetchIdentityKeySharesWithWebAuthnAssertion({
+            userAddr, publicKey, authenticatorData, clientDataJSON, signature,
+        });
+        if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
+        return decryptWithIdentityKeyShares({
+            ciphertext: ciphertext.okValue!,
+            identityKeyShares: identityKeySharesResult.okValue!,
+        });
+    }
+
+    async fetchIdentityKeySharesWithWebAuthnAssertion({
+        userAddr, publicKey, authenticatorData, clientDataJSON, signature,
+    }: {
+        userAddr: AccountAddress,
+        publicKey: Secp256r1PublicKey,
+        authenticatorData: Uint8Array,
+        clientDataJSON: Uint8Array,
+        signature: Uint8Array,
+    }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
+        const tibeScheme = this.getTibeScheme();
+        if (!tibeScheme.isOk) return Result.Err({error: tibeScheme.errValue, extra: tibeScheme.extra});
         const proofResult = this.buildWebAuthnProof({
             userAddr, publicKey, authenticatorData, clientDataJSON, signature,
         });
         if (!proofResult.isOk) return Result.Err({ error: proofResult.errValue });
-        return decryptCore({
+        return fetchIdentityKeySharesCore({
             aceDeployment: this.aceDeployment,
             networkState: this.networkState!,
             request: this.request!,
             proof: proofResult.okValue!,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
-            ciphertext: this.ciphertext,
+            tibeScheme: tibeScheme.okValue!,
         });
     }
 
@@ -234,13 +302,15 @@ export class BasicDecryptionSession {
         fullMessage: string,
         targetEndpoint: string,
     }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
+        const tibeScheme = this.getTibeScheme();
+        if (!tibeScheme.isOk) return Result.Err({error: tibeScheme.errValue, extra: tibeScheme.extra});
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
         return buildPerNodeRequestCore({
             aceDeployment: this.aceDeployment,
             networkState: this.networkState!,
             request: this.request!,
             proof,
-            ciphertext: this.ciphertext,
+            tibeScheme: tibeScheme.okValue!,
             targetEndpoint,
         });
     }

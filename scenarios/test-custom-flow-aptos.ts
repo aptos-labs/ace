@@ -230,10 +230,16 @@ async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<Cus
     const aceDeployment = new ACE.AceDeployment({
         apiEndpoint: LOCALNET_URL, contractAddr: adminAddr,
     });
+    // Keep the low-level public-key cache path covered in a real scenario.
+    const pk = (await ACE.IBE_Aptos.fetchPk({
+        aceDeployment,
+        keypairId,
+    })).unwrapOrThrow('fetchPk failed');
     const encResult = await ACE.IBE_Aptos.encrypt({
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr,
         moduleName: 'check_acl_demo',
         label, plaintext: new TextEncoder().encode('HELLO CUSTOM FLOW'),
+        pk,
     });
     assert(encResult.isOk, `encrypt failed: ${encResult.errValue}`);
     const callerKeyPair = await pke.keygen();
@@ -260,9 +266,23 @@ async function runCustomFlowTestCases(setup: AptosCustomFlowSetup): Promise<void
         'wrong payload',
     );
     log('Attempting decrypt with correct payload (should succeed)...');
-    const decrypted = await ACE.IBE_Aptos.decryptCustomFlow(
-        { ...f.baseArgs, label: f.label, payload: f.correctCode, keypairId: f.keypairId },
-    );
+    // Keep the custom-flow identity-key-share path covered instead of relying
+    // only on the one-shot decrypt wrapper.
+    const identityKeyShares = (await ACE.IBE_Aptos.fetchIdentityKeySharesCustomFlow({
+        label: f.label,
+        encPk: f.baseArgs.encPk,
+        encSk: f.baseArgs.encSk,
+        payload: f.correctCode,
+        aceDeployment: f.baseArgs.aceDeployment,
+        keypairId: f.keypairId,
+        chainId: CHAIN_ID,
+        moduleAddr: f.adminAddr,
+        moduleName: 'check_acl_demo',
+    })).unwrapOrThrow('fetchIdentityKeySharesCustomFlow failed');
+    const decrypted = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
+        ciphertext: f.baseArgs.ciphertext,
+        identityKeyShares,
+    }).unwrapOrThrow('decryptWithIdentityKeyShares failed');
     assert(
         new TextDecoder().decode(decrypted) === 'HELLO CUSTOM FLOW',
         `plaintext mismatch: ${new TextDecoder().decode(decrypted)}`,

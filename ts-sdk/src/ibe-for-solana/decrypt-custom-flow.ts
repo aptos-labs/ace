@@ -2,21 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
+import { Result } from "../result";
 import * as pke from "../pke";
+import * as tibe from "../t-ibe";
 import {
     AceDeployment,
     ContractID,
     CustomFlowProof,
     CustomFlowRequest,
     fetchNetworkState,
-    decryptCoreCustom,
+    decryptWithIdentityKeyShares,
+    fetchIdentityKeySharesCoreCustom,
 } from "../_internal/common";
 
-export async function decryptCustomFlow({
-    ciphertext, label, encPk, encSk, epoch, txn,
-    aceDeployment, keypairId, knownChainName, programId,
+export async function fetchIdentityKeySharesCustomFlow({
+    label, encPk, encSk, epoch, txn,
+    aceDeployment, keypairId, knownChainName, programId, tibeScheme,
 }: {
-    ciphertext: Uint8Array,
     label: Uint8Array,
     encPk: Uint8Array,
     encSk: Uint8Array,
@@ -26,11 +28,12 @@ export async function decryptCustomFlow({
     keypairId: AccountAddress,
     knownChainName: string,
     programId: string,
-}): Promise<Uint8Array> {
+    tibeScheme?: number,
+}): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
-        .unwrapOrThrow('SolanaCustomFlow.decrypt: parse encPk');
+        .unwrapOrThrow('SolanaCustomFlow.fetchIdentityKeyShares: parse encPk');
     const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
-        .unwrapOrThrow('SolanaCustomFlow.decrypt: parse encSk');
+        .unwrapOrThrow('SolanaCustomFlow.fetchIdentityKeyShares: parse encSk');
 
     const networkState = await fetchNetworkState(aceDeployment);
     const contractId = ContractID.newSolana({knownChainName, programId});
@@ -44,13 +47,46 @@ export async function decryptCustomFlow({
         proof,
     });
 
-    return (await decryptCoreCustom({
+    return fetchIdentityKeySharesCoreCustom({
         aceDeployment,
         networkState,
         customRequest,
         callerDecryptionKey: callerDecSk,
-        ciphertext,
-    })).unwrapOrThrow('SolanaCustomFlow.decrypt failed');
+        tibeScheme: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+    });
+}
+
+export async function decryptCustomFlow(args: {
+    ciphertext: Uint8Array,
+    label: Uint8Array,
+    encPk: Uint8Array,
+    encSk: Uint8Array,
+    epoch: number,
+    txn: Uint8Array,
+    aceDeployment: AceDeployment,
+    keypairId: AccountAddress,
+    knownChainName: string,
+    programId: string,
+}): Promise<Uint8Array> {
+    const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
+        .unwrapOrThrow('SolanaCustomFlow.decrypt failed')
+        .scheme;
+    const identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
+        label: args.label,
+        encPk: args.encPk,
+        encSk: args.encSk,
+        epoch: args.epoch,
+        txn: args.txn,
+        aceDeployment: args.aceDeployment,
+        keypairId: args.keypairId,
+        knownChainName: args.knownChainName,
+        programId: args.programId,
+        tibeScheme,
+    });
+    return decryptWithIdentityKeyShares({
+        ciphertext: args.ciphertext,
+        identityKeyShares: identityKeySharesResult.unwrapOrThrow('SolanaCustomFlow.decrypt failed'),
+    }).unwrapOrThrow('SolanaCustomFlow.decrypt failed');
 }
 
 // ── Utilities for building Solana custom-flow instruction data ────────────────

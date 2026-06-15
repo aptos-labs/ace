@@ -116,6 +116,26 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
+If you encrypt many objects with the same ACE keypair and t-IBE scheme, fetch the public key once and pass it to each encryption call. If you use a non-default `tibeScheme`, pass it to `fetchPk` too.
+
+```typescript
+const pk = (await ACE.IBE_Aptos.fetchPk({
+  aceDeployment,
+  keypairId,
+})).unwrapOrThrow("ACE public key fetch failed");
+
+const ciphertext = (await ACE.IBE_Aptos.encrypt({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr,
+  moduleName,
+  label,
+  plaintext: songBytes,
+  pk,
+})).unwrapOrThrow("ACE encrypt failed");
+```
+
 These parameters tell ACE which app contract and object ID this ciphertext belongs to. In this example, the SDK `label` is the full object ID, so decrypting the content will check access for that same object ID.
 
 For decryption, prefer the session-style API in wallets and web apps. It lets you build the canonical request first, show or pass it to the wallet, then submit the proof:

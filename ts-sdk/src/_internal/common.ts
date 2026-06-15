@@ -632,6 +632,35 @@ export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<N
     return NetworkState.fromBytes(stateBytes).unwrapOrThrow('ACE: parse network state');
 }
 
+export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, context}: {
+    aceDeployment: AceDeployment,
+    keypairId: AccountAddress,
+    tibeScheme?: number,
+    context: string,
+}): Promise<Result<tibe.MasterPublicKey>> {
+    if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
+    return Result.captureAsync({
+        task: async (_extra) => {
+            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${aceContractAddr}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [keypairId.toStringLong()],
+                },
+            });
+            const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
+            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow(`${context}: parse DKG session`);
+            if (!session.resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
+
+            return tibe.MasterPublicKey.fromGroupElements(tibeScheme, session.basePoint, session.resultPk)
+                .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`);
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
 export async function fetchNetworkStateAndBuildRequest(
     aceDeployment: AceDeployment,
     fullDecryptionDomain: FullDecryptionDomain,

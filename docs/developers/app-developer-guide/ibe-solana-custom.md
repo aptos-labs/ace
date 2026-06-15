@@ -121,6 +121,25 @@ const ciphertext = (await ACE.IBE_Solana.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
+If you encrypt many objects with the same ACE keypair and t-IBE scheme, fetch the public key once and pass it to each encryption call. If you use a non-default `tibeScheme`, pass it to `fetchPk` too.
+
+```typescript
+const pk = (await ACE.IBE_Solana.fetchPk({
+  aceDeployment,
+  keypairId,
+})).unwrapOrThrow("ACE public key fetch failed");
+
+const ciphertext = (await ACE.IBE_Solana.encrypt({
+  aceDeployment,
+  keypairId,
+  knownChainName,
+  programId,
+  label,
+  plaintext,
+  pk,
+})).unwrapOrThrow("ACE encrypt failed");
+```
+
 For decryption, we create a fresh one-time encryption keypair, fetch the current ACE epoch, build request bytes, and sign a transaction that calls the hook:
 
 ```typescript

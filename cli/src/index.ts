@@ -324,7 +324,7 @@ loadtestCmd
     .option('-e, --endpoint <url>', 'Target an arbitrary worker URL (must be a current committee member)')
     .option('--post-url <url>', "Override the URL the probe actually POSTs to. The mint still uses --endpoint for committee-member lookup (enc-key + slot), but the probe traffic goes to --post-url. Useful for testing through a global LB / proxy / VPC route.")
     .option('--network <name>', 'Network name (matches a prior `loadtest setup`)', 'testnet')
-    .option('--contract <addr>', 'ACE contract address to target (default: ts-sdk knownDeployments.preview20260506). Required together with --keypair and --chain-id.')
+    .option('--contract <addr>', 'ACE contract address to target (default: ts-sdk knownDeployments.preview20260610). Required together with --keypair and --chain-id.')
     .option('--keypair <addr>', 'ACE keypair ID. Required together with --contract and --chain-id.')
     .option('--chain-id <id>', 'Chain ID for the target ACE deployment. Required together with --contract and --keypair.')
     .option('--ramp <csv>', 'Comma-separated QPS levels (default 20,40,80,160,320,640,1280)')

@@ -26,7 +26,7 @@ export async function encrypt({aceDeployment, keypairId, knownChainName, program
     if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
             const contractId = ContractID.newSolana({knownChainName, programId});
             const fdd = new FullDecryptionDomain({keypairId, contractId, label});
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();

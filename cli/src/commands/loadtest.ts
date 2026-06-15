@@ -206,7 +206,7 @@ export async function loadtestRunCommand(opts: {
     console.log(`Network:         ${network}`);
     console.log(`Test account:    ${state.accountAddr}\n`);
 
-    // SDK setup. By default we target ts-sdk knownDeployments.preview20260506;
+    // SDK setup. By default we target ts-sdk knownDeployments.preview20260610;
     // operators can override with --contract/--keypair/--chain-id (must travel
     // together — they all describe the same deployment).
     const customCount = [opts.contract, opts.keypair, opts.chainId].filter(Boolean).length;
@@ -231,9 +231,9 @@ export async function loadtestRunCommand(opts: {
         }
         console.log(`Custom deployment: contract=${opts.contract} keypair=${opts.keypair} chainId=${chainId}`);
     } else {
-        const known = ACE.knownDeployments.preview20260506;
+        const known = ACE.knownDeployments.preview20260610;
         aceDeployment = known.aceDeployment;
-        keypairId = known.keypairId;
+        keypairId = known.ibeKeypairId;
         chainId = known.chainId;
     }
 

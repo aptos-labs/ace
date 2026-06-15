@@ -2,21 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress } from "@aptos-labs/ts-sdk";
+import { Result } from "../result";
 import * as pke from "../pke";
+import * as tibe from "../t-ibe";
 import {
     AceDeployment,
     ContractID,
     CustomFlowProof,
     CustomFlowRequest,
     fetchNetworkState,
-    decryptCoreCustom,
+    decryptWithIdentityKeyShares,
+    fetchIdentityKeySharesCoreCustom,
 } from "../_internal/common";
 
-export async function decryptCustomFlow({
-    ciphertext, label, encPk, encSk, payload,
-    aceDeployment, keypairId, chainId, moduleAddr, moduleName,
+export async function fetchIdentityKeySharesCustomFlow({
+    label, encPk, encSk, payload,
+    aceDeployment, keypairId, chainId, moduleAddr, moduleName, tibeScheme,
 }: {
-    ciphertext: Uint8Array,
     label: Uint8Array,
     encPk: Uint8Array,
     encSk: Uint8Array,
@@ -26,11 +28,12 @@ export async function decryptCustomFlow({
     chainId: number,
     moduleAddr: AccountAddress,
     moduleName: string,
-}): Promise<Uint8Array> {
+    tibeScheme?: number,
+}): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
-        .unwrapOrThrow('AptosCustomFlow.decrypt: parse encPk');
+        .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encPk');
     const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
-        .unwrapOrThrow('AptosCustomFlow.decrypt: parse encSk');
+        .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encSk');
 
     const networkState = await fetchNetworkState(aceDeployment);
     const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
@@ -44,11 +47,44 @@ export async function decryptCustomFlow({
         proof,
     });
 
-    return (await decryptCoreCustom({
+    return fetchIdentityKeySharesCoreCustom({
         aceDeployment,
         networkState,
         customRequest,
         callerDecryptionKey: callerDecSk,
-        ciphertext,
-    })).unwrapOrThrow('AptosCustomFlow.decrypt failed');
+        tibeScheme: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+    });
+}
+
+export async function decryptCustomFlow(args: {
+    ciphertext: Uint8Array,
+    label: Uint8Array,
+    encPk: Uint8Array,
+    encSk: Uint8Array,
+    payload: Uint8Array,
+    aceDeployment: AceDeployment,
+    keypairId: AccountAddress,
+    chainId: number,
+    moduleAddr: AccountAddress,
+    moduleName: string,
+}): Promise<Uint8Array> {
+    const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
+        .unwrapOrThrow('AptosCustomFlow.decrypt failed')
+        .scheme;
+    const identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
+        label: args.label,
+        encPk: args.encPk,
+        encSk: args.encSk,
+        payload: args.payload,
+        aceDeployment: args.aceDeployment,
+        keypairId: args.keypairId,
+        chainId: args.chainId,
+        moduleAddr: args.moduleAddr,
+        moduleName: args.moduleName,
+        tibeScheme,
+    });
+    return decryptWithIdentityKeyShares({
+        ciphertext: args.ciphertext,
+        identityKeyShares: identityKeySharesResult.unwrapOrThrow('AptosCustomFlow.decrypt failed'),
+    }).unwrapOrThrow('AptosCustomFlow.decrypt failed');
 }

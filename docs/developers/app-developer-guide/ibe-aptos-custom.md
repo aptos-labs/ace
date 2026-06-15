@@ -350,7 +350,27 @@ const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
 });
 ```
 
-This custom SDK flow is one call today. If your UI has multiple phases, keep `encPk`, `encSk`, and the proof inputs in your own session state until the user finishes the proof step.
+If your UI has multiple phases, keep `encPk`, `encSk`, and the proof inputs in your own session state until the user finishes the proof step. You can also fetch the worker results first and open the ciphertext locally later. If the ciphertext uses a non-default t-IBE scheme, pass the same `tibeScheme` to the fetch call.
+
+```typescript
+const identityKeyShares =
+  (await ACE.IBE_Aptos.fetchIdentityKeySharesCustomFlow({
+    label,
+    encPk,
+    encSk,
+    payload,
+    aceDeployment,
+    keypairId,
+    chainId,
+    moduleAddr,
+    moduleName,
+  })).unwrapOrThrow("ACE fetch identity key shares failed");
+
+const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
+  ciphertext,
+  identityKeyShares,
+}).unwrapOrThrow("ACE local decrypt failed");
+```
 
 Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, include it in the app-defined bytes passed as the SDK `payload` argument, and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
 

@@ -326,7 +326,6 @@ async function main() {
                 moduleAddr: adminAccountAddress,
                 moduleName: 'access_control',
                 label: pingDomain,
-                ciphertext: pingCiph,
             });
             const pingMsgToSign = await pingSession.getRequestToSign();
             const pingFullMessage = buildAptosWalletFullMessage({
@@ -335,13 +334,20 @@ async function main() {
                 message: pingMsgToSign,
                 nonce: 'full-happy-path-ping',
             });
-            const pingDecResult = await pingSession.decryptWithProof({
+            // Keep the reusable identity-key-share API covered in a real
+            // basic-flow scenario; decryptWithProof is still covered below.
+            const pingIdentityKeyShares = await pingSession.fetchIdentityKeySharesWithProof({
                 userAddr: bob.accountAddress,
                 publicKey: bob.publicKey,
                 signature: bob.sign(pingFullMessage),
                 fullMessage: pingFullMessage,
             });
-            assert(pingDecResult.isOk, `decrypt PING failed: ${pingDecResult.errValue}`);
+            assert(pingIdentityKeyShares.isOk, `fetch PING identity key shares failed: ${pingIdentityKeyShares.errValue}`);
+            const pingDecResult = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
+                ciphertext: pingCiph,
+                identityKeyShares: pingIdentityKeyShares.okValue!,
+            });
+            assert(pingDecResult.isOk, `local decrypt PING failed: ${pingDecResult.errValue}`);
             assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
             console.log('  Bob decrypted PING ✓');
         }

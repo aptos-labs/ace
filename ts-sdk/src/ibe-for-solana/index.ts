@@ -4,4 +4,10 @@
 export { encrypt, fetchPk } from "./encrypt";
 export { BasicDecryptionSession } from "./basic-decryption-session";
 export { decryptBasicFlow } from "./decrypt-basic-flow";
-export { decryptCustomFlow, buildCustomRequestBytes, fetchCurrentEpoch } from "./decrypt-custom-flow";
+export {
+    decryptCustomFlow,
+    fetchIdentityKeySharesCustomFlow,
+    buildCustomRequestBytes,
+    fetchCurrentEpoch,
+} from "./decrypt-custom-flow";
+export { decryptWithIdentityKeyShares } from "../_internal/common";

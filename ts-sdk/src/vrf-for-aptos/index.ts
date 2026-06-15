@@ -217,7 +217,7 @@ async function fetchCurrentNodeInfos(
     aceDeployment: AceDeployment,
     networkState: NetworkState,
 ): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
-    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
     return Promise.all(networkState.curNodes.map(async (nodeAddr) => {

@@ -26,6 +26,14 @@ export class AceDeployment {
         this.contractAddr = contractAddr;
         this.apiKey = apiKey;
     }
+
+    withApiKey(apiKey?: string): AceDeployment {
+        return new AceDeployment({
+            apiEndpoint: this.apiEndpoint,
+            contractAddr: this.contractAddr,
+            apiKey,
+        });
+    }
 }
 
 export class ContractID {
@@ -611,7 +619,7 @@ export class WorkerRequest {
 }
 
 export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<NetworkState> {
-    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const [stateHex] = await aptos.view({
         payload: {
@@ -629,7 +637,7 @@ export async function fetchNetworkStateAndBuildRequest(
     fullDecryptionDomain: FullDecryptionDomain,
     ephemeralEncryptionKey: pke.EncryptionKey,
 ): Promise<{networkState: NetworkState, request: DecryptionRequestPayload}> {
-    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
     const [stateHex] = await aptos.view({
@@ -700,7 +708,7 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
  * from subsequent DKR sessions.
  */
 export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
-    const aptos = createAptos(aceDeployment.apiEndpoint);
+    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const keypairIdStr = keypairId.toStringLong();
 
@@ -741,7 +749,7 @@ export async function decryptCore({aceDeployment, networkState, request, proof, 
 }): Promise<Result<Uint8Array>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
@@ -849,7 +857,7 @@ export async function decryptCoreCustom({aceDeployment, networkState, customRequ
 }): Promise<Result<Uint8Array>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
@@ -967,7 +975,7 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint);
+            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
@@ -1009,9 +1017,11 @@ export async function buildPerNodeRequestCore({
     });
 }
 
-export function createAptos(rpcUrl?: string): Aptos {
+export function createAptos(rpcUrl?: string, apiKey?: string): Aptos {
+    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
     return new Aptos(new AptosConfig({
         network: Network.CUSTOM,
         fullnode: rpcUrl ?? 'http://localhost:8080/v1',
+        clientConfig: headers ? { HEADERS: headers } : undefined,
     }));
 }

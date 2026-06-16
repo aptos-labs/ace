@@ -70,6 +70,10 @@ use crate::verify::{
 };
 use crate::{now_utc_iso, wlog, ChainRpcConfig};
 
+// Keep user-controlled request bytes bounded before hex/decrypt and before BCS
+// allocates nested Vec/String fields inside WorkerRequest.
+const MAX_REQUEST_BODY_HEX_BYTES: usize = 1024 * 1024;
+
 // ── User-facing handler (POST /) ─────────────────────────────────────────────
 
 /// Shared state for the user-facing request handler. The secrets provider
@@ -360,6 +364,17 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
             };
         }
     };
+
+    if body.len() > MAX_REQUEST_BODY_HEX_BYTES {
+        return Outcome::Rejected {
+            reason: Reason::BadRequest,
+            detail: Some(format!(
+                "request body hex length {} exceeds max {}",
+                body.len(),
+                MAX_REQUEST_BODY_HEX_BYTES
+            )),
+        };
+    }
 
     let body_str = match std::str::from_utf8(body) {
         Ok(s) => s,

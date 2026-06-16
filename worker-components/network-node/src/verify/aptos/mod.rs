@@ -32,6 +32,14 @@ pub mod multi_ed25519;
 #[allow(dead_code)]
 pub mod multi_key;
 
+use std::{
+    collections::HashMap,
+    future::Future,
+    hash::Hash,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use k256::ecdsa::{
@@ -43,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sha3::Sha3_256;
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::{
     BasicFlowRequest, ContractId, DecryptionRequestPayload, ThresholdVrfRequest,
@@ -169,6 +178,48 @@ const SIG_SCHEME_ANY_WIRE: u8 = 1;
 const SIG_SCHEME_MULTI_ED25519_WIRE: u8 = 2;
 const SIG_SCHEME_MULTI_KEY_WIRE: u8 = 3;
 const SIG_SCHEME_KEYLESS_WIRE: u8 = 4;
+
+const KEYLESS_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(3);
+
+type RsaJwk = aptos_keyless_common::RsaJwk;
+type Groth16VerificationKey = aptos_keyless_common::Groth16VerificationKey;
+type KeylessConfiguration = aptos_keyless_common::types::Configuration;
+type CacheEntry<T> = Arc<AsyncMutex<Option<Timed<T>>>>;
+type CacheStore<K, T> = AsyncMutex<HashMap<K, CacheEntry<T>>>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct KeylessChainCacheKey {
+    chain_id: u8,
+    rpc_base_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct SystemJwkCacheKey {
+    chain: KeylessChainCacheKey,
+    iss: String,
+    kid: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct FederatedJwkCacheKey {
+    chain: KeylessChainCacheKey,
+    jwk_addr: [u8; 32],
+    iss: String,
+    kid: String,
+}
+
+#[derive(Clone)]
+struct Timed<T> {
+    value: T,
+    fetched_at: Instant,
+}
+
+static SYSTEM_JWK_CACHE: OnceLock<CacheStore<SystemJwkCacheKey, RsaJwk>> = OnceLock::new();
+static FEDERATED_JWK_CACHE: OnceLock<CacheStore<FederatedJwkCacheKey, RsaJwk>> = OnceLock::new();
+static GROTH16_VK_CACHE: OnceLock<CacheStore<KeylessChainCacheKey, Groth16VerificationKey>> =
+    OnceLock::new();
+static KEYLESS_CONFIG_CACHE: OnceLock<CacheStore<KeylessChainCacheKey, KeylessConfiguration>> =
+    OnceLock::new();
 
 // `serde_bytes::ByteBuf` is what BCS uses to round-trip a `Vec<u8>` field
 // (length-prefixed). We use it as the on-wire representation for the Ed25519
@@ -434,6 +485,138 @@ impl AptosPayloadBinding for ThresholdVrfRequestPayload {
     }
 }
 
+fn system_jwk_cache() -> &'static CacheStore<SystemJwkCacheKey, RsaJwk> {
+    SYSTEM_JWK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn federated_jwk_cache() -> &'static CacheStore<FederatedJwkCacheKey, RsaJwk> {
+    FEDERATED_JWK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn groth16_vk_cache() -> &'static CacheStore<KeylessChainCacheKey, Groth16VerificationKey> {
+    GROTH16_VK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn keyless_config_cache() -> &'static CacheStore<KeylessChainCacheKey, KeylessConfiguration> {
+    KEYLESS_CONFIG_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn chain_cache_key(chain_id: u8, rpc: &vss_common::AptosRpc) -> KeylessChainCacheKey {
+    KeylessChainCacheKey {
+        chain_id,
+        rpc_base_url: rpc.base_url.trim_end_matches('/').to_string(),
+    }
+}
+
+async fn cached_fetch<K, T, Fut, Fetch>(
+    store: &'static CacheStore<K, T>,
+    key: K,
+    fetch: Fetch,
+) -> Result<T>
+where
+    K: Eq + Hash + Clone,
+    T: Clone,
+    Fetch: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    // The entry mutex is the per-key singleflight: one task refreshes while
+    // same-key callers wait, then consume the freshly cached value.
+    let entry = {
+        let mut map = store.lock().await;
+        map.entry(key.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
+            .clone()
+    };
+
+    let mut guard = entry.lock().await;
+    if let Some(cached) = guard.as_ref() {
+        if cached.fetched_at.elapsed() <= KEYLESS_RESOURCE_CACHE_TTL {
+            return Ok(cached.value.clone());
+        }
+    }
+
+    let had_cached_value = guard.is_some();
+    match fetch().await {
+        Ok(fresh) => {
+            *guard = Some(Timed {
+                value: fresh.clone(),
+                fetched_at: Instant::now(),
+            });
+            Ok(fresh)
+        }
+        Err(err) => {
+            drop(guard);
+            if !had_cached_value {
+                let mut map = store.lock().await;
+                if map
+                    .get(&key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry))
+                {
+                    map.remove(&key);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+async fn fetch_cached_system_rsa_jwk(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+    iss: &str,
+    kid: &str,
+) -> Result<RsaJwk> {
+    let key = SystemJwkCacheKey {
+        chain: chain_cache_key(chain_id, rpc),
+        iss: iss.to_string(),
+        kid: kid.to_string(),
+    };
+    cached_fetch(system_jwk_cache(), key, || {
+        keyless::fetch_system_rsa_jwk(rpc, iss, kid)
+    })
+    .await
+}
+
+async fn fetch_cached_federated_jwk_with_fallback(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+    fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
+    kid: &str,
+) -> Result<RsaJwk> {
+    let key = FederatedJwkCacheKey {
+        chain: chain_cache_key(chain_id, rpc),
+        jwk_addr: fpk.jwk_addr,
+        iss: fpk.pk.iss_val.clone(),
+        kid: kid.to_string(),
+    };
+    cached_fetch(federated_jwk_cache(), key, || {
+        federated_keyless::fetch_jwk_with_federated_fallback(rpc, fpk, kid)
+    })
+    .await
+}
+
+async fn fetch_cached_groth16_vk(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+) -> Result<Groth16VerificationKey> {
+    cached_fetch(groth16_vk_cache(), chain_cache_key(chain_id, rpc), || {
+        keyless::fetch_groth16_vk(rpc)
+    })
+    .await
+}
+
+async fn fetch_cached_configuration(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+) -> Result<KeylessConfiguration> {
+    cached_fetch(
+        keyless_config_cache(),
+        chain_cache_key(chain_id, rpc),
+        || keyless::fetch_configuration(rpc),
+    )
+    .await
+}
+
 async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
@@ -473,8 +656,10 @@ async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
             let computed = aptos_keyless_common::federated_keyless_account_authentication_key(fpk);
             let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
             check_auth_key_bytes(proof, computed.as_ref(), "federated_keyless", rpc).await?;
-            verify_federated_keyless_signature_for_message(chain_id, fpk, sig, &msg_bytes, chain_rpc)
-                .await
+            verify_federated_keyless_signature_for_message(
+                chain_id, fpk, sig, &msg_bytes, chain_rpc,
+            )
+            .await
         }
         (pk, sig) => Err(anyhow!(
             "verify_aptos_account_proof: pk/sig scheme mismatch ({} pk vs {} sig)",
@@ -501,12 +686,11 @@ async fn verify_any_account_proof<P: AptosPayloadBinding + Sync>(
             check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await
         }
         deferred => {
-            let msg_bytes = signed_message_bytes(payload, proof, deferred.signed_message_context())?;
+            let msg_bytes =
+                signed_message_bytes(payload, proof, deferred.signed_message_context())?;
             check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await?;
-            verify_deferred_keyless_signature_for_message(
-                chain_id, deferred, &msg_bytes, chain_rpc,
-            )
-            .await
+            verify_deferred_keyless_signature_for_message(chain_id, deferred, &msg_bytes, chain_rpc)
+                .await
         }
     }
 }
@@ -586,9 +770,7 @@ async fn verify_multi_key_account_proof<P: AptosPayloadBinding + Sync>(
 
     if let Some(msg_bytes) = keyless_msg_bytes {
         let keyless_futs = deferred_keyless_checks.into_iter().map(|deferred| {
-            verify_deferred_keyless_signature_for_message(
-                chain_id, deferred, &msg_bytes, chain_rpc,
-            )
+            verify_deferred_keyless_signature_for_message(chain_id, deferred, &msg_bytes, chain_rpc)
         });
         futures::future::try_join_all(keyless_futs).await?;
     }
@@ -705,10 +887,8 @@ async fn verify_deferred_keyless_signature_for_message(
             verify_keyless_signature_for_message(chain_id, pk, sig, msg_bytes, chain_rpc).await
         }
         AnySignatureCheck::DeferredFederatedKeyless { fpk, sig } => {
-            verify_federated_keyless_signature_for_message(
-                chain_id, fpk, sig, msg_bytes, chain_rpc,
-            )
-            .await
+            verify_federated_keyless_signature_for_message(chain_id, fpk, sig, msg_bytes, chain_rpc)
+                .await
         }
         AnySignatureCheck::VerifiedLocally => Ok(()),
     }
@@ -813,9 +993,9 @@ async fn verify_keyless_signature_for_message(
     let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_keyless_signature: parse jwt_header_json: {}", e))?;
     let (jwk_res, vk_res, cfg_res) = tokio::join!(
-        keyless::fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
-        keyless::fetch_groth16_vk(rpc),
-        keyless::fetch_configuration(rpc),
+        fetch_cached_system_rsa_jwk(chain_id, rpc, &pk.iss_val, &header.kid),
+        fetch_cached_groth16_vk(chain_id, rpc),
+        fetch_cached_configuration(chain_id, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;
@@ -844,9 +1024,9 @@ async fn verify_federated_keyless_signature_for_message(
             )
         })?;
     let (jwk_res, vk_res, cfg_res) = tokio::join!(
-        federated_keyless::fetch_jwk_with_federated_fallback(rpc, fpk, &header.kid),
-        keyless::fetch_groth16_vk(rpc),
-        keyless::fetch_configuration(rpc),
+        fetch_cached_federated_jwk_with_fallback(chain_id, rpc, fpk, &header.kid),
+        fetch_cached_groth16_vk(chain_id, rpc),
+        fetch_cached_configuration(chain_id, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;

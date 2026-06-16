@@ -59,11 +59,12 @@ use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 use vss_common::crypto::pke_encrypt;
+use vss_common::group::SCHEME_BLS12381G2;
 use vss_common::normalize_account_addr;
 use vss_common::pke::{pke_decrypt_bytes, EncryptionKey};
 
 use crate::secret_usage;
-use crate::secrets::{LocalSecrets, SecretsProvider, SecretsSnapshotWire};
+use crate::secrets::{LocalSecrets, SecretsProvider, SecretsSnapshotWire, ShareEntry, Snapshot};
 use crate::verify::{
     self, BasicFlowRequest, CustomFlowRequest, ThresholdVrfRequest, WorkerRequest,
 };
@@ -456,11 +457,21 @@ fn enc_pk_to_hex(ek: &EncryptionKey) -> Option<String> {
 
 async fn handle_basic_flow(
     state: &AppState,
-    snapshot: &crate::secrets::Snapshot,
+    snapshot: &Snapshot,
     req: BasicFlowRequest,
     tibe_scheme: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
+    let keypair_id = keypair_id_str(&req.payload.keypair_id);
+    let extract_start = Instant::now();
+    let entry = match preflight_tibe_share(snapshot, &keypair_id, req.payload.epoch, tibe_scheme) {
+        Ok(entry) => entry,
+        Err(outcome) => {
+            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+            return outcome;
+        }
+    };
+
     let pfn_start = Instant::now();
     let verify_result = verify::verify_basic(&req, &state.chain_rpc).await;
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
@@ -475,12 +486,9 @@ async fn handle_basic_flow(
         &req.payload.contract_id,
         &req.payload.domain,
     );
-    let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let extract_start = Instant::now();
-    let outcome = extract_and_respond(
-        snapshot,
-        &keypair_id,
-        req.payload.epoch,
+    let outcome = derive_tibe_share_and_respond(
+        &entry,
         &identity,
         &req.payload.ephemeral_enc_key,
         tibe_scheme,
@@ -491,11 +499,21 @@ async fn handle_basic_flow(
 
 async fn handle_custom_flow(
     state: &AppState,
-    snapshot: &crate::secrets::Snapshot,
+    snapshot: &Snapshot,
     req: CustomFlowRequest,
     tibe_scheme: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
+    let keypair_id = keypair_id_str(&req.keypair_id);
+    let extract_start = Instant::now();
+    let entry = match preflight_tibe_share(snapshot, &keypair_id, req.epoch, tibe_scheme) {
+        Ok(entry) => entry,
+        Err(outcome) => {
+            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+            return outcome;
+        }
+    };
+
     let pfn_start = Instant::now();
     let verify_result = verify::verify_custom(&req, &state.chain_rpc).await;
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
@@ -507,26 +525,28 @@ async fn handle_custom_flow(
     }
     // Custom-flow identity uses `label` in place of `domain`; ContractId is unchanged.
     let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.label);
-    let keypair_id = keypair_id_str(&req.keypair_id);
     let extract_start = Instant::now();
-    let outcome = extract_and_respond(
-        snapshot,
-        &keypair_id,
-        req.epoch,
-        &identity,
-        &req.enc_pk,
-        tibe_scheme,
-    );
+    let outcome = derive_tibe_share_and_respond(&entry, &identity, &req.enc_pk, tibe_scheme);
     ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
     outcome
 }
 
 async fn handle_threshold_vrf(
     state: &AppState,
-    snapshot: &crate::secrets::Snapshot,
+    snapshot: &Snapshot,
     req: ThresholdVrfRequest,
     ctx: &mut RequestContext,
 ) -> Outcome {
+    let keypair_id = keypair_id_str(&req.payload.keypair_id);
+    let extract_start = Instant::now();
+    let entry = match preflight_threshold_vrf_share(snapshot, &keypair_id, req.payload.epoch) {
+        Ok(entry) => entry,
+        Err(outcome) => {
+            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
+            return outcome;
+        }
+    };
+
     let pfn_start = Instant::now();
     let verify_result = verify::verify_threshold_vrf(&req, &state.chain_rpc).await;
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
@@ -537,35 +557,7 @@ async fn handle_threshold_vrf(
         };
     }
 
-    let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let extract_start = Instant::now();
-    let entry = match snapshot.lookup(&keypair_id, req.payload.epoch) {
-        Some(v) => v,
-        None => {
-            ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
-            return Outcome::Rejected {
-                reason: Reason::NotFound,
-                detail: Some(format!(
-                    "no share for keypair_id={} epoch={}",
-                    keypair_id, req.payload.epoch
-                )),
-            };
-        }
-    };
-    if !secret_usage::allows_usage(
-        entry.expected_usage,
-        secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
-    ) {
-        ctx.extract_ms = Some(extract_start.elapsed().as_millis() as u64);
-        return Outcome::Rejected {
-            reason: Reason::BadRequest,
-            detail: Some(format!(
-                "keypair_id={} epoch={} usage mask {} does not allow threshold VRF",
-                keypair_id, req.payload.epoch, entry.expected_usage
-            )),
-        };
-    }
-
     let share_bytes = match crate::crypto::partial_derive_threshold_vrf_share(
         &req.payload.keypair_id,
         &req.payload.contract_id,
@@ -606,68 +598,128 @@ fn short_hex(keypair_id: &[u8; 32]) -> String {
     hex::encode(&keypair_id[..4])
 }
 
-fn extract_and_respond(
-    snapshot: &crate::secrets::Snapshot,
+fn lookup_share_or_reject(
+    snapshot: &Snapshot,
     keypair_id: &str,
     epoch: u64,
-    identity: &[u8],
-    response_enc_key: &EncryptionKey,
-    tibe_scheme: u8,
-) -> Outcome {
+) -> Result<ShareEntry, Outcome> {
     // Empty entries (no shares yet, or this node isn't in the committee) and a
     // simple keypair/epoch miss both map to NotFound; the operator-facing
     // distinction lives in the maintainer's logs, not in the response.
-    let entry = match snapshot.lookup(keypair_id, epoch) {
-        Some(v) => v,
-        None => {
-            return Outcome::Rejected {
-                reason: Reason::NotFound,
-                detail: Some(format!(
-                    "no share for keypair_id={} epoch={}",
-                    keypair_id, epoch
-                )),
-            };
-        }
-    };
+    snapshot
+        .lookup(keypair_id, epoch)
+        .ok_or_else(|| Outcome::Rejected {
+            reason: Reason::NotFound,
+            detail: Some(format!(
+                "no share for keypair_id={} epoch={}",
+                keypair_id, epoch
+            )),
+        })
+}
+
+fn preflight_tibe_share(
+    snapshot: &Snapshot,
+    keypair_id: &str,
+    epoch: u64,
+    tibe_scheme: u8,
+) -> Result<ShareEntry, Outcome> {
+    let entry = lookup_share_or_reject(snapshot, keypair_id, epoch)?;
 
     match crate::crypto::group_scheme_for_tibe(tibe_scheme) {
         Ok(expected_group) if expected_group == entry.group_scheme => {}
         Ok(expected_group) => {
-            return Outcome::Rejected {
+            return Err(Outcome::Rejected {
                 reason: Reason::BadRequest,
                 detail: Some(format!(
                     "tibe_scheme {} requires group {}, but share's group is {}",
                     tibe_scheme, expected_group, entry.group_scheme
                 )),
-            };
+            });
         }
         Err(e) => {
-            return Outcome::Rejected {
+            return Err(Outcome::Rejected {
                 reason: Reason::BadRequest,
                 detail: Some(format!("unknown tibe_scheme {}: {:#}", tibe_scheme, e)),
-            };
+            });
         }
     }
 
     let required_usage = match secret_usage::usage_for_tibe_scheme(tibe_scheme) {
         Ok(u) => u,
         Err(e) => {
-            return Outcome::Rejected {
+            return Err(Outcome::Rejected {
                 reason: Reason::BadRequest,
                 detail: Some(format!("unknown tibe_scheme {}: {:#}", tibe_scheme, e)),
-            };
+            });
         }
     };
     if !secret_usage::allows_usage(entry.expected_usage, required_usage) {
-        return Outcome::Rejected {
+        return Err(Outcome::Rejected {
             reason: Reason::BadRequest,
             detail: Some(format!(
                 "keypair_id={} epoch={} usage mask {} does not allow tibe_scheme {}",
                 keypair_id, epoch, entry.expected_usage, tibe_scheme
             )),
-        };
+        });
     }
 
+    Ok(entry)
+}
+
+fn preflight_threshold_vrf_share(
+    snapshot: &Snapshot,
+    keypair_id: &str,
+    epoch: u64,
+) -> Result<ShareEntry, Outcome> {
+    let entry = lookup_share_or_reject(snapshot, keypair_id, epoch)?;
+    if !secret_usage::allows_usage(
+        entry.expected_usage,
+        secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
+    ) {
+        return Err(Outcome::Rejected {
+            reason: Reason::BadRequest,
+            detail: Some(format!(
+                "keypair_id={} epoch={} usage mask {} does not allow threshold VRF",
+                keypair_id, epoch, entry.expected_usage
+            )),
+        });
+    }
+    if entry.group_scheme != SCHEME_BLS12381G2 {
+        return Err(Outcome::Rejected {
+            reason: Reason::Internal,
+            detail: Some(format!(
+                "threshold VRF requires BLS12-381 G2 DKG shares, got group scheme {}",
+                entry.group_scheme
+            )),
+        });
+    }
+
+    Ok(entry)
+}
+
+#[cfg(test)]
+fn extract_and_respond(
+    snapshot: &Snapshot,
+    keypair_id: &str,
+    epoch: u64,
+    identity: &[u8],
+    response_enc_key: &EncryptionKey,
+    tibe_scheme: u8,
+) -> Outcome {
+    let entry = match preflight_tibe_share(snapshot, keypair_id, epoch, tibe_scheme) {
+        Ok(entry) => entry,
+        Err(outcome) => return outcome,
+    };
+
+    derive_tibe_share_and_respond(&entry, identity, response_enc_key, tibe_scheme)
+}
+
+fn derive_tibe_share_and_respond(
+    entry: &ShareEntry,
+    identity: &[u8],
+    response_enc_key: &EncryptionKey,
+    tibe_scheme: u8,
+) -> Outcome {
     let share_hex = match crate::crypto::partial_extract_idk_share(
         tibe_scheme,
         identity,

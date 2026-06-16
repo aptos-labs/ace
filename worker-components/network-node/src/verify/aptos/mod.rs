@@ -32,6 +32,14 @@ pub mod multi_ed25519;
 #[allow(dead_code)]
 pub mod multi_key;
 
+use std::{
+    collections::HashMap,
+    future::Future,
+    hash::Hash,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use k256::ecdsa::{
@@ -43,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sha3::Sha3_256;
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::{
     BasicFlowRequest, ContractId, DecryptionRequestPayload, ThresholdVrfRequest,
@@ -169,6 +178,48 @@ const SIG_SCHEME_ANY_WIRE: u8 = 1;
 const SIG_SCHEME_MULTI_ED25519_WIRE: u8 = 2;
 const SIG_SCHEME_MULTI_KEY_WIRE: u8 = 3;
 const SIG_SCHEME_KEYLESS_WIRE: u8 = 4;
+
+const KEYLESS_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(3);
+
+type RsaJwk = aptos_keyless_common::RsaJwk;
+type Groth16VerificationKey = aptos_keyless_common::Groth16VerificationKey;
+type KeylessConfiguration = aptos_keyless_common::types::Configuration;
+type CacheEntry<T> = Arc<AsyncMutex<Option<Timed<T>>>>;
+type CacheStore<K, T> = AsyncMutex<HashMap<K, CacheEntry<T>>>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct KeylessChainCacheKey {
+    chain_id: u8,
+    rpc_base_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct SystemJwkCacheKey {
+    chain: KeylessChainCacheKey,
+    iss: String,
+    kid: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct FederatedJwkCacheKey {
+    chain: KeylessChainCacheKey,
+    jwk_addr: [u8; 32],
+    iss: String,
+    kid: String,
+}
+
+#[derive(Clone)]
+struct Timed<T> {
+    value: T,
+    fetched_at: Instant,
+}
+
+static SYSTEM_JWK_CACHE: OnceLock<CacheStore<SystemJwkCacheKey, RsaJwk>> = OnceLock::new();
+static FEDERATED_JWK_CACHE: OnceLock<CacheStore<FederatedJwkCacheKey, RsaJwk>> = OnceLock::new();
+static GROTH16_VK_CACHE: OnceLock<CacheStore<KeylessChainCacheKey, Groth16VerificationKey>> =
+    OnceLock::new();
+static KEYLESS_CONFIG_CACHE: OnceLock<CacheStore<KeylessChainCacheKey, KeylessConfiguration>> =
+    OnceLock::new();
 
 // `serde_bytes::ByteBuf` is what BCS uses to round-trip a `Vec<u8>` field
 // (length-prefixed). We use it as the on-wire representation for the Ed25519
@@ -363,20 +414,17 @@ pub(super) async fn verify_aptos(
     proof: &AptosProofOfPermission,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let origin = extract_request_origin(proof)?;
-    let (account_result, app_result) = tokio::join!(
-        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
-        check_ace_request_hook(
-            contract,
-            APTOS_DECRYPTION_HOOK,
-            &req.payload.domain,
-            &proof.user_addr,
-            &origin,
-            chain_rpc,
-        ),
-    );
-    account_result?;
-    app_result
+    check_ace_request_hook(
+        contract,
+        APTOS_DECRYPTION_HOOK,
+        &req.payload.domain,
+        &proof.user_addr,
+        &origin,
+        chain_rpc,
+    )
+    .await
 }
 
 pub(super) async fn verify_threshold_vrf_aptos(
@@ -397,20 +445,17 @@ pub(super) async fn verify_threshold_vrf_aptos(
             ))
         }
     };
+    verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let origin = extract_request_origin(proof)?;
-    let (account_result, app_result) = tokio::join!(
-        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
-        check_ace_request_hook(
-            contract,
-            APTOS_VRF_HOOK,
-            &req.payload.label,
-            &req.payload.account_address,
-            &origin,
-            chain_rpc,
-        ),
-    );
-    account_result?;
-    app_result
+    check_ace_request_hook(
+        contract,
+        APTOS_VRF_HOOK,
+        &req.payload.label,
+        &req.payload.account_address,
+        &origin,
+        chain_rpc,
+    )
+    .await
 }
 
 pub(super) trait AptosPayloadBinding: serde::Serialize {
@@ -440,6 +485,138 @@ impl AptosPayloadBinding for ThresholdVrfRequestPayload {
     }
 }
 
+fn system_jwk_cache() -> &'static CacheStore<SystemJwkCacheKey, RsaJwk> {
+    SYSTEM_JWK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn federated_jwk_cache() -> &'static CacheStore<FederatedJwkCacheKey, RsaJwk> {
+    FEDERATED_JWK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn groth16_vk_cache() -> &'static CacheStore<KeylessChainCacheKey, Groth16VerificationKey> {
+    GROTH16_VK_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn keyless_config_cache() -> &'static CacheStore<KeylessChainCacheKey, KeylessConfiguration> {
+    KEYLESS_CONFIG_CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
+
+fn chain_cache_key(chain_id: u8, rpc: &vss_common::AptosRpc) -> KeylessChainCacheKey {
+    KeylessChainCacheKey {
+        chain_id,
+        rpc_base_url: rpc.base_url.trim_end_matches('/').to_string(),
+    }
+}
+
+async fn cached_fetch<K, T, Fut, Fetch>(
+    store: &'static CacheStore<K, T>,
+    key: K,
+    fetch: Fetch,
+) -> Result<T>
+where
+    K: Eq + Hash + Clone,
+    T: Clone,
+    Fetch: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    // The entry mutex is the per-key singleflight: one task refreshes while
+    // same-key callers wait, then consume the freshly cached value.
+    let entry = {
+        let mut map = store.lock().await;
+        map.entry(key.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
+            .clone()
+    };
+
+    let mut guard = entry.lock().await;
+    if let Some(cached) = guard.as_ref() {
+        if cached.fetched_at.elapsed() <= KEYLESS_RESOURCE_CACHE_TTL {
+            return Ok(cached.value.clone());
+        }
+    }
+
+    let had_cached_value = guard.is_some();
+    match fetch().await {
+        Ok(fresh) => {
+            *guard = Some(Timed {
+                value: fresh.clone(),
+                fetched_at: Instant::now(),
+            });
+            Ok(fresh)
+        }
+        Err(err) => {
+            drop(guard);
+            if !had_cached_value {
+                let mut map = store.lock().await;
+                if map
+                    .get(&key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry))
+                {
+                    map.remove(&key);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+async fn fetch_cached_system_rsa_jwk(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+    iss: &str,
+    kid: &str,
+) -> Result<RsaJwk> {
+    let key = SystemJwkCacheKey {
+        chain: chain_cache_key(chain_id, rpc),
+        iss: iss.to_string(),
+        kid: kid.to_string(),
+    };
+    cached_fetch(system_jwk_cache(), key, || {
+        keyless::fetch_system_rsa_jwk(rpc, iss, kid)
+    })
+    .await
+}
+
+async fn fetch_cached_federated_jwk_with_fallback(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+    fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
+    kid: &str,
+) -> Result<RsaJwk> {
+    let key = FederatedJwkCacheKey {
+        chain: chain_cache_key(chain_id, rpc),
+        jwk_addr: fpk.jwk_addr,
+        iss: fpk.pk.iss_val.clone(),
+        kid: kid.to_string(),
+    };
+    cached_fetch(federated_jwk_cache(), key, || {
+        federated_keyless::fetch_jwk_with_federated_fallback(rpc, fpk, kid)
+    })
+    .await
+}
+
+async fn fetch_cached_groth16_vk(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+) -> Result<Groth16VerificationKey> {
+    cached_fetch(groth16_vk_cache(), chain_cache_key(chain_id, rpc), || {
+        keyless::fetch_groth16_vk(rpc)
+    })
+    .await
+}
+
+async fn fetch_cached_configuration(
+    chain_id: u8,
+    rpc: &vss_common::AptosRpc,
+) -> Result<KeylessConfiguration> {
+    cached_fetch(
+        keyless_config_cache(),
+        chain_cache_key(chain_id, rpc),
+        || keyless::fetch_configuration(rpc),
+    )
+    .await
+}
+
 async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
@@ -467,17 +644,22 @@ async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
             verify_multi_key_account_proof(payload, chain_id, proof, mk, ms, chain_rpc).await
         }
         (AptosPublicKeyMaterial::Keyless(pk), AptosSignatureMaterial::Keyless(sig)) => {
-            verify_keyless_signature(payload, chain_id, proof, pk, sig, chain_rpc).await?;
+            let msg_bytes = signed_message_bytes(payload, proof, "verify_keyless_signature")?;
             let computed = aptos_keyless_common::keyless_account_authentication_key(pk);
             let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
-            check_auth_key_bytes(proof, computed.as_ref(), "keyless", rpc).await
+            check_auth_key_bytes(proof, computed.as_ref(), "keyless", rpc).await?;
+            verify_keyless_signature_for_message(chain_id, pk, sig, &msg_bytes, chain_rpc).await
         }
         (AptosPublicKeyMaterial::FederatedKeyless(fpk), AptosSignatureMaterial::Keyless(sig)) => {
-            verify_federated_keyless_signature(payload, chain_id, proof, fpk, sig, chain_rpc)
-                .await?;
+            let msg_bytes =
+                signed_message_bytes(payload, proof, "verify_federated_keyless_signature")?;
             let computed = aptos_keyless_common::federated_keyless_account_authentication_key(fpk);
             let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
-            check_auth_key_bytes(proof, computed.as_ref(), "federated_keyless", rpc).await
+            check_auth_key_bytes(proof, computed.as_ref(), "federated_keyless", rpc).await?;
+            verify_federated_keyless_signature_for_message(
+                chain_id, fpk, sig, &msg_bytes, chain_rpc,
+            )
+            .await
         }
         (pk, sig) => Err(anyhow!(
             "verify_aptos_account_proof: pk/sig scheme mismatch ({} pk vs {} sig)",
@@ -495,10 +677,22 @@ async fn verify_any_account_proof<P: AptosPayloadBinding + Sync>(
     any_sig: &any::AnySignatureInner,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    verify_any_signature_only(payload, chain_id, proof, any_pk, any_sig, chain_rpc).await?;
+    let signature_check =
+        verify_any_signature_locally_or_defer_keyless(payload, proof, any_pk, any_sig)?;
     let computed = any::authentication_key(any_pk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
-    check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await
+    match signature_check {
+        AnySignatureCheck::VerifiedLocally => {
+            check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await
+        }
+        deferred => {
+            let msg_bytes =
+                signed_message_bytes(payload, proof, deferred.signed_message_context())?;
+            check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await?;
+            verify_deferred_keyless_signature_for_message(chain_id, deferred, &msg_bytes, chain_rpc)
+                .await
+        }
+    }
 }
 
 async fn verify_multi_ed25519_account_proof<P: AptosPayloadBinding + Sync>(
@@ -551,31 +745,69 @@ async fn verify_multi_key_account_proof<P: AptosPayloadBinding + Sync>(
 ) -> Result<()> {
     multi_key::validate(mk, ms)?;
 
+    let mut deferred_keyless_checks = Vec::new();
     let positions = multi_key::bitmap_iter_ones(&ms.bitmap).zip(ms.signatures.iter());
-    let position_futs: Vec<_> =
-        positions
-            .map(|(pos, sig)| {
-                let pk = &mk.public_keys[pos];
-                async move {
-                    verify_any_signature_only(payload, chain_id, proof, pk, sig, chain_rpc).await
-                }
-            })
-            .collect();
-    futures::future::try_join_all(position_futs).await?;
+    for (pos, sig) in positions {
+        let pk = &mk.public_keys[pos];
+        match verify_any_signature_locally_or_defer_keyless(payload, proof, pk, sig)? {
+            AnySignatureCheck::VerifiedLocally => {}
+            deferred => deferred_keyless_checks.push(deferred),
+        }
+    }
+    let keyless_msg_bytes = if deferred_keyless_checks.is_empty() {
+        None
+    } else {
+        Some(signed_message_bytes(
+            payload,
+            proof,
+            "verify_multi_key_account_proof",
+        )?)
+    };
 
     let computed = multi_key::authentication_key(mk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
-    check_auth_key_bytes(proof, &computed, "multi_key", rpc).await
+    check_auth_key_bytes(proof, &computed, "multi_key", rpc).await?;
+
+    if let Some(msg_bytes) = keyless_msg_bytes {
+        let keyless_futs = deferred_keyless_checks.into_iter().map(|deferred| {
+            verify_deferred_keyless_signature_for_message(chain_id, deferred, &msg_bytes, chain_rpc)
+        });
+        futures::future::try_join_all(keyless_futs).await?;
+    }
+    Ok(())
 }
 
-async fn verify_any_signature_only<P: AptosPayloadBinding + Sync>(
+#[derive(Copy, Clone)]
+enum AnySignatureCheck<'a> {
+    VerifiedLocally,
+    DeferredKeyless {
+        pk: &'a aptos_keyless_common::KeylessPublicKey,
+        sig: &'a aptos_keyless_common::KeylessSignature,
+    },
+    DeferredFederatedKeyless {
+        fpk: &'a aptos_keyless_common::FederatedKeylessPublicKey,
+        sig: &'a aptos_keyless_common::KeylessSignature,
+    },
+}
+
+impl AnySignatureCheck<'_> {
+    fn signed_message_context(&self) -> &'static str {
+        match self {
+            AnySignatureCheck::VerifiedLocally => "verify_any_signature_only",
+            AnySignatureCheck::DeferredKeyless { .. } => "verify_keyless_signature",
+            AnySignatureCheck::DeferredFederatedKeyless { .. } => {
+                "verify_federated_keyless_signature"
+            }
+        }
+    }
+}
+
+fn verify_any_signature_locally_or_defer_keyless<'a, P: AptosPayloadBinding>(
     payload: &P,
-    chain_id: u8,
     proof: &AptosProofOfPermission,
-    any_pk: &any::AnyPublicKeyInner,
-    any_sig: &any::AnySignatureInner,
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
+    any_pk: &'a any::AnyPublicKeyInner,
+    any_sig: &'a any::AnySignatureInner,
+) -> Result<AnySignatureCheck<'a>> {
     match (any_pk, any_sig) {
         (any::AnyPublicKeyInner::Ed25519(pk_bytes), any::AnySignatureInner::Ed25519(sig_bytes)) => {
             let pk_arr: [u8; 32] = pk_bytes.as_slice().try_into().map_err(|_| {
@@ -593,7 +825,8 @@ async fn verify_any_signature_only<P: AptosPayloadBinding + Sync>(
             let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
                 .map_err(|e| anyhow!("verify_any_signature_only: invalid Ed25519 pubkey: {}", e))?;
             let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-            verify_ed25519_signature(payload, proof, &vk, &sig, "verify_any_signature_only")
+            verify_ed25519_signature(payload, proof, &vk, &sig, "verify_any_signature_only")?;
+            Ok(AnySignatureCheck::VerifiedLocally)
         }
         (
             any::AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes),
@@ -619,23 +852,45 @@ async fn verify_any_signature_only<P: AptosPayloadBinding + Sync>(
                     "verify_any_signature_only: Secp256k1 signature has high s (malleable)"
                 ));
             }
-            verify_secp256k1_signature(payload, proof, &vk, &sig, "verify_any_signature_only")
+            verify_secp256k1_signature(payload, proof, &vk, &sig, "verify_any_signature_only")?;
+            Ok(AnySignatureCheck::VerifiedLocally)
         }
         (any::AnyPublicKeyInner::Keyless(pk), any::AnySignatureInner::Keyless(sig)) => {
-            verify_keyless_signature(payload, chain_id, proof, pk, sig, chain_rpc).await
+            Ok(AnySignatureCheck::DeferredKeyless { pk, sig })
         }
         (any::AnyPublicKeyInner::FederatedKeyless(fpk), any::AnySignatureInner::Keyless(sig)) => {
-            verify_federated_keyless_signature(payload, chain_id, proof, fpk, sig, chain_rpc).await
+            Ok(AnySignatureCheck::DeferredFederatedKeyless { fpk, sig })
         }
         (
             any::AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes),
             any::AnySignatureInner::WebAuthn(assertion),
-        ) => verify_webauthn_signature(payload, pk_bytes, assertion),
+        ) => {
+            verify_webauthn_signature(payload, pk_bytes, assertion)?;
+            Ok(AnySignatureCheck::VerifiedLocally)
+        }
         (pk, sig) => Err(anyhow!(
             "verify_any_signature_only: invalid pk/sig pairing ({} pk vs {} sig)",
             pk.tag_name(),
             sig.tag_name(),
         )),
+    }
+}
+
+async fn verify_deferred_keyless_signature_for_message(
+    chain_id: u8,
+    deferred: AnySignatureCheck<'_>,
+    msg_bytes: &[u8],
+    chain_rpc: &ChainRpcConfig,
+) -> Result<()> {
+    match deferred {
+        AnySignatureCheck::DeferredKeyless { pk, sig } => {
+            verify_keyless_signature_for_message(chain_id, pk, sig, msg_bytes, chain_rpc).await
+        }
+        AnySignatureCheck::DeferredFederatedKeyless { fpk, sig } => {
+            verify_federated_keyless_signature_for_message(chain_id, fpk, sig, msg_bytes, chain_rpc)
+                .await
+        }
+        AnySignatureCheck::VerifiedLocally => Ok(()),
     }
 }
 
@@ -727,22 +982,20 @@ fn verify_webauthn_signature<P: AptosPayloadBinding>(
     })
 }
 
-async fn verify_keyless_signature<P: AptosPayloadBinding>(
-    payload: &P,
+async fn verify_keyless_signature_for_message(
     chain_id: u8,
-    proof: &AptosProofOfPermission,
     pk: &aptos_keyless_common::KeylessPublicKey,
     sig: &aptos_keyless_common::KeylessSignature,
+    msg_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    let msg_bytes = signed_message_bytes(payload, proof, "verify_keyless_signature")?;
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| anyhow!("verify_keyless_signature: parse jwt_header_json: {}", e))?;
     let (jwk_res, vk_res, cfg_res) = tokio::join!(
-        keyless::fetch_system_rsa_jwk(rpc, &pk.iss_val, &header.kid),
-        keyless::fetch_groth16_vk(rpc),
-        keyless::fetch_configuration(rpc),
+        fetch_cached_system_rsa_jwk(chain_id, rpc, &pk.iss_val, &header.kid),
+        fetch_cached_groth16_vk(chain_id, rpc),
+        fetch_cached_configuration(chain_id, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;
@@ -751,19 +1004,17 @@ async fn verify_keyless_signature<P: AptosPayloadBinding>(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("verify_keyless_signature: system clock: {}", e))?
         .as_secs();
-    aptos_keyless_common::verify_signature(pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+    aptos_keyless_common::verify_signature(pk, sig, msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
         .map_err(|e| anyhow!("verify_keyless_signature: {}", e))
 }
 
-async fn verify_federated_keyless_signature<P: AptosPayloadBinding>(
-    payload: &P,
+async fn verify_federated_keyless_signature_for_message(
     chain_id: u8,
-    proof: &AptosProofOfPermission,
     fpk: &aptos_keyless_common::FederatedKeylessPublicKey,
     sig: &aptos_keyless_common::KeylessSignature,
+    msg_bytes: &[u8],
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    let msg_bytes = signed_message_bytes(payload, proof, "verify_federated_keyless_signature")?;
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     let header: aptos_keyless_common::types::JwtHeader = serde_json::from_str(&sig.jwt_header_json)
         .map_err(|e| {
@@ -773,9 +1024,9 @@ async fn verify_federated_keyless_signature<P: AptosPayloadBinding>(
             )
         })?;
     let (jwk_res, vk_res, cfg_res) = tokio::join!(
-        federated_keyless::fetch_jwk_with_federated_fallback(rpc, fpk, &header.kid),
-        keyless::fetch_groth16_vk(rpc),
-        keyless::fetch_configuration(rpc),
+        fetch_cached_federated_jwk_with_fallback(chain_id, rpc, fpk, &header.kid),
+        fetch_cached_groth16_vk(chain_id, rpc),
+        fetch_cached_configuration(chain_id, rpc),
     );
     let jwk = jwk_res?;
     let vk = vk_res?;
@@ -784,7 +1035,7 @@ async fn verify_federated_keyless_signature<P: AptosPayloadBinding>(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("verify_federated_keyless_signature: system clock: {}", e))?
         .as_secs();
-    aptos_keyless_common::verify_signature(&fpk.pk, sig, &msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
+    aptos_keyless_common::verify_signature(&fpk.pk, sig, msg_bytes, &jwk, &vk, &cfg, now_unix_secs)
         .map_err(|e| anyhow!("verify_federated_keyless_signature: {}", e))
 }
 

@@ -200,7 +200,6 @@ impl DecryptionRequestPayload {
         h.update(&body);
         Ok(h.finalize().into())
     }
-
 }
 
 impl ThresholdVrfRequestPayload {
@@ -300,7 +299,6 @@ pub async fn verify_threshold_vrf(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana::SolanaContractId;
     use vss_common::pke::{ElGamalOtpRistretto255EncKey, EncryptionKey};
 
     /// Pin down the exact `"0x" || hex(BCS(payload))` form for a hand-built

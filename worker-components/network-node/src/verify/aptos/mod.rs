@@ -363,20 +363,17 @@ pub(super) async fn verify_aptos(
     proof: &AptosProofOfPermission,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
+    verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let origin = extract_request_origin(proof)?;
-    let (account_result, app_result) = tokio::join!(
-        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
-        check_ace_request_hook(
-            contract,
-            APTOS_DECRYPTION_HOOK,
-            &req.payload.domain,
-            &proof.user_addr,
-            &origin,
-            chain_rpc,
-        ),
-    );
-    account_result?;
-    app_result
+    check_ace_request_hook(
+        contract,
+        APTOS_DECRYPTION_HOOK,
+        &req.payload.domain,
+        &proof.user_addr,
+        &origin,
+        chain_rpc,
+    )
+    .await
 }
 
 pub(super) async fn verify_threshold_vrf_aptos(
@@ -397,20 +394,17 @@ pub(super) async fn verify_threshold_vrf_aptos(
             ))
         }
     };
+    verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let origin = extract_request_origin(proof)?;
-    let (account_result, app_result) = tokio::join!(
-        verify_aptos_account_proof(&req.payload, contract.chain_id, proof, chain_rpc),
-        check_ace_request_hook(
-            contract,
-            APTOS_VRF_HOOK,
-            &req.payload.label,
-            &req.payload.account_address,
-            &origin,
-            chain_rpc,
-        ),
-    );
-    account_result?;
-    app_result
+    check_ace_request_hook(
+        contract,
+        APTOS_VRF_HOOK,
+        &req.payload.label,
+        &req.payload.account_address,
+        &origin,
+        chain_rpc,
+    )
+    .await
 }
 
 pub(super) trait AptosPayloadBinding: serde::Serialize {

@@ -3,12 +3,13 @@
 
 use anyhow::{anyhow, Result};
 
-use super::cache::{
+use super::super::cache::{
     fetch_cached_configuration, fetch_cached_groth16_vk, fetch_cached_system_rsa_jwk,
 };
-use super::hooks::check_auth_key_bytes;
-use super::message::signed_message_bytes;
-use super::{AptosPayloadBinding, AptosProofOfPermission};
+use super::super::{
+    hooks::check_auth_key_bytes, message::signed_message_bytes, AptosPayloadBinding,
+    AptosProofOfPermission,
+};
 use crate::ChainRpcConfig;
 
 pub(super) async fn verify_account_proof<P: AptosPayloadBinding>(

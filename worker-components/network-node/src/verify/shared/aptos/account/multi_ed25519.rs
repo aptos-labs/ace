@@ -3,10 +3,10 @@
 
 use anyhow::{anyhow, Result};
 
-use super::account_single::verify_ed25519_signature;
-use super::hooks::check_auth_key_bytes;
-use super::multi_ed25519;
-use super::{AptosPayloadBinding, AptosProofOfPermission};
+use super::super::{
+    hooks::check_auth_key_bytes, multi_ed25519, AptosPayloadBinding, AptosProofOfPermission,
+};
+use super::single::verify_ed25519_signature;
 use crate::ChainRpcConfig;
 
 pub(super) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(

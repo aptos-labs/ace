@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 
-use super::{account_federated_keyless as federated_keyless, account_keyless as keyless};
+use super::{federated_keyless, keyless};
 use crate::ChainRpcConfig;
 
 #[derive(Copy, Clone)]

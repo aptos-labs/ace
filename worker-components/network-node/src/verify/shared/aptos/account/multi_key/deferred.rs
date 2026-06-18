@@ -3,10 +3,8 @@
 
 use anyhow::Result;
 
-use super::account_any::verify_signature_locally_or_defer_keyless;
-use super::account_deferred::AnySignatureCheck;
-use super::multi_key;
-use super::{AptosPayloadBinding, AptosProofOfPermission};
+use super::super::super::{multi_key, AptosPayloadBinding, AptosProofOfPermission};
+use super::super::{any::verify_signature_locally_or_defer_keyless, deferred::AnySignatureCheck};
 
 pub(super) fn collect<'a, P: AptosPayloadBinding>(
     payload: &P,

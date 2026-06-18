@@ -8,9 +8,10 @@ use k256::ecdsa::{
 };
 use sha3::{Digest, Sha3_256};
 
-use super::hooks::check_auth_key_bytes;
-use super::message::signed_message_bytes;
-use super::{AptosPayloadBinding, AptosProofOfPermission};
+use super::super::{
+    hooks::check_auth_key_bytes, message::signed_message_bytes, AptosPayloadBinding,
+    AptosProofOfPermission,
+};
 use crate::ChainRpcConfig;
 
 pub(super) async fn verify_ed25519_account_proof<P: AptosPayloadBinding>(

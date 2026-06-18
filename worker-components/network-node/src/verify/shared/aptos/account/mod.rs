@@ -3,11 +3,17 @@
 
 use anyhow::{anyhow, Result};
 
+mod any;
+mod deferred;
+mod federated_keyless;
+mod keyless;
+mod multi_ed25519;
+mod multi_key;
+mod single;
+mod webauthn;
+
 use super::{
-    account_any as any, account_federated_keyless as federated_keyless, account_keyless as keyless,
-    account_multi_ed25519 as multi_ed25519, account_multi_key as multi_key,
-    account_single as single, AptosPayloadBinding, AptosProofOfPermission, AptosPublicKeyMaterial,
-    AptosSignatureMaterial,
+    AptosPayloadBinding, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
 };
 use crate::ChainRpcConfig;
 

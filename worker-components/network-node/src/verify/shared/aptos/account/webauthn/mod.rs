@@ -4,9 +4,14 @@
 use anyhow::{anyhow, Result};
 use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 
-use super::account_deferred::AnySignatureCheck;
-use super::any::{AssertionSignature, WebAuthnAssertion};
-use super::AptosPayloadBinding;
+mod challenge;
+mod prehash;
+
+use super::super::{
+    any::{AssertionSignature, WebAuthnAssertion},
+    AptosPayloadBinding,
+};
+use super::deferred::AnySignatureCheck;
 
 pub(super) fn verify_signature<'a, P: AptosPayloadBinding>(
     payload: &P,
@@ -16,8 +21,8 @@ pub(super) fn verify_signature<'a, P: AptosPayloadBinding>(
     let vk = P256VerifyingKey::from_sec1_bytes(pk_bytes)
         .map_err(|e| anyhow!("verify_webauthn_signature: invalid Secp256r1 pubkey: {}", e))?;
     let sig = parse_signature(assertion)?;
-    super::account_webauthn_challenge::validate(payload, assertion)?;
-    super::account_webauthn_prehash::verify(&vk, &sig, assertion)?;
+    challenge::validate(payload, assertion)?;
+    prehash::verify(&vk, &sig, assertion)?;
     Ok(AnySignatureCheck::VerifiedLocally)
 }
 

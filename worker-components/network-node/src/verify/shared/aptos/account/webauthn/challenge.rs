@@ -4,8 +4,7 @@
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-use super::any::WebAuthnAssertion;
-use super::AptosPayloadBinding;
+use super::super::super::{any::WebAuthnAssertion, AptosPayloadBinding};
 
 pub(super) fn validate<P: AptosPayloadBinding>(
     payload: &P,

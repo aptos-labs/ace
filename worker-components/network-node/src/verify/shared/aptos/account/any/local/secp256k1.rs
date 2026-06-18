@@ -5,8 +5,9 @@ use anyhow::{anyhow, Result};
 use k256::ecdsa::{Signature as K256Signature, VerifyingKey as K256VerifyingKey};
 
 use super::{
-    account_any_local::fixed_bytes, account_deferred::AnySignatureCheck,
-    account_single::verify_secp256k1_signature, AptosPayloadBinding, AptosProofOfPermission,
+    super::super::super::{AptosPayloadBinding, AptosProofOfPermission},
+    super::super::{deferred::AnySignatureCheck, single::verify_secp256k1_signature},
+    fixed_bytes,
 };
 
 pub(super) fn verify<'a, P: AptosPayloadBinding>(

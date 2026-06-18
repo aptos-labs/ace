@@ -3,9 +3,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{
-    aptos_any as any, AptosPayloadBinding, AptosProofOfPermission, AptosSignatureMaterial,
-};
+use super::{any, AptosPayloadBinding, AptosProofOfPermission, AptosSignatureMaterial};
 
 pub(super) fn signed_message_bytes<P: AptosPayloadBinding>(
     payload: &P,
@@ -78,7 +76,7 @@ fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
     ))
 }
 
-pub(super) fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
+pub(in crate::verify) fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
     let mut origins = Vec::new();
     collect_webauthn_app_origins(&proof.signature, &mut origins)?;
 

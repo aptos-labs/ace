@@ -3,10 +3,10 @@
 
 use anyhow::Result;
 
-use super::aptos_account_deferred::verify_deferred_keyless_signature_for_message;
-use super::aptos_hooks::check_auth_key_bytes;
-use super::aptos_message::signed_message_bytes;
-use super::aptos_multi_key;
+use super::account_deferred::verify_deferred_keyless_signature_for_message;
+use super::hooks::check_auth_key_bytes;
+use super::message::signed_message_bytes;
+use super::multi_key;
 use super::{AptosPayloadBinding, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
@@ -14,13 +14,13 @@ pub(super) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
     proof: &AptosProofOfPermission,
-    mk: &aptos_multi_key::MultiKeyInner,
-    ms: &aptos_multi_key::MultiKeySigInner,
+    mk: &multi_key::MultiKeyInner,
+    ms: &multi_key::MultiKeySigInner,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    aptos_multi_key::validate(mk, ms)?;
+    multi_key::validate(mk, ms)?;
     let deferred_keyless_checks =
-        super::aptos_account_multi_key_deferred::collect(payload, proof, mk, ms)?;
+        super::account_multi_key_deferred::collect(payload, proof, mk, ms)?;
     let keyless_msg_bytes = if deferred_keyless_checks.is_empty() {
         None
     } else {
@@ -31,7 +31,7 @@ pub(super) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
         )?)
     };
 
-    let computed = aptos_multi_key::authentication_key(mk);
+    let computed = multi_key::authentication_key(mk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     check_auth_key_bytes(proof, &computed, "multi_key", rpc).await?;
 

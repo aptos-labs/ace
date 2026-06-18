@@ -6,7 +6,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-use super::aptos_jwks::find_rsa_jwk_in_jwks_resource;
+use super::jwks::find_rsa_jwk_in_jwks_resource;
 
 /// Fetches the `RSA_JWK` for `(iss, kid)` from the on-chain
 /// `0x1::jwks::PatchedJWKs` resource.

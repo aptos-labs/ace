@@ -1,8 +1,8 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-use super::aptos_constants::*;
-use super::{aptos_any as any, aptos_multi_ed25519 as multi_ed25519, aptos_multi_key as multi_key};
+use super::constants::*;
+use super::{any, multi_ed25519, multi_key};
 use super::{AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial};
 
 // `serde_bytes::ByteBuf` is what BCS uses to round-trip a `Vec<u8>` field

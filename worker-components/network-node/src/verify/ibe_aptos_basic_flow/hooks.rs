@@ -4,11 +4,11 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use super::aptos_constants::APTOS_DECRYPTION_HOOK;
+use super::constants::APTOS_DECRYPTION_HOOK;
 use super::{AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
-pub(super) async fn check_ace_request_hook(
+pub(in crate::verify) async fn check_ace_request_hook(
     contract: &AptosContractId,
     hook_name: &str,
     label: &[u8],

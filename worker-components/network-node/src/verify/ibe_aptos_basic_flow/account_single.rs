@@ -8,8 +8,8 @@ use k256::ecdsa::{
 };
 use sha3::{Digest, Sha3_256};
 
-use super::aptos_hooks::check_auth_key_bytes;
-use super::aptos_message::signed_message_bytes;
+use super::hooks::check_auth_key_bytes;
+use super::message::signed_message_bytes;
 use super::{AptosPayloadBinding, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
@@ -22,9 +22,9 @@ pub(super) async fn verify_ed25519_account_proof<P: AptosPayloadBinding>(
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes)
-        .map_err(|e| anyhow!("verify_aptos_account_proof: invalid Ed25519 pubkey: {}", e))?;
+        .map_err(|e| anyhow!("verify_account_proof: invalid Ed25519 pubkey: {}", e))?;
     let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
-    verify_ed25519_signature(payload, proof, &vk, &sig, "verify_aptos_account_proof")?;
+    verify_ed25519_signature(payload, proof, &vk, &sig, "verify_account_proof")?;
     let computed = vss_common::compute_account_address(&vk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     check_auth_key_bytes(proof, computed.as_ref(), "ed25519", rpc).await

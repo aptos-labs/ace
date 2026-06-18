@@ -8,7 +8,7 @@ use p256::ecdsa::{
 };
 use sha2::{Digest, Sha256};
 
-use super::aptos_any::WebAuthnAssertion;
+use super::any::WebAuthnAssertion;
 
 pub(super) fn verify(
     vk: &P256VerifyingKey,

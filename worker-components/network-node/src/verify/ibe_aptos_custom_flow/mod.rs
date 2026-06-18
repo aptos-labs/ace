@@ -4,13 +4,12 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use super::aptos_constants::APTOS_CUSTOM_DECRYPTION_HOOK;
-use super::AptosContractId;
+use super::ibe_aptos_basic_flow::{constants::APTOS_CUSTOM_DECRYPTION_HOOK, AptosContractId};
 use crate::ChainRpcConfig;
 
 // ── Custom-flow verification ──────────────────────────────────────────────────
 
-pub(in crate::verify) async fn verify_custom_aptos(
+pub(in crate::verify) async fn verify(
     contract: &AptosContractId,
     label: &[u8],
     enc_pk_bytes: &[u8],

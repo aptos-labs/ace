@@ -5,8 +5,8 @@
 
 use anyhow::{anyhow, Result};
 
-use super::aptos_jwks::find_rsa_jwk_in_jwks_resource;
-use super::aptos_keyless::fetch_system_rsa_jwk;
+use super::jwks::find_rsa_jwk_in_jwks_resource;
+use super::keyless::fetch_system_rsa_jwk;
 
 /// Matches the on-chain VM behaviour: try `0x1::jwks::PatchedJWKs` first; on
 /// miss, fall back to `0x1::jwks::FederatedJWKs` at `fpk.jwk_addr`.

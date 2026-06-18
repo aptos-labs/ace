@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{DecryptionRequestPayload, ThresholdVrfRequestPayload};
+use super::super::{DecryptionRequestPayload, ThresholdVrfRequestPayload};
 
 pub(in crate::verify) trait AptosPayloadBinding: serde::Serialize {
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]>;

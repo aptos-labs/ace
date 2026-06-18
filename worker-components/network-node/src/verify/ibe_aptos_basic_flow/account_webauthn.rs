@@ -4,8 +4,8 @@
 use anyhow::{anyhow, Result};
 use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 
-use super::aptos_account_deferred::AnySignatureCheck;
-use super::aptos_any::{AssertionSignature, WebAuthnAssertion};
+use super::account_deferred::AnySignatureCheck;
+use super::any::{AssertionSignature, WebAuthnAssertion};
 use super::AptosPayloadBinding;
 
 pub(super) fn verify_signature<'a, P: AptosPayloadBinding>(
@@ -16,8 +16,8 @@ pub(super) fn verify_signature<'a, P: AptosPayloadBinding>(
     let vk = P256VerifyingKey::from_sec1_bytes(pk_bytes)
         .map_err(|e| anyhow!("verify_webauthn_signature: invalid Secp256r1 pubkey: {}", e))?;
     let sig = parse_signature(assertion)?;
-    super::aptos_account_webauthn_challenge::validate(payload, assertion)?;
-    super::aptos_account_webauthn_prehash::verify(&vk, &sig, assertion)?;
+    super::account_webauthn_challenge::validate(payload, assertion)?;
+    super::account_webauthn_prehash::verify(&vk, &sig, assertion)?;
     Ok(AnySignatureCheck::VerifiedLocally)
 }
 

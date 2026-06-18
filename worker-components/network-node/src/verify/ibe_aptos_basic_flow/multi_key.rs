@@ -41,7 +41,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
-use super::aptos_any::{AnyPublicKeyInner, AnySignatureInner};
+use super::any::{AnyPublicKeyInner, AnySignatureInner};
 
 // Mirrors aptos-core's `MAX_NUM_OF_SIGS: usize = 32` for MultiKey signers.
 const MAX_NUM_OF_SIGS: usize = 32;

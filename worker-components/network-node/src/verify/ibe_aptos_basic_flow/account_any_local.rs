@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 
 use super::{
-    aptos_account_deferred::AnySignatureCheck, aptos_account_single::verify_ed25519_signature,
+    account_deferred::AnySignatureCheck, account_single::verify_ed25519_signature,
     AptosPayloadBinding, AptosProofOfPermission,
 };
 
@@ -29,7 +29,7 @@ pub(super) fn verify_secp256k1<'a, P: AptosPayloadBinding>(
     pk_bytes: &'a [u8],
     sig_bytes: &'a [u8],
 ) -> Result<AnySignatureCheck<'a>> {
-    super::aptos_account_any_local_secp256k1::verify(payload, proof, pk_bytes, sig_bytes)
+    super::account_any_local_secp256k1::verify(payload, proof, pk_bytes, sig_bytes)
 }
 
 pub(super) fn fixed_bytes<const N: usize>(bytes: &[u8], label: &str) -> Result<[u8; N]> {

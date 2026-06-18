@@ -20,40 +20,17 @@
 //!
 //! Module layout:
 //!   - `verify` (this file) — outer-envelope wire types + flow dispatch
-//!   - `aptos_*` modules — Aptos flow/type/primitive verification helpers
-//!   - `solana_txn` — Solana txn parsing + RPC simulation
+//!   - `ibe_aptos_basic_flow`
+//!   - `ibe_aptos_custom_flow`
+//!   - `ibe_solana_basic_flow`
+//!   - `ibe_solana_custom_flow`
+//!   - `vrf_aptos`
 
-mod aptos_account;
-mod aptos_account_any;
-mod aptos_account_any_account;
-mod aptos_account_any_local;
-mod aptos_account_any_local_secp256k1;
-mod aptos_account_deferred;
-mod aptos_account_federated_keyless;
-mod aptos_account_keyless;
-mod aptos_account_multi_ed25519;
-mod aptos_account_multi_key;
-mod aptos_account_multi_key_deferred;
-mod aptos_account_single;
-mod aptos_account_webauthn;
-mod aptos_account_webauthn_challenge;
-mod aptos_account_webauthn_prehash;
-pub mod aptos_any;
-mod aptos_binding;
-mod aptos_cache;
-mod aptos_constants;
-mod aptos_custom;
-mod aptos_dispatch;
-mod aptos_federated_keyless;
-mod aptos_hooks;
-mod aptos_jwks;
-mod aptos_keyless;
-mod aptos_message;
-pub mod aptos_multi_ed25519;
-pub mod aptos_multi_key;
-mod aptos_proof;
-mod aptos_proof_serde;
-mod solana_txn;
+mod ibe_aptos_basic_flow;
+mod ibe_aptos_custom_flow;
+mod ibe_solana_basic_flow;
+mod ibe_solana_custom_flow;
+mod vrf_aptos;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -61,12 +38,11 @@ use vss_common::pke::EncryptionKey;
 
 use crate::ChainRpcConfig;
 
-use aptos_binding::AptosPayloadBinding;
-pub use aptos_proof::{
+pub use ibe_aptos_basic_flow::{
     AptosContractId, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
 };
-use solana_txn::SolanaContractId;
-pub use solana_txn::SolanaProofOfPermission;
+use ibe_solana_basic_flow::SolanaContractId;
+pub use ibe_solana_basic_flow::SolanaProofOfPermission;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -270,18 +246,19 @@ pub fn identity_bytes(keypair_id: &[u8; 32], contract_id: &ContractId, domain: &
 /// keypair_id, epoch, contract_id, domain, and ephemeral encryption key in `req`.
 ///
 /// The Aptos side binds via `"0x" || hex(BCS(payload))` appearing in the wallet's
-/// `fullMessage` (see [`aptos_binding::AptosPayloadBinding::to_signed_message_hex`]); only
+/// `fullMessage` (see [`ibe_aptos_basic_flow::AptosPayloadBinding::to_signed_message_hex`]); only
 /// the Solana path needs the pre-serialized bytes for its `build_full_request_bytes`
 /// shape.
 pub async fn verify_basic(req: &BasicFlowRequest, chain_rpc: &ChainRpcConfig) -> Result<()> {
     match (&req.payload.contract_id, &req.proof) {
         (ContractId::Aptos(contract), ProofOfPermission::Aptos(proof)) => {
-            aptos_dispatch::verify_aptos(req, contract, proof, chain_rpc).await
+            ibe_aptos_basic_flow::verify_aptos(req, contract, proof, chain_rpc).await
         }
         (ContractId::Solana(contract), ProofOfPermission::Solana(proof)) => {
             let ephemeral_ek_bytes = bcs::to_bytes(&req.payload.ephemeral_enc_key)
                 .map_err(|e| anyhow!("verify_basic: serialize ephemeral_enc_key: {}", e))?;
-            solana_txn::verify_solana(req, contract, proof, &ephemeral_ek_bytes, chain_rpc).await
+            ibe_solana_basic_flow::verify(req, contract, proof, &ephemeral_ek_bytes, chain_rpc)
+                .await
         }
         (contract, proof) => Err(anyhow!(
             "verify_basic: contract/proof scheme mismatch (contract={}, proof={})",
@@ -298,17 +275,11 @@ pub async fn verify_custom(req: &CustomFlowRequest, chain_rpc: &ChainRpcConfig) 
 
     match (&req.contract_id, &req.proof) {
         (ContractId::Aptos(contract), CustomFlowProof::Aptos(payload)) => {
-            aptos_custom::verify_custom_aptos(
-                contract,
-                &req.label,
-                &enc_pk_bytes,
-                payload,
-                chain_rpc,
-            )
-            .await
+            ibe_aptos_custom_flow::verify(contract, &req.label, &enc_pk_bytes, payload, chain_rpc)
+                .await
         }
         (ContractId::Solana(contract), CustomFlowProof::Solana(proof)) => {
-            solana_txn::verify_custom_solana(req, contract, proof, &enc_pk_bytes, chain_rpc).await
+            ibe_solana_custom_flow::verify(req, contract, proof, &enc_pk_bytes, chain_rpc).await
         }
         (contract, proof) => Err(anyhow!(
             "verify_custom: contract/proof scheme mismatch (contract={}, proof={})",
@@ -326,7 +297,7 @@ pub async fn verify_threshold_vrf(
     req: &ThresholdVrfRequest,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    aptos_dispatch::verify_threshold_vrf_aptos(req, chain_rpc).await
+    vrf_aptos::verify(req, chain_rpc).await
 }
 
 #[cfg(test)]
@@ -342,7 +313,7 @@ mod tests {
     /// pinned literally.
     #[test]
     fn signed_message_hex_aptos_known_answer() {
-        use super::aptos_binding::AptosPayloadBinding;
+        use super::ibe_aptos_basic_flow::AptosPayloadBinding;
         let payload = DecryptionRequestPayload {
             keypair_id: [0xab; 32],
             epoch: 42,

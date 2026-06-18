@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{aptos_any as any, aptos_multi_ed25519 as multi_ed25519, aptos_multi_key as multi_key};
+use super::{any, multi_ed25519, multi_key};
 
 #[derive(Serialize, Deserialize)]
 pub struct AptosContractId {

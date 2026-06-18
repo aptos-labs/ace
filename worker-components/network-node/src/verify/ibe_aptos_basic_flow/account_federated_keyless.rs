@@ -3,11 +3,11 @@
 
 use anyhow::{anyhow, Result};
 
-use super::aptos_cache::{
+use super::cache::{
     fetch_cached_configuration, fetch_cached_federated_jwk_with_fallback, fetch_cached_groth16_vk,
 };
-use super::aptos_hooks::check_auth_key_bytes;
-use super::aptos_message::signed_message_bytes;
+use super::hooks::check_auth_key_bytes;
+use super::message::signed_message_bytes;
 use super::{AptosPayloadBinding, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 

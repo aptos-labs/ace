@@ -16,7 +16,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{BasicFlowRequest, CustomFlowRequest};
+use super::BasicFlowRequest;
 use crate::ChainRpcConfig;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ pub struct SolanaProofOfPermission {
 
 // ── Verification ──────────────────────────────────────────────────────────────
 
-pub(super) async fn verify_solana(
+pub(in crate::verify) async fn verify(
     req: &BasicFlowRequest,
     contract: &SolanaContractId,
     proof: &SolanaProofOfPermission,
@@ -71,32 +71,7 @@ pub(super) async fn verify_solana(
     Ok(())
 }
 
-pub(super) async fn verify_custom_solana(
-    req: &CustomFlowRequest,
-    contract: &SolanaContractId,
-    proof: &SolanaProofOfPermission,
-    enc_pk_bytes: &[u8],
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    let expected_program_id = solana_program_id(contract)?;
-    let is_versioned = proof.inner_scheme == 1;
-
-    validate_custom_txn(
-        &proof.txn_bytes,
-        &expected_program_id,
-        &req.keypair_id,
-        req.epoch,
-        enc_pk_bytes,
-        &req.label,
-        is_versioned,
-    )?;
-
-    let rpc_url = chain_rpc.solana_rpc_for_chain_name(&contract.known_chain_name)?;
-    simulate_txn(&proof.txn_bytes, &rpc_url, &chain_rpc.solana_client).await?;
-    Ok(())
-}
-
-fn solana_program_id(contract: &SolanaContractId) -> Result<[u8; 32]> {
+pub(in crate::verify) fn solana_program_id(contract: &SolanaContractId) -> Result<[u8; 32]> {
     contract.program_id.as_slice().try_into().map_err(|_| {
         anyhow!(
             "Solana programId must be 32 bytes, got {}",
@@ -160,7 +135,7 @@ fn validate_txn(
 }
 
 /// Validate that the Solana transaction carries the expected `CustomFullRequestBytes`.
-fn validate_custom_txn(
+pub(in crate::verify) fn validate_custom_txn(
     txn: &[u8],
     expected_program_id: &[u8; 32],
     expected_keypair_id: &[u8; 32],
@@ -356,7 +331,11 @@ fn read_compact_u16(bytes: &[u8], start: usize) -> Result<(u16, usize)> {
 ///
 /// Use "confirmed" commitment so that recently-confirmed accounts (e.g. a Receipt PDA
 /// created moments before) are visible to the simulation.
-async fn simulate_txn(txn_bytes: &[u8], rpc_url: &str, client: &reqwest::Client) -> Result<()> {
+pub(in crate::verify) async fn simulate_txn(
+    txn_bytes: &[u8],
+    rpc_url: &str,
+    client: &reqwest::Client,
+) -> Result<()> {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
 

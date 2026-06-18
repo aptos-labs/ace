@@ -3,9 +3,9 @@
 
 use anyhow::{anyhow, Result};
 
-use super::aptos_account_single::verify_ed25519_signature;
-use super::aptos_hooks::check_auth_key_bytes;
-use super::aptos_multi_ed25519;
+use super::account_single::verify_ed25519_signature;
+use super::hooks::check_auth_key_bytes;
+use super::multi_ed25519;
 use super::{AptosPayloadBinding, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
@@ -13,12 +13,12 @@ pub(super) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
     proof: &AptosProofOfPermission,
-    pk: &aptos_multi_ed25519::MultiEd25519PublicKeyInner,
-    sig: &aptos_multi_ed25519::MultiEd25519SignatureInner,
+    pk: &multi_ed25519::MultiEd25519PublicKeyInner,
+    sig: &multi_ed25519::MultiEd25519SignatureInner,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    aptos_multi_ed25519::validate(pk, sig)?;
-    let positions = aptos_multi_ed25519::bitmap_iter_ones(&sig.bitmap).zip(sig.signatures.iter());
+    multi_ed25519::validate(pk, sig)?;
+    let positions = multi_ed25519::bitmap_iter_ones(&sig.bitmap).zip(sig.signatures.iter());
     let position_futs = positions.map(|(pos, sig_bytes)| {
         let pk_bytes = &pk.public_keys[pos];
         async move {
@@ -35,7 +35,7 @@ pub(super) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     });
     futures::future::try_join_all(position_futs).await?;
 
-    let computed = aptos_multi_ed25519::authentication_key(pk);
+    let computed = multi_ed25519::authentication_key(pk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     check_auth_key_bytes(proof, &computed, "multi_ed25519", rpc).await
 }

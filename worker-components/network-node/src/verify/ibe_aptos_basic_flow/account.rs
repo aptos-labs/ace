@@ -4,14 +4,14 @@
 use anyhow::{anyhow, Result};
 
 use super::{
-    aptos_account_any as any, aptos_account_federated_keyless as federated_keyless,
-    aptos_account_keyless as keyless, aptos_account_multi_ed25519 as multi_ed25519,
-    aptos_account_multi_key as multi_key, aptos_account_single as single, AptosPayloadBinding,
-    AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
+    account_any as any, account_federated_keyless as federated_keyless, account_keyless as keyless,
+    account_multi_ed25519 as multi_ed25519, account_multi_key as multi_key,
+    account_single as single, AptosPayloadBinding, AptosProofOfPermission, AptosPublicKeyMaterial,
+    AptosSignatureMaterial,
 };
 use crate::ChainRpcConfig;
 
-pub(super) async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
+pub(in crate::verify) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
     proof: &AptosProofOfPermission,
@@ -38,7 +38,7 @@ pub(super) async fn verify_aptos_account_proof<P: AptosPayloadBinding + Sync>(
                 .await
         }
         (pk, sig) => Err(anyhow!(
-            "verify_aptos_account_proof: pk/sig scheme mismatch ({} pk vs {} sig)",
+            "verify_account_proof: pk/sig scheme mismatch ({} pk vs {} sig)",
             pk.tag_name(),
             sig.tag_name(),
         )),

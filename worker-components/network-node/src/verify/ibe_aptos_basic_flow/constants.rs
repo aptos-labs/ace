@@ -4,8 +4,9 @@
 use std::time::Duration;
 
 pub(super) const APTOS_DECRYPTION_HOOK: &str = "on_ace_decryption_request";
-pub(super) const APTOS_VRF_HOOK: &str = "on_ace_vrf_request";
-pub(super) const APTOS_CUSTOM_DECRYPTION_HOOK: &str = "on_ace_decryption_request_custom_flow";
+pub(in crate::verify) const APTOS_VRF_HOOK: &str = "on_ace_vrf_request";
+pub(in crate::verify) const APTOS_CUSTOM_DECRYPTION_HOOK: &str =
+    "on_ace_decryption_request_custom_flow";
 
 // pk_scheme / sig_scheme constants — keep in lockstep with `_internal/aptos.ts`.
 pub(super) const PK_SCHEME_ED25519_WIRE: u8 = 0;

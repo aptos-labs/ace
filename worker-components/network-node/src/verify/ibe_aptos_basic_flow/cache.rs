@@ -12,8 +12,8 @@ use std::{
 use anyhow::Result;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::aptos_constants::KEYLESS_RESOURCE_CACHE_TTL;
-use super::{aptos_federated_keyless as federated_keyless, aptos_keyless as keyless};
+use super::constants::KEYLESS_RESOURCE_CACHE_TTL;
+use super::{federated_keyless, keyless};
 
 type RsaJwk = aptos_keyless_common::RsaJwk;
 type Groth16VerificationKey = aptos_keyless_common::Groth16VerificationKey;

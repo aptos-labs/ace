@@ -3,46 +3,12 @@
 
 use anyhow::Result;
 
-mod account;
-mod account_any;
-mod account_any_account;
-mod account_any_local;
-mod account_any_local_secp256k1;
-mod account_deferred;
-mod account_federated_keyless;
-mod account_keyless;
-mod account_multi_ed25519;
-mod account_multi_key;
-mod account_multi_key_deferred;
-mod account_single;
-mod account_webauthn;
-mod account_webauthn_challenge;
-mod account_webauthn_prehash;
-pub mod any;
-mod binding;
-mod cache;
-pub(in crate::verify) mod constants;
-mod federated_keyless;
-pub(in crate::verify) mod hooks;
-mod jwks;
-mod keyless;
-pub(in crate::verify) mod message;
-pub mod multi_ed25519;
-pub mod multi_key;
-mod proof;
-mod proof_serde;
-
-pub(in crate::verify) use account::verify_account_proof;
-pub(in crate::verify) use binding::AptosPayloadBinding;
-pub use proof::{
-    AptosContractId, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
-};
-
 use super::BasicFlowRequest;
+use crate::verify_shared::aptos::{
+    check_ace_request_hook, extract_request_origin, verify_account_proof, AptosContractId,
+    AptosProofOfPermission, APTOS_DECRYPTION_HOOK,
+};
 use crate::ChainRpcConfig;
-use constants::APTOS_DECRYPTION_HOOK;
-use hooks::check_ace_request_hook;
-use message::extract_request_origin;
 
 pub(in crate::verify) async fn verify_aptos(
     req: &BasicFlowRequest,

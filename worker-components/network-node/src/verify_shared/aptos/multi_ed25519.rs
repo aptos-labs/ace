@@ -238,7 +238,7 @@ pub(crate) fn bitmap_iter_ones(
 ///   4. `popcount(bitmap) == signatures.len()` — verify_arbitrary_msg
 ///   5. `popcount(bitmap) >= threshold`        — verify_arbitrary_msg
 ///   6. `last_set_bit(bitmap) < public_keys.len()` — verify_arbitrary_msg
-pub(in crate::verify) fn validate(
+pub(crate) fn validate(
     pk: &MultiEd25519PublicKeyInner,
     sig: &MultiEd25519SignatureInner,
 ) -> Result<()> {

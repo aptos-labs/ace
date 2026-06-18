@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use super::ibe_aptos_basic_flow::{constants::APTOS_CUSTOM_DECRYPTION_HOOK, AptosContractId};
+use crate::verify_shared::aptos::{AptosContractId, APTOS_CUSTOM_DECRYPTION_HOOK};
 use crate::ChainRpcConfig;
 
 // ── Custom-flow verification ──────────────────────────────────────────────────

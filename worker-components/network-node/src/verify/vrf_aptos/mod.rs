@@ -3,11 +3,10 @@
 
 use anyhow::{anyhow, Result};
 
-use super::ibe_aptos_basic_flow::{
-    constants::APTOS_VRF_HOOK, hooks::check_ace_request_hook, message::extract_request_origin,
-    verify_account_proof,
-};
 use super::{ContractId, ThresholdVrfRequest};
+use crate::verify_shared::aptos::{
+    check_ace_request_hook, extract_request_origin, verify_account_proof, APTOS_VRF_HOOK,
+};
 use crate::ChainRpcConfig;
 
 pub(in crate::verify) async fn verify(

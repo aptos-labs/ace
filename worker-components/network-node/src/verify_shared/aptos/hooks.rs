@@ -8,7 +8,7 @@ use super::constants::APTOS_DECRYPTION_HOOK;
 use super::{AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
-pub(in crate::verify) async fn check_ace_request_hook(
+pub(crate) async fn check_ace_request_hook(
     contract: &AptosContractId,
     hook_name: &str,
     label: &[u8],

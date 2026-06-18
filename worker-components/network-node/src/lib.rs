@@ -25,6 +25,7 @@ mod http_server;
 mod secret_usage;
 pub mod secrets;
 pub mod verify;
+mod verify_shared;
 
 /// ISO 8601 UTC timestamp with millisecond precision, e.g. `2026-04-30T16:53:26.877Z`.
 pub fn now_utc_iso() -> String {

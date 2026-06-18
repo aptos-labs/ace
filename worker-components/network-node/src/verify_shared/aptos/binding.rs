@@ -3,9 +3,9 @@
 
 use anyhow::{anyhow, Result};
 
-use super::super::{DecryptionRequestPayload, ThresholdVrfRequestPayload};
+use crate::verify::{DecryptionRequestPayload, ThresholdVrfRequestPayload};
 
-pub(in crate::verify) trait AptosPayloadBinding: serde::Serialize {
+pub(crate) trait AptosPayloadBinding: serde::Serialize {
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]>;
 
     /// The hex string the dapp asks the wallet to sign as the AIP-62 `message`

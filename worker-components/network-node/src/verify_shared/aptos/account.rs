@@ -11,7 +11,7 @@ use super::{
 };
 use crate::ChainRpcConfig;
 
-pub(in crate::verify) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
+pub(crate) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     payload: &P,
     chain_id: u8,
     proof: &AptosProofOfPermission,

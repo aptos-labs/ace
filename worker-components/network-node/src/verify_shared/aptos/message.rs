@@ -76,7 +76,7 @@ fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
     ))
 }
 
-pub(in crate::verify) fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
+pub(crate) fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
     let mut origins = Vec::new();
     collect_webauthn_app_origins(&proof.signature, &mut origins)?;
 

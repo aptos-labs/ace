@@ -38,7 +38,7 @@ use vss_common::pke::EncryptionKey;
 
 use crate::ChainRpcConfig;
 
-pub use ibe_aptos_basic_flow::{
+pub use crate::verify_shared::aptos::{
     AptosContractId, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
 };
 use ibe_solana_basic_flow::SolanaContractId;
@@ -313,7 +313,7 @@ mod tests {
     /// pinned literally.
     #[test]
     fn signed_message_hex_aptos_known_answer() {
-        use super::ibe_aptos_basic_flow::AptosPayloadBinding;
+        use crate::verify_shared::aptos::AptosPayloadBinding;
         let payload = DecryptionRequestPayload {
             keypair_id: [0xab; 32],
             epoch: 42,

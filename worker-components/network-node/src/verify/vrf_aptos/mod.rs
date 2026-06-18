@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 
 use super::{ContractId, ThresholdVrfRequest};
-use crate::verify_shared::aptos::{
+use super::shared::aptos::{
     check_ace_request_hook, extract_request_origin, verify_account_proof, APTOS_VRF_HOOK,
 };
 use crate::ChainRpcConfig;

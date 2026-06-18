@@ -4,7 +4,7 @@
 use anyhow::Result;
 
 use super::BasicFlowRequest;
-use crate::verify_shared::aptos::{
+use super::shared::aptos::{
     check_ace_request_hook, extract_request_origin, verify_account_proof, AptosContractId,
     AptosProofOfPermission, APTOS_DECRYPTION_HOOK,
 };

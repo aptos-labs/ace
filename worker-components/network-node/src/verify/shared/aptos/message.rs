@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 
 use super::{any, AptosPayloadBinding, AptosProofOfPermission, AptosSignatureMaterial};
 
-pub(super) fn signed_message_bytes<P: AptosPayloadBinding>(
+pub(super) fn verified_signed_message_bytes<P: AptosPayloadBinding>(
     payload: &P,
     proof: &AptosProofOfPermission,
     context: &str,

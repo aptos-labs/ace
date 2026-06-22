@@ -7,7 +7,7 @@ use super::super::cache::{
     fetch_cached_configuration, fetch_cached_groth16_vk, fetch_cached_system_rsa_jwk,
 };
 use super::super::{
-    hooks::check_auth_key_bytes, message::signed_message_bytes, AptosPayloadBinding,
+    hooks::check_auth_key_bytes, message::verified_signed_message_bytes, AptosPayloadBinding,
     AptosProofOfPermission,
 };
 use crate::ChainRpcConfig;
@@ -20,7 +20,7 @@ pub(super) async fn verify_account_proof<P: AptosPayloadBinding>(
     sig: &aptos_keyless_common::KeylessSignature,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    let msg_bytes = signed_message_bytes(payload, proof, "verify_keyless_signature")?;
+    let msg_bytes = verified_signed_message_bytes(payload, proof, "verify_keyless_signature")?;
     let computed = aptos_keyless_common::keyless_account_authentication_key(pk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     check_auth_key_bytes(proof, computed.as_ref(), "keyless", rpc).await?;

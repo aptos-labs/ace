@@ -9,7 +9,7 @@ use k256::ecdsa::{
 use sha3::{Digest, Sha3_256};
 
 use super::super::{
-    hooks::check_auth_key_bytes, message::signed_message_bytes, AptosPayloadBinding,
+    hooks::check_auth_key_bytes, message::verified_signed_message_bytes, AptosPayloadBinding,
     AptosProofOfPermission,
 };
 use crate::ChainRpcConfig;
@@ -40,7 +40,7 @@ pub(super) fn verify_ed25519_signature<P: AptosPayloadBinding>(
 ) -> Result<()> {
     use ed25519_dalek::Verifier;
 
-    let msg_bytes = signed_message_bytes(payload, proof, context)?;
+    let msg_bytes = verified_signed_message_bytes(payload, proof, context)?;
     vk.verify(&msg_bytes, sig)
         .map_err(|e| anyhow!("{}: Ed25519 verification failed: {}", context, e))
 }
@@ -52,7 +52,7 @@ pub(super) fn verify_secp256k1_signature<P: AptosPayloadBinding>(
     sig: &K256Signature,
     context: &str,
 ) -> Result<()> {
-    let msg_bytes = signed_message_bytes(payload, proof, context)?;
+    let msg_bytes = verified_signed_message_bytes(payload, proof, context)?;
     let prehash: [u8; 32] = Sha3_256::digest(&msg_bytes).into();
     vk.verify_prehash(&prehash, sig)
         .map_err(|e| anyhow!("{}: Secp256k1 ECDSA verification failed: {}", context, e))

@@ -4,7 +4,7 @@
 use anyhow::Result;
 
 use super::super::super::{
-    any as aptos_any, hooks::check_auth_key_bytes, message::signed_message_bytes,
+    any as aptos_any, hooks::check_auth_key_bytes, message::verified_signed_message_bytes,
     AptosPayloadBinding, AptosProofOfPermission,
 };
 use super::super::deferred::{verify_deferred_keyless_signature_for_message, AnySignatureCheck};
@@ -41,7 +41,8 @@ async fn verify_deferred<P: AptosPayloadBinding>(
     deferred: AnySignatureCheck<'_>,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    let msg_bytes = signed_message_bytes(payload, proof, deferred.signed_message_context())?;
+    let msg_bytes =
+        verified_signed_message_bytes(payload, proof, deferred.signed_message_context())?;
     let computed = aptos_any::authentication_key(any_pk);
     let rpc = chain_rpc.aptos_rpc_for_chain_id(chain_id)?;
     check_auth_key_bytes(proof, &computed, any_pk.tag_name(), rpc).await?;

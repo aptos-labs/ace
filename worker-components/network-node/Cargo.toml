@@ -5,7 +5,7 @@
 name = "network-node"
 version = "0.1.0"
 edition = "2021"
-description = "Network node: URH, HTTP, and network::touch. Epoch-change DKR/DKG runs in epoch-change-cur / epoch-change-nxt."
+description = "Network node: share maintenance, HTTP, and network::touch. Epoch-change DKR/DKG runs in epoch-change-cur / epoch-change-nxt."
 
 [[bin]]
 name = "network-node"

@@ -4,7 +4,8 @@
 //! Secrets provider abstraction for the three deployment modes.
 //!
 //! * `Monolith` / `Maintainer` use [`SecretsProvider::Local`], reading directly
-//!   from the in-process share map that the URH / state-polling loop populates.
+//!   from the in-process share map populated by the state-polling share
+//!   reconstruction loop.
 //! * `Handler` uses [`SecretsProvider::Remote`], which polls a peer
 //!   maintainer's `/secrets` endpoint and caches the snapshot for 1 second
 //!   (singleflight via the RwLock's write lock — stale callers serialize on
@@ -16,7 +17,7 @@
 //! material.
 //!
 //! No "in committee" flag: an empty `shares` map means "can't serve" whether
-//! that's because the node is genuinely not in the committee or because URH
+//! that's because the node is genuinely not in the committee or because share
 //! reconstruction hasn't completed yet. The handler's lookup-miss path returns
 //! NotFound in both cases, which is the right answer for both.
 
@@ -45,9 +46,9 @@ pub enum SecretsSnapshotWire {
 /// Per-(keypair, epoch) share with its evaluation point and originating group
 /// scheme baked in.
 ///
-/// `eval_point` is captured **at the time the URH task registered the share**,
-/// so stale-buffer-window entries served after a committee change use the
-/// right value for the epoch they belong to.
+/// `eval_point` is captured when the share reconstruction task registers the
+/// share, so stale-buffer-window entries served after a committee change use
+/// the right value for the epoch they belong to.
 ///
 /// `group_scheme` is the underlying VSS group (e.g. BLS12381G1). The handler
 /// validates it against the requested primitive's implementation group.

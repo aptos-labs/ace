@@ -19,11 +19,14 @@ pub struct AptosContractId {
 /// directly into a typed enum, no `Vec<u8>` framing. The custom serde impls
 /// below match the inline encoding the TS SDK writes — see
 /// `ts-sdk/src/_internal/aptos.ts`.
+#[derive(Serialize)]
 pub struct AptosProofOfPermission {
     pub user_addr: [u8; 32],
     pub pk_scheme: u8,
+    #[serde(serialize_with = "super::proof_serde::serialize_public_key")]
     pub public_key: AptosPublicKeyMaterial,
     pub sig_scheme: u8,
+    #[serde(serialize_with = "super::proof_serde::serialize_signature")]
     pub signature: AptosSignatureMaterial,
     pub full_message: String,
 }

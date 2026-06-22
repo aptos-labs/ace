@@ -15,8 +15,8 @@ pub struct AptosContractId {
 /// Proof of permission for a basic-flow Aptos request.
 ///
 /// `public_key_payload` and `signature_payload` each carry their own scheme
-/// tag on the wire. Their custom serde impls keep the TS SDK layout while this
-/// struct exposes only typed payload fields.
+/// tag on the wire. Serde's BCS enum tag is the Aptos scheme byte; field
+/// annotations keep byte-oriented payloads in the TS SDK layout.
 #[derive(Serialize, Deserialize)]
 pub struct AptosProofOfPermission {
     pub user_addr: [u8; 32],
@@ -26,12 +26,12 @@ pub struct AptosProofOfPermission {
 }
 
 /// Inner public-key payload for [`AptosProofOfPermission`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AptosPublicKeyMaterial {
     /// pk_scheme=0. BCS wire is `Vec<u8>(32 bytes)` — the natural BCS of
     /// `aptos_crypto::Ed25519PublicKey` (whose serde derive emits
     /// `serialize_bytes(&self.0)`).
-    Ed25519([u8; 32]),
+    Ed25519(#[serde(with = "super::proof_serde::bytes::fixed_32")] [u8; 32]),
     /// pk_scheme=1. BCS wire is `ULEB128(any_variant) || BCS(inner)`. See
     /// [`any::AnyPublicKeyInner`] for the inner variant layout; the same
     /// account model also covers Secp256k1Ecdsa, Secp256r1Ecdsa, Keyless,
@@ -41,7 +41,10 @@ pub enum AptosPublicKeyMaterial {
     /// — the flat-concat layout from aptos-core's
     /// `MultiEd25519PublicKey::to_bytes`. Legacy K-of-N over raw Ed25519
     /// keys; auth-key derivation uses `Scheme::MultiEd25519 = 0x01`.
-    MultiEd25519(multi_ed25519::MultiEd25519PublicKeyInner),
+    MultiEd25519(
+        #[serde(with = "super::proof_serde::multi_ed25519::public_key")]
+        multi_ed25519::MultiEd25519PublicKeyInner,
+    ),
     /// pk_scheme=3. BCS wire is the inline `MultiKey` struct
     /// (`{ public_keys: Vec<AnyPublicKey>, signatures_required: u8 }`).
     /// K-of-N over the AnyPublicKey variants; auth-key derivation uses
@@ -57,10 +60,10 @@ pub enum AptosPublicKeyMaterial {
 }
 
 /// Inner signature payload for [`AptosProofOfPermission`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AptosSignatureMaterial {
     /// sig_scheme=0. BCS wire is `Vec<u8>(64 bytes)`.
-    Ed25519([u8; 64]),
+    Ed25519(#[serde(with = "super::proof_serde::bytes::fixed_64")] [u8; 64]),
     /// sig_scheme=1. BCS wire is `ULEB128(any_variant) || BCS(inner)`. See
     /// [`any::AnySignatureInner`] — pairs with pk_scheme=1 / `AnyPublicKey`.
     Any(any::AnySignatureInner),
@@ -68,7 +71,10 @@ pub enum AptosSignatureMaterial {
     /// — the flat-concat layout from aptos-core's
     /// `MultiEd25519Signature::to_bytes`. Pairs with pk_scheme=2 /
     /// `MultiEd25519`.
-    MultiEd25519(multi_ed25519::MultiEd25519SignatureInner),
+    MultiEd25519(
+        #[serde(with = "super::proof_serde::multi_ed25519::signature")]
+        multi_ed25519::MultiEd25519SignatureInner,
+    ),
     /// sig_scheme=3. BCS wire is the inline `MultiKeyAuthenticator`
     /// signature struct (`{ signatures: Vec<AnySignature>, bitmap: Vec<u8> }`)
     /// — pairs with pk_scheme=3 / `MultiKey`. Bitmap is MSB-first per byte;

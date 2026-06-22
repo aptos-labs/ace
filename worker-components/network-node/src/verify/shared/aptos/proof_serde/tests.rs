@@ -3,8 +3,9 @@
 
 use serde::Serialize;
 
-use super::super::constants::{PK_SCHEME_ED25519_WIRE, SIG_SCHEME_ED25519_WIRE};
 use super::super::{AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial};
+
+const ED25519_SCHEME_WIRE: u8 = 0;
 
 #[derive(Serialize)]
 struct LegacyEd25519Proof {
@@ -26,9 +27,9 @@ fn proof_material_serde_keeps_legacy_wire_shape() {
     let full_message = "APTOS\nmessage: 0xabc".to_string();
     let legacy = LegacyEd25519Proof {
         user_addr,
-        pk_scheme: PK_SCHEME_ED25519_WIRE,
+        pk_scheme: ED25519_SCHEME_WIRE,
         public_key: public_key.to_vec(),
-        sig_scheme: SIG_SCHEME_ED25519_WIRE,
+        sig_scheme: ED25519_SCHEME_WIRE,
         signature: signature.to_vec(),
         full_message: full_message.clone(),
     };

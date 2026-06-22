@@ -1,35 +1,56 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-use serde::de::{Error as _, SeqAccess};
+use serde::de::Error as _;
+use serde::Deserialize;
 
-pub(super) fn next<'de, A, T>(seq: &mut A, missing: &'static str) -> Result<T, A::Error>
-where
-    A: SeqAccess<'de>,
-    T: serde::Deserialize<'de>,
-{
-    seq.next_element()?.ok_or_else(|| A::Error::custom(missing))
-}
-
-pub(super) fn array<'de, const N: usize, A>(
-    seq: &mut A,
-    label: &'static str,
-) -> Result<[u8; N], A::Error>
-where
-    A: SeqAccess<'de>,
-{
-    let bytes = seq
-        .next_element::<serde_bytes::ByteBuf>()?
-        .ok_or_else(|| A::Error::custom(format!("missing {label}")))?;
-    bytes.into_vec().try_into().map_err(|v: Vec<u8>| {
-        A::Error::custom(format!("{} must be {} bytes, got {}", label, N, v.len()))
-    })
-}
-
-pub(super) fn serialize<S>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error>
+pub(crate) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::Serialize;
-    serde_bytes::Bytes::new(bytes).serialize(s)
+    serde_bytes::Bytes::new(bytes).serialize(serializer)
+}
+
+pub(crate) fn fixed<'de, const N: usize, D>(deserializer: D) -> Result<[u8; N], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
+    bytes
+        .into_vec()
+        .try_into()
+        .map_err(|v: Vec<u8>| D::Error::custom(format!("expected {} bytes, got {}", N, v.len())))
+}
+
+pub(crate) mod fixed_32 {
+    pub(crate) fn serialize<S>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        super::serialize(value, serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::fixed(deserializer)
+    }
+}
+
+pub(crate) mod fixed_64 {
+    pub(crate) fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        super::serialize(value, serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::fixed(deserializer)
+    }
 }

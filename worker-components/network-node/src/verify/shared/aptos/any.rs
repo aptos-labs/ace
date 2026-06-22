@@ -5,7 +5,7 @@
 //! account type — Aptos `pk_scheme = 1` / `sig_scheme = 1`.
 //!
 //! `AnyPublicKey` and `AnySignature` are tagged enums (5 / 4 variants
-//! respectively, see the constants below) that aptos-core wraps under a single
+//! respectively, in the order below) that aptos-core wraps under a single
 //! `Scheme::SingleKey` (0x02) auth-key derivation:
 //!
 //!   `auth_key = SHA3-256( BCS(AnyPublicKey) || 0x02 )`

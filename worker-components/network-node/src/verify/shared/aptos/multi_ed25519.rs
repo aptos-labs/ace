@@ -32,7 +32,7 @@
 //!
 //! Verification (one request):
 //!   1. Parse the flat byte layouts into [`MultiEd25519PublicKeyInner`]
-//!      and [`MultiEd25519SignatureInner`] (done by the custom serde in
+//!      and [`MultiEd25519SignatureInner`] (done by the serde field helpers on
 //!      [`super::AptosProofOfPermission`]).
 //!   2. Structural validation (cheap, fail-fast before any RPC) —
 //!      [`validate`] mirrors aptos-core's `verify_arbitrary_msg`
@@ -69,8 +69,8 @@ const ED25519_SIG_LEN: usize = 64;
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 /// Parsed inner shape of `MultiEd25519PublicKey`. The on-the-wire BCS is
-/// `serialize_bytes(pk_1 || ... || pk_N || threshold)`; the custom serde in
-/// [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
+/// `serialize_bytes(pk_1 || ... || pk_N || threshold)`; the serde field helper
+/// on [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
 /// [`MultiEd25519PublicKeyInner::from_flat_bytes`] to parse the inner
 /// structure.
 #[derive(Clone, Debug)]
@@ -80,8 +80,8 @@ pub struct MultiEd25519PublicKeyInner {
 }
 
 /// Parsed inner shape of `MultiEd25519Signature`. The on-the-wire BCS is
-/// `serialize_bytes(sig_1 || ... || sig_K || bitmap[4])`; the custom serde
-/// in [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
+/// `serialize_bytes(sig_1 || ... || sig_K || bitmap[4])`; the serde field
+/// helper on [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
 /// [`MultiEd25519SignatureInner::from_flat_bytes`] to parse the inner
 /// structure.
 #[derive(Clone, Debug)]
@@ -127,7 +127,7 @@ impl MultiEd25519PublicKeyInner {
     }
 
     /// Re-emits the flat byte layout `pk_1 || ... || pk_N || threshold`.
-    /// Used by the custom serializer + the auth-key preimage.
+    /// Used by the serde field helper + the auth-key preimage.
     pub fn to_flat_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.public_keys.len() * ED25519_PK_LEN + 1);
         for pk in &self.public_keys {

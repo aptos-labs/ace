@@ -16,8 +16,8 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::BasicFlowRequest;
 use crate::ChainRpcConfig;
-use super::{BasicFlowRequest, CustomFlowRequest};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -35,7 +35,7 @@ pub struct SolanaProofOfPermission {
 
 // ── Verification ──────────────────────────────────────────────────────────────
 
-pub(super) async fn verify_solana(
+pub(in crate::verify) async fn verify(
     req: &BasicFlowRequest,
     contract: &SolanaContractId,
     proof: &SolanaProofOfPermission,
@@ -57,7 +57,12 @@ pub(super) async fn verify_solana(
         ephemeral_ek_bytes,
         &req.payload.domain,
     );
-    validate_txn(&proof.txn_bytes, &expected_program_id, &expected, is_versioned)?;
+    validate_txn(
+        &proof.txn_bytes,
+        &expected_program_id,
+        &expected,
+        is_versioned,
+    )?;
 
     // 2. Signature + program execution via RPC simulation.
     let rpc_url = chain_rpc.solana_rpc_for_chain_name(&contract.known_chain_name)?;
@@ -66,37 +71,13 @@ pub(super) async fn verify_solana(
     Ok(())
 }
 
-pub(super) async fn verify_custom_solana(
-    req: &CustomFlowRequest,
-    contract: &SolanaContractId,
-    proof: &SolanaProofOfPermission,
-    enc_pk_bytes: &[u8],
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    let expected_program_id = solana_program_id(contract)?;
-    let is_versioned = proof.inner_scheme == 1;
-
-    validate_custom_txn(
-        &proof.txn_bytes,
-        &expected_program_id,
-        &req.keypair_id,
-        req.epoch,
-        enc_pk_bytes,
-        &req.label,
-        is_versioned,
-    )?;
-
-    let rpc_url = chain_rpc.solana_rpc_for_chain_name(&contract.known_chain_name)?;
-    simulate_txn(&proof.txn_bytes, &rpc_url, &chain_rpc.solana_client).await?;
-    Ok(())
-}
-
-fn solana_program_id(contract: &SolanaContractId) -> Result<[u8; 32]> {
-    contract
-        .program_id
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow!("Solana programId must be 32 bytes, got {}", contract.program_id.len()))
+pub(in crate::verify) fn solana_program_id(contract: &SolanaContractId) -> Result<[u8; 32]> {
+    contract.program_id.as_slice().try_into().map_err(|_| {
+        anyhow!(
+            "Solana programId must be 32 bytes, got {}",
+            contract.program_id.len()
+        )
+    })
 }
 
 fn validate_txn(
@@ -112,13 +93,21 @@ fn validate_txn(
     };
 
     if instructions.len() != 1 {
-        return Err(anyhow!("Solana: expected exactly 1 instruction, got {}", instructions.len()));
+        return Err(anyhow!(
+            "Solana: expected exactly 1 instruction, got {}",
+            instructions.len()
+        ));
     }
     let ix = &instructions[0];
 
     let prog_key = account_keys
         .get(ix.program_id_index as usize)
-        .ok_or_else(|| anyhow!("Solana: program_id_index {} out of bounds", ix.program_id_index))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Solana: program_id_index {} out of bounds",
+                ix.program_id_index
+            )
+        })?;
 
     if prog_key != expected_program_id {
         return Err(anyhow!("Solana: instruction program ID mismatch"));
@@ -126,7 +115,10 @@ fn validate_txn(
 
     // Anchor instruction format: [8B discriminator][u32-LE vec-length][vec bytes]
     if ix.data.len() < 12 {
-        return Err(anyhow!("Solana: instruction data too short ({}B)", ix.data.len()));
+        return Err(anyhow!(
+            "Solana: instruction data too short ({}B)",
+            ix.data.len()
+        ));
     }
     let param = &ix.data[8..];
     let vec_len = u32::from_le_bytes([param[0], param[1], param[2], param[3]]) as usize;
@@ -134,14 +126,16 @@ fn validate_txn(
         return Err(anyhow!("Solana: instruction data length mismatch"));
     }
     if &param[4..4 + vec_len] != expected_full_request_bytes {
-        return Err(anyhow!("Solana: full_request_bytes mismatch in instruction data"));
+        return Err(anyhow!(
+            "Solana: full_request_bytes mismatch in instruction data"
+        ));
     }
 
     Ok(())
 }
 
 /// Validate that the Solana transaction carries the expected `CustomFullRequestBytes`.
-fn validate_custom_txn(
+pub(in crate::verify) fn validate_custom_txn(
     txn: &[u8],
     expected_program_id: &[u8; 32],
     expected_keypair_id: &[u8; 32],
@@ -157,20 +151,31 @@ fn validate_custom_txn(
     };
 
     if instructions.len() != 1 {
-        return Err(anyhow!("Solana custom: expected exactly 1 instruction, got {}", instructions.len()));
+        return Err(anyhow!(
+            "Solana custom: expected exactly 1 instruction, got {}",
+            instructions.len()
+        ));
     }
     let ix = &instructions[0];
 
     let prog_key = account_keys
         .get(ix.program_id_index as usize)
-        .ok_or_else(|| anyhow!("Solana custom: program_id_index {} out of bounds", ix.program_id_index))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Solana custom: program_id_index {} out of bounds",
+                ix.program_id_index
+            )
+        })?;
     if prog_key != expected_program_id {
         return Err(anyhow!("Solana custom: instruction program ID mismatch"));
     }
 
     // Anchor format: [8B discriminator][u32-LE vec-length][vec bytes (BCS CustomFullRequestBytes)]
     if ix.data.len() < 12 {
-        return Err(anyhow!("Solana custom: instruction data too short ({}B)", ix.data.len()));
+        return Err(anyhow!(
+            "Solana custom: instruction data too short ({}B)",
+            ix.data.len()
+        ));
     }
     let param = &ix.data[8..];
     let vec_len = u32::from_le_bytes([param[0], param[1], param[2], param[3]]) as usize;
@@ -210,14 +215,18 @@ fn parse_txn_legacy(bytes: &[u8]) -> Result<(Vec<[u8; 32]>, Vec<SolanaInstructio
     let (num_sigs, n) = read_compact_u16(bytes, pos)?;
     pos += n + num_sigs as usize * 64;
     // Message header: 3 bytes
-    if bytes.len() < pos + 3 { return Err(anyhow!("Solana legacy: header truncated")); }
+    if bytes.len() < pos + 3 {
+        return Err(anyhow!("Solana legacy: header truncated"));
+    }
     pos += 3;
     // Static account keys
     let (num_keys, n) = read_compact_u16(bytes, pos)?;
     pos += n;
     let account_keys = read_pubkeys(bytes, &mut pos, num_keys as usize)?;
     // Recent blockhash (32B)
-    if bytes.len() < pos + 32 { return Err(anyhow!("Solana legacy: blockhash truncated")); }
+    if bytes.len() < pos + 32 {
+        return Err(anyhow!("Solana legacy: blockhash truncated"));
+    }
     pos += 32;
     let instructions = read_instructions(bytes, &mut pos)?;
     Ok((account_keys, instructions))
@@ -230,14 +239,20 @@ fn parse_txn_versioned(bytes: &[u8]) -> Result<(Vec<[u8; 32]>, Vec<SolanaInstruc
     pos += n + num_sigs as usize * 64;
     // Version prefix byte (0x80 | version, e.g. 0x80 for v0) — sits between
     // the signatures section and the message header; absent in legacy transactions.
-    if bytes.len() < pos + 1 { return Err(anyhow!("Solana versioned: version byte truncated")); }
+    if bytes.len() < pos + 1 {
+        return Err(anyhow!("Solana versioned: version byte truncated"));
+    }
     pos += 1;
-    if bytes.len() < pos + 3 { return Err(anyhow!("Solana versioned: header truncated")); }
+    if bytes.len() < pos + 3 {
+        return Err(anyhow!("Solana versioned: header truncated"));
+    }
     pos += 3;
     let (num_keys, n) = read_compact_u16(bytes, pos)?;
     pos += n;
     let account_keys = read_pubkeys(bytes, &mut pos, num_keys as usize)?;
-    if bytes.len() < pos + 32 { return Err(anyhow!("Solana versioned: blockhash truncated")); }
+    if bytes.len() < pos + 32 {
+        return Err(anyhow!("Solana versioned: blockhash truncated"));
+    }
     pos += 32;
     let instructions = read_instructions(bytes, &mut pos)?;
     Ok((account_keys, instructions))
@@ -275,7 +290,10 @@ fn read_instructions(bytes: &[u8], pos: &mut usize) -> Result<Vec<SolanaInstruct
         }
         let data = bytes[*pos..*pos + data_len as usize].to_vec();
         *pos += data_len as usize;
-        ixs.push(SolanaInstruction { program_id_index, data });
+        ixs.push(SolanaInstruction {
+            program_id_index,
+            data,
+        });
     }
     Ok(ixs)
 }
@@ -285,7 +303,9 @@ fn read_compact_u16(bytes: &[u8], start: usize) -> Result<(u16, usize)> {
     let mut shift = 0u32;
     let mut i = start;
     loop {
-        let b = *bytes.get(i).ok_or_else(|| anyhow!("compact-u16 out of bounds at {}", i))?;
+        let b = *bytes
+            .get(i)
+            .ok_or_else(|| anyhow!("compact-u16 out of bounds at {}", i))?;
         i += 1;
         result |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
@@ -311,7 +331,11 @@ fn read_compact_u16(bytes: &[u8], start: usize) -> Result<(u16, usize)> {
 ///
 /// Use "confirmed" commitment so that recently-confirmed accounts (e.g. a Receipt PDA
 /// created moments before) are visible to the simulation.
-async fn simulate_txn(txn_bytes: &[u8], rpc_url: &str, client: &reqwest::Client) -> Result<()> {
+pub(in crate::verify) async fn simulate_txn(
+    txn_bytes: &[u8],
+    rpc_url: &str,
+    client: &reqwest::Client,
+) -> Result<()> {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
 
@@ -338,7 +362,11 @@ async fn simulate_txn(txn_bytes: &[u8], rpc_url: &str, client: &reqwest::Client)
     let err_val = &resp_json["result"]["value"]["err"];
     if !err_val.is_null() {
         let logs = &resp_json["result"]["value"]["logs"];
-        return Err(anyhow!("simulateTransaction failed: {} | logs: {}", err_val, logs));
+        return Err(anyhow!(
+            "simulateTransaction failed: {} | logs: {}",
+            err_val,
+            logs
+        ));
     }
 
     Ok(())

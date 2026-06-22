@@ -42,9 +42,6 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
 use super::any::{AnyPublicKeyInner, AnySignatureInner};
-use super::super::BasicFlowRequest;
-use super::{check_basic_ace_hook, AptosContractId, AptosProofOfPermission};
-use crate::ChainRpcConfig;
 
 // Mirrors aptos-core's `MAX_NUM_OF_SIGS: usize = 32` for MultiKey signers.
 const MAX_NUM_OF_SIGS: usize = 32;
@@ -140,7 +137,7 @@ pub(crate) fn bitmap_iter_ones(bitmap: &[u8]) -> impl Iterator<Item = usize> + '
 /// verifies; this matches that policy. Earlier versions of this file
 /// enforced strict equality to match the TS-SDK producer, but consensus
 /// reference (aptos-core) is the authoritative spec.
-pub(in crate::verify::aptos) fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
+pub(crate) fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInner) -> Result<()> {
     if mk.signatures_required == 0 {
         return Err(anyhow!("multi_key: signatures_required must be >= 1"));
     }
@@ -193,77 +190,6 @@ pub(in crate::verify::aptos) fn validate(mk: &MultiKeyInner, ms: &MultiKeySigInn
     Ok(())
 }
 
-// ── Auth-key check ──────────────────────────────────────────────────────────
-
-/// Checks that the on-chain `authentication_key` for `userAddr` equals
-/// `SHA3-256( BCS(MultiKey) || 0x03 )` ([`authentication_key`]). Only one
-/// such check is needed per MultiKey request (not one per signing position)
-/// — the MultiKey wraps the full per-position public-key set into one
-/// auth-key.
-async fn check_multi_key_auth_key(
-    proof: &AptosProofOfPermission,
-    mk: &MultiKeyInner,
-    rpc: &vss_common::AptosRpc,
-) -> Result<()> {
-    let computed = authentication_key(mk);
-
-    let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
-    let account = rpc
-        .get_account(&user_addr_str)
-        .await
-        .map_err(|e| anyhow!("checkAuthKey: get_account {}: {}", user_addr_str, e))?;
-
-    let onchain = hex::decode(account.authentication_key.trim_start_matches("0x"))
-        .map_err(|e| anyhow!("checkAuthKey: parse onchain auth key: {}", e))?;
-
-    if onchain.as_slice() != computed.as_ref() {
-        return Err(anyhow!(
-            "checkAuthKey: multi_key auth key mismatch for {}",
-            user_addr_str
-        ));
-    }
-    Ok(())
-}
-
-// ── Verification entry point ─────────────────────────────────────────────────
-
-pub(super) async fn verify(
-    req: &BasicFlowRequest,
-    contract: &AptosContractId,
-    proof: &AptosProofOfPermission,
-    mk: &MultiKeyInner,
-    ms: &MultiKeySigInner,
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    // 1. Synchronous structural validation — fail fast before any RPC.
-    validate(mk, ms)?;
-
-    // 2. Pair each set bitmap position with its signature; build the
-    //    per-position verify futures. Each future fully verifies one
-    //    position's signature (cryptographic check only; no auth-key,
-    //    no ACL).
-    let positions = bitmap_iter_ones(&ms.bitmap).zip(ms.signatures.iter());
-    let position_futs: Vec<_> = positions
-        .map(|(pos, sig)| {
-            let pk = &mk.public_keys[pos];
-            super::any::verify_position(req, contract, proof, pk, sig, chain_rpc)
-        })
-        .collect();
-
-    // 3. Run per-position signature checks alongside the MultiKey-level
-    //    auth-key check and the dapp ACL view, all in parallel.
-    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
-    let (sig_res, auth_res, perm_res) = tokio::join!(
-        futures::future::try_join_all(position_futs),
-        check_multi_key_auth_key(proof, mk, rpc),
-        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
-    );
-    sig_res?;
-    auth_res?;
-    perm_res?;
-    Ok(())
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -284,7 +210,10 @@ mod tests {
             vec![0, 15]
         );
         // Empty bitmap → empty iter.
-        assert_eq!(bitmap_iter_ones(&[]).collect::<Vec<_>>(), Vec::<usize>::new());
+        assert_eq!(
+            bitmap_iter_ones(&[]).collect::<Vec<_>>(),
+            Vec::<usize>::new()
+        );
         // All zeros → empty iter.
         assert_eq!(
             bitmap_iter_ones(&[0x00, 0x00, 0x00, 0x00]).collect::<Vec<_>>(),
@@ -311,18 +240,18 @@ mod tests {
         // pk_i_bcs = ULEB128(variant=0)=0x00 || ULEB128(32)=0x20 || 32×0x00
         // → bytes = [0x02, 0x00, 0x20, 0×32, 0x00, 0x20, 0×32, 0x02]
         let mut preimage = Vec::new();
-        preimage.push(0x02);              // Vec len = 2
-        preimage.push(0x00);              // AnyPublicKey variant 0 = Ed25519
-        preimage.push(0x20);              // ULEB128(32)
+        preimage.push(0x02); // Vec len = 2
+        preimage.push(0x00); // AnyPublicKey variant 0 = Ed25519
+        preimage.push(0x20); // ULEB128(32)
         preimage.extend_from_slice(&[0u8; 32]);
         preimage.push(0x00);
         preimage.push(0x20);
         preimage.extend_from_slice(&[0u8; 32]);
-        preimage.push(0x02);              // signatures_required = 2
+        preimage.push(0x02); // signatures_required = 2
 
         let mut h = Sha3_256::new();
         h.update(&preimage);
-        h.update([SCHEME_MULTI_KEY]);     // 0x03
+        h.update([SCHEME_MULTI_KEY]); // 0x03
         let expected: [u8; 32] = h.finalize().into();
 
         assert_eq!(got, expected);
@@ -341,7 +270,10 @@ mod tests {
             public_keys: vec![ed25519_pk(), ed25519_pk()],
             signatures_required: 0,
         };
-        let ms = MultiKeySigInner { signatures: vec![], bitmap: vec![] };
+        let ms = MultiKeySigInner {
+            signatures: vec![],
+            bitmap: vec![],
+        };
         let err = validate(&mk, &ms).unwrap_err().to_string();
         assert!(err.contains("signatures_required"), "got: {}", err);
     }

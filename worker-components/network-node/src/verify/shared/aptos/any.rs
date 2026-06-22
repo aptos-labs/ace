@@ -5,7 +5,7 @@
 //! account type — Aptos `pk_scheme = 1` / `sig_scheme = 1`.
 //!
 //! `AnyPublicKey` and `AnySignature` are tagged enums (5 / 4 variants
-//! respectively, see the constants below) that aptos-core wraps under a single
+//! respectively, in the order below) that aptos-core wraps under a single
 //! `Scheme::SingleKey` (0x02) auth-key derivation:
 //!
 //!   `auth_key = SHA3-256( BCS(AnyPublicKey) || 0x02 )`
@@ -21,19 +21,8 @@
 //!
 //! [permalink]: https://github.com/aptos-labs/aptos-core/blob/f8ad6eab698cfb638e56fa8afd92a48642efad12/types/src/transaction/authenticator.rs#L1452-L1473
 
-pub mod ed25519;
-pub mod federated_keyless;
-pub mod keyless;
-pub mod secp256k1;
-pub mod secp256r1;
-
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-
-use super::{AptosContractId, AptosProofOfPermission};
-use super::super::BasicFlowRequest;
-use crate::ChainRpcConfig;
 
 /// Inner BCS-tagged payload of `AnyPublicKey` (pk_scheme=1). Variant order
 /// matches `aptos_types::transaction::authenticator::AnyPublicKey` so BCS
@@ -138,134 +127,6 @@ pub(crate) fn authentication_key(pk: &AnyPublicKeyInner) -> [u8; 32] {
     hasher.update(&pk_bytes);
     hasher.update([SCHEME_SINGLE_KEY]);
     hasher.finalize().into()
-}
-
-/// Inner dispatch for `pk_scheme = sig_scheme = 1`. Matches on the
-/// `(AnyPublicKey, AnySignature)` variant pair and delegates. Cross-pairings
-/// (e.g. `Secp256k1Ecdsa` pk + `Ed25519` sig) return an error so the worker
-/// fails closed rather than silently accepting an unverified proof.
-pub(super) async fn verify(
-    req: &BasicFlowRequest,
-    contract: &AptosContractId,
-    proof: &AptosProofOfPermission,
-    any_pk: &AnyPublicKeyInner,
-    any_sig: &AnySignatureInner,
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    match (any_pk, any_sig) {
-        (AnyPublicKeyInner::Ed25519(pk_bytes), AnySignatureInner::Ed25519(sig_bytes)) => {
-            ed25519::verify(req, contract, proof, any_pk, pk_bytes, sig_bytes, chain_rpc).await
-        }
-        (AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes), AnySignatureInner::Secp256k1Ecdsa(sig_bytes)) => {
-            secp256k1::verify(req, contract, proof, any_pk, pk_bytes, sig_bytes, chain_rpc).await
-        }
-        (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
-            keyless::verify(req, contract, proof, pk, sig, chain_rpc).await
-        }
-        (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
-            federated_keyless::verify(req, contract, proof, fpk, sig, chain_rpc).await
-        }
-        (AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes), AnySignatureInner::WebAuthn(assertion)) => {
-            secp256r1::verify(req, contract, proof, any_pk, pk_bytes, assertion, chain_rpc).await
-        }
-        (pk, sig) => Err(anyhow!(
-            "verify_aptos_any: invalid pk/sig pairing ({} pk vs {} sig)",
-            pk.tag_name(),
-            sig.tag_name(),
-        )),
-    }
-}
-
-/// Per-position signature verification for one MultiKey signer slot.
-///
-/// Pattern-matches the (pk_variant, sig_variant) pair and dispatches to
-/// the appropriate `verify_signature_only` — the cryptographic check only.
-/// Auth-key derivation and dapp-ACL view are deliberately **omitted** here:
-/// in the MultiKey flow they happen once at the wrapper level
-/// ([`super::multi_key::verify`]) rather than per position.
-///
-/// All five `AnyPublicKey`/`AnySignature` pairings (Ed25519, Secp256k1Ecdsa,
-/// Keyless, FederatedKeyless, and Secp256r1Ecdsa+WebAuthn) are supported as
-/// MultiKey positions. The WebAuthn arm binds to the request payload via
-/// `clientDataJSON.challenge` independently of `proof.full_message`, so it
-/// composes cleanly with the other arms that share one `proof.full_message`
-/// at the MultiKey level.
-pub(super) async fn verify_position(
-    req: &BasicFlowRequest,
-    contract: &AptosContractId,
-    proof: &AptosProofOfPermission,
-    any_pk: &AnyPublicKeyInner,
-    any_sig: &AnySignatureInner,
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    match (any_pk, any_sig) {
-        (AnyPublicKeyInner::Ed25519(pk_bytes), AnySignatureInner::Ed25519(sig_bytes)) => {
-            let pk_arr: [u8; 32] = pk_bytes.as_slice().try_into().map_err(|_| {
-                anyhow!("multi_key: Ed25519 pk must be 32 bytes, got {}", pk_bytes.len())
-            })?;
-            let sig_arr: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
-                anyhow!("multi_key: Ed25519 sig must be 64 bytes, got {}", sig_bytes.len())
-            })?;
-            let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
-                .map_err(|e| anyhow!("multi_key: invalid Ed25519 pubkey: {}", e))?;
-            let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-            ed25519::verify_signature_only(req, proof, &vk, &sig).await
-        }
-        (AnyPublicKeyInner::Secp256k1Ecdsa(pk_bytes), AnySignatureInner::Secp256k1Ecdsa(sig_bytes)) => {
-            if sig_bytes.len() != 64 {
-                return Err(anyhow!(
-                    "multi_key: Secp256k1 sig must be 64 bytes, got {}",
-                    sig_bytes.len()
-                ));
-            }
-            let vk = k256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
-                .map_err(|e| anyhow!("multi_key: invalid Secp256k1 pubkey: {}", e))?;
-            let sig = k256::ecdsa::Signature::from_slice(sig_bytes)
-                .map_err(|e| anyhow!("multi_key: invalid Secp256k1 signature: {}", e))?;
-            if sig.normalize_s().is_some() {
-                return Err(anyhow!(
-                    "multi_key: Secp256k1 signature has high s (malleable); only low-s normalized accepted"
-                ));
-            }
-            secp256k1::verify_signature_only(req, proof, &vk, &sig).await
-        }
-        (AnyPublicKeyInner::Secp256r1Ecdsa(pk_bytes), AnySignatureInner::WebAuthn(assertion)) => {
-            if pk_bytes.len() != 65 {
-                return Err(anyhow!(
-                    "multi_key: Secp256r1 pk must be 65 bytes (SEC1 uncompressed), got {}",
-                    pk_bytes.len()
-                ));
-            }
-            let AssertionSignature::Secp256r1Ecdsa(sig_bytes) = &assertion.signature;
-            if sig_bytes.len() != 64 {
-                return Err(anyhow!(
-                    "multi_key: Secp256r1 sig must be 64 bytes, got {}",
-                    sig_bytes.len()
-                ));
-            }
-            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
-                .map_err(|e| anyhow!("multi_key: invalid Secp256r1 pubkey: {}", e))?;
-            let sig = p256::ecdsa::Signature::from_slice(sig_bytes)
-                .map_err(|e| anyhow!("multi_key: invalid Secp256r1 signature: {}", e))?;
-            if sig.normalize_s().is_some() {
-                return Err(anyhow!(
-                    "multi_key: Secp256r1 signature has high s (malleable); only low-s normalized accepted"
-                ));
-            }
-            secp256r1::verify_signature_only(req, proof, &vk, &sig, assertion).await
-        }
-        (AnyPublicKeyInner::Keyless(pk), AnySignatureInner::Keyless(sig)) => {
-            super::keyless::verify_signature_only(req, contract, proof, pk, sig, chain_rpc).await
-        }
-        (AnyPublicKeyInner::FederatedKeyless(fpk), AnySignatureInner::Keyless(sig)) => {
-            super::federated_keyless::verify_signature_only(req, contract, proof, fpk, sig, chain_rpc).await
-        }
-        (pk, sig) => Err(anyhow!(
-            "multi_key: invalid pk/sig pairing at signing position ({} pk vs {} sig)",
-            pk.tag_name(),
-            sig.tag_name(),
-        )),
-    }
 }
 
 #[cfg(test)]

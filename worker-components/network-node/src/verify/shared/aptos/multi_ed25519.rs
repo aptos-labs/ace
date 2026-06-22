@@ -32,14 +32,14 @@
 //!
 //! Verification (one request):
 //!   1. Parse the flat byte layouts into [`MultiEd25519PublicKeyInner`]
-//!      and [`MultiEd25519SignatureInner`] (done by the custom serde in
+//!      and [`MultiEd25519SignatureInner`] (done by the serde field helpers on
 //!      [`super::AptosProofOfPermission`]).
 //!   2. Structural validation (cheap, fail-fast before any RPC) —
 //!      [`validate`] mirrors aptos-core's `verify_arbitrary_msg`
 //!      structural checks at `crates/aptos-crypto/src/multi_ed25519.rs:511`.
 //!   3. `tokio::join!` over (per-position signature verification — Ed25519
 //!      against the pretty-message string, reusing
-//!      [`super::any::ed25519::verify_signature_only`] — plus the
+//!      the account-level Ed25519 signature helper — plus the
 //!      MultiEd25519-level on-chain auth-key match, plus one dapp ACL
 //!      view call against `proof.user_addr`).
 //!
@@ -50,10 +50,6 @@
 
 use anyhow::{anyhow, Result};
 use sha3::{Digest, Sha3_256};
-
-use super::super::BasicFlowRequest;
-use super::{check_basic_ace_hook, AptosContractId, AptosProofOfPermission};
-use crate::ChainRpcConfig;
 
 // `Scheme::MultiEd25519 = 1` — final suffix byte in the MultiEd25519
 // auth-key preimage. See `aptos_types::transaction::authenticator::Scheme`.
@@ -73,8 +69,8 @@ const ED25519_SIG_LEN: usize = 64;
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 /// Parsed inner shape of `MultiEd25519PublicKey`. The on-the-wire BCS is
-/// `serialize_bytes(pk_1 || ... || pk_N || threshold)`; the custom serde in
-/// [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
+/// `serialize_bytes(pk_1 || ... || pk_N || threshold)`; the serde field helper
+/// on [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
 /// [`MultiEd25519PublicKeyInner::from_flat_bytes`] to parse the inner
 /// structure.
 #[derive(Clone, Debug)]
@@ -84,8 +80,8 @@ pub struct MultiEd25519PublicKeyInner {
 }
 
 /// Parsed inner shape of `MultiEd25519Signature`. The on-the-wire BCS is
-/// `serialize_bytes(sig_1 || ... || sig_K || bitmap[4])`; the custom serde
-/// in [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
+/// `serialize_bytes(sig_1 || ... || sig_K || bitmap[4])`; the serde field
+/// helper on [`super::AptosProofOfPermission`] reads the `ByteBuf` and calls
 /// [`MultiEd25519SignatureInner::from_flat_bytes`] to parse the inner
 /// structure.
 #[derive(Clone, Debug)]
@@ -124,11 +120,14 @@ impl MultiEd25519PublicKeyInner {
             public_keys.push(pk);
         }
         let threshold = bytes[payload_len];
-        Ok(Self { public_keys, threshold })
+        Ok(Self {
+            public_keys,
+            threshold,
+        })
     }
 
     /// Re-emits the flat byte layout `pk_1 || ... || pk_N || threshold`.
-    /// Used by the custom serializer + the auth-key preimage.
+    /// Used by the serde field helper + the auth-key preimage.
     pub fn to_flat_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.public_keys.len() * ED25519_PK_LEN + 1);
         for pk in &self.public_keys {
@@ -212,7 +211,9 @@ pub(crate) fn authentication_key(pk: &MultiEd25519PublicKeyInner) -> [u8; 32] {
 /// Iterates set-bit positions in MSB-first order across the fixed 4-byte
 /// bitmap. Matches aptos-core's `bitmap_get_bit`: position p maps to
 /// `bitmap[p/8] & (0x80 >> (p%8))`.
-pub(crate) fn bitmap_iter_ones(bitmap: &[u8; BITMAP_NUM_OF_BYTES]) -> impl Iterator<Item = usize> + '_ {
+pub(crate) fn bitmap_iter_ones(
+    bitmap: &[u8; BITMAP_NUM_OF_BYTES],
+) -> impl Iterator<Item = usize> + '_ {
     bitmap.iter().enumerate().flat_map(|(byte_idx, &byte)| {
         (0..8u32).filter_map(move |bit| {
             if byte & (0x80 >> bit) != 0 {
@@ -237,7 +238,10 @@ pub(crate) fn bitmap_iter_ones(bitmap: &[u8; BITMAP_NUM_OF_BYTES]) -> impl Itera
 ///   4. `popcount(bitmap) == signatures.len()` — verify_arbitrary_msg
 ///   5. `popcount(bitmap) >= threshold`        — verify_arbitrary_msg
 ///   6. `last_set_bit(bitmap) < public_keys.len()` — verify_arbitrary_msg
-pub(in crate::verify::aptos) fn validate(pk: &MultiEd25519PublicKeyInner, sig: &MultiEd25519SignatureInner) -> Result<()> {
+pub(crate) fn validate(
+    pk: &MultiEd25519PublicKeyInner,
+    sig: &MultiEd25519SignatureInner,
+) -> Result<()> {
     if pk.threshold == 0 {
         return Err(anyhow!("multi_ed25519: threshold must be >= 1"));
     }
@@ -280,77 +284,6 @@ pub(in crate::verify::aptos) fn validate(pk: &MultiEd25519PublicKeyInner, sig: &
             pk.public_keys.len(),
         ));
     }
-    Ok(())
-}
-
-// ── Auth-key check ──────────────────────────────────────────────────────────
-
-/// Checks that the on-chain `authentication_key` for `userAddr` equals
-/// [`authentication_key(pk)`]. One check per MultiEd25519 request (not one
-/// per signing position).
-async fn check_multi_ed25519_auth_key(
-    proof: &AptosProofOfPermission,
-    pk: &MultiEd25519PublicKeyInner,
-    rpc: &vss_common::AptosRpc,
-) -> Result<()> {
-    let computed = authentication_key(pk);
-
-    let user_addr_str = format!("0x{}", hex::encode(proof.user_addr));
-    let account = rpc
-        .get_account(&user_addr_str)
-        .await
-        .map_err(|e| anyhow!("checkAuthKey: get_account {}: {}", user_addr_str, e))?;
-
-    let onchain = hex::decode(account.authentication_key.trim_start_matches("0x"))
-        .map_err(|e| anyhow!("checkAuthKey: parse onchain auth key: {}", e))?;
-
-    if onchain.as_slice() != computed.as_ref() {
-        return Err(anyhow!(
-            "checkAuthKey: multi_ed25519 auth key mismatch for {}",
-            user_addr_str
-        ));
-    }
-    Ok(())
-}
-
-// ── Verification entry point ─────────────────────────────────────────────────
-
-pub(super) async fn verify(
-    req: &BasicFlowRequest,
-    contract: &AptosContractId,
-    proof: &AptosProofOfPermission,
-    pk: &MultiEd25519PublicKeyInner,
-    sig: &MultiEd25519SignatureInner,
-    chain_rpc: &ChainRpcConfig,
-) -> Result<()> {
-    validate(pk, sig)?;
-
-    // Pair each set bitmap position with its signature; build the
-    // per-position verify futures. Reuse the SingleKey Ed25519 per-position
-    // verifier — same primitive, same pretty-message binding.
-    let positions = bitmap_iter_ones(&sig.bitmap).zip(sig.signatures.iter());
-    let position_futs: Vec<_> = positions
-        .map(|(pos, sig_bytes)| {
-            let pk_bytes = &pk.public_keys[pos];
-            async move {
-                let vk = ed25519_dalek::VerifyingKey::from_bytes(pk_bytes).map_err(|e| {
-                    anyhow!("multi_ed25519: invalid Ed25519 pubkey at position {}: {}", pos, e)
-                })?;
-                let ed_sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
-                super::any::ed25519::verify_signature_only(req, proof, &vk, &ed_sig).await
-            }
-        })
-        .collect();
-
-    let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
-    let (sig_res, auth_res, perm_res) = tokio::join!(
-        futures::future::try_join_all(position_futs),
-        check_multi_ed25519_auth_key(proof, pk, rpc),
-        check_basic_ace_hook(contract, &req.payload.domain, proof, rpc),
-    );
-    sig_res?;
-    auth_res?;
-    perm_res?;
     Ok(())
 }
 
@@ -450,7 +383,10 @@ mod tests {
             public_keys: vec![pk(0x01)],
             threshold: 0,
         };
-        let sig = MultiEd25519SignatureInner { signatures: vec![], bitmap: [0; 4] };
+        let sig = MultiEd25519SignatureInner {
+            signatures: vec![],
+            bitmap: [0; 4],
+        };
         let err = validate(&pk, &sig).unwrap_err().to_string();
         assert!(err.contains("threshold"), "got: {}", err);
     }

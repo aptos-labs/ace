@@ -78,7 +78,7 @@ fn parse_aptos_wallet_application(full_message: &str) -> Result<String> {
 
 pub(crate) fn extract_request_origin(proof: &AptosProofOfPermission) -> Result<String> {
     let mut origins = Vec::new();
-    collect_webauthn_app_origins(&proof.signature, &mut origins)?;
+    collect_webauthn_app_origins(&proof.signature_payload, &mut origins)?;
 
     match extract_signed_wallet_application(proof) {
         Ok(application) => origins.push(application),

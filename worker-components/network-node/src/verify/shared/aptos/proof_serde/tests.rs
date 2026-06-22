@@ -34,8 +34,8 @@ fn proof_material_serde_keeps_legacy_wire_shape() {
     };
     let typed = AptosProofOfPermission {
         user_addr,
-        public_key: AptosPublicKeyMaterial::Ed25519(public_key),
-        signature: AptosSignatureMaterial::Ed25519(signature),
+        public_key_payload: AptosPublicKeyMaterial::Ed25519(public_key),
+        signature_payload: AptosSignatureMaterial::Ed25519(signature),
         full_message,
     };
     let legacy_bytes = bcs::to_bytes(&legacy).unwrap();
@@ -43,11 +43,11 @@ fn proof_material_serde_keeps_legacy_wire_shape() {
 
     let decoded: AptosProofOfPermission = bcs::from_bytes(&legacy_bytes).unwrap();
     assert!(matches!(
-        decoded.public_key,
+        decoded.public_key_payload,
         AptosPublicKeyMaterial::Ed25519(_)
     ));
     assert!(matches!(
-        decoded.signature,
+        decoded.signature_payload,
         AptosSignatureMaterial::Ed25519(_)
     ));
 }

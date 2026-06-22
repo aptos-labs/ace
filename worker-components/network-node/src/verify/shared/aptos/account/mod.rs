@@ -23,7 +23,7 @@ pub(crate) async fn verify_account_proof<P: AptosPayloadBinding + Sync>(
     proof: &AptosProofOfPermission,
     chain_rpc: &ChainRpcConfig,
 ) -> Result<()> {
-    match (&proof.public_key, &proof.signature) {
+    match (&proof.public_key_payload, &proof.signature_payload) {
         (AptosPublicKeyMaterial::Ed25519(pk), AptosSignatureMaterial::Ed25519(sig)) => {
             single::verify_ed25519_account_proof(payload, chain_id, proof, pk, sig, chain_rpc).await
         }

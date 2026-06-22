@@ -14,14 +14,14 @@ pub struct AptosContractId {
 
 /// Proof of permission for a basic-flow Aptos request.
 ///
-/// `public_key` and `signature` each carry their own scheme tag on the wire.
-/// Their custom serde impls keep the TS SDK layout while this struct exposes
-/// only typed material fields.
+/// `public_key_payload` and `signature_payload` each carry their own scheme
+/// tag on the wire. Their custom serde impls keep the TS SDK layout while this
+/// struct exposes only typed payload fields.
 #[derive(Serialize, Deserialize)]
 pub struct AptosProofOfPermission {
     pub user_addr: [u8; 32],
-    pub public_key: AptosPublicKeyMaterial,
-    pub signature: AptosSignatureMaterial,
+    pub public_key_payload: AptosPublicKeyMaterial,
+    pub signature_payload: AptosSignatureMaterial,
     pub full_message: String,
 }
 

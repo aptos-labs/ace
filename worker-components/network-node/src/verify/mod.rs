@@ -4,10 +4,9 @@
 //! Wire-format types for `WorkerRequest` and proof-of-permission verification.
 //!
 //! The on-the-wire request layout mirrors `ts-sdk/src/_internal/common.ts` and is decoded
-//! in one shot via `bcs::from_bytes` (`#[derive(Serialize, Deserialize)]` on every nested
-//! type — except [`AptosProofOfPermission`], which has hand-rolled serde that
-//! dispatches on `pk_scheme` / `sig_scheme`).  Adding a new variant — chain, proof
-//! scheme, flow — is one new enum arm.
+//! in one shot via `bcs::from_bytes`. Aptos key/signature material carries its
+//! own `pk_scheme` / `sig_scheme` wire tag, matching the TS SDK's inline layout.
+//! Adding a new variant — chain, proof scheme, flow — is one new enum arm.
 //!
 //! Verification entry points:
 //!   - [`verify_basic`] — checks an `AptosProofOfPermission` (Ed25519 or keyless: sig +

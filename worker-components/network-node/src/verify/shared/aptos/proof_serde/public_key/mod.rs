@@ -1,9 +1,5 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-mod bytes;
-mod public_key;
-mod signature;
-
-#[cfg(test)]
-mod tests;
+mod de;
+mod ser;

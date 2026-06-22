@@ -14,19 +14,13 @@ pub struct AptosContractId {
 
 /// Proof of permission for a basic-flow Aptos request.
 ///
-/// `pk_scheme` / `sig_scheme` already disambiguate which inner type lives in
-/// `public_key` / `signature` on the wire; we use those tags to deserialize
-/// directly into a typed enum, no `Vec<u8>` framing. The custom serde impls
-/// below match the inline encoding the TS SDK writes — see
-/// `ts-sdk/src/_internal/aptos.ts`.
-#[derive(Serialize)]
+/// `public_key` and `signature` each carry their own scheme tag on the wire.
+/// Their custom serde impls keep the TS SDK layout while this struct exposes
+/// only typed material fields.
+#[derive(Serialize, Deserialize)]
 pub struct AptosProofOfPermission {
     pub user_addr: [u8; 32],
-    pub pk_scheme: u8,
-    #[serde(serialize_with = "super::proof_serde::serialize_public_key")]
     pub public_key: AptosPublicKeyMaterial,
-    pub sig_scheme: u8,
-    #[serde(serialize_with = "super::proof_serde::serialize_signature")]
     pub signature: AptosSignatureMaterial,
     pub full_message: String,
 }

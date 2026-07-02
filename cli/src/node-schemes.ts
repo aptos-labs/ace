@@ -443,11 +443,10 @@ function generateMetadataManagementOnly(t: TemplateInputs): string {
     const e = t.existing ?? {};
     return `# ${CLI} node — scheme: metadata-management-only
 #
-# Use this for externally managed workers, such as Aptos Labs internal-ops
-# deployments. The CLI stores credentials and on-chain metadata only. It will
-# not emit gcloud/docker commands, start a local process, or change worker image
-# versions. Image/resources/replicas/routing changes still require the external
-# deployment owner, e.g. an internal-ops PR.
+# Use this for externally managed workers. The CLI stores credentials and
+# on-chain metadata only. It will not emit gcloud/docker commands, start a local
+# process, or change worker image versions. Runtime deployment changes still
+# belong to the deployment system that runs the worker.
 #
 # Edit the values below, then save and quit your editor.
 ${HEADER_READONLY_NOTE}
@@ -460,7 +459,7 @@ ${aliasLine(e.alias)}
 ${stringLine('endpoint', e.endpoint ?? '', 'Public endpoint registered on-chain for this node.')}
 ${keyLines(t)}
 
-${renderChainRpcBlock(e.chainRpc, 'External deployment sync is responsible for applying these values to the runtime.')}
+${renderChainRpcBlock(e.chainRpc, 'Your deployment system must apply these values to the runtime.')}
 `;
 }
 

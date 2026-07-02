@@ -170,11 +170,11 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
 
     if (mode === 'metadata-management-only') {
         console.log('Metadata-management-only profile saved.');
-        console.log('Expected automatic follow-up: the external operator sync applies credential/API-key/chain-RPC changes to runtime.');
+        console.log('This CLI only saved local profile metadata; it did not update a running service.');
         if (node.endpoint !== updatedNode.endpoint) {
             console.log('Not automatic: node edit does not update endpoint registration on-chain.');
         }
-        console.log('Still requires a deployment PR: image tag, resources, replicas, topology, routing, namespace, or RBAC changes.');
+        console.log('Apply these changes through the deployment system that runs this node.');
         return;
     }
 

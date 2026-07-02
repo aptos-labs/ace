@@ -8,6 +8,7 @@ edition = "2021"
 description = "Shared Aptos REST + on-chain VSS Session parsing for vss-dealer / vss-recipient."
 
 [dependencies]
+ace-pke = { path = "../pke" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,9 +23,7 @@ ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"
 ark-ec = { version = "0.4", default-features = false }
 ark-ff = { version = "0.4", default-features = false }
 ark-serialize = { version = "0.4", default-features = false }
-curve25519-dalek = { version = "4", features = ["rand_core"] }
 rand = "0.8"
-hpke = { version = "0.12", default-features = false, features = ["std", "x25519"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread"] }

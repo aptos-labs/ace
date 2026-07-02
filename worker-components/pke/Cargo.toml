@@ -1,0 +1,21 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "ace-pke"
+version = "0.1.0"
+edition = "2021"
+description = "ACE public-key encryption schemes and BCS wire types."
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+bcs = "0.1"
+curve25519-dalek = { version = "4", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+sha3 = "0.10"
+hpke = { version = "0.12", default-features = false, features = ["std", "x25519"] }
+ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
+chacha20poly1305 = { version = "0.10", features = ["alloc"] }
+hkdf = "0.12"

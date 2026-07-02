@@ -4,12 +4,12 @@
 /// PKE abstract layer — scheme-dispatching enums for encryption keys and ciphertexts.
 /// Mirrors ts-sdk/src/pke/index.ts.
 ///
-/// Each enum currently has one variant (Simple ElGamal over Ristretto255 = scheme 0).
 /// Adding a new scheme is an additive change: add a variant here and a sibling module.
-/// Scheme-specific types and serde live in ace::pke_elgamal_otp_ristretto255.
+/// Scheme-specific types and serde live in the sibling ace::pke_* modules.
 module ace::pke {
     use aptos_std::bcs_stream::{Self, BCSStream};
     use ace::pke_elgamal_otp_ristretto255;
+    use ace::pke_hybrid_x25519_mlkem768_chacha20poly1305;
     use ace::pke_hpke_x25519_chacha20poly1305;
 
     // ── Error codes ──────────────────────────────────────────────────────────
@@ -23,6 +23,7 @@ module ace::pke {
 
     const SCHEME_ELGAMAL_OTP_RISTRETTO255: u8 = 0;
     const SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305: u8 = 1;
+    const SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305: u8 = 2;
 
     // ── Outer enum types ─────────────────────────────────────────────────────
 
@@ -30,12 +31,14 @@ module ace::pke {
     enum EncryptionKey has copy, drop, store {
         ElGamalOtpRistretto255(pke_elgamal_otp_ristretto255::EncryptionKey),
         HpkeX25519ChaCha20Poly1305(pke_hpke_x25519_chacha20poly1305::EncryptionKey),
+        HybridX25519MlKem768ChaCha20Poly1305(pke_hybrid_x25519_mlkem768_chacha20poly1305::EncryptionKey),
     }
 
     /// Wire: [u8 scheme] [inner Ciphertext bytes]
     enum Ciphertext has copy, drop, store {
         ElGamalOtpRistretto255(pke_elgamal_otp_ristretto255::Ciphertext),
         HpkeX25519ChaCha20Poly1305(pke_hpke_x25519_chacha20poly1305::Ciphertext),
+        HybridX25519MlKem768ChaCha20Poly1305(pke_hybrid_x25519_mlkem768_chacha20poly1305::Ciphertext),
     }
 
     // ── Public scheme constants ───────────────────────────────────────────────
@@ -46,6 +49,10 @@ module ace::pke {
 
     public fun scheme_hpke_x25519_chacha20poly1305(): u8 {
         SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305
+    }
+
+    public fun scheme_hybrid_x25519_mlkem768_chacha20poly1305(): u8 {
+        SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305
     }
 
     // ── EncryptionKey parse ───────────────────────────────────────────────────
@@ -60,6 +67,10 @@ module ace::pke {
         } else if (scheme == SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
             EncryptionKey::HpkeX25519ChaCha20Poly1305(
                 pke_hpke_x25519_chacha20poly1305::deserialize_enc_key(stream)
+            )
+        } else if (scheme == SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+            EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(
+                pke_hybrid_x25519_mlkem768_chacha20poly1305::deserialize_enc_key(stream)
             )
         } else {
             abort EUNSUPPORTED_SCHEME
@@ -81,6 +92,7 @@ module ace::pke {
         match (ek) {
             EncryptionKey::ElGamalOtpRistretto255(_) => SCHEME_ELGAMAL_OTP_RISTRETTO255,
             EncryptionKey::HpkeX25519ChaCha20Poly1305(_) => SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305,
+            EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(_) => SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305,
         }
     }
 
@@ -90,6 +102,7 @@ module ace::pke {
         match (ek) {
             EncryptionKey::ElGamalOtpRistretto255(inner) => inner,
             EncryptionKey::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+            EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 
@@ -99,6 +112,17 @@ module ace::pke {
         match (ek) {
             EncryptionKey::HpkeX25519ChaCha20Poly1305(inner) => inner,
             EncryptionKey::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
+            EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+        }
+    }
+
+    /// Downcast an `EncryptionKey` to its `HybridX25519MlKem768ChaCha20Poly1305` inner type.
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
+    public fun enc_key_as_hybrid_x25519_mlkem768_chacha20poly1305(ek: EncryptionKey): pke_hybrid_x25519_mlkem768_chacha20poly1305::EncryptionKey {
+        match (ek) {
+            EncryptionKey::HybridX25519MlKem768ChaCha20Poly1305(inner) => inner,
+            EncryptionKey::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
+            EncryptionKey::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 
@@ -114,6 +138,10 @@ module ace::pke {
         } else if (scheme == SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305) {
             Ciphertext::HpkeX25519ChaCha20Poly1305(
                 pke_hpke_x25519_chacha20poly1305::deserialize_ciphertext(stream)
+            )
+        } else if (scheme == SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305) {
+            Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(
+                pke_hybrid_x25519_mlkem768_chacha20poly1305::deserialize_ciphertext(stream)
             )
         } else {
             abort EUNSUPPORTED_SCHEME
@@ -135,6 +163,7 @@ module ace::pke {
         match (ct) {
             Ciphertext::ElGamalOtpRistretto255(_) => SCHEME_ELGAMAL_OTP_RISTRETTO255,
             Ciphertext::HpkeX25519ChaCha20Poly1305(_) => SCHEME_HPKE_X25519_HKDF_SHA256_CHACHA20POLY1305,
+            Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(_) => SCHEME_HYBRID_X25519_MLKEM768_CHACHA20POLY1305,
         }
     }
 
@@ -144,6 +173,7 @@ module ace::pke {
         match (ct) {
             Ciphertext::ElGamalOtpRistretto255(inner) => inner,
             Ciphertext::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+            Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 
@@ -153,6 +183,17 @@ module ace::pke {
         match (ct) {
             Ciphertext::HpkeX25519ChaCha20Poly1305(inner) => inner,
             Ciphertext::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
+            Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
+        }
+    }
+
+    /// Downcast a `Ciphertext` to its `HybridX25519MlKem768ChaCha20Poly1305` inner type.
+    /// Aborts with `EUNSUPPORTED_SCHEME` if the variant does not match.
+    public fun ciphertext_as_hybrid_x25519_mlkem768_chacha20poly1305(ct: Ciphertext): pke_hybrid_x25519_mlkem768_chacha20poly1305::Ciphertext {
+        match (ct) {
+            Ciphertext::HybridX25519MlKem768ChaCha20Poly1305(inner) => inner,
+            Ciphertext::ElGamalOtpRistretto255(_) => abort EUNSUPPORTED_SCHEME,
+            Ciphertext::HpkeX25519ChaCha20Poly1305(_) => abort EUNSUPPORTED_SCHEME,
         }
     }
 

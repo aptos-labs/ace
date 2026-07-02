@@ -6,13 +6,14 @@
  * and `ace node edit`.
  *
  * A "scheme" is the (platform, mode) tuple that drives both the wizard's
- * inline scheme picker and the text-form template the user edits. Four are
+ * inline scheme picker and the text-form template the user edits. Five are
  * supported today:
  *
  *   * `gcp-cloudrun-monolith`         — platform=gcp,    mode=monolith
  *   * `gcp-cloudrun-microservices`    — platform=gcp,    mode=microservices
  *   * `docker-monolith`               — platform=docker, mode=monolith
  *   * `local-build-monolith`          — platform=local,  mode=monolith
+ *   * `metadata-management-only`       — platform unset, mode=metadata-management-only
  *
  * The two GCP options are unavailable when the ACE deployment is on
  * localnet (Cloud Run can't reach a localhost chain endpoint).
@@ -31,24 +32,28 @@ export type Scheme =
     | 'gcp-cloudrun-monolith'
     | 'gcp-cloudrun-microservices'
     | 'docker-monolith'
-    | 'local-build-monolith';
+    | 'local-build-monolith'
+    | 'metadata-management-only';
 
 export function schemeOf(node: Pick<TrackedNode, 'platform' | 'mode'>): Scheme {
     const platform = node.platform ?? 'docker';
     const mode = node.mode ?? 'monolith';
+    if (mode === 'metadata-management-only')            return 'metadata-management-only';
     if (platform === 'gcp' && mode === 'microservices') return 'gcp-cloudrun-microservices';
     if (platform === 'gcp')                              return 'gcp-cloudrun-monolith';
     if (platform === 'docker')                           return 'docker-monolith';
     return 'local-build-monolith';
 }
 
-export function platformOf(scheme: Scheme): Platform {
+export function platformOf(scheme: Scheme): Platform | undefined {
+    if (scheme === 'metadata-management-only') return undefined;
     if (scheme.startsWith('gcp-'))    return 'gcp';
     if (scheme.startsWith('docker-')) return 'docker';
     return 'local';
 }
 
 export function modeOf(scheme: Scheme): Mode {
+    if (scheme === 'metadata-management-only') return 'metadata-management-only';
     return scheme === 'gcp-cloudrun-microservices' ? 'microservices' : 'monolith';
 }
 
@@ -73,6 +78,10 @@ export async function pickScheme(opts: { isLocalnet: boolean }): Promise<Scheme 
         {
             name: 'Local build (from source), monolith',
             value: 'local-build-monolith',
+        },
+        {
+            name: 'Metadata management only — external runtime; CLI manages credentials/on-chain metadata',
+            value: 'metadata-management-only',
         },
     ];
     const picked = await escSelect({
@@ -118,6 +127,7 @@ export interface SchemeDefaults {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 export interface ExistingValues {
@@ -136,6 +146,7 @@ export interface ExistingValues {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
@@ -153,12 +164,41 @@ const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
 };
 
 const CHAIN_RPC_KEYS = Object.keys(CHAIN_RPC_PLACEHOLDERS) as (keyof ChainRpcOverrides)[];
+const COMMENT_WIDTH = 88;
+
+function commentBlock(comments: string | string[]): string {
+    const lines = Array.isArray(comments) ? comments : [comments];
+    return lines.flatMap(wrapComment).join('\n');
+}
+
+function wrapComment(text: string): string[] {
+    if (text === '') return ['#'];
+
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let line = '#';
+
+    for (const word of words) {
+        const next = line === '#' ? `# ${word}` : `${line} ${word}`;
+        if (next.length <= COMMENT_WIDTH || line === '#') {
+            line = next;
+            continue;
+        }
+        lines.push(line);
+        line = `# ${word}`;
+    }
+    lines.push(line);
+    return lines;
+}
 
 function renderChainRpcBlock(existing?: ChainRpcOverrides, applicabilityNote = ''): string {
-    const note = applicabilityNote ? ' ' + applicabilityNote : '';
     const lines = [
-        '# Per-chain RPC overrides. Commented out by default — uncomment to override',
-        `# the worker's compiled-in default.${note} Get Aptos apikeys at https://developers.aptoslabs.com/.`,
+        commentBlock([
+            'Per-chain RPC overrides.',
+            'Commented out by default; uncomment to override worker defaults.',
+            ...(applicabilityNote ? [applicabilityNote] : []),
+            'Aptos API keys: https://developers.aptoslabs.com/.',
+        ]),
         '[chainRpc]',
     ];
     for (const k of CHAIN_RPC_KEYS) {
@@ -179,13 +219,24 @@ function nullableLine(
     key: string,
     value: string | undefined,
     placeholder: string,
-    trailingComment: string,
+    comments: string | string[],
 ): string {
     const head = `${key.padEnd(20)}`;
-    if (value !== undefined && value !== '') {
-        return `${head} = "${value}"      ${trailingComment}`;
-    }
-    return `# ${head} = "${placeholder}"      ${trailingComment}`;
+    const field = `${head} = "${value ?? placeholder}"`;
+    const prefix = value !== undefined && value !== '' ? '' : '# ';
+    return `${commentBlock(comments)}\n${prefix}${field}`;
+}
+
+function stringLine(key: string, value: string, comments: string | string[]): string {
+    return `${commentBlock(comments)}\n${key.padEnd(20)} = "${value}"`;
+}
+
+function numberLine(key: string, value: number, comments: string | string[]): string {
+    return `${commentBlock(comments)}\n${key.padEnd(20)} = ${value}`;
+}
+
+function commentedStringLine(key: string, value: string, comments: string | string[]): string {
+    return `${commentBlock(comments)}\n# ${key.padEnd(20)} = "${value}"`;
 }
 
 const HEADER_READONLY_NOTE = `#   * Required fields are uncommented; edit to taste.
@@ -200,15 +251,22 @@ function readonlyIdentityBlock(t: TemplateInputs): string {
         `#  accountAddr     = "${t.identity.accountAddr}"`,
         `#  pkeEk           = "${t.identity.pkeEk}"`,
         `#  aceAddr         = "${t.blob.aceAddr}"`,
-        `#  rpcUrl          = "${t.blob.rpcUrl}"${t.blob.nodeRpcUrl ? '                  # admin\'s view' : ''}`,
-        ...(t.blob.nodeRpcUrl ? [`#  nodeRpcUrl      = "${t.blob.nodeRpcUrl}"   # rewritten for the container's view of the host`] : []),
+        ...(t.blob.nodeRpcUrl ? ['#  rpcUrl is the admin-facing RPC URL.'] : []),
+        `#  rpcUrl          = "${t.blob.rpcUrl}"`,
+        ...(t.blob.nodeRpcUrl ? [
+            '#  nodeRpcUrl is the container-facing RPC URL.',
+            `#  nodeRpcUrl      = "${t.blob.nodeRpcUrl}"`,
+        ] : []),
     ].join('\n');
 }
 
 function aliasLine(existing?: string): string {
     return nullableLine(
         'alias', existing, 'my-testnet-node',
-        `# short friendly name shown in \`${CLI} node ls\` / \`${CLI} network-status\`; uncomment + set to label this node`,
+        [
+            'Optional display name for this node profile.',
+            `Shown by \`${CLI} node ls\` and status commands.`,
+        ],
     );
 }
 
@@ -218,11 +276,19 @@ function keyLines(t: TemplateInputs): string {
     return [
         nullableLine(
             'rpcApiKey', apiKey, 'AG-yourkey...',
-            `# → --ace-deployment-apikey. Pre-filled from deployment blob if present. Comment out to use anonymous (subject to public IP rate limits — get your own at https://developers.aptoslabs.com/)`,
+            [
+                'Deployment API key passed as --ace-deployment-apikey.',
+                'Pre-filled from the deployment blob when present.',
+                'Comment out to use anonymous RPC, subject to public IP rate limits.',
+            ],
         ),
         nullableLine(
             'gasStationKey', gasKey, 'gsk-yourkey...',
-            `# → --ace-deployment-gaskey. Pre-filled from deployment blob if present. Comment out if you have no gas station`,
+            [
+                'Gas station key passed as --ace-deployment-gaskey.',
+                'Pre-filled from the deployment blob when present.',
+                'Comment out if you have no gas station.',
+            ],
         ),
     ].join('\n');
 }
@@ -235,6 +301,7 @@ export function generateTemplate(scheme: Scheme, t: TemplateInputs): string {
         case 'gcp-cloudrun-microservices': return generateGcpMicroservices(t);
         case 'docker-monolith':            return generateDockerMonolith(t);
         case 'local-build-monolith':       return generateLocalBuildMonolith(t);
+        case 'metadata-management-only':    return generateMetadataManagementOnly(t);
     }
 }
 
@@ -252,10 +319,18 @@ ${readonlyIdentityBlock(t)}
 # ── Editable fields ───────────────────────────────────────────────────────────
 
 ${aliasLine(e.alias)}
-image            = "${e.image ?? d.image ?? 'aptoslabs/ace-node:latest'}"      # Docker image. List options: \`${CLI} image ls\`
-project          = "${e.project ?? d.project ?? ''}"                            # GCP project ID. Default from \`gcloud config get-value project\`. List: \`gcloud projects list\`
-region           = "${e.region ?? d.region ?? 'us-central1'}"                   # Cloud Run region. List: \`gcloud run regions list\`
-serviceName      = "${e.serviceName ?? d.serviceName ?? ''}"                    # Cloud Run service name. Lowercase letters/digits/hyphens, <64 chars, must start with a letter
+${stringLine('image', e.image ?? d.image ?? 'aptoslabs/ace-node:latest', `Docker image. List options with \`${CLI} image ls\`.`)}
+${stringLine('project', e.project ?? d.project ?? '', [
+    'GCP project ID.',
+    'Default comes from `gcloud config get-value project`.',
+    'List projects with `gcloud projects list`.',
+])}
+${stringLine('region', e.region ?? d.region ?? 'us-central1', `Cloud Run region. List regions with \`gcloud run regions list\`.`)}
+${stringLine('serviceName', e.serviceName ?? d.serviceName ?? '', [
+    'Cloud Run service name.',
+    'Use lowercase letters, digits, and hyphens.',
+    'Must start with a letter and be under 64 characters.',
+])}
 ${keyLines(t)}
 
 ${renderChainRpcBlock(e.chainRpc)}
@@ -281,12 +356,27 @@ ${readonlyIdentityBlock(t)}
 # ── Editable fields ───────────────────────────────────────────────────────────
 
 ${aliasLine(e.alias)}
-image                 = "${e.image ?? d.image ?? 'aptoslabs/ace-node:latest'}"           # Docker image. List options: \`${CLI} image ls\`
-project               = "${e.project ?? d.project ?? ''}"                                # GCP project ID. Default from \`gcloud config get-value project\`. List: \`gcloud projects list\`
-region                = "${e.region ?? d.region ?? 'us-central1'}"                       # Cloud Run region. List: \`gcloud run regions list\`
-maintainerServiceName = "${e.maintainerServiceName ?? d.maintainerServiceName ?? ''}"    # Internal-only Cloud Run service, min=max=1. Lowercase letters/digits/hyphens, <64 chars, must start with a letter
-handlerServiceName    = "${e.handlerServiceName ?? d.handlerServiceName ?? ''}"          # Public Cloud Run service, scales horizontally. Naming: same rules as above
-handlerMaxInstances   = ${e.handlerMaxInstances ?? d.handlerMaxInstances ?? 10}          # Cloud Run autoscaling cap on the Handler. Higher = more throughput (also more cost); 1 effectively disables scaling
+${stringLine('image', e.image ?? d.image ?? 'aptoslabs/ace-node:latest', `Docker image. List options with \`${CLI} image ls\`.`)}
+${stringLine('project', e.project ?? d.project ?? '', [
+    'GCP project ID.',
+    'Default comes from `gcloud config get-value project`.',
+    'List projects with `gcloud projects list`.',
+])}
+${stringLine('region', e.region ?? d.region ?? 'us-central1', `Cloud Run region. List regions with \`gcloud run regions list\`.`)}
+${stringLine('maintainerServiceName', e.maintainerServiceName ?? d.maintainerServiceName ?? '', [
+    'Internal-only Cloud Run service, pinned at min=max=1.',
+    'Use lowercase letters, digits, and hyphens.',
+    'Must start with a letter and be under 64 characters.',
+])}
+${stringLine('handlerServiceName', e.handlerServiceName ?? d.handlerServiceName ?? '', [
+    'Public Cloud Run service that scales horizontally.',
+    'Use the same naming rules as maintainerServiceName.',
+])}
+${numberLine('handlerMaxInstances', e.handlerMaxInstances ?? d.handlerMaxInstances ?? 10, [
+    'Cloud Run autoscaling cap on the Handler.',
+    'Higher means more throughput and more cost.',
+    'Set to 1 to effectively disable scaling.',
+])}
 ${keyLines(t)}
 
 ${renderChainRpcBlock(e.chainRpc, 'Applies to the Handler (the Maintainer doesn\'t make per-request chain calls).')}
@@ -309,9 +399,13 @@ ${readonlyIdentityBlock(t)}
 # ── Editable fields ───────────────────────────────────────────────────────────
 
 ${aliasLine(e.alias)}
-image            = "${e.image ?? d.image ?? 'aptoslabs/ace-node:latest'}"      # Docker image. List options: \`${CLI} image ls\`
-port             = "${e.port ?? d.port ?? '19000'}"                            # TCP port the worker listens on. Default: lowest unused port starting at 19000
-containerName    = "${e.containerName ?? d.containerName ?? ''}"               # \`docker run --name\`. Must be unique on this host. List existing: \`docker ps -a --format '{{.Names}}'\`
+${stringLine('image', e.image ?? d.image ?? 'aptoslabs/ace-node:latest', `Docker image. List options with \`${CLI} image ls\`.`)}
+${stringLine('port', e.port ?? d.port ?? '19000', 'TCP port the worker listens on. Default: lowest unused port starting at 19000.')}
+${stringLine('containerName', e.containerName ?? d.containerName ?? '', [
+    '`docker run --name` value.',
+    'Must be unique on this host.',
+    "List existing containers with `docker ps -a --format '{{.Names}}'`.",
+])}
 ${keyLines(t)}
 
 ${renderChainRpcBlock(e.chainRpc)}
@@ -335,13 +429,37 @@ ${readonlyIdentityBlock(t)}
 # ── Editable fields ───────────────────────────────────────────────────────────
 
 ${aliasLine(e.alias)}
-# image          = (ignored — local builds use the binary at \`<repoPath>/target/release/network-node\`)
-repoPath         = "${e.repoPath ?? d.repoPath ?? ''}"                         # path to a checked-out ACE repo
-port             = "${e.port ?? d.port ?? '19000'}"                            # TCP port the worker listens on. Default: lowest unused port starting at 19000
-logMaxMb         = ${e.logMaxMb ?? d.logMaxMb ?? 50}                            # logrotate threshold (MB); rotates when the log file exceeds this size
+${commentedStringLine('image', '(ignored)', 'Local builds use the binary at `<repoPath>/target/release/network-node`.')}
+${stringLine('repoPath', e.repoPath ?? d.repoPath ?? '', 'Path to a checked-out ACE repo.')}
+${stringLine('port', e.port ?? d.port ?? '19000', 'TCP port the worker listens on. Default: lowest unused port starting at 19000.')}
+${numberLine('logMaxMb', e.logMaxMb ?? d.logMaxMb ?? 50, 'Logrotate threshold in MB. Rotates when the log exceeds this size.')}
 ${keyLines(t)}
 
 ${renderChainRpcBlock(e.chainRpc)}
+`;
+}
+
+function generateMetadataManagementOnly(t: TemplateInputs): string {
+    const e = t.existing ?? {};
+    return `# ${CLI} node — scheme: metadata-management-only
+#
+# Use this for externally managed workers. The CLI stores credentials and
+# on-chain metadata only. It will not emit gcloud/docker commands, start a local
+# process, or change worker image versions. Runtime deployment changes still
+# belong to the deployment system that runs the worker.
+#
+# Edit the values below, then save and quit your editor.
+${HEADER_READONLY_NOTE}
+#
+${readonlyIdentityBlock(t)}
+#
+# ── Editable fields ───────────────────────────────────────────────────────────
+
+${aliasLine(e.alias)}
+${stringLine('endpoint', e.endpoint ?? '', 'Public endpoint registered on-chain for this node.')}
+${keyLines(t)}
+
+${renderChainRpcBlock(e.chainRpc, 'Your deployment system must apply these values to the runtime.')}
 `;
 }
 
@@ -363,11 +481,12 @@ export interface ParsedNodeForm {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 const FORBIDDEN_TOP = new Set([
     'accountAddr', 'pkeEk', 'pkeDk', 'accountSk', 'aceAddr', 'rpcUrl', 'nodeRpcUrl',
-    'endpoint', 'platform', 'mode', 'gcp', 'docker', 'local',
+    'platform', 'mode', 'gcp', 'docker', 'local',
 ]);
 
 interface SchemaField {
@@ -409,6 +528,12 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         repoPath:      { required: true,  type: 'string' },
         port:          { required: true,  type: 'string' },
         logMaxMb:      { required: true,  type: 'number' },
+        rpcApiKey:     { required: false, type: 'string' },
+        gasStationKey: { required: false, type: 'string' },
+    },
+    'metadata-management-only': {
+        alias:         { required: false, type: 'string' },
+        endpoint:      { required: true,  type: 'string' },
         rpcApiKey:     { required: false, type: 'string' },
         gasStationKey: { required: false, type: 'string' },
     },
@@ -536,6 +661,8 @@ export function defaultsFor(
                 port: extras.defaultPort ?? '19000',
                 logMaxMb: 50,
             };
+        case 'metadata-management-only':
+            return {};
     }
 }
 

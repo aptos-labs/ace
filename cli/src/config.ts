@@ -11,16 +11,19 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 export type Platform = 'gcp' | 'docker' | 'local';
 
 /**
- * Deployment mode. Only meaningful for `platform = 'gcp'` today:
+ * Deployment mode:
  *   * `monolith`      — one Cloud Run service does everything.
  *   * `microservices` — Maintainer (internal, min=max=1) + Handler (public,
  *                       scales) pair, talking to each other via the Handler's
  *                       service account + Maintainer's `/secrets`.
+ *   * `metadata-management-only` — runtime is externally managed. The CLI
+ *                       persists credentials/on-chain metadata only and does
+ *                       not emit or run deployment commands.
  *
  * `docker` and `local` are always monolith today. Missing field defaults to
  * `monolith` for backwards compat with v2.2.x-and-earlier tracked nodes.
  */
-export type Mode = 'monolith' | 'microservices';
+export type Mode = 'monolith' | 'microservices' | 'metadata-management-only';
 
 export interface ChainRpcOverrides {
     aptosMainnetApi?:      string;

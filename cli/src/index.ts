@@ -128,7 +128,7 @@ nodeCmd
     .option('--rpc-api-key <key>', 'Deployment RPC API key')
     .option('--gas-station-key <key>', 'Gas station API key')
     .option('--platform <platform>', 'Deployment platform (non-interactive currently supports gcp)')
-    .option('--mode <mode>', 'GCP mode: microservices or monolith (default: microservices)')
+    .option('--mode <mode>', 'Mode: microservices, monolith, or metadata-management-only (default: microservices)')
     .option('--alias <alias>', 'Node profile alias')
     .option('--image <image>', 'Worker image, e.g. aptoslabs/ace-node:3.1.0')
     .option('--project <id>', 'GCP project ID')

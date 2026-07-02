@@ -702,9 +702,13 @@ function requireParsedString(v: string | undefined, label: string): string {
 }
 
 function schemeFromOptions(opts: NodeNewOptions, isLocalnet: boolean): Scheme {
+    if (opts.mode === 'metadata-management-only') {
+        return 'metadata-management-only';
+    }
+
     const platform = opts.platform ?? 'gcp';
     if (platform !== 'gcp') {
-        throw new Error('Non-interactive node new currently supports only --platform gcp.');
+        throw new Error('Non-interactive node new currently supports only --platform gcp or --mode metadata-management-only.');
     }
     if (isLocalnet) {
         throw new Error('GCP Cloud Run is unavailable for localnet deployments.');
@@ -712,7 +716,7 @@ function schemeFromOptions(opts: NodeNewOptions, isLocalnet: boolean): Scheme {
     const mode = opts.mode ?? 'microservices';
     if (mode === 'microservices') return 'gcp-cloudrun-microservices';
     if (mode === 'monolith') return 'gcp-cloudrun-monolith';
-    throw new Error('--mode must be "microservices" or "monolith".');
+    throw new Error('--mode must be "microservices", "monolith", or "metadata-management-only".');
 }
 
 function parsedFormFromOptions(
@@ -721,12 +725,19 @@ function parsedFormFromOptions(
     defaults: ReturnType<typeof defaultsFor>,
     net: NetworkDetails,
 ): ParsedNodeForm {
-    const common = {
+    const metadataCommon = {
         alias:         nonEmpty(opts.alias),
-        image:         nonEmpty(opts.image) ?? defaults.image,
         rpcApiKey:     nonEmpty(opts.rpcApiKey) ?? net.rpcApiKey,
         gasStationKey: nonEmpty(opts.gasStationKey) ?? net.gasStationKey,
         chainRpc:      parseChainRpcJson(opts.chainRpcJson),
+    };
+    if (scheme === 'metadata-management-only') {
+        return { ...metadataCommon, endpoint: nonEmpty(opts.endpoint) };
+    }
+
+    const common = {
+        ...metadataCommon,
+        image: nonEmpty(opts.image) ?? defaults.image,
     };
     if (scheme === 'gcp-cloudrun-monolith') {
         return {
@@ -794,6 +805,27 @@ async function endpointFromOptions(
     throw new Error(`${label} endpoint is not reachable: ${endpoint}`);
 }
 
+function endpointValueFromOptions(
+    opts: NodeNewOptions,
+    label: string,
+    capturedEndpoint?: string,
+): string {
+    const endpoint = nonEmpty(opts.endpoint) ?? capturedEndpoint;
+    if (!endpoint) {
+        throw new Error(`Missing ${label} endpoint. Pass --endpoint.`);
+    }
+    return endpoint;
+}
+
+async function promptEndpointValue(message: string, defaultValue?: string): Promise<string> {
+    let last = defaultValue;
+    while (true) {
+        const url = (await input({ message, default: last })).trim();
+        if (!url) continue;
+        return url;
+    }
+}
+
 /** Best-effort lookup of the latest aptoslabs/ace-node tag from Docker Hub. */
 async function latestImageTag(): Promise<string> {
     try {
@@ -839,7 +871,9 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     const mode: Mode = modeOf(scheme);
     const platform = platformOf(scheme);
 
-    const fallbackImage = options.image ?? await latestImageTag();
+    const fallbackImage = scheme === 'metadata-management-only'
+        ? ''
+        : options.image ?? await latestImageTag();
 
     const t: TemplateInputs = {
         identity: { accountAddr: profile.accountAddr, pkeEk: profile.pkeEk! },
@@ -889,7 +923,13 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     let dockerCfg: TrackedNode['docker'];
     let localCfg:  LocalConfig | undefined;
 
-    if (scheme === 'gcp-cloudrun-monolith') {
+    if (scheme === 'metadata-management-only') {
+        console.log('\nMetadata-management-only profile: no deploy command will be emitted.');
+        console.log('Use the external deployment system for image/resources/replicas/routing changes.\n');
+        endpoint = nonInteractive
+            ? endpointValueFromOptions(options, 'externally managed node', parsed.endpoint)
+            : await promptEndpointValue("Your externally managed node's public URL", parsed.endpoint);
+    } else if (scheme === 'gcp-cloudrun-monolith') {
         const project = requireParsedString(parsed.project, 'GCP project');
         const region = requireParsedString(parsed.region, 'Cloud Run region');
         const serviceName = requireParsedString(parsed.serviceName, 'Cloud Run service name');

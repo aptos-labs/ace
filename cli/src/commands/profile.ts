@@ -34,6 +34,8 @@ export function profileListCommand(): void {
                 : `${D}not started${R}`;
             console.log(`    Deploy  : ${deployLabel(node)}  ${procStatus}`);
             if (node.local?.logFile) console.log(`    Log     : ${node.local.logFile}`);
+        } else if (node.mode === 'metadata-management-only') {
+            console.log(`    Deploy  : ${deployLabel(node)}`);
         } else if (node.platform) {
             console.log(`    Deploy  : ${deployLabel(node)}`);
         }

@@ -5,7 +5,7 @@
  * `ace node edit` — open the resolved node profile in `$EDITOR` as a TOML form.
  *
  * The form's schema is picked from the node's stored `(platform, mode)` pair —
- * the same four schemes that `ace node new` offers. Identity / deployment-
+ * the same schemes that `ace node new` offers. Identity / deployment-
  * binding fields (account, keys, deployment URL, platform, mode) are surfaced
  * as comments only; uncommenting them is rejected. To change those, recreate
  * the node profile.
@@ -61,6 +61,7 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             containerName:          node.docker?.containerName,
             repoPath:               node.local?.repoPath,
             logMaxMb:               node.local?.logMaxMb,
+            endpoint:               node.endpoint,
         },
     };
 }
@@ -68,6 +69,7 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
 function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
     const merged: TrackedNode = { ...node };
     merged.alias         = edit.alias;
+    merged.endpoint      = edit.endpoint ?? merged.endpoint;
     merged.image         = edit.image ?? merged.image;
     merged.rpcApiKey     = edit.rpcApiKey;
     merged.gasStationKey = edit.gasStationKey;
@@ -103,7 +105,7 @@ function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
 
 function diffSummary(before: TrackedNode, after: TrackedNode): string[] {
     const lines: string[] = [];
-    const keys: (keyof TrackedNode)[] = ['alias', 'image', 'rpcApiKey', 'gasStationKey'];
+    const keys: (keyof TrackedNode)[] = ['alias', 'endpoint', 'image', 'rpcApiKey', 'gasStationKey'];
     for (const k of keys) {
         const a = before[k];
         const b = after[k];
@@ -165,6 +167,16 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     const { image, rpcApiKey, gasStationKey } = updatedNode;
     const chainRpc = updatedNode.chainRpc;
     const mode = nodeMode(updatedNode);
+
+    if (mode === 'metadata-management-only') {
+        console.log('Metadata-management-only profile saved.');
+        console.log('Expected automatic follow-up: the external operator sync applies credential/API-key/chain-RPC changes to runtime.');
+        if (node.endpoint !== updatedNode.endpoint) {
+            console.log('Not automatic: node edit does not update endpoint registration on-chain.');
+        }
+        console.log('Still requires a deployment PR: image tag, resources, replicas, topology, routing, namespace, or RBAC changes.');
+        return;
+    }
 
     if (node.platform === 'gcp' && updatedNode.gcp) {
         if (rpcUrlsNeedVpcEgress(chainRpc)) {

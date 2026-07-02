@@ -33,6 +33,7 @@ function renderDiffSection(lines: string[], heading: string | undefined, rows: D
 }
 
 export function deployLabel(node: TrackedNode): string {
+    if (node.mode === 'metadata-management-only') return 'external runtime (metadata management only)';
     if (node.platform === 'gcp') {
         if (node.mode === 'microservices') {
             const h = node.gcp?.handlerServiceName ?? '?';
@@ -281,6 +282,9 @@ export function renderNodeStatus(
         lines.push(`${B}Process${R}  local build  ${procStatus}`);
         if (node.local.logFile) lines.push(`  Log: ${node.local.logFile}`);
         if (!alive) lines.push(`  ${D}Run \`${CLI} node edit\` to restart.${R}`);
+    } else if (node.mode === 'metadata-management-only') {
+        lines.push(`${B}Deployment${R}  ${deployLabel(node)}`);
+        lines.push(`  ${D}Credentials and on-chain metadata are managed by this profile; runtime changes require the external deployment system.${R}`);
     } else if (!node.platform) {
         lines.push(`${D}No deployment platform configured.${R}`);
     } else if (deployDiff instanceof Error) {

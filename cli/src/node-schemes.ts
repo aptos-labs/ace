@@ -6,13 +6,14 @@
  * and `ace node edit`.
  *
  * A "scheme" is the (platform, mode) tuple that drives both the wizard's
- * inline scheme picker and the text-form template the user edits. Four are
+ * inline scheme picker and the text-form template the user edits. Five are
  * supported today:
  *
  *   * `gcp-cloudrun-monolith`         — platform=gcp,    mode=monolith
  *   * `gcp-cloudrun-microservices`    — platform=gcp,    mode=microservices
  *   * `docker-monolith`               — platform=docker, mode=monolith
  *   * `local-build-monolith`          — platform=local,  mode=monolith
+ *   * `metadata-management-only`       — platform unset, mode=metadata-management-only
  *
  * The two GCP options are unavailable when the ACE deployment is on
  * localnet (Cloud Run can't reach a localhost chain endpoint).
@@ -31,24 +32,28 @@ export type Scheme =
     | 'gcp-cloudrun-monolith'
     | 'gcp-cloudrun-microservices'
     | 'docker-monolith'
-    | 'local-build-monolith';
+    | 'local-build-monolith'
+    | 'metadata-management-only';
 
 export function schemeOf(node: Pick<TrackedNode, 'platform' | 'mode'>): Scheme {
     const platform = node.platform ?? 'docker';
     const mode = node.mode ?? 'monolith';
+    if (mode === 'metadata-management-only')            return 'metadata-management-only';
     if (platform === 'gcp' && mode === 'microservices') return 'gcp-cloudrun-microservices';
     if (platform === 'gcp')                              return 'gcp-cloudrun-monolith';
     if (platform === 'docker')                           return 'docker-monolith';
     return 'local-build-monolith';
 }
 
-export function platformOf(scheme: Scheme): Platform {
+export function platformOf(scheme: Scheme): Platform | undefined {
+    if (scheme === 'metadata-management-only') return undefined;
     if (scheme.startsWith('gcp-'))    return 'gcp';
     if (scheme.startsWith('docker-')) return 'docker';
     return 'local';
 }
 
 export function modeOf(scheme: Scheme): Mode {
+    if (scheme === 'metadata-management-only') return 'metadata-management-only';
     return scheme === 'gcp-cloudrun-microservices' ? 'microservices' : 'monolith';
 }
 
@@ -73,6 +78,10 @@ export async function pickScheme(opts: { isLocalnet: boolean }): Promise<Scheme 
         {
             name: 'Local build (from source), monolith',
             value: 'local-build-monolith',
+        },
+        {
+            name: 'Metadata management only — external runtime; CLI manages credentials/on-chain metadata',
+            value: 'metadata-management-only',
         },
     ];
     const picked = await escSelect({
@@ -118,6 +127,7 @@ export interface SchemeDefaults {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 export interface ExistingValues {
@@ -136,6 +146,7 @@ export interface ExistingValues {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
@@ -235,6 +246,7 @@ export function generateTemplate(scheme: Scheme, t: TemplateInputs): string {
         case 'gcp-cloudrun-microservices': return generateGcpMicroservices(t);
         case 'docker-monolith':            return generateDockerMonolith(t);
         case 'local-build-monolith':       return generateLocalBuildMonolith(t);
+        case 'metadata-management-only':    return generateMetadataManagementOnly(t);
     }
 }
 
@@ -345,6 +357,31 @@ ${renderChainRpcBlock(e.chainRpc)}
 `;
 }
 
+function generateMetadataManagementOnly(t: TemplateInputs): string {
+    const e = t.existing ?? {};
+    return `# ${CLI} node — scheme: metadata-management-only
+#
+# Use this for externally managed workers, such as Aptos Labs internal-ops
+# deployments. The CLI stores credentials and on-chain metadata only. It will
+# not emit gcloud/docker commands, start a local process, or change worker image
+# versions. Image/resources/replicas/routing changes still require the external
+# deployment owner, e.g. an internal-ops PR.
+#
+# Edit the values below, then save and quit your editor.
+${HEADER_READONLY_NOTE}
+#
+${readonlyIdentityBlock(t)}
+#
+# ── Editable fields ───────────────────────────────────────────────────────────
+
+${aliasLine(e.alias)}
+endpoint         = "${e.endpoint ?? ''}"      # public endpoint registered on-chain for this node
+${keyLines(t)}
+
+${renderChainRpcBlock(e.chainRpc, 'External deployment sync is responsible for applying these values to the runtime.')}
+`;
+}
+
 // ── Phase 3: parser ──────────────────────────────────────────────────────────
 
 export interface ParsedNodeForm {
@@ -363,11 +400,12 @@ export interface ParsedNodeForm {
     containerName?:          string;
     repoPath?:               string;
     logMaxMb?:               number;
+    endpoint?:               string;
 }
 
 const FORBIDDEN_TOP = new Set([
     'accountAddr', 'pkeEk', 'pkeDk', 'accountSk', 'aceAddr', 'rpcUrl', 'nodeRpcUrl',
-    'endpoint', 'platform', 'mode', 'gcp', 'docker', 'local',
+    'platform', 'mode', 'gcp', 'docker', 'local',
 ]);
 
 interface SchemaField {
@@ -409,6 +447,12 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         repoPath:      { required: true,  type: 'string' },
         port:          { required: true,  type: 'string' },
         logMaxMb:      { required: true,  type: 'number' },
+        rpcApiKey:     { required: false, type: 'string' },
+        gasStationKey: { required: false, type: 'string' },
+    },
+    'metadata-management-only': {
+        alias:         { required: false, type: 'string' },
+        endpoint:      { required: true,  type: 'string' },
         rpcApiKey:     { required: false, type: 'string' },
         gasStationKey: { required: false, type: 'string' },
     },
@@ -536,6 +580,8 @@ export function defaultsFor(
                 port: extras.defaultPort ?? '19000',
                 logMaxMb: 50,
             };
+        case 'metadata-management-only':
+            return {};
     }
 }
 

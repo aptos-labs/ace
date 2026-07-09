@@ -19,7 +19,6 @@ use crate::session::{
 // ── DealerState ───────────────────────────────────────────────────────────────
 
 /// Plaintext-only intermediate (gets PKE-encrypted into `dealer_state` before going on chain).
-/// Wire: BCS enum tag (= scheme) || u64 LE n || BCS Vec<Vec<u8>> coefs_poly_p.
 #[derive(Serialize)]
 pub enum DealerState {
     Bls12381Fr {
@@ -126,7 +125,7 @@ pub fn dc0_bytes(
     scheme: u8,
     commitment_points: &[Vec<u8>],
     share_ciphertexts: &[Ciphertext],
-    dealer_state_ct: &Ciphertext,
+    dealer_state_ct: Option<&Ciphertext>,
     consistency_proof: Option<BcsSigmaDlogLinearProof>,
 ) -> Result<Vec<u8>> {
     let dc0 = BcsDealerContribution0 {
@@ -137,7 +136,7 @@ pub fn dc0_bytes(
                 .collect::<Result<Vec<_>>>()?,
         },
         private_share_messages: share_ciphertexts.to_vec(),
-        dealer_state: Some(dealer_state_ct.clone()),
+        dealer_state: dealer_state_ct.cloned(),
         consistency_proof,
     };
     Ok(bcs::to_bytes(&dc0).expect("bcs serialization failed"))
@@ -239,14 +238,14 @@ mod tests {
     #[test]
     fn dc0_bytes_g1_consistency_none_appends_zero() {
         let (c, s, d) = minimal_dc0_base_g1();
-        let out = dc0_bytes(SCHEME_BLS12381G1, &c, &s, &d, None).unwrap();
+        let out = dc0_bytes(SCHEME_BLS12381G1, &c, &s, Some(&d), None).unwrap();
         assert_eq!(*out.last().unwrap(), 0x00);
     }
 
     #[test]
     fn dc0_bytes_g2_consistency_none_appends_zero() {
         let (c, s, d) = minimal_dc0_base_g2();
-        let out = dc0_bytes(SCHEME_BLS12381G2, &c, &s, &d, None).unwrap();
+        let out = dc0_bytes(SCHEME_BLS12381G2, &c, &s, Some(&d), None).unwrap();
         assert_eq!(*out.last().unwrap(), 0x00);
     }
 
@@ -254,7 +253,7 @@ mod tests {
     fn dc0_bytes_g1_wrong_size_rejected() {
         let bad = vec![vec![0u8; 47], vec![0u8; 47]];
         let (_, s, d) = minimal_dc0_base_g1();
-        assert!(dc0_bytes(SCHEME_BLS12381G1, &bad, &s, &d, None).is_err());
+        assert!(dc0_bytes(SCHEME_BLS12381G1, &bad, &s, Some(&d), None).is_err());
     }
 
     #[test]

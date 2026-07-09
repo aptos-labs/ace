@@ -12,7 +12,12 @@ Each worker \(k\) starts one VSS with a degree-\((t-1)\) sharing polynomial:
 p_k(X) = a_{k,0} + a_{k,1}X + \cdots + a_{k,t-1}X^{t-1}.
 \]
 
-ACE derives dealer coefficients from the dealer's PKE decryption key, with optional override only for resharing. For fresh DKG, \(a_{k,0}\) is uniform if the PKE secret key is uniform.
+ACE first derives a VSS-only seed from the dealer's PKE decryption key:
+`HKDF-Expand(pke_dk, "ace::vss-dealer-seed::v1", 32)`. It then derives dealer
+coefficients from that seed plus session-separating context: Aptos chain id, ACE
+module address, VSS session address, coefficient domain, and coefficient index.
+DKR uses an override only for the constant term that must carry forward the
+previous share.
 
 The DKG contract waits until at least \(t\) VSS sessions complete and freezes that contributing set \(Q\). Once \(Q\) is fixed:
 

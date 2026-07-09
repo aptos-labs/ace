@@ -71,11 +71,18 @@ Defined in `contracts/group/sources/group.move` and mirrored in `worker-componen
 | Component | RNG | Usage |
 |-----------|-----|-------|
 | TS SDK | WebCrypto `crypto.getRandomValues` (browser) / Node `crypto.randomBytes` | All ephemerals ($r$ in PKE/IBE encrypt, ephemeral encryption keys) |
-| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | VSS dealer optional `secret_override`, HPKE keygen |
+| Rust workers | `rand::rngs::OsRng` (`/dev/urandom` on Linux, `getrandom` syscall) | HPKE keygen |
 | Move (on-chain) | `aptos_framework::randomness` API | DKG basepoint sampling (e.g. `epoch_change::touch` uses `randomness::generate(...)` for new G2 base points) |
 
 **Audit notes.**
-- VSS dealer polynomial randomness is **derived from the dealer's PKE decryption key**, not freshly sampled. This includes both the secret-bearing polynomial and the Pedersen blinding polynomial. This is intentional and security-equivalent provided the PKE dk is itself uniformly random; the operator-CLI generates the dk via `WebCrypto` at onboarding and stores it in the provider-specific secret manager (Cloud Run Secret, etc.).
+- VSS dealer polynomial coefficients are deterministically derived in two
+  stages. First the dealer derives a VSS-only seed with
+  `HKDF-Expand(pke_dk, "ace::vss-dealer-seed::v1", 32)`. Coefficients are then
+  derived from that seed plus public session context
+  (`chain_id || ace_addr || session_addr || coefficient_domain || idx`). This
+  keeps DC0/DC1 restart-safe while preventing coefficient reuse across sessions
+  or deployments, and avoids using the HPKE private key material directly as
+  the coefficient-derivation key.
 - Aptos's on-chain `randomness::generate` is itself a threshold protocol. Trust assumption: the Aptos validator quorum is honest. This is part of the "contract is truth" trust premise — see [`../trust-model.md`](../trust-model.md).
 
 ---

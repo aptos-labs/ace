@@ -2588,6 +2588,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
+ "hkdf",
  "rand",
  "serde_json",
  "sha2",

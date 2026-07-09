@@ -173,10 +173,11 @@ pub fn fr_to_le_bytes(f: Fr) -> [u8; 32] {
     bytes
 }
 
-/// Derive a BLS12-381 Fr polynomial coefficient from a PKE decryption key and index.
+/// Deterministically derive a BLS12-381 Fr element from caller-provided key material and index.
 ///
-/// Uses SHA3-256("vss-coef-v1/" || dk_bytes || LE64(idx)) reduced mod Fr.
-/// Deterministic: same dk + idx always gives the same coefficient.
+/// Uses SHA3-256("vss-coef-v1/" || key_material || LE64(idx)) reduced mod Fr.
+/// Callers deriving protocol secrets must include sufficient domain and session
+/// context in `key_material` or use a domain-specific DST.
 pub fn fr_from_dk_bytes(dk: &[u8], idx: usize) -> Fr {
     fr_from_dk_bytes_with_dst(b"vss-coef-v1/", dk, idx)
 }

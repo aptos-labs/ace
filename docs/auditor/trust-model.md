@@ -118,7 +118,7 @@ The chain itself is subject to whatever ordering / front-running properties the 
 ### 4.4 Long-term secret rotation
 
 Master secrets rotate on every epoch (auto every `epoch_duration_micros` ≥ 30s, or on `CommitteeChange`). However:
-- A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. **The PKE decryption key derivation step ([`cryptography/vss.md`](./cryptography/vss.md) §1.1 item 7) deterministically derives polynomial coefficients from the dealer's PKE dk, so the dealer can always recover their old contributions while their PKE dk lives.** Operationally, deleting old shares from disk is the operator's responsibility; the protocol does not enforce it.
+- A *retired* committee member who held a share at epoch `e` retains that share's bytes on disk after they leave the committee. If `t-1` retired members for the same generation collude later with one current member that still holds a backwards-compatible share for any reason, decryption is possible. A retained PKE decryption key can also decrypt that worker's historical on-chain VSS private share messages and re-derive any VSS dealer polynomials created with that key. Operationally, deleting old shares and rotating/deleting old PKE keys is the operator's responsibility; the protocol does not enforce it.
 - Workers retain old shares for ~30s after rotation to handle in-flight requests.
 
 ### 4.5 Sybil resistance and cryptoeconomic incentives
@@ -176,8 +176,8 @@ The worker process expects two pieces of secret material at startup, both passed
 The CLI's onboarding wizard (`cli/src/onboarding.ts`) generates both secrets locally, prints a `gcloud run deploy` / `docker run` command that writes them as Cloud Run secrets / env vars, and registers the public counterparts on-chain.
 
 **Audit hooks:**
-- A worker that loses its `pke-dk` cannot be replaced with a fresh PKE dk without losing all its current Shamir shares (because share derivation is deterministic on the dk per [`cryptography/vss.md`](./cryptography/vss.md) §1.1 item 7). Recovery requires either a DKR (which fails if the worker's dk is unrecoverable and they hold above-threshold shares) or admin intervention via `CommitteeChange`.
-- A leaked `pke-dk` reveals every Shamir share that worker has ever dealt — past *and* future, until they're rotated out.
+- A worker that loses its `pke-dk` cannot be replaced with a fresh PKE dk without losing access to on-chain VSS ciphertexts encrypted to that key and the ability to re-derive its own VSS dealer polynomials. Recovery requires either a DKR (which fails if the worker's dk is unrecoverable and they hold above-threshold shares) or admin intervention via `CommitteeChange`.
+- A leaked `pke-dk` reveals historical on-chain VSS ciphertexts encrypted to that worker and all VSS dealer polynomials derived from that key; it will reveal future ciphertexts and future derived polynomials until the key is rotated out.
 - Storing the dk as a Cloud Run env var places trust in the cloud provider's secret-manager. Field-level KMS encryption is not currently used.
 
 Recommended operator practices (not enforced):

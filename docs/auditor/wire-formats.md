@@ -394,7 +394,7 @@ struct BcsDealerContribution1 {
 ```
 
 The Move-side struct is in `contracts/vss/sources/vss.move:75-104`; field order is identical.
-Current dealer workers encrypt `dealer_state` to the dealer's registered PKE key.
+Current dealer workers set `dealer_state` to `None`.
 
 **Plaintext shape of `private_share_messages[i]`** (after PKE decrypt):
 ```rust
@@ -409,7 +409,10 @@ struct BcsPcsOpening {
 
 ### 6.2 `vss::DealerState` plaintext
 
-The dealer encrypts a "dealer state" cipherblob (used to re-derive its polynomial after a crash). Defined in `worker-components/vss-common/src/vss_types.rs::DealerState`:
+`DealerContribution0.dealer_state` is optional. Current dealer workers set it
+to `None` because they can re-derive their polynomial from a VSS-only seed
+derived from the PKE decryption key and public session context. The legacy plaintext type is still defined in
+`worker-components/vss-common/src/vss_types.rs::DealerState`:
 
 ```rust
 enum DealerState {
@@ -419,8 +422,6 @@ enum DealerState {
     },
 }
 ```
-
-This is encrypted to the dealer's *own* PKE encryption key (`enc_keys[0]` in the dealer's view, which is itself, per the `dkg::Session` ordering). Workers don't currently consume it; it's there for crash recovery.
 
 ### 6.3 `dkg::Session` and `dkr::Session`
 

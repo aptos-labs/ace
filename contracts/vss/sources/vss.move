@@ -40,6 +40,7 @@ module ace::vss {
     const E_INVALID_PUBLIC_KEY_PROOF: u64 = 33;
     const E_TOO_EARLY_TO_OPEN: u64 = 35;
     const E_PUBLIC_KEY_SCHEME_MISMATCH: u64 = 36;
+    const E_NOT_ADMIN: u64 = 37;
 
     // ── Protocol constants ───────────────────────────────────────────────────
 
@@ -162,6 +163,11 @@ module ace::vss {
             public_keys: vector[],
         };
         move_to(&object_signer, session);
+
+        // Snapshot feature configs.
+        let feature_configs = feature_configs_or_empty(@ace);
+        move_to(&object_signer, feature_configs);
+
         event::emit(SessionCreated { session_addr });
         session_addr
     }
@@ -526,4 +532,71 @@ module ace::vss {
     public fun dc1_is_some_at(dc1: &DealerContribution1, i: u64): bool {
         dc1.shares_to_reveal[i].is_some()
     }
+
+    // ── Feature flags/configs begin ─────────────────────────────────────────────────
+
+    const FEATURE__ISSUE154_FIX_FLAG: u64 = 0;
+
+    enum FeatureConfig has copy, drop, store {
+        /// Controls whether the dealer should apply the fix for https://github.com/aptos-labs/ace/issues/154.
+        Issue154FixFlag,
+    }
+
+    entry fun update_issue154_fix_flag(admin: &signer, enabling: bool) {
+        assert!(address_of(admin) == @ace, error::permission_denied(E_NOT_ADMIN));
+        ensure_feature_slot(admin, FEATURE__ISSUE154_FIX_FLAG);
+        let feature_configs = &mut FeatureConfigs[@ace];
+        if (enabling) {
+            feature_configs.items[FEATURE__ISSUE154_FIX_FLAG] = option::some(FeatureConfig::Issue154FixFlag);
+        } else {
+            feature_configs.items[FEATURE__ISSUE154_FIX_FLAG] = option::none();
+        }
+        canonicalize_feature_configs();
+    }
+
+    struct FeatureConfigs has copy, drop, key {
+        items: vector<Option<FeatureConfig>>,
+    }
+
+    #[view]
+    public fun feature_configs_bcs(session_addr: address): vector<u8> {
+        bcs::to_bytes(&feature_configs_or_empty(session_addr))
+    }
+
+    fun ensure_feature_slot(admin: &signer, idx: u64) {
+        if (!exists<FeatureConfigs>(@ace)) {
+            move_to(admin, FeatureConfigs { items: vector[] });
+        };
+        let configs = &mut FeatureConfigs[@ace];
+        while (configs.items.length() <= idx) {
+            configs.items.push_back(option::none());
+        };
+    }
+
+    fun canonicalize_feature_configs() {
+        let is_empty = {
+            let configs = &mut FeatureConfigs[@ace];
+            while (configs.items.length() > 0) {
+                let last_idx = configs.items.length() - 1;
+                if (configs.items[last_idx].is_none()) {
+                    configs.items.pop_back();
+                } else {
+                    break;
+                };
+            };
+            configs.items.length() == 0
+        };
+        if (is_empty) {
+            move_from<FeatureConfigs>(@ace);
+        }
+    }
+
+    fun feature_configs_or_empty(addr: address): FeatureConfigs {
+        if (exists<FeatureConfigs>(addr)) {
+            *&FeatureConfigs[addr]
+        } else {
+            FeatureConfigs { items: vector[] }
+        }
+    }
+    // ── Feature flags/configs end ───────────────────────────────────────────────────
 }

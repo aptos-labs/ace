@@ -3,7 +3,7 @@
 
 import * as ace from '@aptos-labs/ace-sdk';
 import { Result } from '@aptos-labs/ace-sdk';
-import { Account, AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, AptosConfig, Deserializer, Ed25519PrivateKey, Network, Serializer } from '@aptos-labs/ts-sdk';
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import {
@@ -195,7 +195,20 @@ export function ed25519PrivateKeyHex(account: Account): string {
  * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
  * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
  */
-export async function deployContracts(adminAccount: Account, packageFolders: string[], rpcUrl = LOCALNET_URL): Promise<void> {
+export type DeployContractsOptions = {
+    rpcUrl?: string;
+    enableVssIssue154FixFlag?: boolean;
+};
+
+export async function deployContracts(
+    adminAccount: Account,
+    packageFolders: string[],
+    options: string | DeployContractsOptions = LOCALNET_URL,
+): Promise<void> {
+    const rpcUrl = typeof options === 'string' ? options : options.rpcUrl ?? LOCALNET_URL;
+    const shouldEnableVssIssue154FixFlag = typeof options === 'string'
+        ? true
+        : options.enableVssIssue154FixFlag ?? true;
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
     const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr);
@@ -207,9 +220,29 @@ export async function deployContracts(adminAccount: Account, packageFolders: str
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
+        if (shouldEnableVssIssue154FixFlag && packageFolders.includes('vss')) {
+            await enableVssIssue154FixFlag(adminAccount, adminAddr, rpcUrl);
+        }
     } finally {
         rmContractsPublishScratch(scratch);
     }
+}
+
+export async function enableVssIssue154FixFlag(
+    adminAccount: Account,
+    aceContract = adminAccount.accountAddress.toStringLong(),
+    rpcUrl = LOCALNET_URL,
+): Promise<void> {
+    log('Enable VSS Issue154FixFlag.');
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${aceContract}::vss::update_issue154_fix_flag` as `${string}::${string}::${string}`,
+            args: [true],
+            rpcUrl,
+        }),
+        'vss::update_issue154_fix_flag',
+    );
 }
 
 export async function fundAccount(address: AccountAddress): Promise<void> {
@@ -612,6 +645,50 @@ export async function getVssSession(aceContractAddr: AccountAddress, sessionAddr
             });
             const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
             return ace.vss.Session.fromBytes(bytes).unwrapOrThrow('Failed to parse session.');
+        },
+    });
+}
+
+function accountAddressString(addr: AccountAddress | string): string {
+    return typeof addr === 'string' ? AccountAddress.fromString(addr).toStringLong() : addr.toStringLong();
+}
+
+function decodeVssIssue154FixFlag(featureConfigsBcs: Uint8Array): boolean {
+    const deserializer = new Deserializer(featureConfigsBcs);
+    const itemCount = deserializer.deserializeUleb128AsU32();
+    for (let i = 0; i < itemCount; i++) {
+        const optionLen = deserializer.deserializeUleb128AsU32();
+        if (optionLen === 0) continue;
+        if (optionLen !== 1) {
+            throw new Error(`invalid FeatureConfig option length ${optionLen} at index ${i}`);
+        }
+        const variant = deserializer.deserializeUleb128AsU32();
+        if (i === 0 && variant === 0) {
+            if (deserializer.remaining() !== 0) throw new Error('trailing feature config bytes');
+            return true;
+        }
+    }
+    if (deserializer.remaining() !== 0) throw new Error('trailing feature config bytes');
+    return false;
+}
+
+export async function getVssIssue154FixFlag(
+    aceContractAddr: AccountAddress | string,
+    configAddr: AccountAddress | string,
+): Promise<Result<boolean>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: false,
+        task: async () => {
+            const aptos = createAptos();
+            const [hexBytes] = await aptos.view({
+                payload: {
+                    function: `${accountAddressString(aceContractAddr)}::vss::feature_configs_bcs` as `${string}::${string}::${string}`,
+                    typeArguments: [],
+                    functionArguments: [accountAddressString(configAddr)],
+                },
+            });
+            const bytes = new Uint8Array(Buffer.from((hexBytes as string).replace(/^0x/, ''), 'hex'));
+            return decodeVssIssue154FixFlag(bytes);
         },
     });
 }

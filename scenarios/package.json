@@ -7,6 +7,7 @@
   "scripts": {
     "test-vss-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-protocol.ts",
     "test-vss-protocol-g1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-protocol-g1.ts",
+    "test-vss-feature-flag-compat": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-feature-flag-compat.ts",
     "test-dkg-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkg-protocol.ts",
     "test-dkg-protocol-g1": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkg-protocol-g1.ts",
     "test-dkr-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-dkr-protocol.ts",

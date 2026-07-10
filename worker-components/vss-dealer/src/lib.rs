@@ -16,8 +16,8 @@ use vss_common::crypto::{
 };
 use vss_common::group::BcsElement;
 use vss_common::session::{
-    BcsPcsOpening, BcsSigmaDlogLinearProof, ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED,
-    STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING,
+    BcsPcsOpening, BcsSigmaDlogLinearProof, FeatureConfigs, ACK_WINDOW_MICROS, STATE_DEALER_DEAL,
+    STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS, STATE_VERIFY_DEALER_OPENING,
 };
 use vss_common::sigma_dlog_linear;
 use vss_common::vss_types::{
@@ -55,6 +55,37 @@ struct DealingData {
     public_keys: Vec<Vec<u8>>,
 }
 
+struct DealerRuntimeState {
+    feature_configs: FeatureConfigs,
+    derivation_context: Option<Vec<u8>>,
+}
+
+impl DealerRuntimeState {
+    async fn load(rpc: &AptosRpc, ace: &str, session_addr: &str) -> Result<Self> {
+        let feature_configs = rpc
+            .get_feature_configs_bcs_decoded(ace, session_addr)
+            .await
+            .map_err(|e| anyhow!("failed to fetch VSS feature configs: {}", e))?;
+        let derivation_context = if feature_configs.issue154_fix_enabled() {
+            let chain_id = rpc
+                .get_chain_id()
+                .await
+                .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
+            Some(polynomial_derivation_context(chain_id, ace, session_addr)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            feature_configs,
+            derivation_context,
+        })
+    }
+
+    fn derivation_context(&self) -> Option<&[u8]> {
+        self.derivation_context.as_deref()
+    }
+}
+
 /// Dealer state machine.
 pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
     let rpc = AptosRpc::new_with_gas_key(
@@ -76,11 +107,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         "vss-dealer: starting (account={} session={} ace={})",
         account_addr, session_addr, ace
     );
-    let derivation_context =
-        polynomial_derivation_context_for_session(&rpc, &ace, &session_addr).await?;
+    let runtime_state = DealerRuntimeState::load(&rpc, &ace, &session_addr).await?;
     println!(
         "vss-dealer: Issue154FixFlag {}",
-        if derivation_context.is_some() {
+        if runtime_state.feature_configs.issue154_fix_enabled() {
             "enabled"
         } else {
             "disabled"
@@ -128,7 +158,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         &ace,
                         &session,
                         &pke_dk_bytes,
-                        derivation_context.as_deref(),
+                        &runtime_state,
                         config.secret_override,
                     )
                     .await
@@ -174,7 +204,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             &ace,
                             &session,
                             &pke_dk_bytes,
-                            derivation_context.as_deref(),
+                            &runtime_state,
                             config.secret_override,
                         )
                         .await
@@ -228,7 +258,7 @@ async fn build_and_submit_dc0(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
-    derivation_context: Option<&[u8]>,
+    runtime_state: &DealerRuntimeState,
     secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
@@ -248,7 +278,7 @@ async fn build_and_submit_dc0(
         n,
         threshold,
         pke_dk_bytes,
-        derivation_context,
+        runtime_state.derivation_context(),
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,
@@ -333,7 +363,7 @@ async fn build_and_submit_dc1(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
-    derivation_context: Option<&[u8]>,
+    runtime_state: &DealerRuntimeState,
     secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
@@ -353,7 +383,7 @@ async fn build_and_submit_dc1(
         n,
         threshold,
         pke_dk_bytes,
-        derivation_context,
+        runtime_state.derivation_context(),
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,
@@ -603,26 +633,6 @@ fn polynomial_derivation_context(chain_id: u8, ace: &str, session_addr: &str) ->
     out.extend_from_slice(&addr_to_bytes(ace)?);
     out.extend_from_slice(&addr_to_bytes(session_addr)?);
     Ok(out)
-}
-
-async fn polynomial_derivation_context_for_session(
-    rpc: &AptosRpc,
-    ace: &str,
-    session_addr: &str,
-) -> Result<Option<Vec<u8>>> {
-    let feature_configs = rpc
-        .get_feature_configs_bcs_decoded(ace, session_addr)
-        .await
-        .map_err(|e| anyhow!("failed to fetch VSS feature configs: {}", e))?;
-    if !feature_configs.issue154_fix_enabled() {
-        return Ok(None);
-    }
-
-    let chain_id = rpc
-        .get_chain_id()
-        .await
-        .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
-    polynomial_derivation_context(chain_id, ace, session_addr).map(Some)
 }
 
 fn validate_polynomial_lengths(coefs_p: &[Fr], coefs_r: &[Fr], threshold: usize) -> Result<()> {

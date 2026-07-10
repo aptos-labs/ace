@@ -207,9 +207,29 @@ export async function deployContracts(adminAccount: Account, packageFolders: str
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
+        if (packageFolders.includes('vss')) {
+            await enableVssIssue154FixFlag(adminAccount, adminAddr, rpcUrl);
+        }
     } finally {
         rmContractsPublishScratch(scratch);
     }
+}
+
+export async function enableVssIssue154FixFlag(
+    adminAccount: Account,
+    aceContract = adminAccount.accountAddress.toStringLong(),
+    rpcUrl = LOCALNET_URL,
+): Promise<void> {
+    log('Enable VSS Issue154FixFlag.');
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${aceContract}::vss::update_issue154_fix_flag` as `${string}::${string}::${string}`,
+            args: [true],
+            rpcUrl,
+        }),
+        'vss::update_issue154_fix_flag',
+    );
 }
 
 export async function fundAccount(address: AccountAddress): Promise<void> {

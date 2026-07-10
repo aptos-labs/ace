@@ -20,6 +20,8 @@ pub const STATE_FAILED: u8 = 4;
 
 pub const ACK_WINDOW_MICROS: u64 = 10_000_000;
 
+pub const FEATURE_ISSUE154_FIX_FLAG: usize = 0;
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub dealer: String,
@@ -247,6 +249,27 @@ pub struct BcsSession {
     pub public_keys: Vec<BcsElement>,
 }
 
+/// BCS mirror of `vss::FeatureConfig`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum FeatureConfig {
+    Issue154FixFlag,
+}
+
+/// BCS mirror of `vss::FeatureConfigs`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct FeatureConfigs {
+    pub items: Vec<Option<FeatureConfig>>,
+}
+
+impl FeatureConfigs {
+    pub fn issue154_fix_enabled(&self) -> bool {
+        matches!(
+            self.items.get(FEATURE_ISSUE154_FIX_FLAG),
+            Some(Some(FeatureConfig::Issue154FixFlag))
+        )
+    }
+}
+
 /// Check whether a Move `Option<T>` field (encoded as `{"vec": []}` or `{"vec": [value]}`)
 /// represents `Some`. Returns `true` if the field has a non-empty `vec` array.
 fn option_field_is_set(data_json: &Value, field: &str) -> bool {
@@ -261,5 +284,25 @@ fn option_field_is_set(data_json: &Value, field: &str) -> bool {
                 !v.is_null()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FeatureConfig, FeatureConfigs};
+
+    #[test]
+    fn feature_configs_detects_issue154_fix_flag() {
+        assert!(!FeatureConfigs::default().issue154_fix_enabled());
+        assert!(!FeatureConfigs { items: vec![None] }.issue154_fix_enabled());
+
+        let configs = FeatureConfigs {
+            items: vec![Some(FeatureConfig::Issue154FixFlag)],
+        };
+        assert!(configs.issue154_fix_enabled());
+
+        let encoded = bcs::to_bytes(&configs).unwrap();
+        let decoded: FeatureConfigs = bcs::from_bytes(&encoded).unwrap();
+        assert!(decoded.issue154_fix_enabled());
     }
 }

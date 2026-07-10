@@ -11,8 +11,8 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use tokio::sync::oneshot;
 use vss_common::crypto::{
-    fr_to_le_bytes, group_compressed_with_base, group_identity_compressed,
-    pedersen_commit_compressed, pke_encrypt, poly_eval,
+    fr_from_dk_bytes, fr_from_dk_bytes_with_dst, fr_to_le_bytes, group_compressed_with_base,
+    group_identity_compressed, pedersen_commit_compressed, pke_encrypt, poly_eval,
 };
 use vss_common::group::BcsElement;
 use vss_common::session::{
@@ -29,6 +29,7 @@ pub const POLL_SECS: u64 = 1;
 
 const P_COEF_DST: &[u8] = b"vss-secret-sharing-coef-v2/";
 const R_COEF_DST: &[u8] = b"vss-pedersen-blinding-coef-v2/";
+const LEGACY_R_COEF_DST: &[u8] = b"vss-pedersen-blinding-coef-v1/";
 const VSS_SEED_INFO: &[u8] = b"ace::vss-dealer-seed::v1";
 
 #[derive(Debug, Clone)]
@@ -228,18 +229,15 @@ async fn build_and_submit_dc0(
     let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
     let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
     let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
-    let chain_id = rpc
-        .get_chain_id()
-        .await
-        .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
-    let derivation_context = polynomial_derivation_context(chain_id, ace, session_addr)?;
+    let derivation_context =
+        polynomial_derivation_context_for_session(rpc, ace, session_addr).await?;
 
     let dealing = build_dealing_data(
         scheme,
         n,
         threshold,
         pke_dk_bytes,
-        &derivation_context,
+        derivation_context.as_deref(),
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,
@@ -337,18 +335,15 @@ async fn build_and_submit_dc1(
     let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
     let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
     let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
-    let chain_id = rpc
-        .get_chain_id()
-        .await
-        .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
-    let derivation_context = polynomial_derivation_context(chain_id, ace, session_addr)?;
+    let derivation_context =
+        polynomial_derivation_context_for_session(rpc, ace, session_addr).await?;
 
     let dealing = build_dealing_data(
         scheme,
         n,
         threshold,
         pke_dk_bytes,
-        &derivation_context,
+        derivation_context.as_deref(),
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,
@@ -441,7 +436,7 @@ fn build_dealing_data(
     n: usize,
     threshold: usize,
     pke_dk_bytes: &[u8],
-    derivation_context: &[u8],
+    derivation_context: Option<&[u8]>,
     secret_override: Option<[u8; 32]>,
     public_base_bytes: &[u8],
     generator_g_bytes: &[u8],
@@ -505,12 +500,20 @@ fn build_dealing_data_from_polys(
 fn derive_polynomials(
     threshold: usize,
     pke_dk_bytes: &[u8],
-    derivation_context: &[u8],
+    derivation_context: Option<&[u8]>,
     secret_override: Option<[u8; 32]>,
 ) -> Result<(Vec<Fr>, Vec<Fr>)> {
     if threshold == 0 {
         return Err(anyhow!("VSS threshold must be positive"));
     }
+    let Some(derivation_context) = derivation_context else {
+        return Ok(derive_legacy_polynomials(
+            threshold,
+            pke_dk_bytes,
+            secret_override,
+        ));
+    };
+
     let vss_seed = derive_vss_seed(pke_dk_bytes)?;
 
     let secret = if let Some(s) = secret_override {
@@ -533,6 +536,28 @@ fn derive_polynomials(
         .map(|i| derive_polynomial_coefficient(R_COEF_DST, &vss_seed, derivation_context, i))
         .collect::<Result<Vec<_>>>()?;
     Ok((coefs_p, coefs_r))
+}
+
+fn derive_legacy_polynomials(
+    threshold: usize,
+    pke_dk_bytes: &[u8],
+    secret_override: Option<[u8; 32]>,
+) -> (Vec<Fr>, Vec<Fr>) {
+    let secret = if let Some(s) = secret_override {
+        Fr::from_le_bytes_mod_order(&s)
+    } else {
+        fr_from_dk_bytes(pke_dk_bytes, 0)
+    };
+    let mut coefs_p = Vec::with_capacity(threshold);
+    coefs_p.push(secret);
+    for i in 1..threshold {
+        coefs_p.push(fr_from_dk_bytes(pke_dk_bytes, i));
+    }
+
+    let coefs_r = (0..threshold)
+        .map(|i| fr_from_dk_bytes_with_dst(LEGACY_R_COEF_DST, pke_dk_bytes, i))
+        .collect();
+    (coefs_p, coefs_r)
 }
 
 fn derive_vss_seed(pke_dk_bytes: &[u8]) -> Result<[u8; 32]> {
@@ -570,6 +595,26 @@ fn polynomial_derivation_context(chain_id: u8, ace: &str, session_addr: &str) ->
     Ok(out)
 }
 
+async fn polynomial_derivation_context_for_session(
+    rpc: &AptosRpc,
+    ace: &str,
+    session_addr: &str,
+) -> Result<Option<Vec<u8>>> {
+    let feature_configs = rpc
+        .get_feature_configs_bcs_decoded(ace, session_addr)
+        .await
+        .map_err(|e| anyhow!("failed to fetch VSS feature configs: {}", e))?;
+    if !feature_configs.issue154_fix_enabled() {
+        return Ok(None);
+    }
+
+    let chain_id = rpc
+        .get_chain_id()
+        .await
+        .map_err(|e| anyhow!("failed to get chain_id: {}", e))?;
+    polynomial_derivation_context(chain_id, ace, session_addr).map(Some)
+}
+
 fn validate_polynomial_lengths(coefs_p: &[Fr], coefs_r: &[Fr], threshold: usize) -> Result<()> {
     if threshold == 0 {
         return Err(anyhow!("VSS threshold must be positive"));
@@ -594,8 +639,8 @@ mod tests {
         let context = polynomial_derivation_context(4, "0x0ace", "0x1234").unwrap();
         let dk = [42u8; 32];
 
-        let first = derive_polynomials(3, &dk, &context, None).unwrap();
-        let second = derive_polynomials(3, &dk, &context, None).unwrap();
+        let first = derive_polynomials(3, &dk, Some(&context), None).unwrap();
+        let second = derive_polynomials(3, &dk, Some(&context), None).unwrap();
 
         assert_eq!(first, second);
     }
@@ -606,8 +651,8 @@ mod tests {
         let context_2 = polynomial_derivation_context(4, "0x0ace", "0x1235").unwrap();
         let dk = [42u8; 32];
 
-        let first = derive_polynomials(3, &dk, &context_1, None).unwrap();
-        let second = derive_polynomials(3, &dk, &context_2, None).unwrap();
+        let first = derive_polynomials(3, &dk, Some(&context_1), None).unwrap();
+        let second = derive_polynomials(3, &dk, Some(&context_2), None).unwrap();
 
         assert_ne!(first, second);
     }
@@ -618,13 +663,27 @@ mod tests {
         let context = polynomial_derivation_context(4, "0x0ace", "0x1234").unwrap();
         let dk = [42u8; 32];
 
-        let (coefs_p, coefs_r) = derive_polynomials(3, &dk, &context, Some(secret)).unwrap();
+        let (coefs_p, coefs_r) = derive_polynomials(3, &dk, Some(&context), Some(secret)).unwrap();
         let (coefs_p_again, coefs_r_again) =
-            derive_polynomials(3, &dk, &context, Some(secret)).unwrap();
+            derive_polynomials(3, &dk, Some(&context), Some(secret)).unwrap();
 
         assert_eq!(coefs_p[0], Fr::from_le_bytes_mod_order(&secret));
         assert_eq!(coefs_p, coefs_p_again);
         assert_eq!(coefs_r, coefs_r_again);
+    }
+
+    #[test]
+    fn derive_polynomials_uses_legacy_path_without_context() {
+        let dk = [42u8; 32];
+
+        let (coefs_p, coefs_r) = derive_polynomials(3, &dk, None, None).unwrap();
+
+        assert_eq!(coefs_p[0], fr_from_dk_bytes(&dk, 0));
+        assert_eq!(coefs_p[1], fr_from_dk_bytes(&dk, 1));
+        assert_eq!(
+            coefs_r[0],
+            fr_from_dk_bytes_with_dst(LEGACY_R_COEF_DST, &dk, 0)
+        );
     }
 
     #[test]

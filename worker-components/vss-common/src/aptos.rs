@@ -640,6 +640,26 @@ impl AptosRpc {
         bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode BcsSession: {}", e))
     }
 
+    /// Fetch and BCS-decode the VSS feature config snapshot for `session_addr`.
+    pub async fn get_feature_configs_bcs_decoded(
+        &self,
+        ace: &str,
+        session_addr: &str,
+    ) -> Result<crate::session::FeatureConfigs> {
+        let result = self
+            .call_view(
+                &format!("{}::vss::feature_configs_bcs", ace),
+                &[serde_json::json!(session_addr)],
+            )
+            .await?;
+        let hex = result
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("expected string in feature_configs_bcs result"))?;
+        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+        bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode FeatureConfigs: {}", e))
+    }
+
     /// Fetch the inner `data` object of an Aptos resource at `(addr, resource_type)`.
     pub async fn get_resource_data(&self, addr: &str, resource_type: &str) -> Result<Value> {
         let url = format!(

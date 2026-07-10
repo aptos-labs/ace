@@ -76,6 +76,16 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         "vss-dealer: starting (account={} session={} ace={})",
         account_addr, session_addr, ace
     );
+    let derivation_context =
+        polynomial_derivation_context_for_session(&rpc, &ace, &session_addr).await?;
+    println!(
+        "vss-dealer: Issue154FixFlag {}",
+        if derivation_context.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(POLL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -118,6 +128,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                         &ace,
                         &session,
                         &pke_dk_bytes,
+                        derivation_context.as_deref(),
                         config.secret_override,
                     )
                     .await
@@ -163,6 +174,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             &ace,
                             &session,
                             &pke_dk_bytes,
+                            derivation_context.as_deref(),
                             config.secret_override,
                         )
                         .await
@@ -216,6 +228,7 @@ async fn build_and_submit_dc0(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
+    derivation_context: Option<&[u8]>,
     secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
@@ -229,15 +242,13 @@ async fn build_and_submit_dc0(
     let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
     let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
     let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
-    let derivation_context =
-        polynomial_derivation_context_for_session(rpc, ace, session_addr).await?;
 
     let dealing = build_dealing_data(
         scheme,
         n,
         threshold,
         pke_dk_bytes,
-        derivation_context.as_deref(),
+        derivation_context,
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,
@@ -322,6 +333,7 @@ async fn build_and_submit_dc1(
     ace: &str,
     session: &vss_common::Session,
     pke_dk_bytes: &[u8],
+    derivation_context: Option<&[u8]>,
     secret_override: Option<[u8; 32]>,
 ) -> Result<String> {
     let n = session.share_holders.len();
@@ -335,15 +347,13 @@ async fn build_and_submit_dc1(
     let base_point_bytes = bcs_session.base_point.point_bytes().to_vec();
     let generator_g_bytes = bcs_session.pcs_context.generator_g.point_bytes().to_vec();
     let generator_h_bytes = bcs_session.pcs_context.generator_h.point_bytes().to_vec();
-    let derivation_context =
-        polynomial_derivation_context_for_session(rpc, ace, session_addr).await?;
 
     let dealing = build_dealing_data(
         scheme,
         n,
         threshold,
         pke_dk_bytes,
-        derivation_context.as_deref(),
+        derivation_context,
         secret_override,
         &base_point_bytes,
         &generator_g_bytes,

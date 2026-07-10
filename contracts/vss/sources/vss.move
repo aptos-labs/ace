@@ -576,8 +576,13 @@ module ace::vss {
     fun canonicalize_feature_configs() {
         let is_empty = {
             let configs = &mut FeatureConfigs[@ace];
-            while (configs.items.length() > 0 && configs.items.last().is_none()) {
-                configs.items.pop_back();
+            while (configs.items.length() > 0) {
+                let last_idx = configs.items.length() - 1;
+                if (configs.items[last_idx].is_none()) {
+                    configs.items.pop_back();
+                } else {
+                    break;
+                };
             };
             configs.items.length() == 0
         };

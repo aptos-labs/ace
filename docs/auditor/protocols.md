@@ -30,6 +30,11 @@ verifies the sender from that in-memory registry and checks that it matches the
 requested holder index.
 The request carries a fresh HPKE-X25519 response key, and the dealer
 returns the opening encrypted with AAD bound to the signed request transcript.
+Recipient processes cache the chain ID per Aptos REST URL and the dealer's
+node-message endpoint per `(ACE deployment, dealer)` after the first successful
+read. These values are immutable under the current `worker_config` contract,
+whose registration functions use `move_to` and expose no rotation operation;
+failed reads are not cached.
 
 ## DKG
 

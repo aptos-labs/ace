@@ -85,16 +85,28 @@ The VSS recipient asks the dealer's node-message gateway for its share with:
 struct ShareRequest {
     session_addr: String,
     holder_index: u64, // zero-based index in vss::Session.share_holders
+    response_enc_key: pke::EncryptionKey, // fresh HPKE-X25519 key
 }
 ```
 
 The message route is `(protocol = "vss", route = "share-request")`. The gateway
 checks that the signed sender equals `share_holders[holder_index]`; the dealer
-then returns the BCS bytes of a `pedersen_polynomial_commitment::Opening` for
+then returns `BCS(pke::Ciphertext::HpkeX25519ChaCha20Poly1305)`. The encrypted
+plaintext is the BCS bytes of a `pedersen_polynomial_commitment::Opening` for
 evaluation position `holder_index + 1`.
 
-The recipient verifies the returned opening against the on-chain PCS context and
-DC0 commitment before submitting the on-chain ACK transaction.
+The canonical request ID is `vss-share:` followed by the hex-encoded,
+domain-separated SHA-256 hash of `BCS(ShareRequest)`. The dealer rejects an
+envelope whose signed request ID does not match its request body.
+
+The HPKE AAD is the BCS encoding of the domain
+`ace::vss::share-response::v1` together with the signed message's sender,
+recipient, request ID, and complete `ShareRequest`. This binds the encrypted
+opening to the complete share request transcript.
+
+The recipient decrypts with the request's ephemeral key, verifies the returned
+opening against the on-chain PCS context and DC0 commitment, and only then
+submits the on-chain ACK transaction.
 
 ## Worker Request
 

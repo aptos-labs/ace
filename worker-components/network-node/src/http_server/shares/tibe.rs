@@ -2,20 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::super::outcome::{Outcome, Reason};
-use super::lookup::lookup_share_or_reject;
 use crate::secret_usage;
-use crate::secrets::{ShareEntry, Snapshot};
+use crate::secrets::ShareEntry;
 
 pub(crate) fn preflight_tibe_share(
-    snapshot: &Snapshot,
+    entry: &ShareEntry,
     keypair_id: &str,
     epoch: u64,
     tibe_scheme: u8,
-) -> Result<ShareEntry, Outcome> {
-    let entry = lookup_share_or_reject(snapshot, keypair_id, epoch)?;
-    ensure_tibe_group(&entry, tibe_scheme)?;
-    ensure_tibe_usage(&entry, keypair_id, epoch, tibe_scheme)?;
-    Ok(entry)
+) -> Result<(), Outcome> {
+    ensure_tibe_group(entry, tibe_scheme)?;
+    ensure_tibe_usage(entry, keypair_id, epoch, tibe_scheme)
 }
 
 fn ensure_tibe_group(entry: &ShareEntry, tibe_scheme: u8) -> Result<(), Outcome> {

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod keypair;
-mod lookup;
 mod response;
 mod tibe;
 mod vrf;

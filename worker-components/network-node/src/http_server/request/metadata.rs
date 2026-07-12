@@ -4,23 +4,33 @@
 use vss_common::pke::EncryptionKey;
 
 use super::super::outcome::{Flow, RequestContext};
-use crate::verify::{DecryptionBasicFlowRequest, DecryptionCustomFlowRequest, ThresholdVrfRequest};
+use crate::verify::{
+    DecryptionBasicFlowRequest, DecryptionCustomFlowRequest, ThresholdVrfRequest, WorkerRequest,
+};
 
-pub(crate) fn record_basic(ctx: &mut RequestContext, req: &DecryptionBasicFlowRequest) {
+pub(crate) fn record(ctx: &mut RequestContext, request: &WorkerRequest) {
+    match request {
+        WorkerRequest::DecryptionBasicFlow(req) => record_basic(ctx, req),
+        WorkerRequest::DecryptionCustomFlow(req) => record_custom(ctx, req),
+        WorkerRequest::ThresholdVrf(req) => record_vrf(ctx, req),
+    }
+}
+
+fn record_basic(ctx: &mut RequestContext, req: &DecryptionBasicFlowRequest) {
     ctx.flow = Some(Flow::Basic);
     ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
     ctx.epoch = Some(req.payload.epoch);
     ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.ephemeral_enc_key);
 }
 
-pub(crate) fn record_custom(ctx: &mut RequestContext, req: &DecryptionCustomFlowRequest) {
+fn record_custom(ctx: &mut RequestContext, req: &DecryptionCustomFlowRequest) {
     ctx.flow = Some(Flow::Custom);
     ctx.keypair_short = Some(short_hex(&req.keypair_id));
     ctx.epoch = Some(req.epoch);
     ctx.enc_pk_hex = enc_pk_to_hex(&req.enc_pk);
 }
 
-pub(crate) fn record_vrf(ctx: &mut RequestContext, req: &ThresholdVrfRequest) {
+fn record_vrf(ctx: &mut RequestContext, req: &ThresholdVrfRequest) {
     ctx.flow = Some(Flow::ThresholdVrf);
     ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
     ctx.epoch = Some(req.payload.epoch);

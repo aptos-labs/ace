@@ -1,7 +1,7 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! In-memory secret-share snapshots used by request handlers.
+//! In-memory secret shares used by request handlers.
 //!
 //! Monolith processes fill this map from the maintainer loop. Handler-only
 //! processes fill the same map from the shared VSS DB in a background sync loop;
@@ -33,29 +33,18 @@ pub struct ShareEntry {
     pub note: String,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Snapshot {
-    pub entries: Arc<HashMap<(String, u64), ShareEntry>>,
-}
-
-impl Snapshot {
-    pub fn lookup(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
-        // `HashMap<(String, u64), _>::get` needs an owned key here because
-        // there is no `Borrow<(String, u64)>` impl for `(&str, u64)`.
-        self.entries.get(&(keypair_id.to_string(), epoch)).cloned()
-    }
-}
-
 #[derive(Clone)]
 pub struct LocalSecrets {
     pub shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
 }
 
 impl LocalSecrets {
-    pub async fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            entries: Arc::new(self.shares.read().await.clone()),
-        }
+    pub async fn get_share(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
+        self.shares
+            .read()
+            .await
+            .get(&(keypair_id.to_string(), epoch))
+            .cloned()
     }
 }
 
@@ -64,9 +53,9 @@ pub enum SecretsProvider {
 }
 
 impl SecretsProvider {
-    pub async fn snapshot(&self) -> Result<Arc<Snapshot>> {
+    pub async fn get_share(&self, keypair_id: &str, epoch: u64) -> Result<Option<ShareEntry>> {
         match self {
-            SecretsProvider::Local(l) => Ok(Arc::new(l.snapshot().await)),
+            SecretsProvider::Local(l) => Ok(l.get_share(keypair_id, epoch).await),
         }
     }
 }
@@ -94,7 +83,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_snapshot_roundtrip() {
+    async fn local_get_share_only_clones_requested_share() {
         let mut shares: HashMap<(String, u64), ShareEntry> = HashMap::new();
         shares.insert(
             ("0xkp".to_string(), 5),
@@ -127,16 +116,26 @@ mod tests {
             shares: Arc::new(RwLock::new(shares)),
         };
 
-        let snapshot = local.snapshot().await;
-        assert_eq!(snapshot.entries.len(), 2);
-        let first = snapshot.lookup("0xkp", 5).expect("epoch 5 share");
+        let first = local.get_share("0xkp", 5).await.expect("epoch 5 share");
         assert_eq!(first.group_scheme, 0);
         assert_eq!(
             first.expected_usage,
             0
         );
         assert_eq!(first.note, "test-only g1");
-        let second = snapshot.lookup("0xkp", 6).expect("epoch 6 share");
+        local
+            .shares
+            .write()
+            .await
+            .get_mut(&("0xkp".to_string(), 5))
+            .unwrap()
+            .note = "updated live share".to_string();
+        assert_eq!(
+            first.note,
+            "test-only g1"
+        );
+
+        let second = local.get_share("0xkp", 6).await.expect("epoch 6 share");
         assert_eq!(second.group_scheme, 1);
         assert_eq!(
             second.expected_usage,
@@ -146,11 +145,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_snapshot_empty_when_no_shares() {
+    async fn local_get_share_returns_none_when_missing() {
         let local = LocalSecrets {
             shares: Arc::new(RwLock::new(HashMap::new())),
         };
-        let snapshot = local.snapshot().await;
-        assert!(snapshot.entries.is_empty());
+        assert!(local.get_share("0xmissing", 7).await.is_none());
     }
 }

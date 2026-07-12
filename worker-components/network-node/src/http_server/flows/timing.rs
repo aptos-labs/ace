@@ -7,17 +7,17 @@ use super::super::outcome::{Outcome, RequestContext};
 use super::super::shares::{
     derive_tibe_share_and_respond, preflight_threshold_vrf_share, preflight_tibe_share,
 };
-use crate::secrets::{ShareEntry, Snapshot};
+use crate::secrets::ShareEntry;
 
 pub(crate) fn timed_tibe_preflight(
     ctx: &mut RequestContext,
-    snapshot: &Snapshot,
+    share: &ShareEntry,
     keypair_id: &str,
     epoch: u64,
     tibe_scheme: u8,
-) -> Result<ShareEntry, Outcome> {
+) -> Result<(), Outcome> {
     let start = Instant::now();
-    let result = preflight_tibe_share(snapshot, keypair_id, epoch, tibe_scheme);
+    let result = preflight_tibe_share(share, keypair_id, epoch, tibe_scheme);
     if result.is_err() {
         ctx.extract_ms = Some(start.elapsed().as_millis() as u64);
     }
@@ -26,12 +26,12 @@ pub(crate) fn timed_tibe_preflight(
 
 pub(crate) fn timed_vrf_preflight(
     ctx: &mut RequestContext,
-    snapshot: &Snapshot,
+    share: &ShareEntry,
     keypair_id: &str,
     epoch: u64,
-) -> Result<ShareEntry, Outcome> {
+) -> Result<(), Outcome> {
     let start = Instant::now();
-    let result = preflight_threshold_vrf_share(snapshot, keypair_id, epoch);
+    let result = preflight_threshold_vrf_share(share, keypair_id, epoch);
     if result.is_err() {
         ctx.extract_ms = Some(start.elapsed().as_millis() as u64);
     }

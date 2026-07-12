@@ -9,27 +9,26 @@ use super::super::state::AppState;
 use super::forbidden;
 use super::timing::timed_vrf_preflight;
 use super::vrf_share::derive_threshold_vrf_share;
-use crate::secrets::{ShareEntry, Snapshot};
+use crate::secrets::ShareEntry;
 use crate::verify::{self, ThresholdVrfRequest};
 
 pub(crate) async fn handle_threshold_vrf(
     state: &AppState,
-    snapshot: &Snapshot,
+    share: &ShareEntry,
     req: ThresholdVrfRequest,
     ctx: &mut RequestContext,
 ) -> Outcome {
     let keypair_id = keypair_id_str(&req.payload.keypair_id);
-    let entry = match timed_vrf_preflight(ctx, snapshot, &keypair_id, req.payload.epoch) {
-        Ok(entry) => entry,
-        Err(outcome) => return outcome,
-    };
+    if let Err(outcome) = timed_vrf_preflight(ctx, share, &keypair_id, req.payload.epoch) {
+        return outcome;
+    }
     let pfn_start = Instant::now();
     if let Err(e) = verify::verify_threshold_vrf(&req, &state.chain_rpc).await {
         ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
         return forbidden(e);
     }
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
-    timed_vrf_response(ctx, &req, &entry)
+    timed_vrf_response(ctx, &req, share)
 }
 
 fn timed_vrf_response(

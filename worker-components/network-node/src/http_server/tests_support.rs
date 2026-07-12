@@ -1,20 +1,8 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::Arc};
-
 use vss_common::group::{BcsElement, BcsPublicPoint};
 use vss_common::session::BcsPcsPublicParams;
-
-use crate::secrets::{ShareEntry, Snapshot};
-
-pub(crate) fn snapshot_with_share(keypair_id: &str, epoch: u64, entry: ShareEntry) -> Snapshot {
-    let mut entries = HashMap::new();
-    entries.insert((keypair_id.to_string(), epoch), entry);
-    Snapshot {
-        entries: Arc::new(entries),
-    }
-}
 
 pub(crate) fn dummy_pcs_context() -> BcsPcsPublicParams {
     BcsPcsPublicParams {

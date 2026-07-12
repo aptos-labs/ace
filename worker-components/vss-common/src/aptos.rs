@@ -6,10 +6,11 @@ use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha3::{Digest, Sha3_256};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::session::Session;
+use crate::{normalize_account_addr, session::Session};
 
 /// Process-global nonce counter for orderless transactions.
 /// Seeded from the current time in nanoseconds so that separate OS processes
@@ -235,12 +236,55 @@ fn fee_payer_signing_input(fee_payer_txn_bcs: &[u8]) -> Vec<u8> {
 
 // ── AptosRpc ─────────────────────────────────────────────────────────────────
 
+/// Successful reads of immutable network metadata, shared by all `AptosRpc`
+/// instances that target the same normalized REST URL.
+#[derive(Default)]
+struct AptosRpcMetadataCache {
+    chain_id: tokio::sync::OnceCell<u8>,
+    node_msg_endpoints: Mutex<
+        HashMap<(String, String), Arc<tokio::sync::OnceCell<String>>>,
+    >,
+}
+
+impl AptosRpcMetadataCache {
+    fn node_msg_endpoint_cell(
+        &self,
+        ace: &str,
+        worker_addr: &str,
+    ) -> Arc<tokio::sync::OnceCell<String>> {
+        let key = (
+            normalize_account_addr(ace),
+            normalize_account_addr(worker_addr),
+        );
+        self.node_msg_endpoints
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key)
+            .or_default()
+            .clone()
+    }
+}
+
+fn metadata_cache_for_rpc_url(base_url: &str) -> Arc<AptosRpcMetadataCache> {
+    static CACHES: OnceLock<Mutex<HashMap<String, Arc<AptosRpcMetadataCache>>>> = OnceLock::new();
+
+    let cache_key = base_url.trim_end_matches('/').to_string();
+    CACHES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(cache_key)
+        .or_default()
+        .clone()
+}
+
 #[derive(Clone)]
 pub struct AptosRpc {
     pub base_url: String,
     client: reqwest::Client,
     gas_key: Option<String>,
     gas_station_url: Option<String>,
+    metadata_cache: Arc<AptosRpcMetadataCache>,
 }
 
 #[derive(Deserialize)]
@@ -290,10 +334,20 @@ impl AptosRpc {
             }
         });
 
-        Self { base_url, client, gas_key, gas_station_url }
+        let metadata_cache = metadata_cache_for_rpc_url(&base_url);
+        Self { base_url, client, gas_key, gas_station_url, metadata_cache }
     }
 
     pub async fn get_chain_id(&self) -> Result<u8> {
+        let chain_id = self
+            .metadata_cache
+            .chain_id
+            .get_or_try_init(|| self.fetch_chain_id())
+            .await?;
+        Ok(*chain_id)
+    }
+
+    async fn fetch_chain_id(&self) -> Result<u8> {
         let url = self.base_url.trim_end_matches('/');
         let resp = self.client.get(url).send().await?;
         if !resp.status().is_success() {
@@ -730,17 +784,23 @@ impl AptosRpc {
 
     /// Fetch a worker's registered node-to-node message endpoint.
     pub async fn get_worker_node_msg_endpoint(&self, ace: &str, worker_addr: &str) -> Result<String> {
-        let result = self
-            .call_view(
-                &format!("{}::worker_config::get_node_msg_endpoint", ace),
-                &[json!(worker_addr)],
-            )
+        let cell = self.metadata_cache.node_msg_endpoint_cell(ace, worker_addr);
+        let endpoint = cell
+            .get_or_try_init(|| async {
+                let result = self
+                    .call_view(
+                        &format!("{}::worker_config::get_node_msg_endpoint", ace),
+                        &[json!(worker_addr)],
+                    )
+                    .await?;
+                result
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| anyhow!("expected string in get_node_msg_endpoint result"))
+            })
             .await?;
-        result
-            .first()
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("expected string in get_node_msg_endpoint result"))
+        Ok(endpoint.clone())
     }
 
     pub async fn wait_for_txn(&self, hash: &str) -> Result<()> {
@@ -779,6 +839,58 @@ impl AptosRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn rpc_instances_share_metadata_cache_by_normalized_url() {
+        let first = AptosRpc::new("http://cache-test.invalid/v1".to_string());
+        let same = AptosRpc::new("http://cache-test.invalid/v1/".to_string());
+        let different = AptosRpc::new("http://other-cache-test.invalid/v1".to_string());
+
+        assert!(Arc::ptr_eq(&first.metadata_cache, &same.metadata_cache));
+        assert!(!Arc::ptr_eq(&first.metadata_cache, &different.metadata_cache));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn metadata_cache_singleflights_chain_id_and_worker_endpoint() {
+        let cache = Arc::new(AptosRpcMetadataCache::default());
+        let chain_loads = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let cache = cache.clone();
+            let chain_loads = chain_loads.clone();
+            tasks.push(tokio::spawn(async move {
+                *cache.chain_id.get_or_init(|| async move {
+                    chain_loads.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(20)).await;
+                    4
+                }).await
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), 4);
+        }
+        assert_eq!(chain_loads.load(Ordering::SeqCst), 1);
+
+        let endpoint_loads = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for worker_addr in ["0x1", "0x01", "0x0001", "1"].into_iter().cycle().take(16) {
+            let cell = cache.node_msg_endpoint_cell("0xace", worker_addr);
+            let endpoint_loads = endpoint_loads.clone();
+            tasks.push(tokio::spawn(async move {
+                cell.get_or_init(|| async move {
+                    endpoint_loads.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(20)).await;
+                    "http://worker.invalid:8080".to_string()
+                }).await.clone()
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), "http://worker.invalid:8080");
+        }
+        assert_eq!(endpoint_loads.load(Ordering::SeqCst), 1);
+    }
 
     /// Pins the exact BCS layout of `TransactionPayload::Payload(V1(...))` for an
     /// orderless entry function with one Address arg + one Bytes arg.

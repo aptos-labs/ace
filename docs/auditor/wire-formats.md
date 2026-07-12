@@ -75,7 +75,9 @@ struct SignedNodeMessage {
 
 `signature_bcs_hex` is the BCS `sig::Signature` over the BCS
 `NodeMessageToSign` described in [`cryptography/sig.md`](./cryptography/sig.md).
-The gateway verifies the sender against `worker_config::get_sig_verification_key_bcs`.
+Before serving a VSS session, the dealer client loads its holders' keys from
+`worker_config::get_sig_verification_key_bcs` into the gateway. The request
+path verifies the sender against that in-memory registry without a chain read.
 
 ## Off-Chain VSS Share Request
 

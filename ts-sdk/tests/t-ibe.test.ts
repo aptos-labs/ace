@@ -29,7 +29,7 @@ function setupShares(threshold: number, total: number, id: Uint8Array): {
     const sharePks: WeierstrassPoint<bigint>[] = [];
     for (let i = 0; i < shareLeBytes.length; i++) {
         const si = bytesToNumberLE(shareLeBytes[i]);
-        shares.push(new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint.multiply(si), undefined));
+        shares.push(new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint.multiply(si)));
         sharePks.push(mskInner.base.multiply(si) as unknown as WeierstrassPoint<bigint>);
     }
     return { mskInner, mpkInner, shares, sharePks };
@@ -106,7 +106,7 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             const { mpkInner, shares, sharePks } = setupShares(2, 3, id);
             // Replace idkShare with a different point (use share[1]'s idkShare under share[0]'s evalPoint).
             const tampered = new BfibeBls12381.IdentityDecryptionKeyShare(
-                shares[0].evalPoint, shares[1].idkShare, undefined,
+                shares[0].evalPoint, shares[1].idkShare,
             );
             const ok = BfibeBls12381.verifyShare({
                 basePoint: mpkInner.basePoint,
@@ -160,7 +160,7 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             const idPoint2 = bls12_381.G2.hashToCurve(id2, { DST: DST_ID_HASH }) as unknown as WeierstrassPoint<Fp2>;
             const wrongShares = shareLeBytes.slice(0, 2).map((leBytes, i) => {
                 const si = bytesToNumberLE(leBytes);
-                return new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint2.multiply(si), undefined);
+                return new BfibeBls12381.IdentityDecryptionKeyShare(BigInt(i + 1), idPoint2.multiply(si));
             });
 
             const result = BfibeBls12381.decrypt({ idkShares: wrongShares, ciphertext });
@@ -193,7 +193,7 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             expect(restored.toBytes()).toEqual(ciph.toBytes());
         });
 
-        it('IdentityDecryptionKeyShare (without proof)', () => {
+        it('IdentityDecryptionKeyShare', () => {
             const id = new TextEncoder().encode('serde@test.com');
             const { shares } = setupShares(2, 3, id);
             const share = shares[0];
@@ -202,17 +202,6 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             expect(restored.toBytes()).toEqual(share.toBytes());
         });
 
-        it('IdentityDecryptionKeyShare (with proof bytes)', () => {
-            const id = new TextEncoder().encode('serde-proof@test.com');
-            const { shares } = setupShares(2, 3, id);
-            const proof = new Uint8Array(32).fill(0xab);
-            const shareWithProof = new BfibeBls12381.IdentityDecryptionKeyShare(
-                shares[0].evalPoint, shares[0].idkShare, proof
-            );
-            const restored = BfibeBls12381.IdentityDecryptionKeyShare.fromBytes(shareWithProof.toBytes())
-                .unwrapOrThrow('IdentityDecryptionKeyShare (with proof) round-trip failed');
-            expect(restored.toBytes()).toEqual(shareWithProof.toBytes());
-        });
     });
 
     describe('Serialization round-trips (abstract wrapper classes)', () => {
@@ -247,7 +236,7 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
             const { shares } = setupShares(2, 3, id);
             const share = shares[0];
             const wrapped = TIBE.IdentityDecryptionKeyShare.newBonehFranklinBls12381ShortPkOtpHmac(
-                share.evalPoint, share.idkShare, undefined
+                share.evalPoint, share.idkShare
             ).unwrapOrThrow('newBonehFranklin');
             const restored = TIBE.IdentityDecryptionKeyShare.fromBytes(wrapped.toBytes())
                 .unwrapOrThrow('IdentityDecryptionKeyShare wrapper round-trip failed');

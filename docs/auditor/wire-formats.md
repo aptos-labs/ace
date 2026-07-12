@@ -183,12 +183,32 @@ The HTTP response body is a hex string of `BCS(pke_encrypt(response_enc_key, BCS
 For IBE requests, the encrypted plaintext is `BCS(IdentityDecryptionKeyShare)`:
 
 ```rust
-struct IdentityDecryptionKeyShare {
-    eval_point: [u8; 32],
-    idk_share: Vec<u8>, // 96-byte G2 for scheme 0; 48-byte G1 for scheme 1
-    proof: Option<...>, // currently None; SDK verifies against sharePk by pairing
+enum IdentityDecryptionKeyShare {
+    BfibeBls12381ShortPkOtpHmac(ShortPkIdentityDecryptionKeyShare), // tag 0
+    BfibeBls12381ShortSigAead(ShortSigIdentityDecryptionKeyShare),  // tag 1
+}
+
+struct ShortPkIdentityDecryptionKeyShare {
+    eval_point: BcsFixedBytes<32>,
+    idk_share: BcsFixedBytes<96>, // compressed G2 encoding
+}
+
+struct ShortSigIdentityDecryptionKeyShare {
+    eval_point: BcsFixedBytes<32>,
+    idk_share: BcsFixedBytes<48>, // compressed G1 encoding
 }
 ```
+
+The enum discriminants are the scheme tags consumed by the TypeScript SDK.
+`BcsFixedBytes<N>` serializes as a BCS byte vector. Both Rust and TypeScript first
+parse this wire representation with only exact-length checks; neither decoder
+decompresses or validates a curve point. The SDK then checks the response scheme
+and the holder's expected evaluation point before explicitly materializing the
+curve point and performing pairing verification against the public share-PK.
+There is no separate IBE share proof field; the SDK verifies each share against
+its public share-PK by pairing. The complete outer encoding is 131 bytes for
+scheme 0 and 83 bytes for scheme 1. Rust and TypeScript consume the shared golden vectors in
+`test-vectors/identity-decryption-key-share.json`.
 
 ```rust
 struct ThresholdVrfShare {

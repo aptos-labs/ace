@@ -163,21 +163,15 @@ export class MasterPrivateKey {
 export class IdentityDecryptionKeyShare {
     evalPoint: bigint;
     idkShare: WeierstrassPoint<bigint>; // G1 — this is the "minimal-signature-size" object
-    proof: Uint8Array | undefined;
 
-    constructor(evalPoint: bigint, idkShare: WeierstrassPoint<bigint>, proof: Uint8Array | undefined) {
+    constructor(evalPoint: bigint, idkShare: WeierstrassPoint<bigint>) {
         this.evalPoint = evalPoint;
         this.idkShare = idkShare;
-        this.proof = proof;
     }
 
     serialize(serializer: Serializer): void {
         serializer.serializeBytes(numberToBytesLE(this.evalPoint, 32));
         serializer.serializeBytes((this.idkShare as any).toBytes());
-        serializer.serializeU8(this.proof !== undefined ? 1 : 0);
-        if (this.proof !== undefined) {
-            serializer.serializeBytes(this.proof);
-        }
     }
 
     static deserialize(deserializer: Deserializer): Result<IdentityDecryptionKeyShare> {
@@ -188,10 +182,7 @@ export class IdentityDecryptionKeyShare {
                 if (evalPointBytes.length !== 32) throw "IdentityDecryptionKeyShare: expected 32-byte evalPoint";
                 const evalPoint = bytesToNumberLE(evalPointBytes);
                 const idkShareBytes = deserializer.deserializeBytes();
-                const idkShare = bls12_381.G1.Point.fromBytes(idkShareBytes) as unknown as WeierstrassPoint<bigint>;
-                const hasProof = deserializer.deserializeU8() !== 0;
-                const proof = hasProof ? deserializer.deserializeBytes() : undefined;
-                return new IdentityDecryptionKeyShare(evalPoint, idkShare, proof);
+                return identityDecryptionKeyShareFromCompressedBytes(evalPoint, idkShareBytes);
             },
         });
     }
@@ -222,6 +213,15 @@ export class IdentityDecryptionKeyShare {
     }
 
     toHex(): string { return bytesToHex(this.toBytes()); }
+}
+
+export function identityDecryptionKeyShareFromCompressedBytes(
+    evalPoint: bigint,
+    idkShareBytes: Uint8Array,
+): IdentityDecryptionKeyShare {
+    if (idkShareBytes.length !== 48) throw "IdentityDecryptionKeyShare: expected 48-byte G1 point";
+    const idkShare = bls12_381.G1.Point.fromBytes(idkShareBytes) as unknown as WeierstrassPoint<bigint>;
+    return new IdentityDecryptionKeyShare(evalPoint, idkShare);
 }
 
 // ── Ciphertext ───────────────────────────────────────────────────────────────

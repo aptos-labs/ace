@@ -76,7 +76,10 @@ Recover seed and decrypt:
 
 **Output sizes** (excluding wire ULEBs):
 - Ciphertext: **112 + |plaintext|** bytes.
-- IDK share: **81 bytes** = 32B `eval_point` LE || 48B G1 || 1B share-proof flag.
+- Scheme-1 IDK inner share: **80 bytes** = 32B `eval_point` LE || 48B G1.
+- Complete scheme-1 `IdentityDecryptionKeyShare` BCS: **83 bytes**, including
+  the outer scheme byte and two one-byte vector-length ULEBs. The analogous
+  scheme-0 G2 encoding is **131 bytes**.
 
 **Security.** CCA-secure under [Boneh–Franklin 2001 / FullIdent](https://crypto.stanford.edu/~dabo/papers/bfibe.pdf) on BLS12-381 (BDH assumption), threshold-extended via Shamir over $\mathbb{F}_r$, in the random-oracle model. The AEAD provides authenticated encryption with a single-use derived (key, nonce) — no nonce reuse risk because each fresh $r$ derives a fresh seed and therefore a fresh $(\text{key}, \text{nonce})$. ~128-bit security level.
 

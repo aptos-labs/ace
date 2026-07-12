@@ -72,7 +72,7 @@ for (const { label, bytes } of SIZES) {
                     const ct = encrypt({ mpk, id: ID, plaintext: pt }).unwrapOrThrow("encrypt");
                     const idPoint = bls12_381.G1.hashToCurve(ID, { DST });
                     const idkFull = (idPoint as any).multiply(msk.scalar);
-                    const share = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+                    const share = new IdentityDecryptionKeyShare(1n, idkFull);
                     pinned = { share, ct };
                 },
             },

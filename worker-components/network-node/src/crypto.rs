@@ -9,7 +9,7 @@ use ark_ec::{
     hashing::{curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve},
     AffineRepr, CurveGroup,
 };
-use ark_ff::{field_hashers::DefaultFieldHasher, BigInteger, PrimeField};
+use ark_ff::{field_hashers::DefaultFieldHasher, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::RngCore;
 use sha2::{Digest, Sha256, Sha512};
@@ -37,6 +37,93 @@ type G1Hasher = MapToCurveBasedHasher<
     WBMap<ark_bls12_381::g1::Config>,
 >;
 
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum IdentityDecryptionKeyShareWire {
+    BfibeBls12381ShortPkOtpHmac(ShortPkIdentityDecryptionKeyShareWire),
+    BfibeBls12381ShortSigAead(ShortSigIdentityDecryptionKeyShareWire),
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ShortPkIdentityDecryptionKeyShareWire {
+    eval_point: BcsFixedBytes<32>,
+    idk_share: BcsFixedBytes<96>,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ShortSigIdentityDecryptionKeyShareWire {
+    eval_point: BcsFixedBytes<32>,
+    idk_share: BcsFixedBytes<48>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BcsFixedBytes<const N: usize>([u8; N]);
+
+impl<const N: usize> BcsFixedBytes<N> {
+    fn try_from_vec(bytes: Vec<u8>, label: &str) -> Result<Self> {
+        let actual_len = bytes.len();
+        let fixed = bytes.try_into().map_err(|_| {
+            anyhow!(
+                "{} must be exactly {} bytes, got {}",
+                label,
+                N,
+                actual_len
+            )
+        })?;
+        Ok(Self(fixed))
+    }
+}
+
+impl<const N: usize> serde::Serialize for BcsFixedBytes<N> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de, const N: usize> serde::Deserialize<'de> for BcsFixedBytes<N> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+        let actual_len = bytes.len();
+        let fixed = bytes.try_into().map_err(|_| {
+            serde::de::Error::custom(format!(
+                "expected exactly {} bytes, got {}",
+                N, actual_len
+            ))
+        })?;
+        Ok(Self(fixed))
+    }
+}
+
+impl IdentityDecryptionKeyShareWire {
+    fn new(scheme: u8, eval_point: u64, idk_share: Vec<u8>) -> Result<Self> {
+        let eval_point = BcsFixedBytes(fr_to_le_bytes(Fr::from(eval_point)));
+        match scheme {
+            SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => Ok(
+                Self::BfibeBls12381ShortPkOtpHmac(ShortPkIdentityDecryptionKeyShareWire {
+                    eval_point,
+                    idk_share: BcsFixedBytes::try_from_vec(idk_share, "G2 IDK share")?,
+                }),
+            ),
+            SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => Ok(
+                Self::BfibeBls12381ShortSigAead(ShortSigIdentityDecryptionKeyShareWire {
+                    eval_point,
+                    idk_share: BcsFixedBytes::try_from_vec(idk_share, "G1 IDK share")?,
+                }),
+            ),
+            scheme => Err(anyhow!("unsupported t-IBE scheme {}", scheme)),
+        }
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        bcs::to_bytes(self).map_err(|e| anyhow!("encode identity decryption key share: {}", e))
+    }
+}
+
 pub fn group_scheme_for_tibe(tibe_scheme: u8) -> Result<u8> {
     use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
     match tibe_scheme {
@@ -54,7 +141,7 @@ pub fn partial_extract_idk_share(
     eval_point: u64,
 ) -> Result<Vec<u8>> {
     let scalar = Fr::from_le_bytes_mod_order(scalar_le32);
-    let (share_bytes, share_len_tag) = match tibe_scheme {
+    let share_bytes = match tibe_scheme {
         SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => {
             let hasher = G2Hasher::new(DST_HASH_TO_G2_SHORTPK)
                 .map_err(|e| anyhow!("G2Hasher::new: {:?}", e))?;
@@ -67,7 +154,7 @@ pub fn partial_extract_idk_share(
                 .into_affine()
                 .serialize_compressed(&mut bytes)
                 .map_err(|e| anyhow!("serialize G2 IDK share: {:?}", e))?;
-            (bytes, 0x60)
+            bytes
         }
         SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => {
             let hasher = G1Hasher::new(DST_HASH_TO_G1_SHORTSIG)
@@ -81,23 +168,12 @@ pub fn partial_extract_idk_share(
                 .into_affine()
                 .serialize_compressed(&mut bytes)
                 .map_err(|e| anyhow!("serialize G1 IDK share: {:?}", e))?;
-            (bytes, 0x30)
+            bytes
         }
         scheme => return Err(anyhow!("unsupported t-IBE scheme {}", scheme)),
     };
 
-    let eval_bytes = Fr::from(eval_point).into_bigint().to_bytes_le();
-    let mut eval_le32 = [0u8; 32];
-    eval_le32[..eval_bytes.len()].copy_from_slice(&eval_bytes);
-
-    let mut out = Vec::with_capacity(36 + share_bytes.len());
-    out.push(tibe_scheme);
-    out.push(0x20); // BCS vector length for the 32-byte evaluation point.
-    out.extend_from_slice(&eval_le32);
-    out.push(share_len_tag);
-    out.extend_from_slice(&share_bytes);
-    out.push(0x00); // No separate proof; the public sub-PK verifies this share.
-    Ok(out)
+    IdentityDecryptionKeyShareWire::new(tibe_scheme, eval_point, share_bytes)?.to_bytes()
 }
 
 #[derive(serde::Serialize)]
@@ -338,34 +414,96 @@ fn bcs_g2_projective(elem: &BcsElement) -> Result<G2Projective> {
 mod tests {
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    struct IdkShareWireVectors {
+        identity_utf8: String,
+        scalar_le_hex: String,
+        eval_point: u64,
+        shortpk_otp_hmac_hex: String,
+        shortsig_aead_hex: String,
+    }
+
     #[test]
-    fn tibe_share_wire_formats_cover_both_groups() {
-        let scalar = fr_to_le_bytes(Fr::from(7u64));
+    fn tibe_share_wire_matches_cross_language_vectors() {
+        let vectors: IdkShareWireVectors = serde_json::from_str(include_str!(
+            "../../../test-vectors/identity-decryption-key-share.json"
+        ))
+        .unwrap();
+        let scalar: [u8; 32] = hex::decode(&vectors.scalar_le_hex)
+            .unwrap()
+            .try_into()
+            .unwrap();
         let short_pk = partial_extract_idk_share(
             SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
-            b"identity",
+            vectors.identity_utf8.as_bytes(),
             &scalar,
-            2,
+            vectors.eval_point,
         )
         .unwrap();
-        assert_eq!(short_pk.len(), 132);
-        assert_eq!(short_pk[0], SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC);
-        assert_eq!(short_pk[1], 32);
-        assert_eq!(short_pk[34], 96);
-        assert_eq!(short_pk[131], 0);
+        assert_eq!(hex::encode(&short_pk), vectors.shortpk_otp_hmac_hex);
+        let short_pk_wire: IdentityDecryptionKeyShareWire = bcs::from_bytes(&short_pk).unwrap();
+        let IdentityDecryptionKeyShareWire::BfibeBls12381ShortPkOtpHmac(short_pk_inner) =
+            &short_pk_wire
+        else {
+            panic!("expected short-pk IDK share wire variant");
+        };
+        assert_eq!(
+            short_pk_inner.eval_point.0,
+            fr_to_le_bytes(Fr::from(vectors.eval_point))
+        );
+        assert_eq!(short_pk_inner.idk_share.0.len(), 96);
+        assert_eq!(short_pk_wire.to_bytes().unwrap(), short_pk);
 
         let short_sig = partial_extract_idk_share(
             SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
-            b"identity",
+            vectors.identity_utf8.as_bytes(),
             &scalar,
-            2,
+            vectors.eval_point,
         )
         .unwrap();
-        assert_eq!(short_sig.len(), 84);
-        assert_eq!(short_sig[0], SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD);
-        assert_eq!(short_sig[1], 32);
-        assert_eq!(short_sig[34], 48);
-        assert_eq!(short_sig[83], 0);
+        assert_eq!(hex::encode(&short_sig), vectors.shortsig_aead_hex);
+        let short_sig_wire: IdentityDecryptionKeyShareWire = bcs::from_bytes(&short_sig).unwrap();
+        let IdentityDecryptionKeyShareWire::BfibeBls12381ShortSigAead(short_sig_inner) =
+            &short_sig_wire
+        else {
+            panic!("expected short-sig IDK share wire variant");
+        };
+        assert_eq!(
+            short_sig_inner.eval_point.0,
+            fr_to_le_bytes(Fr::from(vectors.eval_point))
+        );
+        assert_eq!(short_sig_inner.idk_share.0.len(), 48);
+        assert_eq!(short_sig_wire.to_bytes().unwrap(), short_sig);
+    }
+
+    #[test]
+    fn tibe_share_wire_rejects_wrong_scheme_and_point_length() {
+        assert!(IdentityDecryptionKeyShareWire::new(
+            SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+            1,
+            vec![0u8; 95],
+        )
+        .is_err());
+        assert!(IdentityDecryptionKeyShareWire::new(
+            SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+            1,
+            vec![0u8; 49],
+        )
+        .is_err());
+        assert!(IdentityDecryptionKeyShareWire::new(0xff, 1, vec![]).is_err());
+    }
+
+    #[test]
+    fn tibe_share_wire_deserialization_only_checks_structure() {
+        let wire = IdentityDecryptionKeyShareWire::new(
+            SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+            1,
+            vec![0xff; 48],
+        )
+        .unwrap();
+        let bytes = wire.to_bytes().unwrap();
+        let decoded: IdentityDecryptionKeyShareWire = bcs::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, wire);
     }
 
     #[test]

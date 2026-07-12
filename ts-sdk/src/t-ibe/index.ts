@@ -1,6 +1,7 @@
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { Fp2 } from "@noble/curves/abstract/tower";
 import { WeierstrassPoint } from "@noble/curves/abstract/weierstrass";
+import { bytesToNumberLE } from "@noble/curves/utils";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { group } from "..";
 import { Result } from "../result";
@@ -282,10 +283,10 @@ export class IdentityDecryptionKeyShare {
         this.inner = inner;
     }
 
-    static newBonehFranklinBls12381ShortPkOtpHmac(evalPoint: bigint, idkShare: WeierstrassPoint<Fp2>, proof?: Uint8Array): Result<IdentityDecryptionKeyShare> {
+    static newBonehFranklinBls12381ShortPkOtpHmac(evalPoint: bigint, idkShare: WeierstrassPoint<Fp2>): Result<IdentityDecryptionKeyShare> {
         return Result.capture({
             task: (_extra: Record<string, any>) => {
-                const inner = new BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare(evalPoint, idkShare, proof);
+                const inner = new BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare(evalPoint, idkShare);
                 return new IdentityDecryptionKeyShare(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, inner);
             },
             recordsExecutionTimeMs: false,
@@ -293,10 +294,10 @@ export class IdentityDecryptionKeyShare {
     }
 
     /** Build a shortsig-aead IDK share. `idkShare` is in G1 (48 bytes compressed). */
-    static newBonehFranklinBls12381ShortSigAead(evalPoint: bigint, idkShare: WeierstrassPoint<bigint>, proof?: Uint8Array): Result<IdentityDecryptionKeyShare> {
+    static newBonehFranklinBls12381ShortSigAead(evalPoint: bigint, idkShare: WeierstrassPoint<bigint>): Result<IdentityDecryptionKeyShare> {
         return Result.capture({
             task: (_extra: Record<string, any>) => {
-                const inner = new BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare(evalPoint, idkShare, proof);
+                const inner = new BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare(evalPoint, idkShare);
                 return new IdentityDecryptionKeyShare(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, inner);
             },
             recordsExecutionTimeMs: false,
@@ -320,13 +321,13 @@ export class IdentityDecryptionKeyShare {
     }
 
     static fromBytes(bytes: Uint8Array): Result<IdentityDecryptionKeyShare> {
-        const task = (_extra: Record<string, any>) => {
-            const des = new Deserializer(bytes);
-            const ret = IdentityDecryptionKeyShare.deserialize(des).unwrapOrThrow('IdentityDecryptionKeyShare.fromBytes failed');
-            if (des.remaining() !== 0) throw 'IdentityDecryptionKeyShare.fromBytes: trailing bytes';
-            return ret;
-        };
-        return Result.capture({task, recordsExecutionTimeMs: false});
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => IdentityDecryptionKeyShareWire.fromBytes(bytes)
+                .unwrapOrThrow('IdentityDecryptionKeyShare.fromBytes: wire parse failed')
+                .materialize()
+                .unwrapOrThrow('IdentityDecryptionKeyShare.fromBytes: invalid curve point'),
+        });
     }
 
     static fromHex(hex: string): Result<IdentityDecryptionKeyShare> {
@@ -354,6 +355,61 @@ export class IdentityDecryptionKeyShare {
 
     toHex(): string {
         return bytesToHex(this.toBytes());
+    }
+}
+
+/** Structurally parsed IDK share that has not decompressed the untrusted curve point. */
+export class IdentityDecryptionKeyShareWire {
+    constructor(
+        readonly scheme: number,
+        readonly evalPoint: bigint,
+        readonly idkShareBytes: Uint8Array,
+    ) {}
+
+    static fromBytes(bytes: Uint8Array): Result<IdentityDecryptionKeyShareWire> {
+        const task = (_extra: Record<string, any>) => {
+            const des = new Deserializer(bytes);
+            const scheme = des.deserializeU8();
+            const evalPointBytes = des.deserializeBytes();
+            if (evalPointBytes.length !== 32) throw 'IdentityDecryptionKeyShareWire: expected 32-byte evalPoint';
+            const evalPoint = bytesToNumberLE(evalPointBytes);
+            const idkShareBytes = des.deserializeBytes();
+            const expectedPointLength = scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC
+                ? 96
+                : scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
+                    ? 48
+                    : null;
+            if (expectedPointLength === null) throw `IdentityDecryptionKeyShareWire: unknown scheme ${scheme}`;
+            if (idkShareBytes.length !== expectedPointLength) {
+                throw `IdentityDecryptionKeyShareWire: expected ${expectedPointLength}-byte point`;
+            }
+            if (des.remaining() !== 0) throw 'IdentityDecryptionKeyShareWire.fromBytes: trailing bytes';
+            return new IdentityDecryptionKeyShareWire(scheme, evalPoint, idkShareBytes);
+        };
+        return Result.capture({task, recordsExecutionTimeMs: false});
+    }
+
+    materialize(): Result<IdentityDecryptionKeyShare> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+                    const inner = BfibeBls12381ShortPkOtpHmac.identityDecryptionKeyShareFromCompressedBytes(
+                        this.evalPoint,
+                        this.idkShareBytes,
+                    );
+                    return new IdentityDecryptionKeyShare(this.scheme, inner);
+                }
+                if (this.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                    const inner = BfibeBls12381ShortSigAead.identityDecryptionKeyShareFromCompressedBytes(
+                        this.evalPoint,
+                        this.idkShareBytes,
+                    );
+                    return new IdentityDecryptionKeyShare(this.scheme, inner);
+                }
+                throw `IdentityDecryptionKeyShareWire.materialize: unknown scheme ${this.scheme}`;
+            },
+        });
     }
 }
 

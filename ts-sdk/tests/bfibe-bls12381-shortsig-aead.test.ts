@@ -63,7 +63,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
         const idkFull = (idPoint as any).multiply(msk.scalar);
-        const single = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+        const single = new IdentityDecryptionKeyShare(1n, idkFull);
 
         const recovered = decrypt({ idkShares: [single], ciphertext: ct }).unwrapOrThrow("decrypt");
         expect(recovered).toEqual(plaintext);
@@ -86,7 +86,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
         const allShares = points.map(p =>
-            new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y), undefined)
+            new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y))
         );
 
         // Pick an arbitrary t-subset (3 shares: indices 0, 2, 4).
@@ -109,7 +109,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
         const idkFull = (idPoint as any).multiply(msk.scalar);
-        const share = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+        const share = new IdentityDecryptionKeyShare(1n, idkFull);
 
         expect(decrypt({ idkShares: [share], ciphertext: ct1 }).unwrapOrThrow("dec-1")).toEqual(plaintext);
         expect(decrypt({ idkShares: [share], ciphertext: ct2 }).unwrapOrThrow("dec-2")).toEqual(plaintext);
@@ -137,7 +137,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
         const idkFull = (id_pt as any).multiply(msk.scalar);
-        const share = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+        const share = new IdentityDecryptionKeyShare(1n, idkFull);
 
         const tamperedAead = new Uint8Array(ct.aeadCt);
         tamperedAead[0] ^= 0x01;
@@ -155,7 +155,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         const wrongIdPoint = bls12_381.G1.hashToCurve(utf8("wrong-id"), {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
-        const wrongShare = new IdentityDecryptionKeyShare(1n, (wrongIdPoint as any).multiply(msk.scalar), undefined);
+        const wrongShare = new IdentityDecryptionKeyShare(1n, (wrongIdPoint as any).multiply(msk.scalar));
 
         const r = decrypt({ idkShares: [wrongShare], ciphertext: ct });
         expect(r.isOk).toBe(false);
@@ -177,7 +177,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         // share_pks[i] = s_i · basePoint (in G2)
         const sharePks = points.map(p => mpk.basePoint.multiply(p.y));
         const idkShares = points.map(p =>
-            new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y), undefined)
+            new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y))
         );
 
         // Each share should verify against its own sharePk.
@@ -226,7 +226,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         const idPoint = bls12_381.G1.hashToCurve(id, {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
-        const share = new IdentityDecryptionKeyShare(7n, (idPoint as any).multiply(msk.scalar), undefined);
+        const share = new IdentityDecryptionKeyShare(7n, (idPoint as any).multiply(msk.scalar));
         const back = IdentityDecryptionKeyShare.fromBytes(share.toBytes()).unwrapOrThrow("share round-trip");
         expect(back.toBytes()).toEqual(share.toBytes());
         expect(back.evalPoint).toBe(7n);
@@ -245,7 +245,7 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         const idPoint = bls12_381.G1.hashToCurve(utf8("id"), {
             DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
         });
-        const share = new IdentityDecryptionKeyShare(1n, (idPoint as any).multiply(msk.scalar), undefined);
+        const share = new IdentityDecryptionKeyShare(1n, (idPoint as any).multiply(msk.scalar));
         const shareBytes = (share.idkShare as any).toBytes();
         expect(shareBytes.length).toBe(48);
     });

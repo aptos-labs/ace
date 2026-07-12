@@ -54,6 +54,12 @@ export type NetworkNodeSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
+    /** Ed25519 node-to-node messaging signing key hex. */
+    sigSkHex?: string;
+    /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
+    vssStoreUrl?: string;
+    /** Local listen address for embedded node-to-node VSS share requests. */
+    nodeMsgListen?: string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
     aceDeploymentApi?: string;
@@ -83,32 +89,33 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
         '--account-sk', `0x${pkHex}`,
         '--pke-dk', pkeDkHex,
     ];
+    if (opts.sigSkHex !== undefined) {
+        args.push('--sig-sk', opts.sigSkHex);
+    }
+    if (opts.vssStoreUrl !== undefined) {
+        args.push('--vss-store-url', opts.vssStoreUrl);
+    }
+    if (opts.nodeMsgListen !== undefined) {
+        args.push('--node-msg-listen', opts.nodeMsgListen);
+    }
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));
     }
     return spawnWithLog(NETWORK_NODE_BINARY, args, `ace-node-${accountAddr}`);
 }
 
-export type NetworkNodeSplitSpawnInput = NetworkNodeSpawnInput & {
-    /** TCP port for the maintainer's `GET /secrets` endpoint. Required. */
-    maintainerPort: number;
-};
+export type NetworkNodeSplitSpawnInput = NetworkNodeSpawnInput;
 
 /**
  * Spawn a maintainer + handler pair for one committee member.
  *
  * The maintainer keeps the chain-touching responsibilities (URH share
- * reconstruction, `network::touch`, epoch-change-cur/nxt) and serves
- * `GET /secrets` on `--port=maintainerPort`. The handler owns the public
- * `--port` (= `opts.port`) and serves user decryption requests, pulling
- * secrets from the maintainer's `/secrets` endpoint with a 1-second
- * singleflight cache.
+ * reconstruction, `network::touch`, epoch-change-cur/nxt) and writes the
+ * shared VSS DB. The handler owns the public `--port` (= `opts.port`), reads
+ * the same VSS DB directly, and serves user decryption/VRF requests.
  *
- * No application-level auth on `/secrets`: maintainer + handler are assumed
- * to live in the same private network (Cloud Run `ingress=internal` + IAM
- * `run.invoker`, or a VPC-scoped service). On-chain registration is
- * unchanged — `account_addr` + PKE pubkey identify the worker; the endpoint
- * URL registered on-chain should point at the handler.
+ * On-chain registration is unchanged: `account_addr` + PKE pubkey identify the
+ * worker; the endpoint URL registered on-chain points at the handler.
  */
 export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
     maintainer: ChildProcess;
@@ -121,6 +128,9 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
     if (opts.port === undefined) {
         throw new Error('spawnNetworkNodeSplit: opts.port (handler port) is required');
     }
+    if (opts.vssStoreUrl === undefined) {
+        throw new Error('spawnNetworkNodeSplit: opts.vssStoreUrl is required');
+    }
 
     const maintainer = spawnWithLog(
         NETWORK_NODE_BINARY,
@@ -132,7 +142,9 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
             '--account-addr', accountAddr,
             '--account-sk', `0x${pkHex}`,
             '--pke-dk', pkeDkHex,
-            '--port', String(opts.maintainerPort),
+            ...(opts.sigSkHex !== undefined ? ['--sig-sk', opts.sigSkHex] : []),
+            '--vss-store-url', opts.vssStoreUrl,
+            ...(opts.nodeMsgListen !== undefined ? ['--node-msg-listen', opts.nodeMsgListen] : []),
         ],
         `ace-node-maintainer-${accountAddr}`,
     );
@@ -142,7 +154,10 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
         [
             'run',
             '--mode', 'handler',
-            '--maintainer-url', `http://127.0.0.1:${opts.maintainerPort}/secrets`,
+            '--ace-deployment-api', rpc,
+            '--ace-deployment-addr', opts.aceDeploymentAddr,
+            '--account-addr', accountAddr,
+            '--vss-store-url', opts.vssStoreUrl,
             '--pke-dk', pkeDkHex,
             '--port', String(opts.port),
         ],
@@ -159,8 +174,6 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
     total: number;
     /** Base port; handler/monolith uses `workerBasePort + index`. */
     workerBasePort: number;
-    /** Offset for the maintainer's `/secrets` port in split mode (default 100). */
-    maintainerPortOffset?: number;
 };
 
 /**
@@ -175,23 +188,27 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
  * codepaths under continuous CI coverage.
  */
 export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess[] {
-    const offset = opts.maintainerPortOffset ?? 100;
     const handlerPort = opts.workerBasePort + opts.index;
     const isSplit = opts.index < Math.ceil(opts.total / 2);
     if (isSplit) {
         const { maintainer, handler } = spawnNetworkNodeSplit({
             runAs: opts.runAs,
             pkeDkHex: opts.pkeDkHex,
+            sigSkHex: opts.sigSkHex,
+            vssStoreUrl: opts.vssStoreUrl,
+            nodeMsgListen: opts.nodeMsgListen,
             aceDeploymentAddr: opts.aceDeploymentAddr,
             aceDeploymentApi: opts.aceDeploymentApi,
             port: handlerPort,
-            maintainerPort: opts.workerBasePort + offset + opts.index,
         });
         return [maintainer, handler];
     }
     return [spawnNetworkNode({
         runAs: opts.runAs,
         pkeDkHex: opts.pkeDkHex,
+        sigSkHex: opts.sigSkHex,
+        vssStoreUrl: opts.vssStoreUrl,
+        nodeMsgListen: opts.nodeMsgListen,
         aceDeploymentAddr: opts.aceDeploymentAddr,
         aceDeploymentApi: opts.aceDeploymentApi,
         port: handlerPort,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Full happy-path E2E test: covers SDK, network, DKG, epoch transitions, and encrypt/decrypt.
+ * Full happy-path E2E test: covers SDK, network, DKG/DKR, epoch transitions, and threshold VRF.
  *
  * Epoch layout (epoch_duration = 90 s so epoch 1 times out before any manual proposal):
  *   Epoch 0: committee {0,1,2}    threshold=2  (initial)
@@ -20,13 +20,13 @@
  * Flow:
  *   - Worker 0 proposes keypair-0 (epoch 0→1 DKG; workers 0,1 approve)
  *   - Epoch 1→2 auto-reshare (same committee, epoch duration expires)
- *   - Alice encrypts "PING" for keypair-0 (allowlist: Bob)
+ *   - Bob derives "ping-blob" VRF bytes from keypair-0 (allowlist: Bob)
  *   - Epoch 2→3 CommitteeChange to {1,2,3,4} (workers 0,1 approve from epoch-2 committee)
- *   - Bob decrypts "PING" (keypair-0, epoch-3 committee)
+ *   - Bob derives "ping-blob" again after DKR; output is unchanged
  *   - Worker 1 proposes keypair-1 (epoch 3→4 DKG; workers 1,2 approve)
+ *   - Bob registers "pong-blob" and derives VRF bytes as owner
  *   - Epoch 4→5 CommitteeChange to {2,3,4}
- *   - Bob registers "pong-blob" (pay-to-download) and encrypts "PONG"
- *   - Alice purchases pong-blob and decrypts "PONG"
+ *   - Alice purchases pong-blob and derives the same VRF bytes after DKR
  *
  * Run:
  *   cd scenarios && pnpm full-happy-path
@@ -39,8 +39,11 @@ import {
     Serializer,
 } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
-import { pke } from '@aptos-labs/ace-sdk';
+import { pke, sig } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 
 import {
     ACCESS_CONTROL_CONTRACT_DIR,
@@ -72,6 +75,7 @@ import {
     spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
 import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
+import { makeNodeMsgEndpoints } from './common/vss-protocol-setup';
 
 const TOTAL_WORKERS = 5;
 // Three overlapping committees referenced by worker indices (not epoch numbers).
@@ -90,9 +94,47 @@ function step(n: string | number, msg: string): void {
     console.log(`\n── Step ${n}: ${msg} ──`);
 }
 
+function assertBytesEqual(label: string, actual: Uint8Array, expected: Uint8Array): void {
+    const actualHex = Buffer.from(actual).toString('hex');
+    const expectedHex = Buffer.from(expected).toString('hex');
+    assert(actualHex === expectedHex, `${label} mismatch: expected 0x${expectedHex}, got 0x${actualHex}`);
+}
+
+async function deriveVrfBytes(args: {
+    aceDeployment: ACE.AceDeployment;
+    keypairId: AccountAddress;
+    contractId: ACE.ContractID;
+    label: Uint8Array;
+    account: Account;
+    nonce: string;
+}): Promise<Uint8Array> {
+    const session = await ACE.VRF_Aptos.DerivationSession.create({
+        aceDeployment: args.aceDeployment,
+        keypairId: args.keypairId,
+        contractId: args.contractId,
+        label: args.label,
+        accountAddress: args.account.accountAddress,
+    });
+    const msgToSign = await session.getRequestToSign();
+    const fullMessage = buildAptosWalletFullMessage({
+        accountAddress: args.account.accountAddress,
+        chainId: CHAIN_ID,
+        message: msgToSign,
+        nonce: args.nonce,
+    });
+    const derived = await session.deriveWithSignature({
+        pubKey: args.account.publicKey,
+        signature: args.account.sign(fullMessage),
+        fullMessage,
+    });
+    assert(derived.length === 32, `VRF output should be 32 bytes, got ${derived.length}`);
+    return derived;
+}
+
 async function main() {
     const workers: ChildProcess[] = [];
     let localnetProc: ChildProcess | null = null;
+    let tmpRoot: string | null = null;
 
     let exitCode = 0;
     try {
@@ -122,7 +164,7 @@ async function main() {
 
         // ── Step 2: Deploy ACE network contracts ─────────────────────────────
         step(2, 'Deploy ACE network contracts');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
         console.log('  Contracts deployed');
 
         // ── Step 3: Fund 5 worker accounts ───────────────────────────────────
@@ -139,8 +181,12 @@ async function main() {
         }
 
         // ── Step 4: Register all workers on-chain ────────────────────────────
-        step(4, 'Register all worker PKE keys and endpoints on-chain (before start_initial_epoch)');
+        step(4, 'Register all worker PKE keys, signature keys, and endpoints on-chain (before start_initial_epoch)');
         const encKeypairs = await Promise.all(Array.from({ length: TOTAL_WORKERS }, () => pke.keygen()));
+        const sigKeypairs = await Promise.all(Array.from({ length: TOTAL_WORKERS }, () => sig.keygen()));
+        tmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-full-happy-'));
+        const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot!, `node-${i}.db`)}`);
+        const nodeMsgEndpoints = makeNodeMsgEndpoints(TOTAL_WORKERS);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
             console.log(`  Registering worker ${i}: ${endpoint}`);
@@ -155,10 +201,26 @@ async function main() {
             assertTxnSuccess(
                 await submitTxn({
                     signer: workerAccounts[i],
-                    entryFunction: `${adminAddr}::worker_config::register_endpoint`,
+                    entryFunction: `${adminAddr}::worker_config::register_sig_verification_key`,
+                    args: [sigKeypairs[i].publicKey.toBytes()],
+                }),
+                `register_sig_verification_key worker ${i}`,
+            );
+            assertTxnSuccess(
+                await submitTxn({
+                    signer: workerAccounts[i],
+                    entryFunction: `${adminAddr}::worker_config::register_client_endpoint`,
                     args: [endpoint],
                 }),
-                `register_endpoint worker ${i}`,
+                `register_client_endpoint worker ${i}`,
+            );
+            assertTxnSuccess(
+                await submitTxn({
+                    signer: workerAccounts[i],
+                    entryFunction: `${adminAddr}::worker_config::register_node_msg_endpoint`,
+                    args: [nodeMsgEndpoints.registeredUrls[i]],
+                }),
+                `register_node_msg_endpoint worker ${i}`,
             );
         }
 
@@ -191,6 +253,9 @@ async function main() {
                 total: TOTAL_WORKERS,
                 runAs: workerAccounts[i],
                 pkeDkHex,
+                sigSkHex: sigKeypairs[i].signingKey.toHex(),
+                vssStoreUrl: storeUrls[i],
+                nodeMsgListen: nodeMsgEndpoints.listens[i],
                 aceDeploymentAddr: adminAddr,
                 aceDeploymentApi: LOCALNET_URL,
                 workerBasePort: WORKER_BASE_PORT,
@@ -202,13 +267,13 @@ async function main() {
 
         // ── Step 7: Worker 0 proposes keypair-0 (new_secret, epoch 0→1) ──────
         // Proposer and approvers are all from committee A (workers 0,1,2; threshold=2).
-        step(7, `Worker 0 proposes keypair-0 (primitive=1, BFIBE shortsig/G2); workers 0,1 approve`);
+        step(7, 'Worker 0 proposes keypair-0 (threshold VRF/G2); workers 0,1 approve');
         const committeeAApprovers = COMMITTEE_A_INDICES.slice(0, COMMITTEE_A_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
             committeeAApprovers[0]!,
             committeeAApprovers,
             adminAddr,
-            serializeNewSecretProposal(1),
+            serializeNewSecretProposal(ACE.network.PRIMITIVE_BLS12381_THRESHOLD_VRF),
         );
         const adminAccountAddress = AccountAddress.fromString(adminAddr);
         await waitFor('keypair-0 DKG done (epoch advances to 1)', async () => {
@@ -274,26 +339,28 @@ async function main() {
             console.log('  ping-blob registered (owner=Alice, allowlist=[Bob])');
         }
 
-        // ── Step 11: Alice encrypts "PING" with keypair-0 ────────────────────
-        step(11, 'Alice encrypts "PING" with keypair-0');
+        // ── Step 11: Bob derives "ping-blob" VRF bytes with keypair-0 ────────
+        step(11, 'Bob derives "ping-blob" VRF bytes with keypair-0');
         const pingDomain = new TextEncoder().encode(`@${alice.accountAddress.toStringLong().slice(2)}/ping-blob`);
         const aceDeployment = new ACE.AceDeployment({
             apiEndpoint: LOCALNET_URL,
             contractAddr: adminAccountAddress,
         });
-
-        const pingEncResult = await ACE.IBE_Aptos.encrypt({
-            aceDeployment,
-            keypairId: keypair0Id,
+        const accessContractId = ACE.ContractID.newAptos({
             chainId: CHAIN_ID,
             moduleAddr: adminAccountAddress,
             moduleName: 'access_control',
-            label: pingDomain,
-            plaintext: new TextEncoder().encode('PING'),
         });
-        assert(pingEncResult.isOk, `encrypt PING failed: ${pingEncResult.errValue}`);
-        const pingCiph = pingEncResult.okValue!;
-        console.log('  Encrypted PING');
+
+        const pingEpoch2Vrf = await deriveVrfBytes({
+            aceDeployment,
+            keypairId: keypair0Id,
+            contractId: accessContractId,
+            label: pingDomain,
+            account: bob,
+            nonce: 'full-happy-path-ping-epoch-2',
+        });
+        console.log(`  Bob derived ping VRF: 0x${Buffer.from(pingEpoch2Vrf).toString('hex')}`);
 
         // ── Step 12: CommitteeChange epoch 2→3 (committee B = workers 1,2,3,4) ─
         // Still in epoch 2 (committee A = {0,1,2}, threshold=2); propose and approve
@@ -316,51 +383,28 @@ async function main() {
         console.log('  Epoch advanced to 3 (committee B active)');
         await sleep(30000); // workers re-derive shares for epoch-3 committee
 
-        // ── Step 13: Bob decrypts "PING" (keypair-0, epoch-3 committee) ───────
-        step(13, 'Bob decrypts "PING" (keypair-0, epoch-3 committee)');
-        {
-            const pingSession = await ACE.IBE_Aptos.BasicDecryptionSession.create({
-                aceDeployment,
-                keypairId: keypair0Id,
-                chainId: CHAIN_ID,
-                moduleAddr: adminAccountAddress,
-                moduleName: 'access_control',
-                label: pingDomain,
-            });
-            const pingMsgToSign = await pingSession.getRequestToSign();
-            const pingFullMessage = buildAptosWalletFullMessage({
-                accountAddress: bob.accountAddress,
-                chainId: CHAIN_ID,
-                message: pingMsgToSign,
-                nonce: 'full-happy-path-ping',
-            });
-            // Keep the reusable identity-key-share API covered in a real
-            // basic-flow scenario; decryptWithProof is still covered below.
-            const pingIdentityKeyShares = await pingSession.fetchIdentityKeySharesWithProof({
-                userAddr: bob.accountAddress,
-                publicKey: bob.publicKey,
-                signature: bob.sign(pingFullMessage),
-                fullMessage: pingFullMessage,
-            });
-            assert(pingIdentityKeyShares.isOk, `fetch PING identity key shares failed: ${pingIdentityKeyShares.errValue}`);
-            const pingDecResult = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
-                ciphertext: pingCiph,
-                identityKeyShares: pingIdentityKeyShares.okValue!,
-            });
-            assert(pingDecResult.isOk, `local decrypt PING failed: ${pingDecResult.errValue}`);
-            assert(new TextDecoder().decode(pingDecResult.okValue!) === 'PING', 'PING plaintext mismatch');
-            console.log('  Bob decrypted PING ✓');
-        }
+        // ── Step 13: Bob derives "ping-blob" again after DKR ─────────────────
+        step(13, 'Bob derives "ping-blob" again after DKR (keypair-0, epoch-3 committee)');
+        const pingEpoch3Vrf = await deriveVrfBytes({
+            aceDeployment,
+            keypairId: keypair0Id,
+            contractId: accessContractId,
+            label: pingDomain,
+            account: bob,
+            nonce: 'full-happy-path-ping-epoch-3',
+        });
+        assertBytesEqual('ping VRF output across DKR', pingEpoch3Vrf, pingEpoch2Vrf);
+        console.log('  Bob derived the same ping VRF bytes after DKR');
 
         // ── Step 14: Worker 1 proposes keypair-1 (epoch 3→4) ─────────────────
         // Proposer and approvers are from committee B (workers 1,2,3,4; threshold=3).
-        step(14, 'Worker 1 proposes keypair-1 in epoch 3; workers 1,2,3 approve');
+        step(14, 'Worker 1 proposes keypair-1 (threshold VRF/G2) in epoch 3; workers 1,2,3 approve');
         const committeeBApprovers = COMMITTEE_B_INDICES.slice(0, COMMITTEE_B_THRESHOLD).map(i => workerAccounts[i]);
         await proposeAndApprove(
             committeeBApprovers[0]!,
             committeeBApprovers,
             adminAddr,
-            serializeNewSecretProposal(1),
+            serializeNewSecretProposal(ACE.network.PRIMITIVE_BLS12381_THRESHOLD_VRF),
         );
         await waitFor('keypair-1 DKG done (epoch advances to 4)', async () => {
             const stateResult = await getNetworkState(adminAccountAddress);
@@ -372,27 +416,8 @@ async function main() {
         console.log(`  Keypair-1 ID: ${keypair1Id.toStringLong()}`);
         await sleep(30000); // workers derive shares for keypair-1
 
-        // ── Step 15: CommitteeChange epoch 4→5 (committee C = workers 2,3,4) ──
-        step(15, `Epoch 4→5 CommitteeChange to committee C = workers ${COMMITTEE_C_INDICES}, threshold=${COMMITTEE_C_THRESHOLD}`);
-        await proposeAndApprove(
-            committeeBApprovers[0]!,
-            committeeBApprovers,
-            adminAddr,
-            serializeCommitteeChangeProposal(
-                COMMITTEE_C_INDICES.map(i => workerAccounts[i].accountAddress),
-                COMMITTEE_C_THRESHOLD,
-            ),
-        );
-        await waitFor('epoch 5', async () => {
-            const stateResult = await getNetworkState(adminAccountAddress);
-            if (!stateResult.isOk) return false;
-            return stateResult.okValue!.epoch === 5;
-        }, 120_000);
-        console.log('  Epoch advanced to 5 (committee C active)');
-        await sleep(30000); // workers re-derive shares for epoch-5 committee
-
-        // ── Step 16: Bob registers "pong-blob" (pay-to-download) and encrypts "PONG" ──
-        step(16, 'Bob registers "pong-blob" (pay-to-download, price=1) and encrypts "PONG"');
+        // ── Step 15: Bob registers "pong-blob" (pay-to-download) and derives VRF bytes ──
+        step(15, 'Bob registers "pong-blob" (pay-to-download, price=1) and derives VRF bytes as owner');
         const pongDomain = new TextEncoder().encode(`@${bob.accountAddress.toStringLong().slice(2)}/pong-blob`);
         {
             const regSer = new Serializer();
@@ -419,21 +444,37 @@ async function main() {
             console.log('  pong-blob registered (owner=Bob, pay-to-download price=1)');
         }
 
-        const pongEncResult = await ACE.IBE_Aptos.encrypt({
+        const pongEpoch4Vrf = await deriveVrfBytes({
             aceDeployment,
             keypairId: keypair1Id,
-            chainId: CHAIN_ID,
-            moduleAddr: adminAccountAddress,
-            moduleName: 'access_control',
+            contractId: accessContractId,
             label: pongDomain,
-            plaintext: new TextEncoder().encode('PONG'),
+            account: bob,
+            nonce: 'full-happy-path-pong-epoch-4-owner',
         });
-        assert(pongEncResult.isOk, `encrypt PONG failed: ${pongEncResult.errValue}`);
-        const pongCiph = pongEncResult.okValue!;
-        console.log('  Encrypted PONG');
+        console.log(`  Bob derived pong VRF: 0x${Buffer.from(pongEpoch4Vrf).toString('hex')}`);
 
-        // ── Step 17: Alice purchases pong-blob and decrypts "PONG" ───────────
-        step(17, 'Alice purchases pong-blob and decrypts "PONG"');
+        // ── Step 16: CommitteeChange epoch 4→5 (committee C = workers 2,3,4) ──
+        step(16, `Epoch 4→5 CommitteeChange to committee C = workers ${COMMITTEE_C_INDICES}, threshold=${COMMITTEE_C_THRESHOLD}`);
+        await proposeAndApprove(
+            committeeBApprovers[0]!,
+            committeeBApprovers,
+            adminAddr,
+            serializeCommitteeChangeProposal(
+                COMMITTEE_C_INDICES.map(i => workerAccounts[i].accountAddress),
+                COMMITTEE_C_THRESHOLD,
+            ),
+        );
+        await waitFor('epoch 5', async () => {
+            const stateResult = await getNetworkState(adminAccountAddress);
+            if (!stateResult.isOk) return false;
+            return stateResult.okValue!.epoch === 5;
+        }, 120_000);
+        console.log('  Epoch advanced to 5 (committee C active)');
+        await sleep(30000); // workers re-derive shares for epoch-5 committee
+
+        // ── Step 17: Alice purchases pong-blob and derives the same VRF bytes ─
+        step(17, 'Alice purchases pong-blob and derives the same VRF bytes');
         assertTxnSuccess(
             await submitTxn({
                 signer: alice,
@@ -452,33 +493,16 @@ async function main() {
         );
         console.log('  Alice purchased pong-blob');
 
-        {
-            const pongSession = await ACE.IBE_Aptos.BasicDecryptionSession.create({
-                aceDeployment,
-                keypairId: keypair1Id,
-                chainId: CHAIN_ID,
-                moduleAddr: adminAccountAddress,
-                moduleName: 'access_control',
-                label: pongDomain,
-                ciphertext: pongCiph,
-            });
-            const pongMsgToSign = await pongSession.getRequestToSign();
-            const pongFullMessage = buildAptosWalletFullMessage({
-                accountAddress: alice.accountAddress,
-                chainId: CHAIN_ID,
-                message: pongMsgToSign,
-                nonce: 'full-happy-path-pong',
-            });
-            const pongDecResult = await pongSession.decryptWithProof({
-                userAddr: alice.accountAddress,
-                publicKey: alice.publicKey,
-                signature: alice.sign(pongFullMessage),
-                fullMessage: pongFullMessage,
-            });
-            assert(pongDecResult.isOk, `decrypt PONG failed: ${pongDecResult.errValue}`);
-            assert(new TextDecoder().decode(pongDecResult.okValue!) === 'PONG', 'PONG plaintext mismatch');
-            console.log('  Alice decrypted PONG ✓');
-        }
+        const pongEpoch5Vrf = await deriveVrfBytes({
+            aceDeployment,
+            keypairId: keypair1Id,
+            contractId: accessContractId,
+            label: pongDomain,
+            account: alice,
+            nonce: 'full-happy-path-pong-epoch-5-buyer',
+        });
+        assertBytesEqual('pong VRF output across DKR and caller accounts', pongEpoch5Vrf, pongEpoch4Vrf);
+        console.log('  Alice derived the same pong VRF bytes after purchase and DKR');
 
         console.log('\n✅ All tests passed!\n');
 
@@ -493,6 +517,9 @@ async function main() {
         if (localnetProc) {
             console.log('Stopping localnet...');
             localnetProc.kill('SIGTERM');
+        }
+        if (tmpRoot) {
+            rmSync(tmpRoot, { recursive: true, force: true });
         }
         process.exit(exitCode);
     }

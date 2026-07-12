@@ -223,6 +223,12 @@ module admin::access_control {
         has_permission(account, utf8(label))
     }
 
+    #[view]
+    public fun on_ace_vrf_request(label: vector<u8>, account: address, origin: String): bool acquires ReceiptCollection, BlobMap {
+        if (origin != utf8(b"https://shelby.example")) return false;
+        has_permission(account, utf8(label))
+    }
+
     fun has_permission(user: address, full_blob_name: String): bool acquires ReceiptCollection, BlobMap {
         let blob_map = borrow_global<BlobMap>(@admin);
         

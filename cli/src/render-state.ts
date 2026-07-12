@@ -236,10 +236,15 @@ export function renderNodeStatus(
     lines.push(row('account sk',    secret(node.accountSk)));
     lines.push(row('PKE enc key',   node.pkeEk ?? `${D}(not set)${R}`));
     lines.push(row('PKE dec key',   secret(node.pkeDk)));
+    lines.push(row('sig verify',    node.sigPk ?? `${D}(not set)${R}`));
+    lines.push(row('sig sign',      secret(node.sigSk)));
     lines.push(row('endpoint',      node.endpoint ?? `${D}(not set)${R}`));
+    lines.push(row('node-msg URL',  node.nodeMsgEndpoint ?? `${D}(not set)${R}`));
     lines.push('');
     lines.push(row('contract',      node.aceAddr));
     lines.push(row('RPC URL',       node.rpcUrl));
+    lines.push(row('VSS store',     node.vssStoreUrl ?? `${D}(not set)${R}`));
+    lines.push(row('node-msg bind', node.nodeMsgListen ?? `${D}(not set)${R}`));
     lines.push(row('API key',       secret(node.rpcApiKey)));
     lines.push(row('gas key',       secret(node.gasStationKey)));
     if (!reveal) lines.push(`  ${D}(use --reveal to show secrets)${R}`);

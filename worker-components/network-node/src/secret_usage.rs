@@ -15,7 +15,7 @@ pub fn usage_for_tibe_scheme(tibe_scheme: u8) -> Result<u64> {
     match tibe_scheme {
         SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => Ok(USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC),
         SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => Ok(USAGE_BFIBE_BLS12381_SHORTSIG_AEAD),
-        s => Err(anyhow!("unsupported t-IBE scheme {}", s)),
+        scheme => Err(anyhow!("unsupported t-IBE scheme {}", scheme)),
     }
 }
 
@@ -28,26 +28,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tibe_scheme_maps_to_usage_bit() {
-        assert_eq!(
-            usage_for_tibe_scheme(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap(),
-            USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC
-        );
-        assert_eq!(
-            usage_for_tibe_scheme(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap(),
-            USAGE_BFIBE_BLS12381_SHORTSIG_AEAD
-        );
-        assert!(usage_for_tibe_scheme(0xff).is_err());
+    fn usage_mask_checks_required_bit() {
+        assert!(allows_usage(
+            USAGE_BLS12381_THRESHOLD_VRF,
+            USAGE_BLS12381_THRESHOLD_VRF
+        ));
+        assert!(!allows_usage(0, USAGE_BLS12381_THRESHOLD_VRF));
     }
 
     #[test]
-    fn usage_mask_checks_required_bit() {
-        let both_g2 = USAGE_BFIBE_BLS12381_SHORTSIG_AEAD | USAGE_BLS12381_THRESHOLD_VRF;
-        assert!(allows_usage(both_g2, USAGE_BFIBE_BLS12381_SHORTSIG_AEAD));
-        assert!(allows_usage(both_g2, USAGE_BLS12381_THRESHOLD_VRF));
-        assert!(!allows_usage(
-            both_g2,
-            USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC
-        ));
+    fn tibe_scheme_maps_to_usage_bit() {
+        assert_eq!(usage_for_tibe_scheme(0).unwrap(), 1);
+        assert_eq!(usage_for_tibe_scheme(1).unwrap(), 2);
+        assert!(usage_for_tibe_scheme(0xff).is_err());
     }
 }

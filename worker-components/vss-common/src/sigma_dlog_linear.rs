@@ -123,6 +123,5 @@ fn append_statement(
 
 fn hash_to_fr(transcript: &[u8]) -> Fr {
     let hash = Sha512::digest(transcript);
-    let be = hash.as_slice();
-    Fr::from_be_bytes_mod_order(be)
+    Fr::from_be_bytes_mod_order(hash.as_slice())
 }

@@ -140,11 +140,11 @@ export class NetworkClient {
         return BigInt(octas);
     }
 
-    async getWorkerEndpoint(addr: string): Promise<string | null> {
+    async getWorkerClientEndpoint(addr: string): Promise<string | null> {
         try {
             const [result] = await this.aptos.view({
                 payload: {
-                    function: `${this.aceAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                    function: `${this.aceAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
                     typeArguments: [],
                     functionArguments: [addr],
                 },

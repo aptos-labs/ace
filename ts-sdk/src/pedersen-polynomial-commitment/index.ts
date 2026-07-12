@@ -26,6 +26,24 @@ export class PublicParams {
             },
         });
     }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+
+    static fromBytes(bytes: Uint8Array): Result<PublicParams> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const deserializer = new Deserializer(bytes);
+                const obj = PublicParams.deserialize(deserializer).unwrapOrThrow("deserialize failed");
+                if (deserializer.remaining() !== 0) throw "trailing bytes";
+                return obj;
+            },
+        });
+    }
 }
 
 /** Pedersen PCS commitment points over the ACE domain {0, 1, ..., n}. */

@@ -3,7 +3,7 @@
 /// ## Client implementation guide
 ///
 /// A DKG client needs the following starting parameters.
-/// - worker_account_addr, worker_account_sk, and worker_pke_dk: necessary credentials.
+/// - worker_account_addr, worker_account_sk, worker_pke_dk, worker_sig_sk, and a persistent VSS store.
 /// - session_addr: this identifies which DKG session to work on.
 /// - term_rx: this allows upper-level apps to send stop cmd.
 ///
@@ -18,24 +18,24 @@
 /// - Our vss clients are supposed to be reentrant-safe. So should our dkg client.
 module ace::dkg {
 
-    use ace::vss;
-    use ace::group;
-    use std::option::{Option, Self};
-    use aptos_framework::event;
-    use aptos_framework::object::{Self, ExtendRef};
-    use std::signer::address_of;
-    use std::error;
     use std::bcs;
+    use std::error;
+    use std::option;
     use std::string::String;
     use std::vector::range;
+    use aptos_framework::event;
+    use aptos_framework::object::{Self, ExtendRef};
+    use ace::group;
+    use ace::pedersen_polynomial_commitment;
     use ace::secret_usage;
+    use ace::vss;
 
     /// VSS sessions are being created one per touch().
     const STATE__START_VSSS: u8 = 0;
     /// All VSS sessions exist; waiting for threshold of them to complete.
     const STATE__VSS_IN_PROGRESS: u8 = 1;
-    /// Threshold VSS sessions are done; aggregating per-worker share PKs one per touch().
-    const STATE__AGGREGATE_SHARE_PKS: u8 = 2;
+    /// Threshold VSS sessions are done; aggregating PCS commitment points one per touch().
+    const STATE__AGGREGATE_COMMITMENT_POINTS: u8 = 2;
     const STATE__DONE: u8 = 3;
     const STATE__FAIL: u8 = 4;
 
@@ -47,17 +47,21 @@ module ace::dkg {
         caller: address,
         workers: vector<address>,
         threshold: u64,
-        public_base_element: group::Element,
+        scheme: u8,
+        pcs_context: pedersen_polynomial_commitment::PublicParams,
         expected_usage: u64,
         note: String,
         state: u8,
         vss_sessions: vector<address>,
-        /// Which VSS sessions contributed when we finalised. Empty until state >= AGGREGATE_SHARE_PKS.
+        /// Which VSS sessions contributed when we finalised. Empty until state >= AGGREGATE_COMMITMENT_POINTS.
         done_flags: vector<bool>,
-        secretly_scaled_element: Option<group::Element>,
-        /// Per-worker share PKs: share_pks[j] = Σ_{k: contributing} vss_k.share_pks[j].
-        /// Built one entry per touch() in AGGREGATE_SHARE_PKS; complete when state == DONE.
-        share_pks: vector<group::Element>,
+        /// Aggregate Pedersen commitment points over the ACE domain {0, 1, ..., n}.
+        ///
+        /// commitment_points[j] = Σ_{k: contributing} vss_k.commitment_points[j].
+        /// Built one entry per touch() in AGGREGATE_COMMITMENT_POINTS; complete when state == DONE.
+        commitment_points: vector<group::Element>,
+        /// Aggregate p(i) * G values over the ACE domain {0, 1, ..., n}.
+        public_keys: vector<group::Element>,
     }
 
     struct SignerStore has key {
@@ -74,34 +78,36 @@ module ace::dkg {
         caller: &signer,
         workers: vector<address>,
         threshold: u64,
-        public_base_element: group::Element,
+        scheme: u8,
         expected_usage: u64,
         note: String,
     ): address {
         let expected_group_scheme = secret_usage::validate_metadata(expected_usage, &note);
         assert!(
-            group::element_scheme(&public_base_element) == expected_group_scheme,
+            scheme == expected_group_scheme,
             error::invalid_argument(E_SECRET_USAGE_GROUP_MISMATCH),
         );
 
-        let caller_addr = address_of(caller);
+        let caller_addr = caller.address_of();
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
         let extend_ref = object_ref.generate_extend_ref();
         let session_addr = object_ref.address_from_constructor_ref();
+        let pcs_context = pedersen_polynomial_commitment::new_context(scheme);
         // VSS sessions are created lazily, one per touch(), to stay within per-tx gas limits.
         let session = Session {
             caller: caller_addr,
             workers,
             threshold,
-            public_base_element,
+            scheme,
+            pcs_context,
             expected_usage,
             note,
             state: STATE__START_VSSS,
             vss_sessions: vector[],
             done_flags: vector[],
-            secretly_scaled_element: option::none(),
-            share_pks: vector[],
+            commitment_points: vector[],
+            public_keys: vector[],
         };
         move_to(&object_signer, session);
         move_to(&object_signer, SignerStore { extend_ref });
@@ -114,12 +120,11 @@ module ace::dkg {
         caller: &signer,
         workers: vector<address>,
         threshold: u64,
-        base_point_bytes: vector<u8>,
+        scheme: u8,
         expected_usage: u64,
         note: String,
     ) {
-        let base_point = group::element_from_bytes(base_point_bytes);
-        new_session(caller, workers, threshold, base_point, expected_usage, note);
+        new_session(caller, workers, threshold, scheme, expected_usage, note);
     }
 
     #[event]
@@ -130,54 +135,57 @@ module ace::dkg {
 
     #[lint::allow_unsafe_randomness]
     public fun touch(session_addr: address) {
-        let session = borrow_global_mut<Session>(session_addr);
+        let session = &mut Session[session_addr];
         if (session.state == STATE__START_VSSS) {
             let idx = session.vss_sessions.length();
             if (idx >= session.workers.length()) {
                 session.state = STATE__VSS_IN_PROGRESS;
                 return;
             };
-            let signer_store = borrow_global<SignerStore>(session_addr);
+            let signer_store = &SignerStore[session_addr];
             let caller = signer_store.extend_ref.generate_signer_for_extending();
             let vss_addr = vss::new_session(
                 &caller,
-                session.workers[idx],   // dealer
-                session.workers,        // recipients
+                session.workers[idx],
+                session.workers,
                 session.threshold,
-                session.public_base_element,
+                session.scheme,
+                option::some(session.pcs_context),
                 option::none(),
             );
             session.vss_sessions.push_back(vss_addr);
         } else if (session.state == STATE__VSS_IN_PROGRESS) {
             let done_flags = vector[];
             let num_done = 0;
-            let done_sessions = vector[];
             session.vss_sessions.for_each(|vss_session| {
                 let done = vss::completed(vss_session);
                 if (done) {
                     num_done += 1;
-                    done_sessions.push_back(vss_session);
                 };
                 done_flags.push_back(done);
             });
             if (num_done >= session.threshold) {
-                let available_sub_pks = done_sessions.map(|vss_session| vss::result_pk(vss_session));
                 session.done_flags = done_flags;
-                session.secretly_scaled_element = option::some(group::element_sum(&available_sub_pks));
-                session.state = STATE__AGGREGATE_SHARE_PKS;
+                session.state = STATE__AGGREGATE_COMMITMENT_POINTS;
             }
-        } else if (session.state == STATE__AGGREGATE_SHARE_PKS) {
-            let n = session.workers.length();
-            let j = session.share_pks.length();
-            if (j >= n) {
+        } else if (session.state == STATE__AGGREGATE_COMMITMENT_POINTS) {
+            let expected_len = session.workers.length() + 1;
+            let commitment_idx = session.commitment_points.length();
+            if (commitment_idx >= expected_len) {
                 session.state = STATE__DONE;
             } else {
-                // One share PK per touch: sum contributing VSS share_pks for worker j.
                 let n_vss = session.vss_sessions.length();
-                let sub_share_pks = range(0, n_vss)
+                let points = range(0, n_vss)
                     .filter(|i| session.done_flags[*i])
-                    .map(|i| vss::share_pks(session.vss_sessions[i])[j]);
-                session.share_pks.push_back(group::element_sum(&sub_share_pks));
+                    .map(|i| vss::pcs_commitment_points(session.vss_sessions[i])[commitment_idx]);
+                let public_keys = range(0, n_vss)
+                    .filter(|i| session.done_flags[*i])
+                    .map(|i| vss::public_keys(session.vss_sessions[i])[commitment_idx]);
+                session.commitment_points.push_back(group::element_sum(&points));
+                session.public_keys.push_back(group::element_sum(&public_keys));
+                if (session.commitment_points.length() >= expected_len) {
+                    session.state = STATE__DONE;
+                };
             }
         };
         event::emit(SessionTouched {
@@ -187,8 +195,8 @@ module ace::dkg {
     }
 
     public fun cancel(caller: &signer, session_addr: address) {
-        let session = borrow_global_mut<Session>(session_addr);
-        if (session.caller != address_of(caller)) {
+        let session = &mut Session[session_addr];
+        if (session.caller != caller.address_of()) {
             abort error::permission_denied(E_ONLY_CALLER_CAN_DO_THIS);
         };
         session.state = STATE__FAIL;
@@ -196,30 +204,50 @@ module ace::dkg {
 
     public fun completed(session_addr: address): bool {
         if (!exists<Session>(session_addr)) return false;
-        borrow_global<Session>(session_addr).state == STATE__DONE
+        Session[session_addr].state == STATE__DONE
     }
 
     public fun failed(session_addr: address): bool {
         if (!exists<Session>(session_addr)) return false;
-        borrow_global<Session>(session_addr).state == STATE__FAIL
+        Session[session_addr].state == STATE__FAIL
     }
 
-    public fun params_for_resharing(session_addr: address): (group::Element, group::Element, vector<address>, u64, vector<group::Element>) {
-        let session = borrow_global<Session>(session_addr);
+    public fun params_for_resharing(
+        session_addr: address,
+    ): (
+        pedersen_polynomial_commitment::PublicParams,
+        vector<group::Element>,
+        vector<group::Element>,
+        vector<address>,
+        u64,
+    ) {
+        let session = &Session[session_addr];
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
-        (session.public_base_element, *session.secretly_scaled_element.borrow(), session.workers, session.threshold, session.share_pks)
+        (session.pcs_context, session.commitment_points, session.public_keys, session.workers, session.threshold)
+    }
+
+    public fun commitment_points(session_addr: address): vector<group::Element> {
+        let session = &Session[session_addr];
+        assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        session.commitment_points
+    }
+
+    public fun result_pk(session_addr: address): group::Element {
+        let session = &Session[session_addr];
+        assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        session.public_keys[0]
     }
 
     public fun share_pks(session_addr: address): vector<group::Element> {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
-        session.share_pks
+        range(1, session.public_keys.length()).map(|i| session.public_keys[i])
     }
 
     /// Returns (vss_sessions, done_flags) for the DKG session.
-    /// Used by DKR to compute per-worker share verification keys.
+    /// Used by DKR to reconstruct the contributing set.
     public fun vss_sessions_and_done_flags(session_addr: address): (vector<address>, vector<bool>) {
-        let session = borrow_global<Session>(session_addr);
+        let session = &Session[session_addr];
         assert!(session.state == STATE__DONE, error::invalid_argument(E_SESSION_NOT_COMPLETED));
         (session.vss_sessions, session.done_flags)
     }
@@ -232,12 +260,12 @@ module ace::dkg {
     /// For a DKG session, the keypair_id IS the session address (it is the origin).
     public fun keypair_id_and_scheme(addr: address): (address, u8) {
         let s = &Session[addr];
-        (addr, group::element_scheme(&s.public_base_element))
+        (addr, s.scheme)
     }
 
     public fun keypair_id_scheme_usage_and_note(addr: address): (address, u8, u64, String) {
         let s = &Session[addr];
-        (addr, group::element_scheme(&s.public_base_element), s.expected_usage, s.note)
+        (addr, s.scheme, s.expected_usage, s.note)
     }
 
     public fun usage_and_note(addr: address): (u64, String) {
@@ -247,7 +275,7 @@ module ace::dkg {
 
     #[view]
     public fun get_session_bcs(session_addr: address): vector<u8> {
-        bcs::to_bytes(borrow_global<Session>(session_addr))
+        bcs::to_bytes(&Session[session_addr])
     }
 
     #[randomness]

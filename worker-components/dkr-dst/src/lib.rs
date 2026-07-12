@@ -16,6 +16,7 @@ use vss_common::{
     normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
     TxnArg,
 };
+use vss_store::connect_vss_store;
 
 const STATE_START_VSSS: u8 = 0;
 const STATE_VSS_IN_PROGRESS: u8 = 1;
@@ -41,6 +42,8 @@ pub struct RunConfig {
     pub account_addr: String,
     pub account_sk_hex: String,
     pub pke_dk_hex: String,
+    pub sig_sk_hex: String,
+    pub vss_store_url: String,
 }
 
 async fn fetch_dkr_session(rpc: &AptosRpc, ace: &str, session_addr: &str) -> Result<DkrSession> {
@@ -89,6 +92,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     let account_addr = normalize_account_addr(&config.account_addr);
     let dkr_session_addr = normalize_account_addr(&config.dkr_session);
     let ace = normalize_account_addr(&config.ace_contract);
+    let _ = connect_vss_store(&config.vss_store_url)?;
 
     println!(
         "dkr-dst: starting (account={} dkr_session={} ace={})",
@@ -191,6 +195,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 pke_dk_hex: config.pke_dk_hex.clone(),
                 account_addr: account_addr.clone(),
                 account_sk_hex: config.account_sk_hex.clone(),
+                sig_sk_hex: Some(config.sig_sk_hex.clone()),
+                vss_store_url: Some(config.vss_store_url.clone()),
             };
             println!(
                 "dkr-dst: spawning recipient for vss_sessions[{}]={}",

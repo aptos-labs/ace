@@ -10,22 +10,22 @@ module ace::secret_usage_tests {
     #[test]
     fun test_secret_usage_group_mapping() {
         assert!(
-            secret_usage::usage_for_primitive(secret_usage::primitive_bfibe_bls12381_shortpk_otp_hmac())
-                == secret_usage::usage_bfibe_bls12381_shortpk_otp_hmac(),
+            secret_usage::usage_for_primitive(secret_usage::primitive_bls12381_g1_test_only())
+                == secret_usage::usage_bls12381_g1_test_only(),
             0,
         );
         assert!(
-            secret_usage::primitive_group_scheme(secret_usage::primitive_bfibe_bls12381_shortpk_otp_hmac())
+            secret_usage::primitive_group_scheme(secret_usage::primitive_bls12381_g1_test_only())
                 == group::scheme_bls12381_g1(),
             1,
         );
         assert!(
-            secret_usage::usage_group_scheme(secret_usage::usage_bfibe_bls12381_shortpk_otp_hmac())
+            secret_usage::usage_group_scheme(secret_usage::usage_bls12381_g1_test_only())
                 == group::scheme_bls12381_g1(),
             2,
         );
         assert!(
-            secret_usage::usage_group_scheme(secret_usage::usage_bfibe_bls12381_shortsig_aead())
+            secret_usage::usage_group_scheme(secret_usage::usage_bls12381_g2_test_only())
                 == group::scheme_bls12381_g2(),
             3,
         );
@@ -38,7 +38,7 @@ module ace::secret_usage_tests {
 
     #[test]
     fun test_secret_usage_allows_same_group_multi_usage() {
-        let usage = secret_usage::usage_bfibe_bls12381_shortsig_aead()
+        let usage = secret_usage::usage_bls12381_g2_test_only()
             | secret_usage::usage_bls12381_threshold_vrf();
         assert!(secret_usage::usage_group_scheme(usage) == group::scheme_bls12381_g2(), 10);
     }
@@ -59,8 +59,8 @@ module ace::secret_usage_tests {
     #[expected_failure]
     fun test_secret_usage_rejects_cross_group_multi_usage() {
         secret_usage::usage_group_scheme(
-            secret_usage::usage_bfibe_bls12381_shortpk_otp_hmac()
-                | secret_usage::usage_bfibe_bls12381_shortsig_aead(),
+            secret_usage::usage_bls12381_g1_test_only()
+                | secret_usage::usage_bls12381_g2_test_only(),
         );
     }
 

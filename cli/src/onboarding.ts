@@ -53,9 +53,6 @@ const CHAIN_DEFAULTS = {
     aptosTestnet:      'https://api.testnet.aptoslabs.com/v1',
     aptosLocalnet:     'http://127.0.0.1:8080/v1',
     aptosShelbyPrivateBeta: '',
-    solanaMainnetBeta: 'https://api.mainnet-beta.solana.com',
-    solanaTestnet:     'https://api.testnet.solana.com',
-    solanaDevnet:      'https://api.devnet.solana.com',
 } as const;
 
 const CHAIN_RPC_KEYS = [
@@ -67,9 +64,6 @@ const CHAIN_RPC_KEYS = [
     'aptosLocalnetApikey',
     'aptosShelbyPrivateBetaApi',
     'aptosShelbyPrivateBetaApikey',
-    'solanaMainnetBetaRpc',
-    'solanaTestnetRpc',
-    'solanaDevnetRpc',
 ] as const satisfies readonly (keyof ChainRpcOverrides)[];
 
 export interface NodeNewOptions {
@@ -93,6 +87,9 @@ export interface NodeNewOptions {
     handlerServiceName?: string;
     handlerMaxInstances?: string;
     endpoint?: string;
+    nodeMsgEndpoint?: string;
+    vssStoreUrl?: string;
+    nodeMsgListen?: string;
     chainRpcJson?: string;
 }
 
@@ -114,6 +111,9 @@ export function isNonInteractiveNodeNew(opts: NodeNewOptions): boolean {
         opts.handlerServiceName ||
         opts.handlerMaxInstances ||
         opts.endpoint ||
+        opts.nodeMsgEndpoint ||
+        opts.vssStoreUrl ||
+        opts.nodeMsgListen ||
         opts.chainRpcJson
     );
 }
@@ -144,7 +144,6 @@ export function rpcUrlsNeedVpcEgress(chainRpc?: ChainRpcOverrides): boolean {
     const urls = [
         chainRpc.aptosMainnetApi, chainRpc.aptosTestnetApi, chainRpc.aptosLocalnetApi,
         chainRpc.aptosShelbyPrivateBetaApi,
-        chainRpc.solanaMainnetBetaRpc, chainRpc.solanaTestnetRpc, chainRpc.solanaDevnetRpc,
     ].filter((u): u is string => typeof u === 'string' && u.length > 0);
     return urls.some(isPrivateRpcUrl);
 }
@@ -180,6 +179,9 @@ export const DEFAULT_CONTAINER_CONCURRENCY = 1000;
 export const GCP_SECRET_ENV = {
     accountSk:            'ACE_ACCOUNT_SK',
     pkeDk:                'ACE_PKE_DK',
+    sigSk:                'ACE_SIG_SK',
+    vssStoreUrl:          'ACE_VSS_STORE_URL',
+    nodeMsgListen:        'ACE_NODE_MSG_LISTEN',
     deploymentApiKey:     'ACE_DEPLOYMENT_APIKEY',
     deploymentGasKey:     'ACE_DEPLOYMENT_GASKEY',
     aptosMainnetApiKey:   'ACE_APTOS_MAINNET_APIKEY',
@@ -222,7 +224,7 @@ export function gcpSecretId(prefix: string, envName: string): string {
 }
 
 function runtimeConfigJson(
-    node: { accountSk: string; pkeDk: string },
+    node: { accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcApiKey?: string,
     gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
@@ -230,6 +232,9 @@ function runtimeConfigJson(
     const cfg = {
         accountSk:            node.accountSk,
         pkeDk:                node.pkeDk,
+        sigSk:                node.sigSk,
+        vssStoreUrl:          node.vssStoreUrl,
+        nodeMsgListen:        node.nodeMsgListen,
         ...(rpcApiKey                  ? { deploymentApiKey:    rpcApiKey }                  : {}),
         ...(gasStationKey              ? { deploymentGasKey:    gasStationKey }              : {}),
         ...(chainRpc?.aptosMainnetApikey  ? { aptosMainnetApiKey:  chainRpc.aptosMainnetApikey }  : {}),
@@ -242,7 +247,7 @@ function runtimeConfigJson(
 
 function configBinding(
     prefix: string,
-    node: { accountSk: string; pkeDk: string },
+    node: { accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcApiKey?: string,
     gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
@@ -294,7 +299,7 @@ function secretEnv(bindings: SecretBinding[]): Record<string, string> {
 
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): GcpDeployScript {
@@ -330,24 +335,21 @@ export function gcpDeployCmd(
 /**
  * Emit the microservices-mode deploy script.
  *
- * The script is **ordered**: the Handler's `--maintainer-url` flag needs the
- * Maintainer's auto-assigned Cloud Run URL, which is NOT derivable from
+ * The script is **ordered**: the Maintainer's auto-assigned Cloud Run URL is
+ * the node-message endpoint registered on chain, and is NOT derivable from
  * `<service>-<project_number>` ahead of time (Cloud Run mixes that with a
  * legacy `<service>-<hash>-<region>.a.run.app` form for some services /
  * projects). Capturing it post-deploy via `gcloud run services describe`
- * is the only correct path. The emitted shell script does that with a
- * `MAINT_URL=$(gcloud …)` substitution, then deploys the Handler.
+ * is the only correct path.
  *
- * Auth model: the Maintainer is reachable only via VPC (`--ingress=internal`),
- * but invocation itself is unauthenticated. The Handler is given Direct VPC
- * egress so its outbound to the Maintainer's `*.run.app` URL is recognized as
- * same-project internal and passes the ingress filter. No OIDC tokens are
- * needed — the worker code does plain HTTP GETs.
+ * Auth model: the Handler is the public request endpoint. The Maintainer is
+ * also the node-message ingress for offchain VSS, so it must be externally
+ * reachable at its registered node-message URL.
  *
  * Step order:
- *   1. Deploy the Maintainer (internal-only, min=max=1, no auth required).
+ *   1. Deploy the Maintainer/node-message endpoint (min=max=1, no auth required).
  *   2. Capture the Maintainer URL.
- *   3. Deploy the Handler with VPC egress + `--maintainer-url=$MAINT_URL/secrets`.
+ *   3. Deploy the Handler.
  */
 export function gcpDeployCmdMicroservices(
     cfg: {
@@ -358,7 +360,7 @@ export function gcpDeployCmdMicroservices(
         handlerMaxInstances: number;
     },
     image: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): GcpDeployScript {
@@ -391,12 +393,13 @@ export function gcpDeployCmdMicroservices(
         `--ace-deployment-api=${rpcUrl}`,
         `--ace-deployment-addr=${aceAddr}`,
         `--account-addr=${node.accountAddr}`,
-        `--port=8080`,
     ];
-    // Handler args use a shell variable for --maintainer-url; the deploy line
-    // below interpolates $MAINT_URL after capture.
-    const handlerArgsBeforeUrl = ['run', '--mode=handler'];
-    const handlerArgsAfterUrl = [
+    const handlerArgs = [
+        'run',
+        '--mode=handler',
+        `--ace-deployment-api=${rpcUrl}`,
+        `--ace-deployment-addr=${aceAddr}`,
+        `--account-addr=${node.accountAddr}`,
         `--port=8080`,
         ...chainRpcArgs(chainRpc, { includeSecrets: false }),
     ];
@@ -429,7 +432,7 @@ export function gcpDeployCmdMicroservices(
         `  --concurrency=${DEFAULT_CONTAINER_CONCURRENCY}`,
         ...cloudRunSecretFlags(secretBindings),
         ...handlerVpcLines,
-        `  --args "${handlerArgsBeforeUrl.join(',')},--maintainer-url=\${MAINT_URL}/secrets,${handlerArgsAfterUrl.join(',')}"`,
+        `  --args "${handlerArgs.join(',')}"`,
     ].join(' \\\n');
 
     const script = [
@@ -456,14 +459,19 @@ export function gcpDeployCmdMicroservices(
 
 export function dockerRunCmd(
     containerName: string, image: string, port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
+    const nodeMsgPort = listenPort(node.nodeMsgListen);
+    const hostVssDir = path.join(homedir(), '.ace', 'vss', containerName);
     return [
+        `mkdir -p ${shellQuote(hostVssDir)} &&`,
         `docker run -d --platform linux/amd64 --restart unless-stopped`,
         `  --name ${containerName}`,
         `  -p ${port}:${port}`,
+        `  -p ${nodeMsgPort}:${nodeMsgPort}`,
+        `  -v ${shellQuote(hostVssDir)}:/ace-vss`,
         `  ${image}`,
         `  run`,
         `  --ace-deployment-api=${rpcUrl}`,
@@ -473,6 +481,9 @@ export function dockerRunCmd(
         `  --account-addr=${node.accountAddr}`,
         `  --account-sk=${node.accountSk}`,
         `  --pke-dk=${node.pkeDk}`,
+        `  --sig-sk=${node.sigSk}`,
+        `  --vss-store-url=${node.vssStoreUrl}`,
+        `  --node-msg-listen=${node.nodeMsgListen}`,
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc),
     ].join(' \\\n');
@@ -484,7 +495,7 @@ export function localBuildCmd(repoPath: string): string {
 
 export function localRunCmd(
     repoPath: string, port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
@@ -497,6 +508,9 @@ export function localRunCmd(
         `  --account-addr=${node.accountAddr}`,
         `  --account-sk=${node.accountSk}`,
         `  --pke-dk=${node.pkeDk}`,
+        `  --sig-sk=${node.sigSk}`,
+        `  --vss-store-url=${node.vssStoreUrl}`,
+        `  --node-msg-listen=${node.nodeMsgListen}`,
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc).map(a => `  ${a}`),
     ].join(' \\\n');
@@ -504,7 +518,7 @@ export function localRunCmd(
 
 export function localRunArgs(
     port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string[] {
@@ -517,6 +531,9 @@ export function localRunArgs(
         `--account-addr=${node.accountAddr}`,
         `--account-sk=${node.accountSk}`,
         `--pke-dk=${node.pkeDk}`,
+        `--sig-sk=${node.sigSk}`,
+        `--vss-store-url=${node.vssStoreUrl}`,
+        `--node-msg-listen=${node.nodeMsgListen}`,
         `--port=${port}`,
         ...chainRpcArgs(chainRpc),
     ];
@@ -531,7 +548,7 @@ function defaultRepoPath(): string | undefined {
 }
 
 function nodeRunArgs(
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
     opts: { includeSecrets?: boolean } = {},
@@ -544,7 +561,13 @@ function nodeRunArgs(
         ...(includeSecrets && rpcApiKey     ? [`--ace-deployment-apikey=${rpcApiKey}`]     : []),
         ...(includeSecrets && gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
         `--account-addr=${node.accountAddr}`,
-        ...(includeSecrets ? [`--account-sk=${node.accountSk}`, `--pke-dk=${node.pkeDk}`] : []),
+        ...(includeSecrets ? [
+            `--account-sk=${node.accountSk}`,
+            `--pke-dk=${node.pkeDk}`,
+            `--sig-sk=${node.sigSk}`,
+            `--vss-store-url=${node.vssStoreUrl}`,
+            `--node-msg-listen=${node.nodeMsgListen}`,
+        ] : []),
         '--port=8080',
         ...chainRpcArgs(chainRpc, { includeSecrets }),
     ];
@@ -563,9 +586,6 @@ function chainRpcArgs(r?: ChainRpcOverrides, opts: { includeSecrets?: boolean } 
         ...(includeSecrets ? f('--aptos-localnet-apikey=',   r.aptosLocalnetApikey) : []),
         ...f('--aptos-shelby-private-beta-api=',    r.aptosShelbyPrivateBetaApi),
         ...(includeSecrets ? f('--aptos-shelby-private-beta-apikey=', r.aptosShelbyPrivateBetaApikey) : []),
-        ...f('--solana-mainnet-beta-rpc=', r.solanaMainnetBetaRpc),
-        ...f('--solana-testnet-rpc=',      r.solanaTestnetRpc),
-        ...f('--solana-devnet-rpc=',       r.solanaDevnetRpc),
     ];
 }
 
@@ -597,9 +617,6 @@ export async function promptChainRpcOverrides(
         aptosLocalnetApikey:  await askKey('Aptos localnet API key',       current?.aptosLocalnetApikey),
         aptosShelbyPrivateBetaApi:    await askUrl('Aptos shelby-private-beta API URL', CHAIN_DEFAULTS.aptosShelbyPrivateBeta, current?.aptosShelbyPrivateBetaApi),
         aptosShelbyPrivateBetaApikey: await askKey('Aptos shelby-private-beta API key', current?.aptosShelbyPrivateBetaApikey),
-        solanaMainnetBetaRpc: await askUrl('Solana mainnet-beta RPC URL',  CHAIN_DEFAULTS.solanaMainnetBeta, current?.solanaMainnetBetaRpc),
-        solanaTestnetRpc:     await askUrl('Solana testnet RPC URL',       CHAIN_DEFAULTS.solanaTestnet,     current?.solanaTestnetRpc),
-        solanaDevnetRpc:      await askUrl('Solana devnet RPC URL',        CHAIN_DEFAULTS.solanaDevnet,      current?.solanaDevnetRpc),
     };
 
     console.log();
@@ -715,7 +732,9 @@ function schemeFromOptions(opts: NodeNewOptions, isLocalnet: boolean): Scheme {
     }
     const mode = opts.mode ?? 'microservices';
     if (mode === 'microservices') return 'gcp-cloudrun-microservices';
-    if (mode === 'monolith') return 'gcp-cloudrun-monolith';
+    if (mode === 'monolith') {
+        throw new Error('GCP Cloud Run monolith is unavailable with offchain VSS because it needs a node-message listener. Use --mode microservices.');
+    }
     throw new Error('--mode must be "microservices", "monolith", or "metadata-management-only".');
 }
 
@@ -738,6 +757,8 @@ function parsedFormFromOptions(
     const common = {
         ...metadataCommon,
         image: nonEmpty(opts.image) ?? defaults.image,
+        vssStoreUrl: nonEmpty(opts.vssStoreUrl) ?? defaults.vssStoreUrl,
+        nodeMsgListen: nonEmpty(opts.nodeMsgListen) ?? defaults.nodeMsgListen,
     };
     if (scheme === 'gcp-cloudrun-monolith') {
         return {
@@ -805,7 +826,16 @@ async function endpointFromOptions(
     throw new Error(`${label} endpoint is not reachable: ${endpoint}`);
 }
 
-function endpointValueFromOptions(
+async function promptEndpointValue(message: string, defaultValue?: string): Promise<string> {
+    let last = defaultValue;
+    while (true) {
+        const url = (await input({ message, default: last })).trim();
+        if (!url) continue;
+        return url.replace(/\/$/, '');
+    }
+}
+
+function metadataEndpointValueFromOptions(
     opts: NodeNewOptions,
     label: string,
     capturedEndpoint?: string,
@@ -814,16 +844,36 @@ function endpointValueFromOptions(
     if (!endpoint) {
         throw new Error(`Missing ${label} endpoint. Pass --endpoint.`);
     }
-    return endpoint;
+    return endpoint.replace(/\/$/, '');
 }
 
-async function promptEndpointValue(message: string, defaultValue?: string): Promise<string> {
-    let last = defaultValue;
-    while (true) {
-        const url = (await input({ message, default: last })).trim();
-        if (!url) continue;
-        return url;
+function nodeMsgEndpointValueFromOptions(
+    opts: NodeNewOptions,
+    label: string,
+    capturedEndpoint?: string,
+): string {
+    const endpoint = nonEmpty(opts.nodeMsgEndpoint) ?? capturedEndpoint;
+    if (!endpoint) {
+        throw new Error(`Could not determine ${label}. Pass --node-msg-endpoint or run with --yes so the CLI can discover it.`);
     }
+    return endpoint.replace(/\/$/, '');
+}
+
+function listenPort(listen: string): string {
+    const m = /:(\d+)$/.exec(listen.trim());
+    if (!m) throw new Error(`Invalid listen address "${listen}" — expected host:port`);
+    return m[1]!;
+}
+
+function nodeMsgEndpointDefault(listen: string, host = 'localhost'): string {
+    return `http://${host}:${listenPort(listen)}`;
+}
+
+function ensureSqliteStoreParent(url: string): void {
+    if (!url.startsWith('sqlite://')) return;
+    const filePath = url.slice('sqlite://'.length);
+    if (!filePath || filePath.startsWith('/ace-vss/')) return;
+    mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
 /** Best-effort lookup of the latest aptoslabs/ace-node tag from Docker Hub. */
@@ -876,7 +926,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         : options.image ?? await latestImageTag();
 
     const t: TemplateInputs = {
-        identity: { accountAddr: profile.accountAddr, pkeEk: profile.pkeEk! },
+        identity: { accountAddr: profile.accountAddr, pkeEk: profile.pkeEk!, sigPk: profile.sigPk },
         blob: {
             rpcUrl:        net.rpcUrl,
             aceAddr:       net.aceAddr,
@@ -906,6 +956,12 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     const image          = parsed.image;
     const rpcApiKey      = parsed.rpcApiKey ?? net.rpcApiKey;
     const gasStationKey  = parsed.gasStationKey ?? net.gasStationKey;
+    const vssStoreUrl = scheme === 'metadata-management-only'
+        ? undefined
+        : requireParsedString(parsed.vssStoreUrl, 'VSS store URL');
+    const nodeMsgListen = scheme === 'metadata-management-only'
+        ? undefined
+        : requireParsedString(parsed.nodeMsgListen, 'node message listen address');
     const chainRpc       = parsed.chainRpc ?? {};
     const nodeRpcUrl     = t.blob.nodeRpcUrl;
     const deployRunOpts  = { stdout: options.json ? 'stderr' : 'inherit' } as const;
@@ -919,6 +975,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     }
 
     let endpoint:  string;
+    let nodeMsgEndpoint: string;
     let gcpCfg:    TrackedNode['gcp'];
     let dockerCfg: TrackedNode['docker'];
     let localCfg:  LocalConfig | undefined;
@@ -927,15 +984,19 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         console.log('\nMetadata-management-only profile: no deploy command will be emitted.');
         console.log('Use the external deployment system for image/resources/replicas/routing changes.\n');
         endpoint = nonInteractive
-            ? endpointValueFromOptions(options, 'externally managed node', parsed.endpoint)
+            ? metadataEndpointValueFromOptions(options, 'externally managed node', parsed.endpoint)
             : await promptEndpointValue("Your externally managed node's public URL", parsed.endpoint);
+        nodeMsgEndpoint = nonInteractive
+            ? nodeMsgEndpointValueFromOptions(options, 'externally managed node-message endpoint')
+            : await promptEndpointValue('Your externally managed node-message public URL', nonEmpty(options.nodeMsgEndpoint));
     } else if (scheme === 'gcp-cloudrun-monolith') {
         const project = requireParsedString(parsed.project, 'GCP project');
         const region = requireParsedString(parsed.region, 'Cloud Run region');
         const serviceName = requireParsedString(parsed.serviceName, 'Cloud Run service name');
         gcpCfg = { project, region, serviceName };
         const cmd = gcpDeployCmd(serviceName, image!, project, region,
-            profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+            { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
         console.log('\nDeploy command:\n');
         console.log(cmd.display);
         console.log();
@@ -948,6 +1009,9 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         endpoint = nonInteractive
             ? await endpointFromOptions(options, 'Cloud Run service', defaultEndpoint)
             : await promptEndpoint('Cloud Run service URL', defaultEndpoint);
+        nodeMsgEndpoint = nonInteractive
+            ? nodeMsgEndpointValueFromOptions(options, 'Cloud Run node-message service', defaultEndpoint)
+            : await promptEndpointValue('Cloud Run node-message service URL', nonEmpty(options.nodeMsgEndpoint) ?? defaultEndpoint);
     } else if (scheme === 'gcp-cloudrun-microservices') {
         const project = requireParsedString(parsed.project, 'GCP project');
         const region = requireParsedString(parsed.region, 'Cloud Run region');
@@ -969,7 +1033,8 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
                 handlerServiceName,
                 handlerMaxInstances,
             },
-            image!, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
+            image!, { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
         console.log('\nDeploy script:\n');
         console.log(cmd.display);
@@ -977,22 +1042,26 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         const ran = nonInteractive
             ? (options.yes ? runDeployScript(cmd.run, gcloudReady(), cmd.env, deployRunOpts) : false)
             : await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env, { yes: options.yes });
-        const defaultEndpoint = ran
-            ? captureCloudRunUrl(handlerServiceName, project, region)
-            : undefined;
+        const defaultEndpoint = ran ? captureCloudRunUrl(handlerServiceName, project, region) : undefined;
+        const defaultNodeMsgEndpoint = ran ? captureCloudRunUrl(maintainerServiceName, project, region) : undefined;
         endpoint = nonInteractive
             ? await endpointFromOptions(options, 'Handler service', defaultEndpoint)
             : await promptEndpoint('Handler service URL', defaultEndpoint);
+        nodeMsgEndpoint = nonInteractive
+            ? nodeMsgEndpointValueFromOptions(options, 'Maintainer node-message service', defaultNodeMsgEndpoint)
+            : await promptEndpointValue('Maintainer node-message service URL', nonEmpty(options.nodeMsgEndpoint) ?? defaultNodeMsgEndpoint);
     } else if (scheme === 'docker-monolith') {
         dockerCfg = { containerName: parsed.containerName!, port: parsed.port! };
         const cmd = dockerRunCmd(parsed.containerName!, image!, parsed.port!,
-            profile, nodeRpcUrl!, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+            { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            nodeRpcUrl!, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
         console.log('\nStart command:\n');
         console.log(cmd);
         console.log();
         await maybeAutoRun(cmd, dockerReady(), 'Run this now?', undefined, { yes: options.yes });
         const defaultEndpoint = isLocalnet ? `http://localhost:${parsed.port}` : undefined;
         endpoint = await promptEndpoint("Your node's public URL", defaultEndpoint);
+        nodeMsgEndpoint = await promptEndpointValue("Your node-message public URL", nonEmpty(options.nodeMsgEndpoint) ?? nodeMsgEndpointDefault(nodeMsgListen!));
     } else {
         // local-build-monolith
         const repoPath = parsed.repoPath!;
@@ -1004,7 +1073,16 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         const nodeKey = makeNodeKey(net.rpcUrl, net.aceAddr, profile.accountAddr);
         const logFile = logFilePath(nodeKey);
         const binaryPath = path.join(repoPath, 'target', 'release', 'network-node');
-        const runArgs = localRunArgs(port, profile, net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+        ensureSqliteStoreParent(vssStoreUrl!);
+        const runArgs = localRunArgs(
+            port,
+            { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            net.rpcUrl,
+            net.aceAddr,
+            rpcApiKey,
+            gasStationKey,
+            chainRpc,
+        );
         const pid = spawnLocalNode(binaryPath, runArgs, logFile);
         console.log(`\nNode started in background  pid=${pid}  log=${logFile}\n`);
 
@@ -1013,6 +1091,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
 
         localCfg = { repoPath, port, pid, logFile, logMaxMb };
         endpoint = await promptEndpoint("Your node's public URL", `http://localhost:${port}`);
+        nodeMsgEndpoint = await promptEndpointValue("Your node-message public URL", nonEmpty(options.nodeMsgEndpoint) ?? nodeMsgEndpointDefault(nodeMsgListen!));
     }
 
     await ensureAccountFunded(net.rpcUrl, profile.accountAddr, rpcApiKey, gasStationKey);
@@ -1021,6 +1100,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     await registerOnChain(
         { ...profile, rpcUrl: net.rpcUrl, aceAddr: net.aceAddr, rpcApiKey, gasStationKey },
         endpoint,
+        nodeMsgEndpoint,
     );
 
     const node: TrackedNode = {
@@ -1032,8 +1112,13 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         accountSk:   profile.accountSk,
         pkeDk:       profile.pkeDk,
         pkeEk:       profile.pkeEk,
+        sigSk:       profile.sigSk,
+        sigPk:       profile.sigPk,
         alias:       parsed.alias,
         endpoint,
+        nodeMsgEndpoint,
+        vssStoreUrl,
+        nodeMsgListen,
         image,
         platform,
         mode,

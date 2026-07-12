@@ -17,7 +17,7 @@ export function plotAsciiIfAvailable(csvPath: string): void {
     const script = `
 set terminal dumb 100 28
 set datafile separator ","
-set title "Worker decryption-share latency vs QPS"
+set title "Worker threshold-VRF-share latency vs QPS"
 set xlabel "QPS"
 set ylabel "latency (ms)"
 set logscale x

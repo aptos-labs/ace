@@ -8,7 +8,6 @@
 module ace::vss {
     use std::bcs;
     use std::error;
-    use std::signer::address_of;
     use std::vector::range;
     use aptos_framework::chain_id;
     use aptos_framework::event;
@@ -19,7 +18,6 @@ module ace::vss {
     use ace::fiat_shamir_transform;
     use ace::group;
     use ace::pedersen_polynomial_commitment;
-    use ace::pke;
     use ace::sigma_dlog_linear;
     use ace::worker_config;
 
@@ -33,13 +31,12 @@ module ace::vss {
     const E_INVALID_RECIPIENT: u64 = 22;
     const E_INVALID_THRESHOLD: u64 = 23;
     const E_RECIPIENT_NOT_FOUND: u64 = 25;
-    const E_NOT_ENOUGH_ACKS: u64 = 26;
-    const E_INVALID_REVEALED_SHARE: u64 = 29;
     const E_NOT_ALL_RECIPIENTS_COVERED: u64 = 30;
     const E_NOT_COMPLETED: u64 = 32;
-    const E_INVALID_PUBLIC_KEY_PROOF: u64 = 33;
+    const E_INVALID_CONSISTENCY_PROOF: u64 = 33;
     const E_TOO_EARLY_TO_OPEN: u64 = 35;
-    const E_PUBLIC_KEY_SCHEME_MISMATCH: u64 = 36;
+    const E_GROUP_SCHEME_MISMATCH: u64 = 36;
+    const E_INVALID_PUBLIC_KEY_PROOF: u64 = 37;
 
     // ── Protocol constants ───────────────────────────────────────────────────
 
@@ -53,11 +50,20 @@ module ace::vss {
 
     // ── On-chain session state ────────────────────────────────────────────────
 
+    /// Previous Pedersen commitment statement for a reshare.
+    ///
+    /// A reshare VSS must prove its new position-0 commitment commits to the
+    /// same secret scalar as this old commitment point:
+    ///   old_c = s * old_g + old_r * old_h
+    ///   new_c = s * new_g + new_r * new_h
+    struct PreviousCommitment has copy, drop, store {
+        old_g: group::Element,
+        old_h: group::Element,
+        old_c: group::Element,
+    }
+
     struct DealerContribution0 has copy, drop, store {
         pcs_commitment: pedersen_polynomial_commitment::Commitment,
-        private_share_messages: vector<pke::Ciphertext>,
-        dealer_state: Option<pke::Ciphertext>,
-        /// Proof that V_0 opens to the previously committed public key in a reshare.
         consistency_proof: Option<sigma_dlog_linear::Proof>,
     }
 
@@ -65,13 +71,11 @@ module ace::vss {
     ///
     /// shares_to_reveal[0] is always None. For i >= 1, it is Some(opening) iff
     /// holder i did not ACK.
-    ///
-    /// public_keys[i] = s_i * public_base_element.
-    ///
-    /// public_key_proofs[i] is Some iff s_i and r_i are not publicly opened.
     struct DealerContribution1 has copy, drop, store {
         shares_to_reveal: vector<Option<pedersen_polynomial_commitment::Opening>>,
+        /// public_keys[i] = p(i) * G, where G is pcs_context.generator_g.
         public_keys: vector<group::Element>,
+        /// A proof is present exactly when the corresponding opening remains private.
         public_key_proofs: vector<Option<sigma_dlog_linear::Proof>>,
     }
 
@@ -79,11 +83,8 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        /// The base element B. The session output is s_0 * B.
-        public_base_element: group::Element,
-        /// If present, this VSS is resharing a previously committed secret s_0,
-        /// and this is the expected s_0 * B.
-        previous_public_key: Option<group::Element>,
+        scheme: u8,
+        previous_commitment: Option<PreviousCommitment>,
         pcs_context: pedersen_polynomial_commitment::PublicParams,
         state_code: u8,
         deal_time_micros: u64,
@@ -91,10 +92,8 @@ module ace::vss {
         dealer_commitment_check: pedersen_polynomial_commitment::DegreeCheckState,
         share_holder_acks: vector<bool>,
         dealer_contribution_1: Option<DealerContribution1>,
-        /// Next position in {0, 1, ..., n} for touch() to verify from DC1.
         next_public_key_to_verify: u64,
-        /// Verified public keys over {0, 1, ..., n}. Empty until DC1 validation
-        /// starts; touch() appends one verified entry at a time.
+        /// Verified public keys over the ACE domain {0, 1, ..., n}.
         public_keys: vector<group::Element>,
     }
 
@@ -118,8 +117,9 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        public_base_element: group::Element,
-        previous_public_key: Option<group::Element>,
+        scheme: u8,
+        pcs_context: Option<pedersen_polynomial_commitment::PublicParams>,
+        previous_commitment: Option<PreviousCommitment>,
     ): address {
         assert!(worker_config::has_pke_enc_key(dealer), error::invalid_argument(E_INVALID_DEALER));
         share_holders.for_each(|share_holder| {
@@ -131,26 +131,29 @@ module ace::vss {
             error::invalid_argument(E_INVALID_THRESHOLD),
         );
 
-        let scheme = group::element_scheme(&public_base_element);
-        if (previous_public_key.is_some()) {
-            assert!(
-                group::element_scheme(previous_public_key.borrow()) == scheme,
-                error::invalid_argument(E_PUBLIC_KEY_SCHEME_MISMATCH),
-            );
+        let pcs_context = if (pcs_context.is_some()) {
+            let context = *pcs_context.borrow();
+            assert!(pcs_context_scheme(&context) == scheme, error::invalid_argument(E_GROUP_SCHEME_MISMATCH));
+            context
+        } else {
+            pedersen_polynomial_commitment::new_context(scheme)
         };
+        if (previous_commitment.is_some()) assert!(
+            previous_commitment_has_scheme(previous_commitment.borrow(), scheme),
+            error::invalid_argument(E_GROUP_SCHEME_MISMATCH),
+        );
 
-        let caller_addr = address_of(caller);
+        let caller_addr = caller.address_of();
         let object_ref = object::create_sticky_object(caller_addr);
         let object_signer = object_ref.generate_signer();
         let session_addr = object_ref.address_from_constructor_ref();
-        let pcs_context = pedersen_polynomial_commitment::new_context(scheme);
 
         let session = Session {
             dealer,
             share_holders,
             threshold,
-            public_base_element,
-            previous_public_key,
+            scheme,
+            previous_commitment,
             pcs_context,
             deal_time_micros: 0,
             state_code: STATE__DEALER_DEAL,
@@ -172,16 +175,21 @@ module ace::vss {
         dealer: address,
         share_holders: vector<address>,
         threshold: u64,
-        public_base_element: vector<u8>,
-        previous_public_key: vector<u8>,
+        scheme: u8,
+        pcs_context: vector<u8>,
+        previous_commitment: vector<u8>,
     ) {
-        let public_base_element = group::element_from_bytes(public_base_element);
-        let previous_public_key = if (previous_public_key.length() > 0) {
-            option::some(group::element_from_bytes(previous_public_key))
+        let pcs_context = if (pcs_context.length() > 0) {
+            option::some(pedersen_polynomial_commitment::public_params_from_bytes(pcs_context))
         } else {
             option::none()
         };
-        new_session(caller, dealer, share_holders, threshold, public_base_element, previous_public_key);
+        let previous_commitment = if (previous_commitment.length() > 0) {
+            option::some(previous_commitment_from_bytes(previous_commitment))
+        } else {
+            option::none()
+        };
+        new_session(caller, dealer, share_holders, threshold, scheme, pcs_context, previous_commitment);
     }
 
     #[randomness]
@@ -191,7 +199,7 @@ module ace::vss {
         payload_bytes: vector<u8>,
     ) {
         let session = &mut Session[session_addr];
-        assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
+        assert!(dealer.address_of() == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
         assert!(session.state_code == STATE__DEALER_DEAL, error::invalid_state(E_NOT_IN_PROGRESS));
         assert!(session.dealer_contribution_0.is_none(), error::invalid_state(E_ALREADY_CONTRIBUTED));
 
@@ -201,23 +209,15 @@ module ace::vss {
             pedersen_polynomial_commitment::commitment_len(&dc0.pcs_commitment) == n,
             error::invalid_argument(E_INVALID_CONTRIBUTION),
         );
-        assert!(dc0.private_share_messages.length() == n, error::invalid_argument(E_INVALID_CONTRIBUTION));
 
-        if (session.previous_public_key.is_some()) {
-            assert!(dc0.consistency_proof.is_some(), error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF));
+        if (session.previous_commitment.is_some()) {
+            assert!(dc0.consistency_proof.is_some(), error::invalid_argument(E_INVALID_CONSISTENCY_PROOF));
             assert!(
-                verify_public_key_proof(
-                    session_addr,
-                    b"vss::dc0-consistency",
-                    &session.pcs_context,
-                    &dc0.pcs_commitment,
-                    &session.public_base_element,
-                    0,
-                    *session.previous_public_key.borrow(),
-                    dc0.consistency_proof.borrow(),
-                ),
-                error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF),
+                verify_same_secret_proof(session_addr, session, &dc0),
+                error::invalid_argument(E_INVALID_CONSISTENCY_PROOF),
             );
+        } else {
+            assert!(dc0.consistency_proof.is_none(), error::invalid_argument(E_INVALID_CONSISTENCY_PROOF));
         };
 
         let dealer_commitment_check = pedersen_polynomial_commitment::degree_check_start(
@@ -236,7 +236,7 @@ module ace::vss {
     ) {
         let session = &mut Session[session_addr];
         assert!(session.state_code == STATE__RECIPIENT_ACK, error::invalid_state(E_NOT_IN_PROGRESS));
-        let recipient_addr = address_of(recipient);
+        let recipient_addr = recipient.address_of();
         let (found, idx) = session.share_holders.index_of(&recipient_addr);
         assert!(found, error::permission_denied(E_RECIPIENT_NOT_FOUND));
         assert!(!session.share_holder_acks[idx], error::invalid_state(E_ALREADY_CONTRIBUTED));
@@ -250,7 +250,7 @@ module ace::vss {
     ) {
         let session = &mut Session[session_addr];
         assert!(session.state_code == STATE__RECIPIENT_ACK, error::invalid_state(E_NOT_IN_PROGRESS));
-        assert!(address_of(dealer) == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
+        assert!(dealer.address_of() == session.dealer, error::permission_denied(E_ONLT_DEALER_CAN_DO_THIS));
         assert!(timestamp::now_microseconds() - session.deal_time_micros > ACK_WINDOW_MICROS, error::invalid_state(E_TOO_EARLY_TO_OPEN));
 
         let dc1 = dealer_contribution_1_from_bytes(payload_bytes);
@@ -261,17 +261,7 @@ module ace::vss {
         assert!(dc1.public_key_proofs.length() == expected_len, error::invalid_argument(E_INVALID_CONTRIBUTION));
         assert!(dc1.shares_to_reveal[0].is_none(), error::invalid_argument(E_INVALID_CONTRIBUTION));
         assert!(dc1.public_key_proofs[0].is_some(), error::invalid_argument(E_INVALID_CONTRIBUTION));
-        assert!(elements_have_scheme(&dc1.public_keys, group::element_scheme(&session.public_base_element)), error::invalid_argument(E_PUBLIC_KEY_SCHEME_MISMATCH));
-
-        let num_acks = session.share_holder_acks.filter(|ack| *ack).length();
-        assert!(num_acks >= session.threshold, error::invalid_state(E_NOT_ENOUGH_ACKS));
-
-        if (session.previous_public_key.is_some()) {
-            assert!(
-                group::element_eq(&dc1.public_keys[0], session.previous_public_key.borrow()),
-                error::invalid_argument(E_INVALID_CONTRIBUTION),
-            );
-        };
+        assert!(elements_have_scheme(&dc1.public_keys, session.scheme), error::invalid_argument(E_GROUP_SCHEME_MISMATCH));
 
         let all_recipient_covered = range(1, expected_len).all(|i| {
             let ack = session.share_holder_acks[*i - 1];
@@ -310,8 +300,7 @@ module ace::vss {
         };
 
         verify_public_key_at(session_addr, session, eval_position);
-        let public_key = session.dealer_contribution_1.borrow().public_keys[eval_position];
-        session.public_keys.push_back(public_key);
+        session.public_keys.push_back(session.dealer_contribution_1.borrow().public_keys[eval_position]);
         session.next_public_key_to_verify = eval_position + 1;
         if (session.next_public_key_to_verify == expected_len) {
             session.state_code = STATE__SUCCESS;
@@ -344,12 +333,6 @@ module ace::vss {
         session.state_code == STATE__SUCCESS
     }
 
-    public fun result_pk(session_addr: address): group::Element {
-        let session = &Session[session_addr];
-        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
-        session.public_keys[0]
-    }
-
     /// Returns the Pedersen PCS commitment points for a completed VSS session.
     public fun pcs_commitment_points(session_addr: address): vector<group::Element> {
         let session = &Session[session_addr];
@@ -357,11 +340,37 @@ module ace::vss {
         pedersen_polynomial_commitment::commitment_points(&session.dealer_contribution_0.borrow().pcs_commitment)
     }
 
-    /// Returns the per-holder share public keys for a completed VSS session.
+    /// Returns p(0) * G for a completed VSS session.
+    public fun result_pk(session_addr: address): group::Element {
+        let session = &Session[session_addr];
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.public_keys[0]
+    }
+
+    public fun public_keys(session_addr: address): vector<group::Element> {
+        let session = &Session[session_addr];
+        assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
+        session.public_keys
+    }
+
+    /// Returns p(i) * G for holder positions i in 1..=n.
     public fun share_pks(session_addr: address): vector<group::Element> {
         let session = &Session[session_addr];
         assert!(session.state_code == STATE__SUCCESS, error::invalid_state(E_NOT_COMPLETED));
         range(1, session.public_keys.length()).map(|i| session.public_keys[i])
+    }
+
+    public fun previous_commitment_from_parts(
+        old_g: group::Element,
+        old_h: group::Element,
+        old_c: group::Element,
+    ): PreviousCommitment {
+        let previous = PreviousCommitment { old_g, old_h, old_c };
+        assert!(
+            previous_commitment_has_scheme(&previous, group::element_scheme(&old_g)),
+            error::invalid_argument(E_GROUP_SCHEME_MISMATCH),
+        );
+        previous
     }
 
     public fun ack_vec(session_addr: address): vector<u8> {
@@ -370,95 +379,64 @@ module ace::vss {
         session.share_holder_acks.map(|ack| if (ack) 1 else 0)
     }
 
+    fun verify_same_secret_proof(session_addr: address, session: &Session, dc0: &DealerContribution0): bool {
+        let previous = session.previous_commitment.borrow();
+        let new_g = pedersen_polynomial_commitment::generator_g(&session.pcs_context);
+        let new_h = pedersen_polynomial_commitment::generator_h(&session.pcs_context);
+        let old_c = previous.old_c;
+        let new_c = pedersen_polynomial_commitment::commitment_point(&dc0.pcs_commitment, 0);
+        let identity = group::identity(session.scheme);
+
+        let b_vals = vector[
+            previous.old_g, previous.old_h, identity,
+            new_g, identity, new_h,
+        ];
+        let p_vals = vector[old_c, new_c];
+        let transcript = vss_transcript(session_addr, b"vss::dc0-same-secret", 0);
+        sigma_dlog_linear::verify(&mut transcript, &b_vals, &p_vals, dc0.consistency_proof.borrow())
+    }
+
     fun verify_public_key_at(session_addr: address, session: &Session, eval_position: u64) {
         let dc0 = session.dealer_contribution_0.borrow();
         let dc1 = session.dealer_contribution_1.borrow();
         let public_key = dc1.public_keys[eval_position];
 
-        if (eval_position == 0) {
-            assert!(dc1.shares_to_reveal[0].is_none(), error::invalid_argument(E_INVALID_CONTRIBUTION));
-            assert!(dc1.public_key_proofs[0].is_some(), error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF));
+        if (dc1.shares_to_reveal[eval_position].is_some()) {
+            let opening = dc1.shares_to_reveal[eval_position].borrow();
+            verify_revealed_share(session, eval_position, opening);
+            let expected_public_key = group::scale_element(
+                &pedersen_polynomial_commitment::generator_g(&session.pcs_context),
+                &pedersen_polynomial_commitment::opening_eval_value_p(opening),
+            );
             assert!(
-                verify_public_key_proof(
-                    session_addr,
-                    b"vss::dc1-public-key",
-                    &session.pcs_context,
-                    &dc0.pcs_commitment,
-                    &session.public_base_element,
-                    0,
-                    public_key,
-                    dc1.public_key_proofs[0].borrow(),
-                ),
+                group::element_eq(&public_key, &expected_public_key),
                 error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF),
             );
             return;
         };
 
-        if (session.share_holder_acks[eval_position - 1]) {
-            assert!(dc1.shares_to_reveal[eval_position].is_none(), error::invalid_argument(E_INVALID_CONTRIBUTION));
-            assert!(dc1.public_key_proofs[eval_position].is_some(), error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF));
-            assert!(
-                verify_public_key_proof(
-                    session_addr,
-                    b"vss::dc1-public-key",
-                    &session.pcs_context,
-                    &dc0.pcs_commitment,
-                    &session.public_base_element,
-                    eval_position,
-                    public_key,
-                    dc1.public_key_proofs[eval_position].borrow(),
-                ),
-                error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF),
-            );
-        } else {
-            assert!(dc1.shares_to_reveal[eval_position].is_some(), error::invalid_argument(E_INVALID_CONTRIBUTION));
-            let opening = dc1.shares_to_reveal[eval_position].borrow();
-            assert!(
-                pedersen_polynomial_commitment::opening_eval_position(opening) == eval_position,
-                error::invalid_argument(E_INVALID_CONTRIBUTION),
-            );
-            assert!(
-                pedersen_polynomial_commitment::verify(&session.pcs_context, &dc0.pcs_commitment, opening),
-                error::invalid_argument(E_INVALID_CONTRIBUTION),
-            );
-            let expected_public_key = group::scale_element(
-                &session.public_base_element,
-                &pedersen_polynomial_commitment::opening_eval_value_p(opening),
-            );
-            assert!(
-                group::element_eq(&public_key, &expected_public_key),
-                error::invalid_argument(E_INVALID_REVEALED_SHARE),
-            );
-        }
-    }
-
-    fun verify_public_key_proof(
-        session_addr: address,
-        purpose: vector<u8>,
-        pcs_context: &pedersen_polynomial_commitment::PublicParams,
-        pcs_commitment: &pedersen_polynomial_commitment::Commitment,
-        public_base_element: &group::Element,
-        eval_position: u64,
-        public_key: group::Element,
-        proof: &sigma_dlog_linear::Proof,
-    ): bool {
-        let scheme = group::element_scheme(public_base_element);
-        if (group::element_scheme(&public_key) != scheme) return false;
-
-        let generator_g = pedersen_polynomial_commitment::generator_g(pcs_context);
-        let generator_h = pedersen_polynomial_commitment::generator_h(pcs_context);
-        if (group::element_scheme(&generator_g) != scheme || group::element_scheme(&generator_h) != scheme) return false;
-
-        let transcript = vss_transcript(session_addr, purpose, eval_position);
+        assert!(dc1.public_key_proofs[eval_position].is_some(), error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF));
+        let generator_g = pedersen_polynomial_commitment::generator_g(&session.pcs_context);
+        let generator_h = pedersen_polynomial_commitment::generator_h(&session.pcs_context);
+        let identity = group::identity(session.scheme);
         let b_vals = vector[
-            *public_base_element, group::identity(scheme),
+            generator_g, identity,
             generator_g, generator_h,
         ];
         let p_vals = vector[
             public_key,
-            pedersen_polynomial_commitment::commitment_point(pcs_commitment, eval_position),
+            pedersen_polynomial_commitment::commitment_point(&dc0.pcs_commitment, eval_position),
         ];
-        sigma_dlog_linear::verify(&mut transcript, &b_vals, &p_vals, proof)
+        let transcript = vss_transcript(session_addr, b"vss::dc1-public-key", eval_position);
+        assert!(
+            sigma_dlog_linear::verify(
+                &mut transcript,
+                &b_vals,
+                &p_vals,
+                dc1.public_key_proofs[eval_position].borrow(),
+            ),
+            error::invalid_argument(E_INVALID_PUBLIC_KEY_PROOF),
+        );
     }
 
     fun vss_transcript(
@@ -476,8 +454,38 @@ module ace::vss {
         transcript
     }
 
+    fun previous_commitment_has_scheme(previous: &PreviousCommitment, scheme: u8): bool {
+        group::element_scheme(&previous.old_g) == scheme
+            && group::element_scheme(&previous.old_h) == scheme
+            && group::element_scheme(&previous.old_c) == scheme
+    }
+
     fun elements_have_scheme(elements: &vector<group::Element>, scheme: u8): bool {
         elements.length() > 0 && elements.map_ref(|e| group::element_scheme(e)).all(|s| *s == scheme)
+    }
+
+    fun pcs_context_scheme(context: &pedersen_polynomial_commitment::PublicParams): u8 {
+        let generator_g = pedersen_polynomial_commitment::generator_g(context);
+        let generator_h = pedersen_polynomial_commitment::generator_h(context);
+        let scheme = group::element_scheme(&generator_g);
+        assert!(group::element_scheme(&generator_h) == scheme, error::invalid_argument(E_GROUP_SCHEME_MISMATCH));
+        scheme
+    }
+
+    fun verify_revealed_share(
+        session: &Session,
+        eval_position: u64,
+        opening: &pedersen_polynomial_commitment::Opening,
+    ) {
+        let dc0 = session.dealer_contribution_0.borrow();
+        assert!(
+            pedersen_polynomial_commitment::opening_eval_position(opening) == eval_position,
+            error::invalid_argument(E_INVALID_CONTRIBUTION),
+        );
+        assert!(
+            pedersen_polynomial_commitment::verify(&session.pcs_context, &dc0.pcs_commitment, opening),
+            error::invalid_argument(E_INVALID_CONTRIBUTION),
+        );
     }
 
     // ── Serde helpers ────────────────────────────────────────────────────────
@@ -485,11 +493,9 @@ module ace::vss {
     fun dealer_contribution_0_from_bytes(bytes: vector<u8>): DealerContribution0 {
         let stream = bcs_stream::new(bytes);
         let pcs_commitment = pedersen_polynomial_commitment::deserialize_commitment(&mut stream);
-        let private_share_messages = bcs_stream::deserialize_vector(&mut stream, |s| pke::deserialize_ciphertext(s));
-        let dealer_state = bcs_stream::deserialize_option(&mut stream, |s| pke::deserialize_ciphertext(s));
         let consistency_proof = bcs_stream::deserialize_option(&mut stream, |s| sigma_dlog_linear::deserialize_proof(s));
         assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_CONTRIBUTION));
-        DealerContribution0 { pcs_commitment, private_share_messages, dealer_state, consistency_proof }
+        DealerContribution0 { pcs_commitment, consistency_proof }
     }
 
     fun dealer_contribution_1_from_bytes(bytes: vector<u8>): DealerContribution1 {
@@ -503,6 +509,15 @@ module ace::vss {
         });
         assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_CONTRIBUTION));
         DealerContribution1 { shares_to_reveal, public_keys, public_key_proofs }
+    }
+
+    fun previous_commitment_from_bytes(bytes: vector<u8>): PreviousCommitment {
+        let stream = bcs_stream::new(bytes);
+        let old_g = group::deserialize_element(&mut stream);
+        let old_h = group::deserialize_element(&mut stream);
+        let old_c = group::deserialize_element(&mut stream);
+        assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_CONTRIBUTION));
+        PreviousCommitment { old_g, old_h, old_c }
     }
 
     // ── Test-only helpers ────────────────────────────────────────────────────

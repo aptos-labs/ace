@@ -6,7 +6,6 @@ import { Result } from "../result";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import * as Bls12381G1 from "../group/bls12381g1";
 import * as Bls12381G2 from "../group/bls12381g2";
-import * as pke from "../pke";
 import {
     Commitment as PcsCommitment,
     DegreeCheckState as PcsDegreeCheckState,
@@ -76,6 +75,21 @@ export function reconstruct({ indexedShares }: {
             }
             throw `reconstruct: unsupported scheme ${scheme}`;
         },
+    });
+}
+
+/** Lagrange-interpolate tagged scalar evaluations at x=0. */
+export function reconstructScalars({ indexedScalars }: {
+    indexedScalars: { index: number; scalar: Scalar }[]
+}): Result<Scalar> {
+    return Result.capture({
+        recordsExecutionTimeMs: false,
+        task: () => reconstruct({
+            indexedShares: indexedScalars.map(({ index, scalar }) => ({
+                index,
+                share: secretShareFromScalar(scalar),
+            })),
+        }).unwrapOrThrow("reconstructScalars: reconstruct failed"),
     });
 }
 
@@ -307,42 +321,58 @@ export class DealerState {
 
 // ── DealerContribution0 ───────────────────────────────────────────────────────
 
+export class PreviousCommitment {
+    constructor(
+        readonly oldG: Element,
+        readonly oldH: Element,
+        readonly oldC: Element,
+    ) {}
+
+    serialize(serializer: Serializer): void {
+        this.oldG.serialize(serializer);
+        this.oldH.serialize(serializer);
+        this.oldC.serialize(serializer);
+    }
+
+    static deserialize(deserializer: Deserializer): Result<PreviousCommitment> {
+        return Result.capture({
+            recordsExecutionTimeMs: false,
+            task: () => {
+                const oldG = Element.deserialize(deserializer).unwrapOrThrow("oldG deserialize failed");
+                const oldH = Element.deserialize(deserializer).unwrapOrThrow("oldH deserialize failed");
+                const oldC = Element.deserialize(deserializer).unwrapOrThrow("oldC deserialize failed");
+                return new PreviousCommitment(oldG, oldH, oldC);
+            },
+        });
+    }
+
+    toBytes(): Uint8Array {
+        const serializer = new Serializer();
+        this.serialize(serializer);
+        return serializer.toUint8Array();
+    }
+}
+
 export class DealerContribution0 {
     pcsCommitment: PcsCommitment;
-    privateShareMessages: pke.Ciphertext[];
-    dealerState: pke.Ciphertext | undefined;
     consistencyProof: SigmaDlogLinearProof | undefined;
 
-    constructor({ sharingPolyCommitment, privateShareMessages, dealerState, consistencyProof }: {
+    constructor({ sharingPolyCommitment, consistencyProof }: {
         sharingPolyCommitment: PcsCommitment;
-        privateShareMessages: pke.Ciphertext[];
-        dealerState?: pke.Ciphertext;
         consistencyProof?: SigmaDlogLinearProof;
     }) {
         this.pcsCommitment = sharingPolyCommitment;
-        this.privateShareMessages = privateShareMessages;
-        this.dealerState = dealerState ?? undefined;
-        this.consistencyProof = consistencyProof ?? undefined;
+        this.consistencyProof = consistencyProof;
     }
 
-    /** Wire format: [PcsCommitment] [share messages] [Option<dealer state>] [Option<consistency proof>] */
+    /** Wire format: [PcsCommitment, Option<SigmaDlogLinearProof>] */
     serialize(serializer: Serializer): void {
         this.pcsCommitment.serialize(serializer);
-        serializer.serializeU32AsUleb128(this.privateShareMessages.length);
-        for (const ct of this.privateShareMessages) {
-            ct.serialize(serializer);
-        }
-        if (this.dealerState !== undefined) {
-            serializer.serializeU8(1);
-            this.dealerState.serialize(serializer);
-        } else {
+        if (this.consistencyProof === undefined) {
             serializer.serializeU8(0);
-        }
-        if (this.consistencyProof !== undefined) {
+        } else {
             serializer.serializeU8(1);
             this.consistencyProof.serialize(serializer);
-        } else {
-            serializer.serializeU8(0);
         }
     }
 
@@ -351,27 +381,14 @@ export class DealerContribution0 {
             recordsExecutionTimeMs: false,
             task: () => {
                 const pcsCommitment = PcsCommitment.deserialize(deserializer).unwrapOrThrow("pcsCommitment deserialize failed");
-                const n = deserializer.deserializeUleb128AsU32();
-                const privateShareMessages: pke.Ciphertext[] = [];
-                for (let i = 0; i < n; i++) {
-                    const ct = pke.Ciphertext.deserialize(deserializer).unwrapOrThrow(`privateShareMessages[${i}] deserialize failed`);
-                    privateShareMessages.push(ct);
-                }
-                const dealerStateTag = deserializer.deserializeU8();
-                let dealerState: pke.Ciphertext | undefined;
-                if (dealerStateTag === 1) {
-                    dealerState = pke.Ciphertext.deserialize(deserializer).unwrapOrThrow("dealerState deserialize failed");
-                } else if (dealerStateTag !== 0) {
-                    throw `dealerState option tag must be 0 or 1, got ${dealerStateTag}`;
-                }
-                const consistencyProofTag = deserializer.deserializeU8();
+                const proofTag = deserializer.deserializeU8();
                 let consistencyProof: SigmaDlogLinearProof | undefined;
-                if (consistencyProofTag === 1) {
+                if (proofTag === 1) {
                     consistencyProof = SigmaDlogLinearProof.deserialize(deserializer).unwrapOrThrow("consistencyProof deserialize failed");
-                } else if (consistencyProofTag !== 0) {
-                    throw `consistencyProof option tag must be 0 or 1, got ${consistencyProofTag}`;
+                } else if (proofTag !== 0) {
+                    throw `consistencyProof option tag must be 0 or 1, got ${proofTag}`;
                 }
-                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, privateShareMessages, dealerState, consistencyProof });
+                return new DealerContribution0({ sharingPolyCommitment: pcsCommitment, consistencyProof });
             },
         });
     }
@@ -426,7 +443,7 @@ export class DealerContribution1 {
             }
         }
         serializer.serializeU32AsUleb128(this.publicKeys.length);
-        for (const pk of this.publicKeys) pk.serialize(serializer);
+        for (const publicKey of this.publicKeys) publicKey.serialize(serializer);
         serializer.serializeU32AsUleb128(this.publicKeyProofs.length);
         for (const proof of this.publicKeyProofs) {
             if (proof === undefined) {
@@ -454,14 +471,14 @@ export class DealerContribution1 {
                         throw `sharesToReveal[${i}]: invalid option tag ${tag}`;
                     }
                 }
-                const pkLen = deserializer.deserializeUleb128AsU32();
+                const publicKeysLen = deserializer.deserializeUleb128AsU32();
                 const publicKeys: Element[] = [];
-                for (let i = 0; i < pkLen; i++) {
+                for (let i = 0; i < publicKeysLen; i++) {
                     publicKeys.push(Element.deserialize(deserializer).unwrapOrThrow(`publicKeys[${i}] deserialize failed`));
                 }
-                const proofLen = deserializer.deserializeUleb128AsU32();
+                const proofsLen = deserializer.deserializeUleb128AsU32();
                 const publicKeyProofs: (SigmaDlogLinearProof | undefined)[] = [];
-                for (let i = 0; i < proofLen; i++) {
+                for (let i = 0; i < proofsLen; i++) {
                     const tag = deserializer.deserializeU8();
                     if (tag === 0) {
                         publicKeyProofs.push(undefined);
@@ -512,8 +529,8 @@ export class Session {
     dealer: AccountAddress;
     shareHolders: AccountAddress[];
     threshold: number;
-    basePoint: Element;
-    previousPublicKey: Element | undefined;
+    scheme: number;
+    previousCommitment: PreviousCommitment | undefined;
     pcsContext: PcsPublicParams;
     stateCode: number;
     dealTimeMicros: number;
@@ -523,16 +540,14 @@ export class Session {
     dealerContribution1: DealerContribution1 | undefined;
     nextPublicKeyToVerify: number;
     publicKeys: Element[];
-    resultPk: Element | undefined;
-    sharePks: Element[];
 
     private constructor(
         {
             dealer,
             shareHolders,
             threshold,
-            basePoint,
-            previousPublicKey,
+            scheme,
+            previousCommitment,
             pcsContext,
             stateCode,
             dealTimeMicros,
@@ -542,13 +557,12 @@ export class Session {
             dealerContribution1,
             nextPublicKeyToVerify,
             publicKeys,
-            sharePks,
         }: {
             dealer: AccountAddress,
             shareHolders: AccountAddress[],
             threshold: number,
-            basePoint: Element,
-            previousPublicKey: Element | undefined,
+            scheme: number,
+            previousCommitment: PreviousCommitment | undefined,
             pcsContext: PcsPublicParams,
             stateCode: number,
             dealTimeMicros: number,
@@ -558,14 +572,13 @@ export class Session {
             dealerContribution1: DealerContribution1 | undefined,
             nextPublicKeyToVerify: number,
             publicKeys: Element[],
-            sharePks: Element[],
         }
     ) {
         this.dealer = dealer;
         this.shareHolders = shareHolders;
         this.threshold = threshold;
-        this.basePoint = basePoint;
-        this.previousPublicKey = previousPublicKey;
+        this.scheme = scheme;
+        this.previousCommitment = previousCommitment;
         this.pcsContext = pcsContext;
         this.stateCode = stateCode;
         this.dealTimeMicros = dealTimeMicros;
@@ -575,8 +588,6 @@ export class Session {
         this.dealerContribution1 = dealerContribution1;
         this.nextPublicKeyToVerify = nextPublicKeyToVerify;
         this.publicKeys = publicKeys;
-        this.resultPk = publicKeys[0];
-        this.sharePks = sharePks;
     }
 
     serialize(serializer: Serializer): void {
@@ -586,10 +597,10 @@ export class Session {
             sh.serialize(serializer);
         }
         serializer.serializeU64(this.threshold);
-        this.basePoint.serialize(serializer);
-        if (this.previousPublicKey !== undefined) {
+        serializer.serializeU8(this.scheme);
+        if (this.previousCommitment !== undefined) {
             serializer.serializeU8(1);
-            this.previousPublicKey.serialize(serializer);
+            this.previousCommitment.serialize(serializer);
         } else {
             serializer.serializeU8(0);
         }
@@ -615,7 +626,7 @@ export class Session {
         }
         serializer.serializeU64(this.nextPublicKeyToVerify);
         serializer.serializeU32AsUleb128(this.publicKeys.length);
-        for (const pk of this.publicKeys) pk.serialize(serializer);
+        for (const publicKey of this.publicKeys) publicKey.serialize(serializer);
     }
 
     static deserialize(deserializer: Deserializer): Result<Session> {
@@ -629,13 +640,13 @@ export class Session {
                     shareHolders.push(AccountAddress.deserialize(deserializer));
                 }
                 const threshold = Number(deserializer.deserializeU64());
-                const basePoint = Element.deserialize(deserializer).unwrapOrThrow("basePoint deserialize failed");
-                const previousPublicKeyTag = deserializer.deserializeU8();
-                let previousPublicKey: Element | undefined;
-                if (previousPublicKeyTag === 1) {
-                    previousPublicKey = Element.deserialize(deserializer).unwrapOrThrow("previousPublicKey deserialize failed");
-                } else if (previousPublicKeyTag !== 0) {
-                    throw `previousPublicKey option tag must be 0 or 1, got ${previousPublicKeyTag}`;
+                const scheme = deserializer.deserializeU8();
+                const previousCommitmentTag = deserializer.deserializeU8();
+                let previousCommitment: PreviousCommitment | undefined;
+                if (previousCommitmentTag === 1) {
+                    previousCommitment = PreviousCommitment.deserialize(deserializer).unwrapOrThrow("previousCommitment deserialize failed");
+                } else if (previousCommitmentTag !== 0) {
+                    throw `previousCommitment option tag must be 0 or 1, got ${previousCommitmentTag}`;
                 }
                 const pcsContext = PcsPublicParams.deserialize(deserializer).unwrapOrThrow("pcsContext deserialize failed");
                 const stateCode = deserializer.deserializeU8();
@@ -666,13 +677,12 @@ export class Session {
                 for (let i = 0; i < publicKeysLen; i++) {
                     publicKeys.push(Element.deserialize(deserializer).unwrapOrThrow(`publicKeys[${i}] deserialize failed`));
                 }
-                const sharePks = publicKeys.slice(1);
                 return new Session({
                     dealer,
                     shareHolders,
                     threshold,
-                    basePoint,
-                    previousPublicKey,
+                    scheme,
+                    previousCommitment,
                     pcsContext,
                     stateCode,
                     dealTimeMicros,
@@ -682,7 +692,6 @@ export class Session {
                     dealerContribution1,
                     nextPublicKeyToVerify,
                     publicKeys,
-                    sharePks,
                 });
             },
         });
@@ -719,5 +728,17 @@ export class Session {
 
     isCompleted(): boolean {
         return this.stateCode === 3; // STATE__SUCCESS
+    }
+
+    get basePoint(): Element {
+        return this.pcsContext.generatorG;
+    }
+
+    get resultPk(): Element | undefined {
+        return this.publicKeys[0];
+    }
+
+    get sharePks(): Element[] {
+        return this.publicKeys.slice(1);
     }
 }

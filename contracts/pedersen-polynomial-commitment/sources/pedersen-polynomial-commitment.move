@@ -78,6 +78,28 @@ module ace::pedersen_polynomial_commitment {
         }
     }
 
+    public fun public_params_from_generators(generator_g: group::Element, generator_h: group::Element): PublicParams {
+        assert!(
+            group::element_scheme(&generator_g) == group::element_scheme(&generator_h),
+            error::invalid_argument(E_INCONSISTENT_SCHEME),
+        );
+        PublicParams { generator_g, generator_h }
+    }
+
+    public fun public_params_from_bytes(bytes: vector<u8>): PublicParams {
+        let stream = bcs_stream::new(bytes);
+        let params = deserialize_public_params(&mut stream);
+        assert!(!bcs_stream::has_remaining(&mut stream), error::invalid_argument(E_INVALID_DIMENSIONS));
+        params
+    }
+
+    public fun deserialize_public_params(stream: &mut BCSStream): PublicParams {
+        public_params_from_generators(
+            group::deserialize_element(stream),
+            group::deserialize_element(stream),
+        )
+    }
+
     public fun commitment_len(commitment: &Commitment): u64 {
         let raw_len = commitment.points.length();
         if (raw_len == 0) 0 else raw_len - 1

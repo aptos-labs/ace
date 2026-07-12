@@ -41,6 +41,9 @@ interface ParsedArgs {
     accountAddr?: string;
     accountSk?: string;
     pkeDk?: string;
+    sigSk?: string;
+    vssStoreUrl?: string;
+    nodeMsgListen?: string;
     port?: string;
     image?: string;
     chainRpc: ChainRpcOverrides;
@@ -67,9 +70,6 @@ const CHAIN_RPC_FLAGS: Record<string, keyof ChainRpcOverrides> = {
     'aptos-localnet-apikey':   'aptosLocalnetApikey',
     'aptos-shelby-private-beta-api':    'aptosShelbyPrivateBetaApi',
     'aptos-shelby-private-beta-apikey': 'aptosShelbyPrivateBetaApikey',
-    'solana-mainnet-beta-rpc': 'solanaMainnetBetaRpc',
-    'solana-testnet-rpc':      'solanaTestnetRpc',
-    'solana-devnet-rpc':       'solanaDevnetRpc',
 };
 
 const CHAIN_RPC_SECRET: Partial<Record<keyof ChainRpcOverrides, boolean>> = {
@@ -99,6 +99,9 @@ function parseNodeArgs(args: string[]): ParsedArgs {
         else if (k === 'account-addr')          p.accountAddr = v;
         else if (k === 'account-sk')            p.accountSk = v;
         else if (k === 'pke-dk')                p.pkeDk = v;
+        else if (k === 'sig-sk')                p.sigSk = v;
+        else if (k === 'vss-store-url')         p.vssStoreUrl = v;
+        else if (k === 'node-msg-listen')       p.nodeMsgListen = v;
         else if (k === 'port')                  p.port = v;
         else if (k in CHAIN_RPC_FLAGS)          p.chainRpc[CHAIN_RPC_FLAGS[k]!] = v;
     }
@@ -295,6 +298,9 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     add('account-addr', node.accountAddr, running.accountAddr);
     addSecretRow(add, 'account-sk', node.accountSk, running.accountSk, running, gcpSecretPrefix, GCP_SECRET_ENV.accountSk);
     addSecretRow(add, 'pke-dk', node.pkeDk, running.pkeDk, running, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
+    addSecretRow(add, 'sig-sk', node.sigSk, running.sigSk, running, gcpSecretPrefix, GCP_SECRET_ENV.sigSk);
+    addSecretRow(add, 'vss-store-url', node.vssStoreUrl, running.vssStoreUrl, running, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
+    addSecretRow(add, 'node-msg-listen', node.nodeMsgListen, running.nodeMsgListen, running, gcpSecretPrefix, GCP_SECRET_ENV.nodeMsgListen);
     if (node.image     || running.image)         add('image',     node.image,         running.image);
 
     addChainRpcRows(add, node.chainRpc ?? {}, running, gcpSecretPrefix);
@@ -312,9 +318,9 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
 
 /**
  * Microservices diff: the worker config is split across two Cloud Run services.
- *   - Maintainer carries the chain/admin secrets (api/addr/apikey/gaskey/account-addr/account-sk).
- *   - Handler carries pke-dk + per-chain RPC overrides + the always-on `--maintainer-url`.
- *   - Both share the image and pke-dk; we diff both copies so drift on either side surfaces.
+ *   - Maintainer carries the chain/admin secrets and node-message/VSS runtime config.
+ *   - Handler carries pke-dk and the same VSS store config so requests can read shares directly.
+ *   - Both share the image; we diff both copies so drift on either side surfaces.
  *   - VPC: maintainer follows the same chainRpc rule as monolith; handler is hard-wired
  *     to network=default, subnet=default, egress=all-traffic (see gcpDeployCmdMicroservices).
  */
@@ -333,9 +339,13 @@ function computeDiffMicroservices(
     addM('account-addr', node.accountAddr, maintainer.accountAddr);
     addSecretRow(addM, 'account-sk', node.accountSk, maintainer.accountSk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.accountSk);
     addSecretRow(addM, 'pke-dk', node.pkeDk, maintainer.pkeDk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
+    addSecretRow(addM, 'sig-sk', node.sigSk, maintainer.sigSk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.sigSk);
+    addSecretRow(addM, 'vss-store-url', node.vssStoreUrl, maintainer.vssStoreUrl, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
+    addSecretRow(addM, 'node-msg-listen', node.nodeMsgListen, maintainer.nodeMsgListen, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.nodeMsgListen);
     if (node.image     || maintainer.image)         addM('image',     node.image,         maintainer.image);
 
     addSecretRow(addH, 'pke-dk', node.pkeDk, handler.pkeDk, handler, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
+    addSecretRow(addH, 'vss-store-url', node.vssStoreUrl, handler.vssStoreUrl, handler, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
     if (node.image || handler.image)                addH('image',     node.image,         handler.image);
     addChainRpcRows(addH, node.chainRpc ?? {}, handler, gcpSecretPrefix);
 

@@ -24,6 +24,8 @@
  */
 
 import { parse as parseToml } from 'smol-toml';
+import { homedir } from 'os';
+import * as path from 'path';
 import { escSelect } from './esc-select.js';
 import { CLI } from './cli-name.js';
 import type { Mode, Platform, GcpConfig, DockerConfig, LocalConfig, ChainRpcOverrides, TrackedNode } from './config.js';
@@ -64,7 +66,9 @@ export async function pickScheme(opts: { isLocalnet: boolean }): Promise<Scheme 
         {
             name: 'GCP Cloud Run, monolith         — single Cloud Run service does everything',
             value: 'gcp-cloudrun-monolith',
-            disabled: opts.isLocalnet ? '(unavailable: deployment is localnet)' : undefined,
+            disabled: opts.isLocalnet
+                ? '(unavailable: deployment is localnet)'
+                : '(unavailable with offchain VSS: Cloud Run exposes one ingress port; use microservices)',
         },
         {
             name: 'GCP Cloud Run, microservices    — Maintainer + Handler pair, Handler scales',
@@ -99,6 +103,7 @@ export interface TemplateInputs {
     identity: {
         accountAddr: string;
         pkeEk:       string;
+        sigPk:       string;
     };
     /** Deployment blob values, used for the read-only block + key pre-fill. */
     blob: {
@@ -128,6 +133,8 @@ export interface SchemeDefaults {
     repoPath?:               string;
     logMaxMb?:               number;
     endpoint?:               string;
+    vssStoreUrl?:            string;
+    nodeMsgListen?:          string;
 }
 
 export interface ExistingValues {
@@ -147,6 +154,8 @@ export interface ExistingValues {
     repoPath?:               string;
     logMaxMb?:               number;
     endpoint?:               string;
+    vssStoreUrl?:            string;
+    nodeMsgListen?:          string;
 }
 
 const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
@@ -158,9 +167,6 @@ const CHAIN_RPC_PLACEHOLDERS: Record<keyof ChainRpcOverrides, string> = {
     aptosLocalnetApikey:  'AG-yourkey...',
     aptosShelbyPrivateBetaApi:    'https://<your-shelby-private-beta-fullnode>/v1',
     aptosShelbyPrivateBetaApikey: 'AG-yourkey...',
-    solanaMainnetBetaRpc: 'https://api.mainnet-beta.solana.com',
-    solanaTestnetRpc:     'https://api.testnet.solana.com',
-    solanaDevnetRpc:      'https://api.devnet.solana.com',
 };
 
 const CHAIN_RPC_KEYS = Object.keys(CHAIN_RPC_PLACEHOLDERS) as (keyof ChainRpcOverrides)[];
@@ -250,6 +256,7 @@ function readonlyIdentityBlock(t: TemplateInputs): string {
         `# ── Read-only identity / deployment binding (do NOT uncomment) ────────────────`,
         `#  accountAddr     = "${t.identity.accountAddr}"`,
         `#  pkeEk           = "${t.identity.pkeEk}"`,
+        `#  sigPk           = "${t.identity.sigPk}"`,
         `#  aceAddr         = "${t.blob.aceAddr}"`,
         ...(t.blob.nodeRpcUrl ? ['#  rpcUrl is the admin-facing RPC URL.'] : []),
         `#  rpcUrl          = "${t.blob.rpcUrl}"`,
@@ -293,6 +300,15 @@ function keyLines(t: TemplateInputs): string {
     ].join('\n');
 }
 
+function runtimeLines(t: TemplateInputs, nodeMsgComment: string): string {
+    const e = t.existing ?? {};
+    const d = t.defaults;
+    return [
+        `vssStoreUrl      = "${e.vssStoreUrl ?? d.vssStoreUrl ?? ''}"          # → --vss-store-url. Persistent VSS DB; sqlite://... for local, postgres://... for shared DB`,
+        `nodeMsgListen    = "${e.nodeMsgListen ?? d.nodeMsgListen ?? ''}"      # → --node-msg-listen. ${nodeMsgComment}`,
+    ].join('\n');
+}
+
 // ── Per-scheme templates ─────────────────────────────────────────────────────
 
 export function generateTemplate(scheme: Scheme, t: TemplateInputs): string {
@@ -332,6 +348,7 @@ ${stringLine('serviceName', e.serviceName ?? d.serviceName ?? '', [
     'Must start with a letter and be under 64 characters.',
 ])}
 ${keyLines(t)}
+${runtimeLines(t, 'Cloud Run monolith currently needs a second listener for node-to-node VSS messages; prefer microservices if deploying on Cloud Run.')}
 
 ${renderChainRpcBlock(e.chainRpc)}
 `;
@@ -378,6 +395,7 @@ ${numberLine('handlerMaxInstances', e.handlerMaxInstances ?? d.handlerMaxInstanc
     'Set to 1 to effectively disable scaling.',
 ])}
 ${keyLines(t)}
+${runtimeLines(t, 'Maintainer service listener for node-to-node VSS messages. Default Cloud Run ingress port is 8080.')}
 
 ${renderChainRpcBlock(e.chainRpc, 'Applies to the Handler (the Maintainer doesn\'t make per-request chain calls).')}
 `;
@@ -407,6 +425,7 @@ ${stringLine('containerName', e.containerName ?? d.containerName ?? '', [
     "List existing containers with `docker ps -a --format '{{.Names}}'`.",
 ])}
 ${keyLines(t)}
+${runtimeLines(t, 'Container listen address for node-to-node VSS messages; the generated docker command publishes this port too.')}
 
 ${renderChainRpcBlock(e.chainRpc)}
 `;
@@ -434,6 +453,7 @@ ${stringLine('repoPath', e.repoPath ?? d.repoPath ?? '', 'Path to a checked-out 
 ${stringLine('port', e.port ?? d.port ?? '19000', 'TCP port the worker listens on. Default: lowest unused port starting at 19000.')}
 ${numberLine('logMaxMb', e.logMaxMb ?? d.logMaxMb ?? 50, 'Logrotate threshold in MB. Rotates when the log exceeds this size.')}
 ${keyLines(t)}
+${runtimeLines(t, 'Local listen address for node-to-node VSS messages.')}
 
 ${renderChainRpcBlock(e.chainRpc)}
 `;
@@ -482,10 +502,12 @@ export interface ParsedNodeForm {
     repoPath?:               string;
     logMaxMb?:               number;
     endpoint?:               string;
+    vssStoreUrl?:            string;
+    nodeMsgListen?:          string;
 }
 
 const FORBIDDEN_TOP = new Set([
-    'accountAddr', 'pkeEk', 'pkeDk', 'accountSk', 'aceAddr', 'rpcUrl', 'nodeRpcUrl',
+    'accountAddr', 'pkeEk', 'pkeDk', 'sigPk', 'sigSk', 'accountSk', 'aceAddr', 'rpcUrl', 'nodeRpcUrl',
     'platform', 'mode', 'gcp', 'docker', 'local',
 ]);
 
@@ -503,6 +525,8 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         serviceName:   { required: true,  type: 'string' },
         rpcApiKey:     { required: false, type: 'string' },
         gasStationKey: { required: false, type: 'string' },
+        vssStoreUrl:   { required: true,  type: 'string' },
+        nodeMsgListen: { required: true,  type: 'string' },
     },
     'gcp-cloudrun-microservices': {
         alias:                 { required: false, type: 'string' },
@@ -514,6 +538,8 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         handlerMaxInstances:   { required: true,  type: 'number' },
         rpcApiKey:             { required: false, type: 'string' },
         gasStationKey:         { required: false, type: 'string' },
+        vssStoreUrl:           { required: true,  type: 'string' },
+        nodeMsgListen:         { required: true,  type: 'string' },
     },
     'docker-monolith': {
         alias:         { required: false, type: 'string' },
@@ -522,6 +548,8 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         containerName: { required: true,  type: 'string' },
         rpcApiKey:     { required: false, type: 'string' },
         gasStationKey: { required: false, type: 'string' },
+        vssStoreUrl:   { required: true,  type: 'string' },
+        nodeMsgListen: { required: true,  type: 'string' },
     },
     'local-build-monolith': {
         alias:         { required: false, type: 'string' },
@@ -530,6 +558,8 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         logMaxMb:      { required: true,  type: 'number' },
         rpcApiKey:     { required: false, type: 'string' },
         gasStationKey: { required: false, type: 'string' },
+        vssStoreUrl:   { required: true,  type: 'string' },
+        nodeMsgListen: { required: true,  type: 'string' },
     },
     'metadata-management-only': {
         alias:         { required: false, type: 'string' },
@@ -623,6 +653,10 @@ export const SUFFIX_MONOLITH = 'mono';
 export const SUFFIX_MAINTAINER = 'ms-secret-maintainer';
 export const SUFFIX_HANDLER = 'ms-req-handler';
 
+function localVssStoreUrl(prefix: string): string {
+    return `sqlite://${path.join(homedir(), '.ace', 'vss', `${prefix}.db`)}`;
+}
+
 /** Apply scheme-specific defaults onto the partial values the caller provides. */
 export function defaultsFor(
     scheme: Scheme,
@@ -639,6 +673,8 @@ export function defaultsFor(
                 project: extras.defaultGcpProject,
                 region: 'us-central1',
                 serviceName: `${prefix}-${SUFFIX_MONOLITH}`,
+                vssStoreUrl: '',
+                nodeMsgListen: '0.0.0.0:8081',
             };
         case 'gcp-cloudrun-microservices':
             return {
@@ -648,33 +684,34 @@ export function defaultsFor(
                 maintainerServiceName: `${prefix}-${SUFFIX_MAINTAINER}`,
                 handlerServiceName:    `${prefix}-${SUFFIX_HANDLER}`,
                 handlerMaxInstances:   10,
+                vssStoreUrl: '',
+                nodeMsgListen: '0.0.0.0:8080',
             };
         case 'docker-monolith':
             return {
                 image: fallbackImage,
                 port: extras.defaultPort ?? '19000',
                 containerName: `${prefix}-${SUFFIX_MONOLITH}`,
+                vssStoreUrl: 'sqlite:///ace-vss/vss.db',
+                nodeMsgListen: `0.0.0.0:${Number(extras.defaultPort ?? '19000') + 1000}`,
             };
         case 'local-build-monolith':
             return {
                 repoPath: extras.defaultRepoPath,
                 port: extras.defaultPort ?? '19000',
                 logMaxMb: 50,
+                vssStoreUrl: localVssStoreUrl(prefix),
+                nodeMsgListen: `127.0.0.1:${Number(extras.defaultPort ?? '19000') + 1000}`,
             };
         case 'metadata-management-only':
             return {};
     }
 }
 
-// ── Microservices deploy emission ────────────────────────────────────────────
+// ── Microservices deploy helpers ──────────────────────────────────────────────
 
-/**
- * The Cloud Run auto-assigned URL follows
- *   `https://<service>-<project_number>.<region>.run.app`
- * and is fully derivable from the service name + project number + region.
- * That lets us bake the Maintainer URL directly into the Handler's
- * `--maintainer-url` flag at generate time — no post-deploy capture needed.
- */
+/** Best-effort Cloud Run URL shape used as a prompt/default; real deploys still
+ * capture the emitted service URL because Cloud Run may use legacy hostnames. */
 export function cloudRunUrl(serviceName: string, projectNumber: string, region: string): string {
     return `https://${serviceName}-${projectNumber}.${region}.run.app`;
 }

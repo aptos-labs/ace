@@ -20,14 +20,14 @@ pub(crate) trait AptosPayloadBinding: serde::Serialize {
     }
 }
 
-impl AptosPayloadBinding for DecryptionRequestPayload {
-    fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
-        DecryptionRequestPayload::to_webauthn_challenge(self)
-    }
-}
-
 impl AptosPayloadBinding for ThresholdVrfRequestPayload {
     fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
         ThresholdVrfRequestPayload::to_webauthn_challenge(self)
+    }
+}
+
+impl AptosPayloadBinding for DecryptionRequestPayload {
+    fn to_webauthn_challenge(&self) -> Result<[u8; 32]> {
+        DecryptionRequestPayload::to_webauthn_challenge(self)
     }
 }

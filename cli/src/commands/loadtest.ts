@@ -233,7 +233,7 @@ export async function loadtestRunCommand(opts: {
     } else {
         const known = ACE.knownDeployments.preview20260610;
         aceDeployment = known.aceDeployment;
-        keypairId = known.ibeKeypairId;
+        keypairId = known.vrfKeypairId;
         chainId = known.chainId;
     }
 
@@ -248,11 +248,11 @@ export async function loadtestRunCommand(opts: {
         loadtester,
         moduleAddr: AccountAddress.fromString(state.contractAddr),
         moduleName: MODULE_NAME,
-        domain: DOMAIN_BYTES,
+        label: DOMAIN_BYTES,
     };
 
     // Initial mint (also a smoke test).
-    console.log('Building initial request body (full SDK decrypt smoke test)...');
+    console.log('Building initial request body (single-worker threshold VRF smoke test)...');
     const initial = await buildOnce(mintCfg);
     console.log(`  epoch=${initial.epoch} body=${initial.requestSize}B\n`);
 

@@ -2,7 +2,7 @@
 
 ACE's VSS is a single-dealer synchronous VSS built from the protocol skeleton in Das et al. "Verifiable Secret Sharing Simplified" (ePrint 2023/1196), with the paper's Appendix A.2 Pedersen polynomial commitment instantiated over ACE's abstract BLS12-381 group interface. DKG composes one VSS per committee member; DKR composes one resharing VSS per old-committee member.
 
-This document uses additive group notation for the PCS and public-key-share equations, matching the Move implementation: \(xG\) means scalar multiplication, and \(X + Y\) is group addition.
+This document uses additive group notation for the PCS and sigma-proof equations, matching the Move implementation: \(xG\) means scalar multiplication, and \(X + Y\) is group addition.
 
 ## 1. Construction
 
@@ -18,7 +18,7 @@ The secret being shared is \(p(0)\). The blinding polynomial \(r\) is never need
 
 ### 1.1 Pedersen PCS
 
-The PCS public parameters are two same-group generators \((G,H)\). ACE samples them on chain when the VSS session is created. Security assumes the discrete-log relation between \(G\) and \(H\) is unknown; hiding of individual Pedersen commitments follows from the uniform blinding value \(r(i)\).
+The PCS public parameters are two same-group generators \((G,H)\). A standalone VSS samples them on chain when the VSS session is created. DKG samples one context and passes it to every child VSS; DKR carries forward the original DKG context so commitments remain in one basis across reshares. Security assumes the discrete-log relation between \(G\) and \(H\) is unknown; hiding of individual Pedersen commitments follows from the uniform blinding value \(r(i)\).
 
 ACE commits over the evaluation domain \(\{0,1,\ldots,n\}\):
 
@@ -26,7 +26,7 @@ ACE commits over the evaluation domain \(\{0,1,\ldots,n\}\):
 V_i = p(i)G + r(i)H \qquad \text{for } i=0,\ldots,n.
 \]
 
-The original paper's Appendix A.2 only needs commitments for holder positions. ACE additionally includes \(V_0\) because DKG/DKR need the public key \(p(0)B\), and DKR must bind \(p(0)\) to an already-published old share public key. The contract therefore stores \(n+1\) commitment points; `commitment_len()` returns \(n\) holder positions.
+The original paper's Appendix A.2 only needs commitments for holder positions. ACE additionally includes \(V_0\) because DKG/DKR aggregate a root commitment and DKR must bind a new resharing constant to an already-committed old share opening. The contract therefore stores \(n+1\) commitment points; `commitment_len()` returns \(n\) holder positions.
 
 An opening at position \(i\) is:
 
@@ -60,81 +60,96 @@ The \(\lambda_i\) values are computed from a factorial-inverse table for the fix
 
 `DealerContribution0` contains:
 
-- the Pedersen commitment vector \(V_0,\ldots,V_n\),
-- one PKE ciphertext per holder, encrypting the holder's opening \((i,p(i),r(i))\),
-- dealer recovery state encrypted to the dealer,
-- and, for resharing sessions only, a sigma proof tying \(p(0)\) to the previous public key.
+- the Pedersen commitment vector \(V_0,\ldots,V_n\);
+- for resharing sessions only, a sigma proof tying the new constant opening to the previous commitment.
 
-After DC0, the chain runs the touch-driven degree check before recipients may ACK. A holder decrypts its PKE ciphertext, verifies \(p(i)G+r(i)H=V_i\), and ACKs on chain if the opening is valid.
+The dealer's polynomials are stored in the off-chain VSS store, not encrypted
+onto the chain. After DC0, the chain runs the touch-driven degree check before
+recipients may ACK.
+
+A holder requests its opening over the node-message gateway. The request is a
+signed node message whose sender must match the requested holder index. The
+dealer replies with the BCS opening \((i,p(i),r(i))\). The holder verifies:
+
+\[
+p(i)G+r(i)H \stackrel{?}{=} V_i
+\]
+
+and ACKs on chain if the opening is valid. The ACK is a normal Aptos transaction
+from the holder account; there is no separate off-chain receipt in the VSS
+contract semantics.
 
 After the ACK window, the dealer submits `DealerContribution1`:
 
 - `shares_to_reveal[0]` is always `None`;
 - for a holder \(i\geq1\) that did not ACK, `shares_to_reveal[i]` is the full opening \((i,p(i),r(i))\);
-- for \(i=0\) and each holder that did ACK, no opening is revealed, but the dealer supplies a sigma proof for the public key \(P_i=p(i)B\);
-- `public_keys[i]` stores \(P_i=p(i)B\) for every \(i=0,\ldots,n\).
+- for each holder that did ACK, no opening is revealed.
+- `public_keys[i] = p(i)G` for every position `i = 0..n`;
+- when an opening remains private, a sigma proof binds `public_keys[i]` to the
+  same secret scalar committed in `V_i`.
 
-For non-ACKing holders, the chain verifies the revealed Pedersen opening and then checks \(P_i=p(i)B\) directly. For ACKing holders, the chain verifies the sigma proof instead, so \(r(i)\) stays private.
+For non-ACKing holders, the chain verifies the revealed Pedersen opening. For
+ACKing holders, the chain relies on the holder's on-chain ACK that it received
+and verified the private opening. The chain separately verifies each public key
+either from a revealed opening or from its DC1 sigma proof.
 
-### 1.4 Sigma Linear-DLog Proofs
+### 1.4 Resharing Same-Secret Proof
 
 The proof module is `ace::sigma_dlog_linear`. It is a Fiat-Shamir generalized Schnorr proof for a witness vector satisfying multiple linear representation equations.
 
-For VSS public-key binding, the witness is \((p(i),r(i))\). The public statement is:
+For resharing, the witness is the old and new opening scalars. If the previous
+commitment is:
 
 \[
-p(i)B + r(i)0 = P_i,
+C_{\text{old}} = sG_{\text{old}} + \rho H_{\text{old}},
+\]
+
+and the new VSS root commitment is:
+
+\[
+C_{\text{new}} = p(0)G_{\text{new}} + r(0)H_{\text{new}},
+\]
+
+the dealer proves knowledge of \((s,\rho,r(0))\) such that:
+
+\[
+sG_{\text{old}} + \rho H_{\text{old}} = C_{\text{old}},
 \qquad
-p(i)G + r(i)H = V_i.
+sG_{\text{new}} + r(0)H_{\text{new}} = C_{\text{new}}.
 \]
 
-Equivalently, the verifier uses the row-major matrix:
-
-\[
-\begin{bmatrix}
-B & 0 \\
-G & H
-\end{bmatrix}
-\begin{bmatrix}
-p(i) \\
-r(i)
-\end{bmatrix}
-=
-\begin{bmatrix}
-P_i \\
-V_i
-\end{bmatrix}.
-\]
-
-The transcript domain includes the Aptos chain id, ACE module address, `"vss"`, a purpose string (`"vss::dc0-consistency"` or `"vss::dc1-public-key"`), the session address, and the evaluation position.
+The statement proves the new secret scalar equals the old committed share scalar
+without revealing either blinding. The transcript domain includes the Aptos
+chain id, ACE module address, `"vss"`, purpose string
+`"vss::dc0-consistency"`, and the session address.
 
 ### 1.5 Resharing Binding
 
-For fresh DKG VSS sessions, `previous_public_key=None`.
+For fresh DKG VSS sessions, `previous_commitment=None`.
 
-For DKR, old holder \(j\) must reshare its existing share \(s_j\). The parent DKG/DKR session already published \(P_j=s_jB\). The child VSS stores this as `previous_public_key` and requires the dealer's DC0 consistency proof at position 0:
-
-\[
-p(0)B = P_j,
-\qquad
-p(0)G + r(0)H = V_0.
-\]
-
-This replaces the old Feldman-era equality check \(V_0=P_j\). The binding is now a sigma proof of knowledge of the same scalar \(p(0)\) in both equations, without revealing \(r(0)\).
+For DKR, old holder \(j\) must reshare its existing share opening
+\((s_j,\rho_j)\). The parent DKG/DKR session already published the old share
+commitment \(C_j=s_jG+\rho_jH\). The child VSS stores this as
+`previous_commitment = (G,H,C_j)` and requires the DC0 same-secret proof above.
+This replaces the old direct equality check. The binding is now a sigma
+proof of knowledge of the same secret scalar in both Pedersen equations.
 
 ## 2. Security Properties
 
-The Pedersen PCS restores the hiding property that the earlier Feldman instantiation lacked: the commitment vector \(V_i=p(i)G+r(i)H\) does not by itself reveal \(p(i)\). ACE still intentionally publishes public key shares \(P_i=p(i)B\). Thus secrecy of scalar shares and the master secret is computational, under DLog for \(B\), while the PCS no longer adds the extra non-hiding leakage Feldman had.
+The Pedersen vector \(V_i=p(i)G+r(i)H\) is perfectly hiding by itself. VSS also
+publishes \(P_i=p(i)G\) for IBE and share verification, so scalar secrecy is
+computational with respect to discrete log, plus Shamir secrecy and operational
+confidentiality of off-chain share delivery/storage.
 
-**Correctness.** If the dealer follows the protocol, every honest holder verifies its private opening and ACKs. The degree check accepts the commitment vector, and DC1 verification populates \(P_0,\ldots,P_n\). Reconstruction from any \(t\) scalar shares recovers \(p(0)\).
+**Correctness.** If the dealer follows the protocol, every honest holder verifies its private opening and ACKs. The degree check accepts the commitment vector. Reconstruction from any \(t\) scalar shares recovers \(p(0)\), and the corresponding blinding shares reconstruct \(r(0)\).
 
-**Completeness.** If at least \(t\) holders ACK, the dealer can open every non-ACKing holder publicly and provide sigma proofs for every hidden opening. The session reaches success unless the dealer equivocated.
+**Completeness.** After the ACK window, the dealer can open every non-ACKing holder publicly. The session reaches success if every non-ACKing opening verifies and every ACKed holder keeps its opening private.
 
-**Binding / public-key soundness.** A successful VSS session fixes one degree-\((t-1)\) polynomial \(p\) over the committed domain, except with the degree-check soundness error and DLog binding assumptions for Pedersen. For every published public key \(P_i\), the chain has either a revealed opening proving \(P_i=p(i)B\), or a sigma proof of knowledge of \((p(i),r(i))\) tying \(P_i\) to \(V_i\). A dealer therefore cannot make the on-chain share public keys correspond to a different sharing polynomial without breaking the PCS binding or the sigma proof.
+**Binding / commitment soundness.** A successful VSS session fixes one degree-\((t-1)\) pair of polynomials \((p,r)\) over the committed domain, except with the degree-check soundness error and DLog binding assumptions for Pedersen. Non-ACKed shares are checked on chain. ACKed shares are checked by the holder before it submits its on-chain ACK.
 
-**Secrecy.** Against fewer than \(t\) corrupted holders, the scalar \(p(0)\) is hidden by Shamir secrecy given their opened shares, by PKE confidentiality for honest holders' openings, and by DLog for the public group elements \(P_i=p(i)B\). The Pedersen blinding polynomial hides the commitment vector itself, matching the paper's Appendix A.2 intuition.
+**Secrecy.** Against fewer than \(t\) corrupted holders, the scalar \(p(0)\) is hidden by Shamir secrecy given their opened shares and by Pedersen hiding for the commitment vector. VSS share delivery is authenticated by node-message signatures but not itself an encryption layer; deployments that need passive-network confidentiality must provide it operationally (for example private networking or TLS).
 
-**Resharing soundness.** In DKR, the DC0 consistency proof forces \(p(0)\) to be the old share whose public key was already on chain. A malicious old dealer can refuse to participate, but cannot successfully reshare a different scalar.
+**Resharing soundness.** In DKR, the DC0 consistency proof forces \(p(0)\) to be the old share scalar inside the previous Pedersen share commitment. A malicious old dealer can refuse to participate, but cannot successfully reshare a different scalar without breaking the sigma proof or Pedersen binding.
 
 ## 3. Implementation Map
 

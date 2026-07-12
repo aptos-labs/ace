@@ -1,6 +1,8 @@
 module loadtest::acl {
+    use std::string::String;
+
     #[view]
-    public fun check_permission(_user: address, _domain: vector<u8>): bool {
+    public fun on_ace_vrf_request(_label: vector<u8>, _account: address, _origin: String): bool {
         true
     }
 }

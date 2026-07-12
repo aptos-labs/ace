@@ -6,7 +6,7 @@
  *
  * Scenario:
  *   Committee: [A, B, C]  threshold=2  resharing_interval_secs=120 (2 min)
- *   Secrets: 1 (primitive=1, BFIBE shortsig/G2)
+ *   Secrets: 1 (threshold VRF/G2)
  *
  * Flow:
  *   1. Start localnet.
@@ -80,7 +80,7 @@ async function main() {
 
     // ── Deploy contracts ─────────────────────────────────────────────────────
     log('Deploying contracts...');
-    await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+    await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
     // ── Register PKE enc keys + HTTP endpoints ───────────────────────────────
     const WORKER_BASE_PORT = 19000;
@@ -93,7 +93,7 @@ async function main() {
         })).unwrapOrThrow('Failed to register PKE key.').asSuccessOrThrow();
         (await submitTxn({
             signer: workerAccounts[i]!,
-            entryFunction: `${aceContract}::worker_config::register_endpoint`,
+            entryFunction: `${aceContract}::worker_config::register_client_endpoint`,
             args: [`http://127.0.0.1:${WORKER_BASE_PORT + i}`],
         })).unwrapOrThrow('Failed to register endpoint.').asSuccessOrThrow();
     }
@@ -186,14 +186,9 @@ async function main() {
     log('  ACE local network is READY');
     log(`  Config: ${CONFIG_PATH}`);
     log('');
-    log('  Run the Solana example:');
-    log('    cd examples/pay-to-download-solana');
-    log('    pnpm test:localnet');
-    log('');
-    log('  Run the Aptos custom-flow example:');
-    log('    cd examples/presigned-access-aptos');
-    log('    pnpm 1-setup:localnet && pnpm 2-deploy-contract:localnet');
-    log('    pnpm 3-grant:localnet && pnpm 4-decrypt:localnet');
+    log('  Try the VRF scenario from another shell:');
+    log('    cd scenarios');
+    log('    pnpm test-threshold-vrf-derive-flow');
     log('══════════════════════════════════════════════');
     log('');
 

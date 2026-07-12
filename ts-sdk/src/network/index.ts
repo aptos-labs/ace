@@ -12,6 +12,11 @@ export const USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 1n;
 export const USAGE_BFIBE_BLS12381_SHORTSIG_AEAD = 2n;
 export const USAGE_BLS12381_THRESHOLD_VRF = 4n;
 
+export const PRIMITIVE_BLS12381_G1_TEST_ONLY = PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC;
+export const PRIMITIVE_BLS12381_G2_TEST_ONLY = PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD;
+export const USAGE_BLS12381_G1_TEST_ONLY = USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC;
+export const USAGE_BLS12381_G2_TEST_ONLY = USAGE_BFIBE_BLS12381_SHORTSIG_AEAD;
+
 export function usageForPrimitive(primitive: number): bigint {
     switch (primitive) {
         case PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC:
@@ -26,8 +31,9 @@ export function usageForPrimitive(primitive: number): bigint {
 }
 
 const SCHEME_NAMES: Record<number, string> = {
-    0: 'BLS12-381 G1 / BFIBE-shortpk-otp-hmac (legacy)',
-    1: 'BLS12-381 G2 / BFIBE-shortsig-aead (default)',
+    0: 'BLS12-381 G1 / BFIBE short-PK OTP-HMAC',
+    1: 'BLS12-381 G2 / BFIBE short-signature AEAD',
+    2: 'BLS12-381 threshold VRF',
 };
 
 export function schemeName(scheme: number): string {

@@ -5,14 +5,16 @@
 //! `main.rs` is a thin CLI wrapper over [`run`].
 
 use anyhow::{anyhow, Result};
+use node_msg_gateway::{send_signed_node_message, sign_node_message, GatewayContext};
 use tokio::sync::oneshot;
-use vss_common::pke::pke_decrypt;
+use vss_common::offchain::ShareRequest;
 use vss_common::session::{
     STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
     STATE_VERIFY_DEALER_OPENING,
 };
 use vss_common::vss_types::pedersen_verify_private_share;
 use vss_common::{normalize_account_addr, parse_ed25519_signing_key_hex, AptosRpc, TxnArg};
+use vss_store::{connect_vss_store, HolderShareRecord, VssStore};
 
 pub const POLL_SECS: u64 = 1;
 
@@ -26,6 +28,8 @@ pub struct RunConfig {
     pub account_addr: String,
     pub account_sk_hex: String,
     pub pke_dk_hex: String,
+    pub sig_sk_hex: Option<String>,
+    pub vss_store_url: Option<String>,
 }
 
 /// Recipient state machine.
@@ -43,6 +47,15 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     );
     let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
     let vk = sk.verifying_key();
+    let sig_sk = config
+        .sig_sk_hex
+        .as_ref()
+        .map(|hex| parse_ed25519_signing_key_hex(hex))
+        .transpose()?;
+    let store = match config.vss_store_url.as_ref() {
+        Some(url) => Some(connect_vss_store(url)?),
+        None => None,
+    };
 
     let account_addr = normalize_account_addr(&config.account_addr);
     let session_addr = normalize_account_addr(&config.vss_session);
@@ -52,9 +65,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         "vss-recipient: starting (account={} session={} ace={})",
         account_addr, session_addr, ace
     );
-
-    let dk_bytes = hex::decode(config.pke_dk_hex.trim_start_matches("0x"))
-        .map_err(|e| anyhow!("invalid pke_dk_hex: {}", e))?;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(POLL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -97,9 +107,6 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             STATE_DEALER_DEAL => {
                 println!("vss-recipient: session in DEALER_DEAL, waiting...");
             }
-            STATE_VERIFY_DEALER_OPENING => {
-                println!("vss-recipient: session in VERIFY_DEALER_OPENING, waiting...");
-            }
             STATE_RECIPIENT_ACK => {
                 let already_acked = session
                     .share_holder_acks
@@ -109,41 +116,39 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 if already_acked {
                     println!("vss-recipient: already acked, waiting for dealer to open...");
                 } else {
-                    // Decrypt and Pedersen-verify the private opening before acking.
-                    let bcs_session = match rpc.get_session_bcs_decoded(&ace, &session_addr).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("vss-recipient: get_session_bcs_decoded error: {:#}", e);
-                            continue;
-                        }
-                    };
-                    let dc0 = match bcs_session.dealer_contribution_0.as_ref() {
-                        Some(d) => d,
+                    let store = match store.as_deref() {
+                        Some(store) => store,
                         None => {
-                            eprintln!("vss-recipient: dc0 missing in bcs session");
+                            eprintln!("vss-recipient: --vss-store-url is required for offchain VSS shares");
                             continue;
                         }
                     };
-                    let plaintext =
-                        match pke_decrypt(&dk_bytes, &dc0.private_share_messages[my_idx]) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                eprintln!("vss-recipient: pke_decrypt error: {:#}", e);
-                                continue;
-                            }
-                        };
-                    if let Err(e) = pedersen_verify_private_share(
-                        &plaintext,
-                        &bcs_session.pcs_context,
-                        &dc0.pcs_commitment,
-                        (my_idx + 1) as u64,
-                    ) {
-                        eprintln!(
-                            "vss-recipient: Pedersen opening verification failed: {:#}",
-                            e
-                        );
+                    let sig_sk = match sig_sk.as_ref() {
+                        Some(sk) => sk,
+                        None => {
+                            eprintln!(
+                                "vss-recipient: --sig-sk is required for offchain VSS shares"
+                            );
+                            continue;
+                        }
+                    };
+                    let share_result = obtain_offchain_share(
+                        &rpc,
+                        store,
+                        sig_sk,
+                        &ace,
+                        &session_addr,
+                        &account_addr,
+                        &session,
+                        my_idx,
+                    )
+                    .await;
+
+                    if let Err(e) = share_result {
+                        eprintln!("vss-recipient: share fetch/verification failed: {:#}", e);
                         continue;
                     }
+
                     println!("vss-recipient: Pedersen opening verification passed, submitting on_share_holder_ack");
                     let args = [TxnArg::Address(session_addr.as_str())];
                     match rpc
@@ -162,6 +167,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                     }
                 }
             }
+            STATE_VERIFY_DEALER_OPENING => {
+                println!("vss-recipient: dealer opening is being verified, waiting...");
+            }
             STATE_SUCCESS => {
                 println!("vss-recipient: session reached SUCCESS.");
                 return Ok(());
@@ -174,4 +182,58 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             }
         }
     }
+}
+
+async fn obtain_offchain_share(
+    rpc: &AptosRpc,
+    store: &dyn VssStore,
+    sig_sk: &ed25519_dalek::SigningKey,
+    ace: &str,
+    session_addr: &str,
+    account_addr: &str,
+    session: &vss_common::Session,
+    my_idx: usize,
+) -> Result<Vec<u8>> {
+    if let Some(record) = store.get_holder_share(session_addr, my_idx as u64)? {
+        return Ok(record.share_bcs);
+    }
+
+    let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await?;
+    let dc0 = bcs_session
+        .dealer_contribution_0
+        .as_ref()
+        .ok_or_else(|| anyhow!("dc0 missing in bcs session"))?;
+    let endpoint = rpc
+        .get_worker_node_msg_endpoint(ace, &session.dealer)
+        .await?;
+    let chain_id = rpc.get_chain_id().await?;
+    let context = GatewayContext::new(chain_id, ace, &session.dealer);
+    let body = bcs::to_bytes(&ShareRequest {
+        session_addr: session_addr.to_string(),
+        holder_index: my_idx as u64,
+    })
+    .map_err(|e| anyhow!("encode VSS share request: {}", e))?;
+    let message = sign_node_message(
+        &context,
+        sig_sk,
+        account_addr,
+        "vss",
+        "share-request",
+        format!("{session_addr}:{my_idx}"),
+        body,
+    )?;
+    let plaintext = send_signed_node_message(endpoint, &message).await?;
+    pedersen_verify_private_share(
+        &plaintext,
+        &bcs_session.pcs_context,
+        &dc0.pcs_commitment,
+        (my_idx + 1) as u64,
+    )?;
+    store.put_holder_share(HolderShareRecord {
+        epoch: 0,
+        session_addr: session_addr.to_string(),
+        holder_index: my_idx as u64,
+        share_bcs: plaintext.clone(),
+    })?;
+    Ok(plaintext)
 }

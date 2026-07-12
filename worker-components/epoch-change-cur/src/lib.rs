@@ -46,6 +46,9 @@ pub struct RunConfig {
     pub account_addr: String,
     pub account_sk_hex: String,
     pub pke_dk_hex: String,
+    pub sig_sk_hex: String,
+    pub vss_store_url: String,
+    pub node_msg_listen: String,
 }
 
 async fn fetch_epoch_change_session(
@@ -208,6 +211,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 account_addr: account_addr.clone(),
                 account_sk_hex: config.account_sk_hex.clone(),
                 pke_dk_hex: config.pke_dk_hex.clone(),
+                sig_sk_hex: config.sig_sk_hex.clone(),
+                vss_store_url: config.vss_store_url.clone(),
+                node_msg_listen: config.node_msg_listen.clone(),
             };
             let label = dkr.clone();
             tokio::spawn(async move {

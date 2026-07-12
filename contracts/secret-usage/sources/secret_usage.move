@@ -7,7 +7,7 @@
 /// group scheme remains an implementation detail derived from that mask.
 module ace::secret_usage {
     use std::error;
-    use std::string::{Self, String};
+    use std::string::String;
     use ace::group;
 
     const E_UNSUPPORTED_USAGE: u64 = 1;
@@ -109,7 +109,7 @@ module ace::secret_usage {
 
     public fun validate_metadata(expected_usage: u64, note: &String): u8 {
         let scheme = usage_group_scheme(expected_usage);
-        assert!(string::length(note) <= MAX_NOTE_BYTES, error::invalid_argument(E_NOTE_TOO_LONG));
+        assert!(note.length() <= MAX_NOTE_BYTES, error::invalid_argument(E_NOTE_TOO_LONG));
         scheme
     }
 
@@ -149,5 +149,23 @@ module ace::secret_usage {
             assert!(current == next, error::invalid_argument(E_INCONSISTENT_GROUP_SCHEME));
             current
         }
+    }
+
+    // Compatibility aliases for low-level VSS/DKG tests that select a group
+    // without exercising an application primitive.
+    public fun primitive_bls12381_g1_test_only(): u8 {
+        PRIMITIVE__BFIBE_BLS12381_SHORTPK_OTP_HMAC
+    }
+
+    public fun primitive_bls12381_g2_test_only(): u8 {
+        PRIMITIVE__BFIBE_BLS12381_SHORTSIG_AEAD
+    }
+
+    public fun usage_bls12381_g1_test_only(): u64 {
+        USAGE__BFIBE_BLS12381_SHORTPK_OTP_HMAC
+    }
+
+    public fun usage_bls12381_g2_test_only(): u64 {
+        USAGE__BFIBE_BLS12381_SHORTSIG_AEAD
     }
 }

@@ -31,6 +31,12 @@ struct RunArgs {
     vss_session: String,
     #[arg(long)]
     pke_dk: String,
+    /// Optional explicit 32-byte Fr little-endian secret override, hex encoded.
+    #[arg(long)]
+    secret_override: Option<String>,
+    /// Optional explicit 32-byte Fr little-endian old Pedersen blinding, hex encoded.
+    #[arg(long)]
+    previous_blinding_override: Option<String>,
     /// Ed25519 private key hex (0x prefix optional).
     /// Falls back to env var `ACE_VSS_DEALER_PRIVATE_KEY` if not provided.
     #[arg(long)]
@@ -38,6 +44,15 @@ struct RunArgs {
     /// Aptos account address. Derived from `account_sk` if omitted.
     #[arg(long)]
     account_addr: Option<String>,
+    /// Ed25519 node-to-node messaging private key hex (0x prefix optional).
+    #[arg(long)]
+    sig_sk: Option<String>,
+    /// Persistent VSS store URL, e.g. sqlite:///tmp/vss.db or postgres://...
+    #[arg(long)]
+    vss_store_url: Option<String>,
+    /// Address this process listens on for node-to-node VSS messages.
+    #[arg(long)]
+    node_msg_listen: Option<String>,
 }
 
 #[tokio::main]
@@ -50,8 +65,8 @@ async fn main() {
                 .or_else(|| std::env::var("ACE_VSS_DEALER_PRIVATE_KEY").ok())
                 .expect("--account-sk or ACE_VSS_DEALER_PRIVATE_KEY env var required");
 
-            let sk = vss_common::parse_ed25519_signing_key_hex(&sk_hex)
-                .expect("invalid account_sk hex");
+            let sk =
+                vss_common::parse_ed25519_signing_key_hex(&sk_hex).expect("invalid account_sk hex");
             let vk = sk.verifying_key();
 
             let account_addr = args
@@ -67,7 +82,21 @@ async fn main() {
                 pke_dk_hex: args.pke_dk,
                 account_addr,
                 account_sk_hex: sk_hex,
-                secret_override: None,
+                secret_override: args
+                    .secret_override
+                    .as_deref()
+                    .map(|value| parse_fr_override_hex("--secret-override", value))
+                    .transpose()
+                    .expect("invalid --secret-override"),
+                previous_blinding_override: args
+                    .previous_blinding_override
+                    .as_deref()
+                    .map(|value| parse_fr_override_hex("--previous-blinding-override", value))
+                    .transpose()
+                    .expect("invalid --previous-blinding-override"),
+                sig_sk_hex: args.sig_sk,
+                vss_store_url: args.vss_store_url,
+                node_msg_listen: args.node_msg_listen,
             };
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -82,4 +111,12 @@ async fn main() {
             }
         }
     }
+}
+
+fn parse_fr_override_hex(name: &str, value: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(value.trim_start_matches("0x"))
+        .map_err(|e| format!("{} must be hex: {}", name, e))?;
+    bytes
+        .try_into()
+        .map_err(|bytes: Vec<u8>| format!("{} must be exactly 32 bytes, got {}", name, bytes.len()))
 }

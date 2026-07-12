@@ -36,6 +36,12 @@ export type DKRSrcSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
+    /** Ed25519 messaging signing key hex. */
+    sigSkHex: string;
+    /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
+    vssStoreUrl: string;
+    /** Listen for node-to-node VSS messages in this DKR source process. */
+    nodeMsgListen: string;
     dkrSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
@@ -59,6 +65,9 @@ export function spawnDKRSrcRun(opts: DKRSrcSpawnInput): ChildProcess {
         '--pke-dk', pkeDkHex,
         '--account-addr', accountAddr,
         '--account-sk', `0x${pkHex}`,
+        '--sig-sk', hexWithPrefix(opts.sigSkHex),
+        '--vss-store-url', opts.vssStoreUrl,
+        '--node-msg-listen', opts.nodeMsgListen,
     ];
     console.log(`  $ ${DKR_SRC_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(DKR_SRC_BINARY, args, {
@@ -71,6 +80,10 @@ export type DKRDstSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
+    /** Ed25519 messaging signing key hex. */
+    sigSkHex: string;
+    /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
+    vssStoreUrl: string;
     dkrSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
@@ -94,10 +107,16 @@ export function spawnDKRDstRun(opts: DKRDstSpawnInput): ChildProcess {
         '--pke-dk', pkeDkHex,
         '--account-addr', accountAddr,
         '--account-sk', `0x${pkHex}`,
+        '--sig-sk', hexWithPrefix(opts.sigSkHex),
+        '--vss-store-url', opts.vssStoreUrl,
     ];
     console.log(`  $ ${DKR_DST_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(DKR_DST_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },
         stdio: 'inherit',
     });
+}
+
+function hexWithPrefix(hex: string): string {
+    return hex.startsWith('0x') ? hex : `0x${hex}`;
 }

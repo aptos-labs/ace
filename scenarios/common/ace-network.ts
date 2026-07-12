@@ -13,8 +13,11 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
-import { pke } from '@aptos-labs/ace-sdk';
+import { pke, sig } from '@aptos-labs/ace-sdk';
 import { ChildProcess } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 
 import { LOCALNET_URL, WORKER_BASE_PORT } from './config';
 import {
@@ -31,13 +34,14 @@ import {
     waitFor,
 } from './helpers';
 import { buildRustWorkspace, spawnNetworkNodeMaybeSplit } from './network-clients';
+import { makeNodeMsgEndpoints } from './vss-protocol-setup';
 
 /** The ACE Move packages, in dependency order. Used by
  *  [`deployAndBringUpAceNetwork`] and any scenario that wants to deploy the
  *  full set; mirrors what every access-failure scenario has historically
  *  duplicated inline. */
 export const ACE_CONTRACTS: readonly string[] = [
-    'pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment',
+    'pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment',
     'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network',
 ];
 
@@ -63,10 +67,12 @@ export interface AceNetworkOptions {
 export interface AceNetworkState {
     workerAccounts: Account[];
     encKeypairs: Awaited<ReturnType<typeof pke.keygen>>[];
+    sigKeypairs: Awaited<ReturnType<typeof sig.keygen>>[];
     workers: ChildProcess[];
     epoch0WorkerAccounts: Account[];
     aceDeployment: ACE.AceDeployment;
     adminAccountAddress: AccountAddress;
+    vssStoreTmpRoot: string;
 }
 
 /**
@@ -115,6 +121,15 @@ export async function setupAceNetworkAndWorkers(
     const encKeypairs = await Promise.all(
         Array.from({ length: totalWorkers }, () => pke.keygen()),
     );
+    const sigKeypairs = await Promise.all(
+        Array.from({ length: totalWorkers }, () => sig.keygen()),
+    );
+    const nodeMsgEndpoints = makeNodeMsgEndpoints(totalWorkers);
+    const vssStoreTmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-network-store-'));
+    process.once('exit', () => {
+        rmSync(vssStoreTmpRoot, { recursive: true, force: true });
+    });
+    const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(vssStoreTmpRoot, `node-${i}.db`)}`);
     for (let i = 0; i < totalWorkers; i++) {
         const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
         assertTxnSuccess(
@@ -128,10 +143,26 @@ export async function setupAceNetworkAndWorkers(
         assertTxnSuccess(
             await submitTxn({
                 signer: workerAccounts[i]!,
-                entryFunction: `${adminAddr}::worker_config::register_endpoint`,
+                entryFunction: `${adminAddr}::worker_config::register_sig_verification_key`,
+                args: [sigKeypairs[i]!.publicKey.toBytes()],
+            }),
+            `register_sig_verification_key worker ${i}`,
+        );
+        assertTxnSuccess(
+            await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${adminAddr}::worker_config::register_node_msg_endpoint`,
+                args: [nodeMsgEndpoints.registeredUrls[i]!],
+            }),
+            `register_node_msg_endpoint worker ${i}`,
+        );
+        assertTxnSuccess(
+            await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${adminAddr}::worker_config::register_client_endpoint`,
                 args: [endpoint],
             }),
-            `register_endpoint worker ${i}`,
+            `register_client_endpoint worker ${i}`,
         );
     }
 
@@ -158,6 +189,9 @@ export async function setupAceNetworkAndWorkers(
             total: totalWorkers,
             runAs: workerAccounts[i]!,
             pkeDkHex,
+            sigSkHex: sigKeypairs[i]!.signingKey.toHex(),
+            vssStoreUrl: storeUrls[i]!,
+            nodeMsgListen: nodeMsgEndpoints.listens[i]!,
             aceDeploymentAddr: adminAddr,
             aceDeploymentApi: LOCALNET_URL,
             workerBasePort: WORKER_BASE_PORT,
@@ -173,10 +207,12 @@ export async function setupAceNetworkAndWorkers(
     return {
         workerAccounts,
         encKeypairs,
+        sigKeypairs,
         workers,
         epoch0WorkerAccounts: epoch0WorkerIndices.map((i) => workerAccounts[i]!),
         aceDeployment,
         adminAccountAddress,
+        vssStoreTmpRoot,
     };
 }
 
@@ -188,8 +224,8 @@ export async function setupAceNetworkAndWorkers(
  * `secrets` count will be ambiguous.
  *
  * `dkgPrimitive` is the ACE primitive id passed to
- * `serializeNewSecretProposal`. Defaults to shortsig IBE, which is the normal
- * access-failure scenario key usage.
+ * `serializeNewSecretProposal`. Defaults to the application-layer threshold
+ * VRF primitive.
  */
 export interface SetupAceOnLocalnetOpts {
     totalWorkers: number;
@@ -281,7 +317,7 @@ export async function runDkg(opts: {
     label?: string;
 }): Promise<AccountAddress> {
     const { approvers, adminAddr, adminAccountAddress } = opts;
-    const primitive = opts.primitive ?? ACE.network.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD;
+    const primitive = opts.primitive ?? ACE.network.PRIMITIVE_BLS12381_THRESHOLD_VRF;
     const timeoutMs = opts.timeoutMs ?? 90_000;
     const label = opts.label ?? `keypair-${opts.expectedSecretsCountAfter - 1}`;
 

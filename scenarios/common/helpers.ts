@@ -36,8 +36,7 @@ export function cleanupScenario(workers: ChildProcess[], localnetProc: ChildProc
 }
 
 /** Fixed key material used by every access-failure scenario. Matches what
- *  `test-access-failures.ts` / `test-access-failures-keyless.ts` /
- *  `test-access-failures-federated-keyless.ts` independently hard-coded
+ *  older scenarios independently hard-coded
  *  before [`setupBaseAceActors`] existed (admin = 0x111…1, alice seed 100,
  *  charlie seed 50). Bob is *not* covered here because his identity varies
  *  per scenario (KeylessAccount vs SingleKeyAccount vs bare Ed25519). */

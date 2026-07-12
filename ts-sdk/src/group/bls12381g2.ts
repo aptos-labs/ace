@@ -162,6 +162,11 @@ export class PublicPoint {
         return new PublicPoint(result as unknown as WeierstrassPoint<Fp2>);
     }
 
+    add(other: PublicPoint): PublicPoint {
+        const result = (this.pt as any).add(other.pt);
+        return new PublicPoint(result as unknown as WeierstrassPoint<Fp2>);
+    }
+
     /** Projective equality check. */
     equals(other: PublicPoint): boolean {
         return (this.pt as any).equals(other.pt);

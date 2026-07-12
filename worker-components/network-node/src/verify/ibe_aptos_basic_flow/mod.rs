@@ -3,11 +3,11 @@
 
 use anyhow::Result;
 
-use super::BasicFlowRequest;
 use super::shared::aptos::{
     check_ace_request_hook, extract_request_origin, verify_account_proof, AptosContractId,
     AptosProofOfPermission, APTOS_DECRYPTION_HOOK,
 };
+use super::BasicFlowRequest;
 use crate::ChainRpcConfig;
 
 pub(in crate::verify) async fn verify_aptos(

@@ -2,6 +2,8 @@ packages:
   - "ts-sdk"
   - "worker"
   - "cli"
-  - "examples/*"
   - "scenarios"
-  - "scenarios/custom-flow-solana"
+allowBuilds:
+  bufferutil: false
+  esbuild: true
+  utf-8-validate: false

@@ -4,9 +4,9 @@
 /**
  * Mints the encrypted request body the probe replays. Two responsibilities:
  *
- *   1. `buildOnce()` — build the per-worker POST body for ONE target node via
- *      `session.buildPerNodeRequest` (no committee fanout, no plaintext
- *      reconstruction). Smoke-tests by POSTing once and confirming the worker
+ *   1. `buildOnce()` — build the per-worker threshold-VRF POST body for ONE
+ *      target node via `session.buildPerNodeRequest` (no committee fanout, no
+ *      output reconstruction). Smoke-tests by POSTing once and confirming the worker
  *      returns a parseable PKE-ciphertext share. Used at `loadtest run` startup
  *      and again each time the on-chain epoch changes.
  *
@@ -44,7 +44,7 @@ export interface MintConfig {
     loadtester: Account;
     moduleAddr: AccountAddress;
     moduleName: string;
-    domain: Uint8Array;
+    label: Uint8Array;
 }
 
 /**
@@ -52,34 +52,31 @@ export interface MintConfig {
  * single POST. Does NOT contact any other committee member.
  */
 export async function buildOnce(cfg: MintConfig): Promise<Pool> {
-    const plaintext = new TextEncoder().encode('loadtest-mint');
-    const ciphertext = (await ACE.IBE_Aptos.encrypt({
+    const session = await ACE.VRF_Aptos.DerivationSession.create({
         aceDeployment: cfg.aceDeployment,
         keypairId: cfg.keypairId,
-        chainId: cfg.chainId,
-        moduleAddr: cfg.moduleAddr,
-        moduleName: cfg.moduleName,
-        label: cfg.domain,
-        plaintext,
-    })).unwrapOrThrow('loadtest mint: encrypt failed');
-
-    const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
-        aceDeployment: cfg.aceDeployment,
-        keypairId: cfg.keypairId,
-        chainId: cfg.chainId,
-        moduleAddr: cfg.moduleAddr,
-        moduleName: cfg.moduleName,
-        label: cfg.domain,
-        ciphertext,
+        contractId: ACE.ContractID.newAptos({
+            chainId: cfg.chainId,
+            moduleAddr: cfg.moduleAddr,
+            moduleName: cfg.moduleName,
+        }),
+        label: cfg.label,
+        accountAddress: cfg.loadtester.accountAddress,
     });
     const msg = await session.getRequestToSign();
-    const built = (await session.buildPerNodeRequest({
-        userAddr: cfg.loadtester.accountAddress,
-        publicKey: cfg.loadtester.publicKey,
-        signature: cfg.loadtester.sign(msg),
-        fullMessage: msg,
+    const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
+        accountAddress: cfg.loadtester.accountAddress,
+        application: 'https://ace-loadtest.local',
+        chainId: cfg.chainId,
+        message: msg,
+        nonce: `loadtest-${Date.now()}-${Math.random()}`,
+    });
+    const built = await session.buildPerNodeRequest({
+        pubKey: cfg.loadtester.publicKey,
+        signature: cfg.loadtester.sign(fullMessage),
+        fullMessage,
         targetEndpoint: cfg.targetEndpoint,
-    })).unwrapOrThrow('loadtest mint: build per-node request failed');
+    });
 
     const postUrl = cfg.postUrl ?? cfg.targetEndpoint;
     // Smoke test: POST once, confirm the response parses as a PKE ciphertext.

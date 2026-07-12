@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use axum::{
-    extract::State,
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
 use tower_http::cors::CorsLayer;
 
 use super::request::handle_request;
-use super::state::{AppState, SecretsServerState};
-use crate::secrets::SecretsSnapshotWire;
+use super::state::AppState;
 use crate::wlog;
 
 /// Spawn the user-request server. Runs until the process exits.
@@ -24,23 +22,7 @@ pub async fn run_user_server(port: u16, state: AppState) {
     serve(port, app, "http-server (user)").await;
 }
 
-pub async fn run_secrets_server(port: u16, state: SecretsServerState) {
-    let app = Router::new()
-        .route("/secrets", get(handle_get_secrets))
-        .route("/healthz", get(handle_secrets_healthz))
-        .with_state(state);
-    serve(port, app, "http-server (secrets)").await;
-}
-
 async fn handle_healthz() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn handle_get_secrets(State(state): State<SecretsServerState>) -> Json<SecretsSnapshotWire> {
-    Json(state.local.snapshot_wire().await)
-}
-
-async fn handle_secrets_healthz() -> StatusCode {
     StatusCode::OK
 }
 

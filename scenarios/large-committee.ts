@@ -13,12 +13,16 @@
 
 import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 import {
     startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep,
     getNetworkState, getDKGSession, getDKRSession,
     proposeAndApprove, serializeNewSecretProposal, serializeCommitteeChangeProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
+import { makeNodeMsgEndpoints } from './common/vss-protocol-setup';
 
 const NUM_WORKERS = 20;
 const THRESHOLD = Math.floor(NUM_WORKERS / 2) + 1;
@@ -31,28 +35,42 @@ if (!Number.isFinite(PHASE_TIMEOUT_MS) || PHASE_TIMEOUT_MS <= 0) {
 async function main() {
     const localnetProc = await startLocalnet();
     const nodeProcs: ReturnType<typeof spawnNetworkNode>[] = [];
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-large-committee-'));
 
     try {
         const accounts = Array.from({ length: NUM_WORKERS + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => ace.pke.keygen()));
+        const sigKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => ace.sig.keygen()));
         for (const account of accounts) await fundAccount(account.accountAddress);
 
         const adminAccount = accounts[NUM_WORKERS];
         const workerAccounts = accounts.slice(0, NUM_WORKERS);
         const aceContract = adminAccount.accountAddress.toStringLong();
+        const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot, `node-${i}.db`)}`);
+        const nodeMsgEndpoints = makeNodeMsgEndpoints(NUM_WORKERS);
 
         log(`Large-committee smoke test: NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
-        log('Register PKE enc keys.');
+        log('Register worker keys and node-msg endpoints.');
         for (let i = 0; i < NUM_WORKERS; i++) {
             (await submitTxn({
                 signer: workerAccounts[i],
                 entryFunction: `${aceContract}::worker_config::register_pke_enc_key`,
                 args: [encKeypairs[i].encryptionKey.toBytes()],
             })).unwrapOrThrow('register_pke_enc_key failed').asSuccessOrThrow();
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${aceContract}::worker_config::register_sig_verification_key`,
+                args: [sigKeypairs[i].publicKey.toBytes()],
+            })).unwrapOrThrow('register_sig_verification_key failed').asSuccessOrThrow();
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${aceContract}::worker_config::register_node_msg_endpoint`,
+                args: [nodeMsgEndpoints.registeredUrls[i]],
+            })).unwrapOrThrow('register_node_msg_endpoint failed').asSuccessOrThrow();
         }
 
         log('Build network-node binary and start one process per worker.');
@@ -61,6 +79,9 @@ async function main() {
             nodeProcs.push(spawnNetworkNode({
                 runAs: workerAccounts[i],
                 pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
+                sigSkHex: sigKeypairs[i].signingKey.toHex(),
+                vssStoreUrl: storeUrls[i],
+                nodeMsgListen: nodeMsgEndpoints.listens[i],
                 aceDeploymentAddr: aceContract,
             }));
         }
@@ -96,9 +117,11 @@ async function main() {
         const dkgSessionAddr = networkState.secrets[0]!.currentSession;
         const dkgSession = (await getDKGSession(adminAccount.accountAddress, dkgSessionAddr))
             .unwrapOrThrow('Failed to read DKG session.');
-        const baselinePk = dkgSession.resultPk;
-        if (!baselinePk) throw 'DKG resultPk absent despite state=DONE';
-        log(`DKG complete. resultPk=${baselinePk.toHex()}`);
+        if (dkgSession.commitmentPoints.length !== NUM_WORKERS + 1) {
+            throw `expected ${NUM_WORKERS + 1} DKG commitment points, got ${dkgSession.commitmentPoints.length}`;
+        }
+        const baselineC0 = dkgSession.commitmentPoints[0]!.toHex();
+        log(`DKG complete. C0=${baselineC0}`);
 
         // After new_secret, cur_nodes = same workers, cur_epoch = 1. Propose CommitteeChange (same workers).
         log(`Admin: propose CommitteeChange(same ${NUM_WORKERS} workers, threshold=${THRESHOLD}); threshold approvers sign.`);
@@ -134,16 +157,17 @@ async function main() {
         const dkrSession = (await getDKRSession(adminAccount.accountAddress, dkrSessionAddr))
             .unwrapOrThrow('Failed to read DKR session.');
 
-        if (dkrSession.secretlyScaledElement.toHex() !== baselinePk.toHex()) {
-            throw `PK mismatch after resharing.\n  before: ${baselinePk.toHex()}\n  after:  ${dkrSession.secretlyScaledElement.toHex()}`;
+        if (dkrSession.commitmentPoints[0]!.toHex() !== baselineC0) {
+            throw `commitment mismatch after resharing.\n  before: ${baselineC0}\n  after:  ${dkrSession.commitmentPoints[0]!.toHex()}`;
         }
 
         log(`PASS: large-committee smoke test with NUM_WORKERS=${NUM_WORKERS}, THRESHOLD=${THRESHOLD}.`);
-        log(`secretlyScaledElement: ${dkrSession.secretlyScaledElement.toHex()}`);
+        log(`reshared C0: ${dkrSession.commitmentPoints[0]!.toHex()}`);
 
     } finally {
         for (const proc of nodeProcs) proc.kill();
         localnetProc.kill();
+        rmSync(tmpRoot, { recursive: true, force: true });
     }
 }
 

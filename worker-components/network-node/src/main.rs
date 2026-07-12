@@ -6,16 +6,13 @@
 //! Modes:
 //! * `monolith` (default): one process maintains secrets and serves user
 //!   requests. Same flags as before.
-//! * `maintainer`: secret maintenance only. Serves `GET /secrets` on
-//!   `--secrets-port`. Skip chain-RPC flags — they are not needed.
-//! * `handler`: user request handling only. Pulls from a peer maintainer
-//!   given by `--s0-url`. Skip on-chain account / `pke-dk` / `ace-deployment-*`
-//!   flags — they are not needed.
+//! * `maintainer`: secret maintenance only. No user-request HTTP server.
+//! * `handler`: user request handling only. Reads shares from `--vss-store-url`
+//!   in a background sync loop.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 use std::env;
-use std::time::Duration;
 use tokio::sync::oneshot;
 use vss_common::AptosRpc;
 
@@ -36,9 +33,9 @@ enum Commands {
 enum CliMode {
     /// Default — secrets + user requests in one process.
     Monolith,
-    /// Secrets only — serves `GET /secrets` for handler peers to pull from.
+    /// Secrets only — maintains VSS/DKG/DKR state and writes the shared VSS DB.
     Maintainer,
-    /// User requests only — pulls secrets from a peer maintainer.
+    /// User requests only — syncs shares from the shared VSS DB.
     Handler,
 }
 
@@ -48,7 +45,7 @@ struct RunArgs {
     #[arg(long, value_enum, default_value = "monolith")]
     mode: CliMode,
 
-    // ── Maintainer / monolith params (ignored in handler mode) ───────────────
+    // ── Maintainer / monolith params ─────────────────────────────────────────
     /// Aptos fullnode URL for the ACE deployment (DKG/DKR operations).
     #[arg(long, default_value = "http://localhost:8080/v1")]
     ace_deployment_api: String,
@@ -69,10 +66,18 @@ struct RunArgs {
     /// PKE decryption key hex (0x prefix optional).
     #[arg(long, default_value = "")]
     pke_dk: String,
+    /// Ed25519 node-to-node messaging signing key hex (0x prefix optional).
+    #[arg(long, default_value = "")]
+    sig_sk: String,
+    /// Persistent VSS store URL used by embedded VSS clients.
+    #[arg(long, default_value = "")]
+    vss_store_url: String,
+    /// Local listen address for embedded node-to-node VSS share gateway.
+    #[arg(long, default_value = "")]
+    node_msg_listen: String,
 
-    // ── HTTP-server port (all modes) ─────────────────────────────────────────
+    // ── HTTP-server port ─────────────────────────────────────────────────────
     /// TCP port. In monolith and handler modes serves `POST /` (user requests);
-    /// in maintainer mode serves `GET /secrets` for peer handlers to pull from.
     /// Optional in monolith mode (omitting it runs chain-touching only, useful
     /// for DKG-only test setups).
     #[arg(long)]
@@ -80,11 +85,6 @@ struct RunArgs {
     /// Maximum concurrent in-flight HTTP requests.
     #[arg(long)]
     max_concurrent: Option<usize>,
-
-    // ── Handler-only ─────────────────────────────────────────────────────────
-    /// URL of the peer maintainer's `/secrets` endpoint. Required in handler mode.
-    #[arg(long)]
-    maintainer_url: Option<String>,
 
     // ── Per-chain Aptos RPC endpoints (used by user-request verification) ────
     #[arg(long, default_value = "https://api.mainnet.aptoslabs.com/v1")]
@@ -103,12 +103,6 @@ struct RunArgs {
     aptos_shelby_private_beta_api: Option<String>,
     #[arg(long)]
     aptos_shelby_private_beta_apikey: Option<String>,
-    #[arg(long, default_value = "https://api.mainnet-beta.solana.com")]
-    solana_mainnet_beta_rpc: String,
-    #[arg(long, default_value = "https://api.testnet.solana.com")]
-    solana_testnet_rpc: String,
-    #[arg(long, default_value = "https://api.devnet.solana.com")]
-    solana_devnet_rpc: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -116,6 +110,9 @@ struct RunArgs {
 struct EnvConfig {
     account_sk: Option<String>,
     pke_dk: Option<String>,
+    sig_sk: Option<String>,
+    vss_store_url: Option<String>,
+    node_msg_listen: Option<String>,
     deployment_api_key: Option<String>,
     deployment_gas_key: Option<String>,
     aptos_mainnet_api_key: Option<String>,
@@ -170,6 +167,17 @@ impl RunArgs {
         self.account_sk =
             string_or_env_or_config(self.account_sk, "ACE_ACCOUNT_SK", cfg.account_sk.clone());
         self.pke_dk = string_or_env_or_config(self.pke_dk, "ACE_PKE_DK", cfg.pke_dk.clone());
+        self.sig_sk = string_or_env_or_config(self.sig_sk, "ACE_SIG_SK", cfg.sig_sk.clone());
+        self.vss_store_url = string_or_env_or_config(
+            self.vss_store_url,
+            "ACE_VSS_STORE_URL",
+            cfg.vss_store_url.clone(),
+        );
+        self.node_msg_listen = string_or_env_or_config(
+            self.node_msg_listen,
+            "ACE_NODE_MSG_LISTEN",
+            cfg.node_msg_listen.clone(),
+        );
         self.aptos_mainnet_apikey = option_or_env_or_config(
             self.aptos_mainnet_apikey,
             "ACE_APTOS_MAINNET_APIKEY",
@@ -229,13 +237,6 @@ fn build_chain_rpc(args: &RunArgs) -> network_node::ChainRpcConfig {
         aptos_shelby_private_beta: args.aptos_shelby_private_beta_api.as_ref().map(|api| {
             AptosRpc::new_with_key(api.clone(), args.aptos_shelby_private_beta_apikey.clone())
         }),
-        solana_mainnet_beta: args.solana_mainnet_beta_rpc.clone(),
-        solana_testnet: args.solana_testnet_rpc.clone(),
-        solana_devnet: args.solana_devnet_rpc.clone(),
-        solana_client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("failed to build Solana HTTP client"),
     }
 }
 
@@ -248,6 +249,9 @@ fn build_maintainer_config(args: &RunArgs) -> network_node::MaintainerConfig {
         account_addr: require_str("account-addr", &args.account_addr),
         account_sk_hex: require_str("account-sk", &args.account_sk),
         pke_dk: require_str("pke-dk", &args.pke_dk),
+        sig_sk_hex: require_str("sig-sk", &args.sig_sk),
+        vss_store_url: require_str("vss-store-url", &args.vss_store_url),
+        node_msg_listen: require_str("node-msg-listen", &args.node_msg_listen),
     }
 }
 
@@ -269,10 +273,16 @@ async fn main() {
                 },
                 CliMode::Maintainer => network_node::Mode::Maintainer {
                     maintainer: build_maintainer_config(&args),
-                    port: require("port", args.port),
                 },
                 CliMode::Handler => network_node::Mode::Handler {
-                    maintainer_url: require("maintainer-url", args.maintainer_url.clone()),
+                    ace_deployment_api: args.ace_deployment_api.clone(),
+                    ace_deployment_apikey: args.ace_deployment_apikey.clone(),
+                    ace_deployment_addr: require_str(
+                        "ace-deployment-addr",
+                        &args.ace_deployment_addr,
+                    ),
+                    account_addr: require_str("account-addr", &args.account_addr),
+                    vss_store_url: require_str("vss-store-url", &args.vss_store_url),
                     pke_dk: require_str("pke-dk", &args.pke_dk),
                     port: require("port", args.port),
                     chain_rpc: build_chain_rpc(&args),

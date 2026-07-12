@@ -693,6 +693,56 @@ impl AptosRpc {
         bcs::from_bytes(&bytes).map_err(|e| anyhow!("EncryptionKey BCS decode: {}", e))
     }
 
+    /// Fetch a worker's registered client-facing endpoint.
+    pub async fn get_worker_client_endpoint(&self, ace: &str, worker_addr: &str) -> Result<String> {
+        let result = self
+            .call_view(
+                &format!("{}::worker_config::get_client_endpoint", ace),
+                &[json!(worker_addr)],
+            )
+            .await?;
+        result
+            .first()
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("expected string in get_client_endpoint result"))
+    }
+
+    /// Fetch a worker's node-to-node messaging signature public key.
+    pub async fn get_sig_verification_key_bcs(
+        &self,
+        ace: &str,
+        worker_addr: &str,
+    ) -> Result<crate::sig::PublicKey> {
+        let result = self
+            .call_view(
+                &format!("{}::worker_config::get_sig_verification_key_bcs", ace),
+                &[json!(worker_addr)],
+            )
+            .await?;
+        let hex = result
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("expected string in get_sig_verification_key_bcs view result"))?;
+        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+        crate::sig::PublicKey::from_bytes(&bytes)
+    }
+
+    /// Fetch a worker's registered node-to-node message endpoint.
+    pub async fn get_worker_node_msg_endpoint(&self, ace: &str, worker_addr: &str) -> Result<String> {
+        let result = self
+            .call_view(
+                &format!("{}::worker_config::get_node_msg_endpoint", ace),
+                &[json!(worker_addr)],
+            )
+            .await?;
+        result
+            .first()
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("expected string in get_node_msg_endpoint result"))
+    }
+
     pub async fn wait_for_txn(&self, hash: &str) -> Result<()> {
         let url = format!(
             "{}/transactions/by_hash/{}",

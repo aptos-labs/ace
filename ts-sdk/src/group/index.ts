@@ -6,6 +6,7 @@ import { Result } from "../result";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import * as Bls12381G1 from "./bls12381g1";
 import * as Bls12381G2 from "./bls12381g2";
+import { frAdd } from "./bls12381fr";
 
 export * as bls12381G1 from "./bls12381g1";
 export * as bls12381G2 from "./bls12381g2";
@@ -88,6 +89,25 @@ export class Scalar {
     }
 
     toHex(): string { return bytesToHex(this.toBytes()); }
+
+    add(other: Scalar): Scalar {
+        if (this.scheme !== other.scheme) {
+            throw `Scalar.add: scheme mismatch (left=${this.scheme}, right=${other.scheme})`;
+        }
+        if (this.scheme === SCHEME_BLS12381G1) {
+            const inner = Bls12381G1.PrivateScalar.fromBigint(
+                frAdd(this.asBls12381G1().scalar, other.asBls12381G1().scalar),
+            ).unwrapOrThrow("Scalar.add G1 failed");
+            return new Scalar(SCHEME_BLS12381G1, inner);
+        }
+        if (this.scheme === SCHEME_BLS12381G2) {
+            const inner = Bls12381G2.PrivateScalar.fromBigint(
+                frAdd(this.asBls12381G2().scalar, other.asBls12381G2().scalar),
+            ).unwrapOrThrow("Scalar.add G2 failed");
+            return new Scalar(SCHEME_BLS12381G2, inner);
+        }
+        throw `Scalar.add: unsupported scheme ${this.scheme}`;
+    }
 }
 
 // ── Element ───────────────────────────────────────────────────────────────────
@@ -117,6 +137,21 @@ export class Element {
             return new Element(SCHEME_BLS12381G2, result);
         }
         throw `scale: unsupported scheme ${this.scheme}`;
+    }
+
+    add(other: Element): Element {
+        if (this.scheme !== other.scheme) {
+            throw `add: scheme mismatch (left=${this.scheme}, right=${other.scheme})`;
+        }
+        if (this.scheme === SCHEME_BLS12381G1) {
+            const result = (this.inner as Bls12381G1.PublicPoint).add(other.inner as Bls12381G1.PublicPoint);
+            return new Element(SCHEME_BLS12381G1, result);
+        }
+        if (this.scheme === SCHEME_BLS12381G2) {
+            const result = (this.inner as Bls12381G2.PublicPoint).add(other.inner as Bls12381G2.PublicPoint);
+            return new Element(SCHEME_BLS12381G2, result);
+        }
+        throw `add: unsupported scheme ${this.scheme}`;
     }
 
     /** Projective equality check. */

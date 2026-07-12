@@ -72,7 +72,16 @@ export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
         console.log(`  docker rm -f ${node.docker.containerName}`);
     } else if (node.platform === 'gcp' && node.gcp) {
         console.log(`\n  Don't forget to delete the Cloud Run service:\n`);
-        console.log(`  gcloud run services delete ${node.gcp.serviceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+        if (node.mode === 'microservices') {
+            if (node.gcp.handlerServiceName) {
+                console.log(`  gcloud run services delete ${node.gcp.handlerServiceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+            }
+            if (node.gcp.maintainerServiceName) {
+                console.log(`  gcloud run services delete ${node.gcp.maintainerServiceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+            }
+        } else {
+            console.log(`  gcloud run services delete ${node.gcp.serviceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
+        }
     } else if (node.platform === 'local' && node.local?.pid) {
         if (isLocalNodeAlive(node.local.pid)) {
             killLocalNode(node.local.pid);

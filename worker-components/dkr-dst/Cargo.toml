@@ -18,6 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 vss-common = { path = "../vss-common" }
 vss-recipient = { path = "../vss-recipient" }
+vss-store = { path = "../vss-store" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 clap = { version = "4", features = ["derive"] }

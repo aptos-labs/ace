@@ -14,16 +14,16 @@ type PrimitiveInfo = {
 
 const PRIMITIVES: PrimitiveInfo[] = [
     {
-        id: aceNetwork.PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
-        usage: aceNetwork.USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+        id: aceNetwork.PRIMITIVE_BLS12381_G1_TEST_ONLY,
+        usage: aceNetwork.USAGE_BLS12381_G1_TEST_ONLY,
         groupScheme: 0,
-        label: 'BFIBE-BLS12381-ShortPK-OTP-HMAC',
+        label: 'BLS12381 G1 test-only',
     },
     {
-        id: aceNetwork.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD,
-        usage: aceNetwork.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD,
+        id: aceNetwork.PRIMITIVE_BLS12381_G2_TEST_ONLY,
+        usage: aceNetwork.USAGE_BLS12381_G2_TEST_ONLY,
         groupScheme: 1,
-        label: 'BFIBE-BLS12381-ShortSig-AEAD',
+        label: 'BLS12381 G2 test-only',
     },
     {
         id: aceNetwork.PRIMITIVE_BLS12381_THRESHOLD_VRF,

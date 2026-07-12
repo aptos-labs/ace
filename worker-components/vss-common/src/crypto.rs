@@ -173,15 +173,18 @@ pub fn fr_to_le_bytes(f: Fr) -> [u8; 32] {
     bytes
 }
 
-/// Derive a BLS12-381 Fr polynomial coefficient from a PKE decryption key and index.
+/// Legacy deterministic BLS12-381 Fr derivation from a PKE decryption key and index.
 ///
 /// Uses SHA3-256("vss-coef-v1/" || dk_bytes || LE64(idx)) reduced mod Fr.
 /// Deterministic: same dk + idx always gives the same coefficient.
+///
+/// Do not use this for VSS dealer polynomials. Active VSS dealer code samples
+/// per-session coefficients with OS randomness and persists them in the VSS store.
 pub fn fr_from_dk_bytes(dk: &[u8], idx: usize) -> Fr {
     fr_from_dk_bytes_with_dst(b"vss-coef-v1/", dk, idx)
 }
 
-/// Domain-separated variant of `fr_from_dk_bytes`.
+/// Domain-separated variant of the legacy deterministic Fr derivation helper.
 pub fn fr_from_dk_bytes_with_dst(dst: &[u8], dk: &[u8], idx: usize) -> Fr {
     let mut hasher = Sha3_256::new();
     hasher.update(dst);

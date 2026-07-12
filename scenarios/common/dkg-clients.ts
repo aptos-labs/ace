@@ -36,6 +36,12 @@ export type DKGWorkerSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
+    /** Ed25519 messaging signing key hex. */
+    sigSkHex: string;
+    /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
+    vssStoreUrl: string;
+    /** Listen for node-to-node VSS messages in this DKG worker process. */
+    nodeMsgListen: string;
     dkgSessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
@@ -65,10 +71,20 @@ export function spawnDKGRun(opts: DKGWorkerSpawnInput): ChildProcess {
         accountAddr,
         '--account-sk',
         `0x${pkHex}`,
+        '--sig-sk',
+        hexWithPrefix(opts.sigSkHex),
+        '--vss-store-url',
+        opts.vssStoreUrl,
+        '--node-msg-listen',
+        opts.nodeMsgListen,
     ];
     console.log(`  $ ${DKG_WORKER_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(DKG_WORKER_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },
         stdio: 'inherit',
     });
+}
+
+function hexWithPrefix(hex: string): string {
+    return hex.startsWith('0x') ? hex : `0x${hex}`;
 }

@@ -23,15 +23,20 @@ export { Result } from "./result";
 // Public Key Encryption
 export * as pke from "./pke";
 
+// Node-to-node messaging signatures
+export * as sig from "./sig";
+
+// Threshold identity-based encryption primitives.
+export * as tibe from "./t-ibe";
+
+// Aptos application flows for IBE encryption and authorized decryption.
+export * as IBE_Aptos from "./ibe-for-aptos";
+
 // Shared types
 export { AceDeployment, ContractID } from "./_internal/common";
 
 // Registry of known ACE deployments (testnet, mainnet, …)
 export { knownDeployments } from "./known-deployments";
-
-// Threshold IBE (encrypt + basic/custom-flow decrypt) — per chain
-export * as IBE_Aptos  from "./ibe-for-aptos";
-export * as IBE_Solana from "./ibe-for-solana";
 
 // Threshold VRF (derive deterministic bytes from owner + label)
 export * as VRF_Aptos from "./vrf-for-aptos";

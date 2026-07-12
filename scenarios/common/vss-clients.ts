@@ -40,10 +40,20 @@ export type VSSDealerSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */
     pkeDkHex: string;
+    /** Optional 32-byte Fr little-endian secret override for resharing scenarios. */
+    secretOverrideHex?: string;
+    /** Optional 32-byte Fr little-endian previous Pedersen blinding override. */
+    previousBlindingOverrideHex?: string;
     sessionAddr: AccountAddress | string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
     aceDeploymentApi?: string;
+    /** Ed25519 messaging signing key hex for node-to-node protocol messages. */
+    sigSkHex?: string;
+    /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
+    vssStoreUrl?: string;
+    /** Listen for node-to-node VSS messages in this client process. */
+    nodeMsgListen?: string;
 };
 
 /** Spawn `vss-dealer run` (skeleton binary). */
@@ -68,6 +78,21 @@ export function spawnVSSDealerRun(opts: VSSDealerSpawnInput): ChildProcess {
         '--account-sk',
         `0x${pkHex}`,
     ];
+    if (opts.sigSkHex !== undefined) {
+        args.push('--sig-sk', hexWithPrefix(opts.sigSkHex));
+    }
+    if (opts.secretOverrideHex !== undefined) {
+        args.push('--secret-override', hexWithPrefix(opts.secretOverrideHex));
+    }
+    if (opts.previousBlindingOverrideHex !== undefined) {
+        args.push('--previous-blinding-override', hexWithPrefix(opts.previousBlindingOverrideHex));
+    }
+    if (opts.vssStoreUrl !== undefined) {
+        args.push('--vss-store-url', opts.vssStoreUrl);
+    }
+    if (opts.nodeMsgListen !== undefined) {
+        args.push('--node-msg-listen', opts.nodeMsgListen);
+    }
     console.log(`  $ ${VSS_DEALER_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(VSS_DEALER_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },
@@ -82,6 +107,8 @@ export type VSSRecipientSpawnInput = {
     sessionAddr: AccountAddress | string;
     aceDeploymentAddr: string;
     aceDeploymentApi?: string;
+    sigSkHex?: string;
+    vssStoreUrl?: string;
 };
 
 /** Spawn `vss-recipient run` (skeleton binary). */
@@ -106,9 +133,19 @@ export function spawnVSSRecipientRun(opts: VSSRecipientSpawnInput): ChildProcess
         '--account-sk',
         `0x${pkHex}`,
     ];
+    if (opts.sigSkHex !== undefined) {
+        args.push('--sig-sk', hexWithPrefix(opts.sigSkHex));
+    }
+    if (opts.vssStoreUrl !== undefined) {
+        args.push('--vss-store-url', opts.vssStoreUrl);
+    }
     console.log(`  $ ${VSS_RECIPIENT_BINARY} ${args.join(' ')} (spawn)`);
     return spawn(VSS_RECIPIENT_BINARY, args, {
         env: { ...process.env, RUST_LOG: 'info' },
         stdio: 'inherit',
     });
+}
+
+function hexWithPrefix(hex: string): string {
+    return hex.startsWith('0x') ? hex : `0x${hex}`;
 }

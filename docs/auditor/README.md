@@ -1,21 +1,21 @@
 # ACE Specification Documents
 
-Audit-oriented technical specifications. These docs are versioned with the code; changes to the protocol or wire formats must update the relevant doc in the same PR.
+Audit-oriented technical specifications. These docs are versioned with the code; changes to protocol state machines, cryptographic constructions, or wire formats must update the relevant doc in the same PR.
 
 | Document | Audience | Covers |
 |----------|----------|--------|
-| [`glossary.md`](./glossary.md) | All readers | Shared definitions of identifiers, roles, cryptographic objects, sub-protocol acronyms, parameters. **Hit an undefined term in any doc? Look here first.** |
-| [`cryptography/`](./cryptography/) | Cryptographic auditor | One file per scheme (PKE, t-IBE, VSS, DKG, DKR, KDF, HMAC, identifiers). Start at [`cryptography/README.md`](./cryptography/README.md). |
-| [`trust-model.md`](./trust-model.md) | Protocol auditor / security reviewer | Actors, threat model, what each adversary class can/cannot do, non-goals |
-| [`protocols.md`](./protocols.md) | Protocol auditor / implementer | On-chain state machines (VSS, DKG, DKR, voting, epoch_change, network), end-to-end decryption-request flow |
-| [`wire-formats.md`](./wire-formats.md) | Auditor + cross-implementation reviewer | Byte-level BCS layouts for every type that crosses a chain or network boundary |
+| [`glossary.md`](./glossary.md) | All readers | Shared identifiers, roles, cryptographic objects, and protocol acronyms |
+| [`cryptography/`](./cryptography/) | Cryptographic auditor | PKE, signatures, VSS, DKG, DKR, symmetric helpers, and related assumptions |
+| [`trust-model.md`](./trust-model.md) | Protocol auditor / security reviewer | Actors, threat model, trust boundaries, and non-goals |
+| [`protocols.md`](./protocols.md) | Protocol auditor / implementer | VSS, DKG, DKR, epoch change, network state, and threshold VRF request flow |
+| [`wire-formats.md`](./wire-formats.md) | Auditor + cross-implementation reviewer | BCS layouts for the active worker request and share formats |
 
-**Reading order for a fresh auditor:** trust-model → [`cryptography/`](./cryptography/) → protocols → wire-formats. Each doc cross-references the others where relevant.
+Reading order for a fresh auditor: trust-model -> cryptography -> protocols -> wire-formats.
 
-**Source of truth.** When a doc and the code disagree, the code is authoritative; please file an issue. Citations in the docs are `path:line` against this commit.
+When a doc and the code disagree, the code is authoritative; please file an issue.
 
-## Out of scope
+## Out of Scope
 
-- App-developer tutorials -> see [`../developers/app-developer-guide/`](../developers/app-developer-guide/) and [`../../examples/`](../../examples/).
+- App-developer tutorials -> see [`../developers/app-developer-guide/`](../developers/app-developer-guide/).
 - Operator runbooks -> see [`../../README.md`](../../README.md) "Operator Guide" section and `cli/`.
-- API references → see `ts-sdk/src/` JSDoc comments and `cargo doc` for the worker crates.
+- API references -> see `ts-sdk/src/` JSDoc comments and `cargo doc` for the worker crates.

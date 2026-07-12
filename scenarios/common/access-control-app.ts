@@ -2,17 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Helpers for the `access_control` dapp used across the access-failure
- * scenarios. Owns the deploy + initialize sequence, the allowlist-blob
- * registration, the domain-bytes convention `@<owner-addr>/<blob-name>`, and
- * a thin wrapper around `ACE.IBE_Aptos.encrypt` for the PING fixture.
+ * Helpers for the `access_control` dapp used across IBE scenarios. Owns the
+ * deploy + initialize sequence, the allowlist-blob registration, and the
+ * domain-bytes convention `@<owner-addr>/<blob-name>`.
  */
 
 import { Account, AccountAddress, Aptos, Serializer } from '@aptos-labs/ts-sdk';
-import * as ACE from '@aptos-labs/ace-sdk';
 
-import { ACCESS_CONTROL_CONTRACT_DIR, CHAIN_ID } from './config';
-import { BaseAceActors, assert, assertTxnSuccess, createAptos, submitTxn } from './helpers';
+import { ACCESS_CONTROL_CONTRACT_DIR } from './config';
+import { assertTxnSuccess, submitTxn } from './helpers';
 import { deployContract } from './infra';
 
 /** Deploys the `access_control` Move package at `adminAddr` and calls its
@@ -72,51 +70,4 @@ export async function registerAllowlistBlob(
  *  UTF-8 encoded. Strips the `0x` prefix from the owner address. */
 export function domainForBlob(owner: Account, blobName: string): Uint8Array {
     return new TextEncoder().encode(`@${owner.accountAddress.toStringLong().slice(2)}/${blobName}`);
-}
-
-/** Encrypts `plaintext` for `(keypairId, domain)` against the `access_control`
- *  permission view. Returns the ciphertext bytes. Asserts on encryption failure. */
-export async function encryptForAccessControl(
-    aceDeployment: ACE.AceDeployment,
-    adminAccountAddress: AccountAddress,
-    keypairId: AccountAddress,
-    domain: Uint8Array,
-    plaintext: Uint8Array,
-): Promise<Uint8Array> {
-    const result = await ACE.IBE_Aptos.encrypt({
-        aceDeployment,
-        keypairId,
-        chainId: CHAIN_ID,
-        moduleAddr: adminAccountAddress,
-        moduleName: 'access_control',
-        label: domain,
-        plaintext,
-    });
-    assert(result.isOk, `encrypt failed: ${result.errValue}`);
-    return result.okValue!;
-}
-
-/** End-to-end setup for an access-failure scenario, parameterised on
- *  whichever Bob the scenario constructed (Bob's address is all the helper
- *  needs — it doesn't care about the signature scheme). Performs:
- *    1. deploy + initialize `access_control` at `actors.adminAddr`,
- *    2. register Alice's `ping-blob` with `bobAddr` as the sole allowlistee,
- *    3. encrypt plaintext "PING" under `(keypair0Id, @alice/ping-blob)`.
- *  Returns the encrypted ciphertext + the domain it was encrypted under,
- *  ready for the access-failure step bodies to consume. */
-export async function setupAccessControlAppAndEncryptPing(
-    actors: BaseAceActors,
-    bobAddr: AccountAddress,
-    aceDeployment: ACE.AceDeployment,
-    adminAccountAddress: AccountAddress,
-    keypair0Id: AccountAddress,
-): Promise<{ correctDomain: Uint8Array; pingCiph: Uint8Array }> {
-    await deployAndInitAccessControl(actors.admin, actors.adminAddr, actors.adminKeyHex);
-    await registerAllowlistBlob(createAptos(), actors.alice, bobAddr, actors.adminAddr, 'ping-blob');
-    const correctDomain = domainForBlob(actors.alice, 'ping-blob');
-    const pingCiph = await encryptForAccessControl(
-        aceDeployment, adminAccountAddress, keypair0Id, correctDomain,
-        new TextEncoder().encode('PING'),
-    );
-    return { correctDomain, pingCiph };
 }

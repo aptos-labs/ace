@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * DKR (re-sharing) protocol e2e — legacy regression coverage for BLS12-381 G1 (scheme = 0).
+ * DKR (re-sharing) protocol e2e — regression coverage for BLS12-381 G1 (scheme = 0).
  *
  * The default DKR scenario (test-dkr-protocol.ts) uses G2; this one keeps G1 covered
  * since both group schemes are still supported.
@@ -10,12 +10,18 @@
 
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
-import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getVssSession, getDKRSession } from './common/helpers';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
+import { startLocalnet, fundAccount, log, deployContracts, submitTxn, sleep, getDKGSession, getDKRSession } from './common/helpers';
 import { spawnDKGRun } from './common/dkg-clients';
 import { buildRustWorkspace, spawnDKRSrcRun, spawnDKRDstRun } from './common/dkr-clients';
+import { makeNodeMsgEndpoints } from './common/vss-protocol-setup';
+import { readVSSHolderShareFromStore } from './common/vss/store-checks';
 
 async function main() {
     const localnetProc = await startLocalnet();
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-dkr-g1-'));
     try {
         // 1 admin + 5 workers: A=0, B=1, C=2, D=3, E=4
         // Old committee: [A, B, C] with old_threshold=2
@@ -23,6 +29,7 @@ async function main() {
         const numWorkers = 5;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
+        const sigKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.sig.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -38,26 +45,35 @@ async function main() {
         const newCommittee = workerAccounts.slice(1, 5);
         const newThreshold = 3;
 
-        // Enc keypair index for new committee member m (0-based in newCommittee):
-        // B=workers[1]->encKeypairs[1], C=workers[2]->encKeypairs[2],
-        // D=workers[3]->encKeypairs[3], E=workers[4]->encKeypairs[4]
-        const newCommitteeEncKeypairIndices = [1, 2, 3, 4];
+        // Worker index for new committee member m (0-based in newCommittee):
+        // B=workers[1], C=workers[2], D=workers[3], E=workers[4]
+        const newCommitteeWorkerIndices = [1, 2, 3, 4];
+        const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot, `node-${i}.db`)}`);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
+        await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr']);
 
         log('Register workers.');
+        const nodeMsgEndpoints = makeNodeMsgEndpoints(numWorkers);
         for (let i = 0; i < numWorkers; i++) {
             (await submitTxn({
                 signer: workerAccounts[i],
                 entryFunction: `${adminAccount.accountAddress}::worker_config::register_pke_enc_key`,
                 args: [encKeypairs[i].encryptionKey.toBytes()],
             })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
-        }
 
-        // Build base_point bytes: G1 generator as [u8 scheme][uleb128(48)][48B].
-        const g1Inner = ace.group.bls12381G1.g1Generator();
-        const basePointBytes = ace.group.Element.fromBls12381G1(g1Inner).toBytes();
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${adminAccount.accountAddress}::worker_config::register_sig_verification_key`,
+                args: [sigKeypairs[i].publicKey.toBytes()],
+            })).unwrapOrThrow('Failed to register worker sig key.').asSuccessOrThrow();
+
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${adminAccount.accountAddress}::worker_config::register_node_msg_endpoint`,
+                args: [nodeMsgEndpoints.registeredUrls[i]],
+            })).unwrapOrThrow('Failed to register worker node-msg endpoint.').asSuccessOrThrow();
+        }
 
         // ── DKG Phase ───────────────────────────────────────────────────────────────
 
@@ -69,8 +85,8 @@ async function main() {
             args: [
                 oldCommittee.map(w => w.accountAddress),
                 oldThreshold,
-                basePointBytes,
-                ace.network.USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+                ace.vss.SCHEME_BLS12381G1,
+                ace.network.USAGE_BLS12381_G1_TEST_ONLY,
                 '',
             ],
         });
@@ -85,10 +101,14 @@ async function main() {
         const dkgProcs = oldCommittee.map((w, i) => spawnDKGRun({
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
+            sigSkHex: sigKeypairs[i].signingKey.toHex(),
+            vssStoreUrl: storeUrls[i],
+            nodeMsgListen: nodeMsgEndpoints.listens[i],
             dkgSessionAddr,
             aceDeploymentAddr: aceContract,
         }));
 
+        let dkgResultPk: ace.vss.PublicPoint | undefined;
         try {
             log('Wait for DKG session to complete (workers call touch_entry internally).');
             const dkgDeadlineMillis = Date.now() + 120_000;
@@ -102,7 +122,12 @@ async function main() {
                 await sleep(5_000);
             }
             if (!dkgSession?.isCompleted()) throw 'DKG session did not complete in time.';
-            log(`DKG complete. resultPk: ${dkgSession.resultPk?.toHex()}`);
+            if (dkgSession.scheme !== ace.vss.SCHEME_BLS12381G1) {
+                throw `expected DKG scheme = ${ace.vss.SCHEME_BLS12381G1}, got ${dkgSession.scheme}`;
+            }
+            dkgResultPk = dkgSession.resultPk;
+            if (dkgResultPk === undefined) throw 'DKG result PK is missing.';
+            log(`DKG complete. aggregate C0: ${dkgSession.commitmentPoints[0].toHex()}`);
         } finally {
             for (const proc of dkgProcs) proc.kill();
         }
@@ -130,6 +155,9 @@ async function main() {
         const dkrSrcProcs = oldCommittee.map((w, i) => spawnDKRSrcRun({
             runAs: w,
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
+            sigSkHex: sigKeypairs[i].signingKey.toHex(),
+            vssStoreUrl: storeUrls[i],
+            nodeMsgListen: nodeMsgEndpoints.listens[i],
             dkrSessionAddr,
             aceDeploymentAddr: aceContract,
         }));
@@ -137,7 +165,9 @@ async function main() {
         // dkr-dst: one per new-committee member (B=1, C=2, D=3, E=4 in workerAccounts)
         const dkrDstProcs = newCommittee.map((w, m) => spawnDKRDstRun({
             runAs: w,
-            pkeDkHex: `0x${Buffer.from(encKeypairs[newCommitteeEncKeypairIndices[m]].decryptionKey.toBytes()).toString('hex')}`,
+            pkeDkHex: `0x${Buffer.from(encKeypairs[newCommitteeWorkerIndices[m]].decryptionKey.toBytes()).toString('hex')}`,
+            sigSkHex: sigKeypairs[newCommitteeWorkerIndices[m]].signingKey.toHex(),
+            vssStoreUrl: storeUrls[newCommitteeWorkerIndices[m]],
             dkrSessionAddr,
             aceDeploymentAddr: aceContract,
         }));
@@ -157,8 +187,20 @@ async function main() {
                 await sleep(5_000);
             }
             if (!dkrSession?.isCompleted()) throw 'DKR session did not complete in time.';
+            if (dkrSession.pcsContext.generatorG.scheme !== ace.vss.SCHEME_BLS12381G1) {
+                throw `expected DKR PCS generator G scheme = ${ace.vss.SCHEME_BLS12381G1}, got ${dkrSession.pcsContext.generatorG.scheme}`;
+            }
+            if (dkrSession.commitmentPoints.length !== newCommittee.length + 1) {
+                throw `expected ${newCommittee.length + 1} DKR commitment points, got ${dkrSession.commitmentPoints.length}`;
+            }
+            if (dkrSession.publicKeys.length !== newCommittee.length + 1) {
+                throw `expected ${newCommittee.length + 1} DKR public keys, got ${dkrSession.publicKeys.length}`;
+            }
+            if (!dkrSession.resultPk.equals(dkgResultPk!)) {
+                throw 'DKR changed the result public key.';
+            }
 
-            log(`DKR complete. secretlyScaledElement: ${dkrSession.secretlyScaledElement.toHex()}`);
+            log(`DKR complete. aggregate C0: ${dkrSession.commitmentPoints[0].toHex()}`);
 
             // ── Correctness check ──────────────────────────────────────────────────────
             // Per https://alinush.github.io/2024/04/26/How-to-reshare-a-secret.html:
@@ -174,12 +216,12 @@ async function main() {
             //           dkrCombinedShare[m] = Σ_{j ∈ H} L_{j+1}^{H}(0) * z_{j,m}
             //         This equals f(m+1) — new committee member m's share of the original secret.
             //
-            // Step 2: Reconstruct the secret from newThreshold combined shares:
-            //           s = Lagrange({(1, dkrCombinedShare[0]), ..., (newThreshold, dkrCombinedShare[newThreshold-1])}, x=0)
+            // Step 2: Verify each combined share/blinding against its aggregate Pedersen commitment.
             //
-            // Step 3: Assert s * publicBaseElement == secretlyScaledElement (PK unchanged).
+            // Step 3: Reconstruct the secret/blinding from newThreshold combined openings and
+            //         assert s * G + r * H equals aggregate C0.
 
-            log('Fetch contributing DKR VSS sessions and verify correctness.');
+            log('Fetch contributing DKR holder DB shares and verify correctness.');
 
             const contributingIndices: number[] = dkrSession.vssContributionFlags
                 .map((flag, j) => (flag ? j : -1))
@@ -190,61 +232,83 @@ async function main() {
                 throw `Not enough contributing VSS sessions: got ${contributingIndices.length}, need ${oldThreshold}`;
             }
 
-            // For each contributing old-committee member j, fetch their VSS session and
-            // decrypt each new committee member m's sub-share.
-            // subShares[vi][m] = z_{j,m} for j = contributingIndices[vi], m = 0..newCommittee.length-1
-            const subShares: ace.vss.SecretShare[][] = [];
+            // For each contributing old-committee member j, fetch each new committee
+            // member m's offchain VSS opening from that member's local store.
+            // subOpenings[vi][m] = z_{j,m} for j = contributingIndices[vi], m = 0..newCommittee.length-1
+            const subOpenings: ace.pedersenPolynomialCommitment.Opening[][] = [];
             for (const j of contributingIndices) {
-                const vssSession = (await getVssSession(adminAccount.accountAddress, dkrSession.vssSessions[j]))
-                    .unwrapOrThrow(`Failed to fetch DKR VSS session ${j}.`);
-                const sharesForVss: ace.vss.SecretShare[] = [];
+                const openingsForVss: ace.pedersenPolynomialCommitment.Opening[] = [];
                 for (let m = 0; m < newCommittee.length; m++) {
-                    const newMemberEncKeypairIdx = newCommitteeEncKeypairIndices[m];
-                    const msgBytes = (await ace.pke.decrypt({
-                        decryptionKey: encKeypairs[newMemberEncKeypairIdx].decryptionKey,
-                        ciphertext: vssSession.dealerContribution0!.privateShareMessages[m],
-                    })).unwrapOrThrow(`Failed to decrypt sub-share (vss=${j}, new_member=${m}).`);
+                    const newMemberWorkerIdx = newCommitteeWorkerIndices[m];
+                    const msgBytes = readVSSHolderShareFromStore({
+                        vssStoreUrl: storeUrls[newMemberWorkerIdx],
+                        sessionAddr: dkrSession.vssSessions[j],
+                        holderIndex: m,
+                    });
                     const msg = ace.vss.PrivateShareMessage.fromBytes(msgBytes)
-                        .unwrapOrThrow(`Failed to parse PrivateShareMessage (vss=${j}, new_member=${m}).`);
-                    sharesForVss.push(msg.share);
+                        .unwrapOrThrow(`Failed to parse holder DB share (vss=${j}, new_member=${m}).`);
+                    openingsForVss.push(msg.opening);
                 }
-                subShares.push(sharesForVss);
+                subOpenings.push(openingsForVss);
             }
 
             // Step 1: For each new committee member m, Lagrange-combine sub-shares at x=0
             //         using OLD evaluation points {j+1 : j ∈ H}.
-            //
-            // reconstruct() returns a Scalar; to feed it into the outer reconstruct() we
-            // convert: Scalar → PrivateScalar → Bls12381Fr.SecretShare → vss.SecretShare.
-            const dkrCombinedShares: ace.vss.SecretShare[] = newCommittee.map((_, m) => {
-                const combinedScalar = ace.vss.reconstruct({
-                    indexedShares: contributingIndices.map((j, vi) => ({
+            const dkrCombinedOpenings: ace.pedersenPolynomialCommitment.Opening[] = newCommittee.map((_, m) => {
+                const evalValueP = ace.vss.reconstructScalars({
+                    indexedScalars: contributingIndices.map((j, vi) => ({
                         index: j + 1,            // old eval point for old member j
-                        share: subShares[vi][m], // z_{j,m}
+                        scalar: subOpenings[vi][m].evalValueP, // z_{j,m}
                     })),
                 }).unwrapOrThrow(`Failed to Lagrange-combine DKR sub-shares for new member ${m}.`);
-                // Convert group.Scalar → vss.SecretShare for the outer reconstruction step.
-                const ps = combinedScalar.asBls12381G1();
-                const bls12381Share = new ace.group.bls12381G1.SecretShare(ps.scalar);
-                return new ace.vss.SecretShare(ace.vss.SCHEME_BLS12381G1, bls12381Share);
+                const evalValueR = ace.vss.reconstructScalars({
+                    indexedScalars: contributingIndices.map((j, vi) => ({
+                        index: j + 1,
+                        scalar: subOpenings[vi][m].evalValueR,
+                    })),
+                }).unwrapOrThrow(`Failed to Lagrange-combine DKR sub-blindings for new member ${m}.`);
+                return new ace.pedersenPolynomialCommitment.Opening(m + 1, evalValueP, evalValueR);
             });
+
+            for (let m = 0; m < newCommittee.length; m++) {
+                const expected = dkrSession.commitmentPoints[m + 1];
+                const actual = dkrSession.pcsContext.generatorG
+                    .scale(dkrCombinedOpenings[m].evalValueP)
+                    .add(dkrSession.pcsContext.generatorH.scale(dkrCombinedOpenings[m].evalValueR));
+                if (!actual.equals(expected)) {
+                    throw `DKR aggregate holder commitment mismatch at new member ${m}`;
+                }
+                if (!dkrSession.basePoint.scale(dkrCombinedOpenings[m].evalValueP).equals(dkrSession.sharePks[m])) {
+                    throw `DKR aggregate holder public key mismatch at new member ${m}`;
+                }
+            }
 
             // Step 2: Reconstruct the secret from newThreshold combined DKR shares
             //         using NEW evaluation points {m+1 : m = 0..newThreshold-1}.
-            const reconstructedSecret = ace.vss.reconstruct({
-                indexedShares: dkrCombinedShares.slice(0, newThreshold).map((share, m) => ({
-                    index: m + 1,  // new eval point for new member m
-                    share,
+            const reconstructedSecret = ace.vss.reconstructScalars({
+                indexedScalars: dkrCombinedOpenings.slice(0, newThreshold).map(opening => ({
+                    index: opening.evalPosition,
+                    scalar: opening.evalValueP,
                 })),
             }).unwrapOrThrow('Failed to reconstruct combined secret from DKR shares.');
+            const reconstructedBlinding = ace.vss.reconstructScalars({
+                indexedScalars: dkrCombinedOpenings.slice(0, newThreshold).map(opening => ({
+                    index: opening.evalPosition,
+                    scalar: opening.evalValueR,
+                })),
+            }).unwrapOrThrow('Failed to reconstruct combined blinding from DKR shares.');
 
-            // Step 3: Verify s * publicBaseElement == secretlyScaledElement.
-            const computedPk = dkrSession.publicBaseElement.scale(reconstructedSecret);
-            if (!computedPk.equals(dkrSession.secretlyScaledElement)) {
-                throw 'Reconstructed secret does not match DKR secretlyScaledElement (PK mismatch).';
+            const computedC0 = dkrSession.pcsContext.generatorG
+                .scale(reconstructedSecret)
+                .add(dkrSession.pcsContext.generatorH.scale(reconstructedBlinding));
+            if (!computedC0.equals(dkrSession.commitmentPoints[0])) {
+                throw 'Reconstructed secret/blinding does not match DKR aggregate C0.';
+            }
+            if (!dkrSession.basePoint.scale(reconstructedSecret).equals(dkrSession.resultPk)) {
+                throw 'Reconstructed secret does not match DKR result PK.';
             }
 
-            log(`DKR correctness verified. secretlyScaledElement: ${dkrSession.secretlyScaledElement.toHex()}`);
+            log(`DKR correctness verified. aggregate C0: ${dkrSession.commitmentPoints[0].toHex()}`);
 
         } finally {
             for (const proc of allDkrProcs) proc.kill();
@@ -252,6 +316,7 @@ async function main() {
 
     } finally {
         localnetProc.kill();
+        rmSync(tmpRoot, { recursive: true, force: true });
     }
 }
 

@@ -8,6 +8,8 @@ export interface NodeProfile {
   accountSk: string;
   pkeDk: string;
   pkeEk: string;
+  sigSk: string;
+  sigPk: string;
 }
 
 const ENV_KEYS: Record<keyof NodeProfile, string> = {
@@ -15,6 +17,8 @@ const ENV_KEYS: Record<keyof NodeProfile, string> = {
   accountSk:   'ACE_ACCOUNT_SK',
   pkeDk:       'ACE_PKE_DK',
   pkeEk:       'ACE_PKE_EK',
+  sigSk:       'ACE_SIG_SK',
+  sigPk:       'ACE_SIG_PK',
 };
 
 /** Read a profile from a .env file, or fall back to environment variables. */

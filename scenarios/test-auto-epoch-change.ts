@@ -21,6 +21,9 @@
 
 import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 import {
     startLocalnet,
     fundAccount,
@@ -35,16 +38,19 @@ import {
     serializeNewSecretProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
+import { makeNodeMsgEndpoints } from './common/vss-protocol-setup';
 
 async function main() {
     const localnetProc = await startLocalnet();
     const nodeProcs: ReturnType<typeof spawnNetworkNode>[] = [];
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-auto-epoch-'));
 
     try {
         // 1 admin + 3 workers: A=0, B=1, C=2
         const numWorkers = 3;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
+        const sigKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.sig.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -55,17 +61,35 @@ async function main() {
 
         const committee = workerAccounts;
         const threshold = 2;
+        const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot, `node-${i}.db`)}`);
+        const nodeMsgEndpoints = makeNodeMsgEndpoints(numWorkers);
+
+        function assertSameCommitment(label: string, expectedHex: string, actualHex: string): void {
+            if (actualHex !== expectedHex) {
+                throw `${label} commitment mismatch.\n  expected: ${expectedHex}\n  got:      ${actualHex}`;
+            }
+        }
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
-        log('Register PKE enc keys for all workers.');
+        log('Register worker keys and node-msg endpoints.');
         for (let i = 0; i < numWorkers; i++) {
             (await submitTxn({
                 signer: workerAccounts[i],
                 entryFunction: `${aceContract}::worker_config::register_pke_enc_key`,
                 args: [encKeypairs[i].encryptionKey.toBytes()],
             })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${aceContract}::worker_config::register_sig_verification_key`,
+                args: [sigKeypairs[i].publicKey.toBytes()],
+            })).unwrapOrThrow('Failed to register worker sig key.').asSuccessOrThrow();
+            (await submitTxn({
+                signer: workerAccounts[i],
+                entryFunction: `${aceContract}::worker_config::register_node_msg_endpoint`,
+                args: [nodeMsgEndpoints.registeredUrls[i]],
+            })).unwrapOrThrow('Failed to register worker node-msg endpoint.').asSuccessOrThrow();
         }
 
         log('Build network-node binary and start one process per worker (A–C).');
@@ -74,6 +98,9 @@ async function main() {
             nodeProcs.push(spawnNetworkNode({
                 runAs: workerAccounts[i],
                 pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
+                sigSkHex: sigKeypairs[i].signingKey.toHex(),
+                vssStoreUrl: storeUrls[i],
+                nodeMsgListen: nodeMsgEndpoints.listens[i],
                 aceDeploymentAddr: aceContract,
             }));
         }
@@ -117,9 +144,11 @@ async function main() {
 
         const dkgSession = (await getDKGSession(adminAccount.accountAddress, dkgSessionAddr))
             .unwrapOrThrow('Failed to read DKG session.');
-        const baselinePk = dkgSession.resultPk;
-        if (!baselinePk) throw 'DKG session resultPk is absent despite state=DONE';
-        log(`DKG resultPk: ${baselinePk.toHex()}`);
+        if (dkgSession.commitmentPoints.length !== committee.length + 1) {
+            throw `expected ${committee.length + 1} DKG commitment points, got ${dkgSession.commitmentPoints.length}`;
+        }
+        const baselineC0 = dkgSession.commitmentPoints[0]!.toHex();
+        log(`DKG C0: ${baselineC0}`);
 
         // ── Wait for auto epoch change (no manual proposal) ──────────────────────
 
@@ -161,20 +190,19 @@ async function main() {
             throw 'Expected epoch_change_state to be None after epoch advance';
         }
 
-        // Verify PK is unchanged after resharing.
+        // Verify the root Pedersen commitment is unchanged after resharing.
         const dkrSessionAddr = finalState.secrets[0]!.currentSession;
         const dkrSession = (await getDKRSession(adminAccount.accountAddress, dkrSessionAddr))
             .unwrapOrThrow('Failed to read DKR session.');
 
-        if (dkrSession.secretlyScaledElement.toHex() !== baselinePk.toHex()) {
-            throw `PK mismatch after resharing.\n  before: ${baselinePk.toHex()}\n  after:  ${dkrSession.secretlyScaledElement.toHex()}`;
-        }
+        assertSameCommitment('auto-reshared secret', baselineC0, dkrSession.commitmentPoints[0]!.toHex());
 
-        log(`Auto epoch change test passed. secretlyScaledElement: ${dkrSession.secretlyScaledElement.toHex()}`);
+        log(`Auto epoch change test passed. reshared C0: ${dkrSession.commitmentPoints[0]!.toHex()}`);
 
     } finally {
         for (const proc of nodeProcs) proc.kill();
         localnetProc.kill();
+        rmSync(tmpRoot, { recursive: true, force: true });
     }
 }
 

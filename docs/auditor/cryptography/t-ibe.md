@@ -1,13 +1,13 @@
 # Threshold Identity-Based Encryption (`t-ibe::*`)
 
-t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, label)`, where `label` is the app-specific scoping bytes); decryption requires t-of-n workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$). See [`dkg.md`](./dkg.md) for how $\mathsf{mpk}$ and the shares are produced.
+t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, label)`, where `label` is the app-specific scoping bytes); decryption requires t-of-n workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}=sG$ is the scalar-derived position-zero public key published by DKG. See [`dkg.md`](./dkg.md) for how $\mathsf{mpk}$ and the shares are produced.
 
 | Scheme | Tag | Status | Defined |
 |--------|-----|--------|---------|
 | BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **test-only** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
 | BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **production, default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs:35` |
 
-> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` ([`pke.md`](./pke.md)). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of this file describes scheme `0x01` only.
+> **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` ([`pke.md`](./pke.md)). It is selected only when the underlying DKG uses a G1 basepoint, currently covered by low-level G1 DKG/DKR scenarios and SDK tests. Production deployments use a G2 basepoint and therefore scheme `0x01`. The remainder of this file describes scheme `0x01` only.
 
 The request carries the t-IBE scheme used by the ciphertext. The worker validates that scheme against the underlying DKG basepoint group via `worker-components/network-node/src/crypto.rs::group_scheme_for_tibe`: scheme `0x00` requires G1 (test-only), and scheme `0x01` requires G2 (production).
 

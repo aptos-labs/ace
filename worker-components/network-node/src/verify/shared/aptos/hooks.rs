@@ -4,7 +4,6 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 
-use super::constants::APTOS_DECRYPTION_HOOK;
 use super::{AptosContractId, AptosProofOfPermission};
 use crate::ChainRpcConfig;
 
@@ -71,42 +70,5 @@ pub(super) async fn check_auth_key_bytes(
             user_addr_str
         ));
     }
-    Ok(())
-}
-
-#[allow(dead_code)]
-/// Calls the on-chain view function
-/// `{moduleAddr}::{moduleName}::on_ace_decryption_request(label, account, origin)`
-/// and expects `true` to be returned.
-pub(super) async fn check_basic_ace_hook(
-    contract: &AptosContractId,
-    domain: &[u8],
-    proof: &AptosProofOfPermission,
-    rpc: &vss_common::AptosRpc,
-) -> Result<()> {
-    let func = format!(
-        "0x{}::{}::{}",
-        hex::encode(contract.module_addr),
-        contract.module_name,
-        APTOS_DECRYPTION_HOOK,
-    );
-    let user_addr = format!("0x{}", hex::encode(proof.user_addr));
-    let domain_hex = format!("0x{}", hex::encode(domain));
-
-    let result = rpc
-        .call_view(&func, &[json!(domain_hex), json!(user_addr), json!("")])
-        .await
-        .map_err(|e| anyhow!("checkBasicAceHook: view call failed for {}: {}", func, e))?;
-
-    let returned = result
-        .first()
-        .ok_or_else(|| anyhow!("checkBasicAceHook: empty view result"))?;
-    if returned.as_bool() != Some(true) && returned.to_string() != "true" {
-        return Err(anyhow!(
-            "checkBasicAceHook: access denied (returned {:?})",
-            returned
-        ));
-    }
-
     Ok(())
 }

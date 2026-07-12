@@ -12,17 +12,14 @@ local = "../group"
 [dependencies.WorkerConfig]
 local = "../worker_config"
 
-[dependencies.PKE]
-local = "../pke"
+[dependencies.PedersenPolynomialCommitment]
+local = "../pedersen-polynomial-commitment"
 
 [dependencies.FiatShamirTransform]
 local = "../fiat-shamir-transform"
 
 [dependencies.SigmaDLogLinear]
 local = "../sigma-dlog-linear"
-
-[dependencies.PedersenPolynomialCommitment]
-local = "../pedersen-polynomial-commitment"
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

@@ -9,6 +9,7 @@
 //! sub-tasks are reconciled each tick as new sessions appear in `vss_sessions`.
 
 use anyhow::{anyhow, Result};
+use node_msg_gateway::GatewayHandle;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
@@ -16,10 +17,11 @@ use vss_common::{
     normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
     TxnArg,
 };
+use vss_store::connect_vss_store;
 
 const STATE_START_VSSS: u8 = 0;
 const STATE_VSS_IN_PROGRESS: u8 = 1;
-const STATE_AGGREGATE_SHARE_PKS: u8 = 2;
+const STATE_AGGREGATE_COMMITMENT_POINTS: u8 = 2;
 const STATE_DONE: u8 = 3;
 const STATE_FAIL: u8 = 4;
 
@@ -40,6 +42,9 @@ pub struct RunConfig {
     pub account_addr: String,
     pub account_sk_hex: String,
     pub pke_dk_hex: String,
+    pub sig_sk_hex: String,
+    pub vss_store_url: String,
+    pub node_msg_listen: String,
 }
 
 async fn fetch_dkg_session(rpc: &AptosRpc, ace: &str, session_addr: &str) -> Result<DkgSession> {
@@ -95,6 +100,11 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         "dkg-worker: starting (account={} dkg_session={} ace={})",
         account_addr, dkg_session_addr, ace
     );
+
+    let _ = connect_vss_store(&config.vss_store_url)?;
+    let _gateway: GatewayHandle =
+        vss_dealer::ensure_vss_share_gateway(&rpc, &ace, &account_addr, &config.node_msg_listen)
+            .await?;
 
     // Fetch once to find my_idx — workers list is fixed for the session lifetime.
     let initial = fetch_dkg_session(&rpc, &ace, &dkg_session_addr).await?;
@@ -160,7 +170,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
         // sub-sessions are running, one rotating worker is enough to detect when
         // threshold completion has been reached.
         let should_touch = match session.state {
-            STATE_START_VSSS | STATE_AGGREGATE_SHARE_PKS => true,
+            STATE_START_VSSS | STATE_AGGREGATE_COMMITMENT_POINTS => true,
             STATE_VSS_IN_PROGRESS => should_submit_rotating_touch(my_idx, n),
             _ => true,
         };
@@ -202,6 +212,10 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 account_addr: account_addr.clone(),
                 account_sk_hex: config.account_sk_hex.clone(),
                 secret_override: None,
+                previous_blinding_override: None,
+                sig_sk_hex: Some(config.sig_sk_hex.clone()),
+                vss_store_url: Some(config.vss_store_url.clone()),
+                node_msg_listen: Some(config.node_msg_listen.clone()),
             };
             println!(
                 "dkg-worker: spawning dealer for vss_sessions[{}]={}",
@@ -230,6 +244,8 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                 pke_dk_hex: config.pke_dk_hex.clone(),
                 account_addr: account_addr.clone(),
                 account_sk_hex: config.account_sk_hex.clone(),
+                sig_sk_hex: Some(config.sig_sk_hex.clone()),
+                vss_store_url: Some(config.vss_store_url.clone()),
             };
             println!(
                 "dkg-worker: spawning recipient for vss_sessions[{}]={}",

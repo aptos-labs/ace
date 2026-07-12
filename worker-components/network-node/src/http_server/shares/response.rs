@@ -13,18 +13,14 @@ pub(crate) fn derive_tibe_share_and_respond(
     response_enc_key: &EncryptionKey,
     tibe_scheme: u8,
 ) -> Outcome {
-    let share_hex = match crate::crypto::partial_extract_idk_share(
+    let share_bytes = match crate::crypto::partial_extract_idk_share(
         tibe_scheme,
         identity,
         &entry.scalar_le32,
         entry.eval_point,
     ) {
-        Ok(s) => s,
+        Ok(bytes) => bytes,
         Err(e) => return internal(format!("partial_extract_idk_share: {:#}", e)),
-    };
-    let share_bytes = match hex::decode(&share_hex) {
-        Ok(b) => b,
-        Err(e) => return internal(format!("hex decode of share: {}", e)),
     };
     encrypt_response_bytes(response_enc_key, &share_bytes)
 }

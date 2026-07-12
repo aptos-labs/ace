@@ -48,7 +48,7 @@ function maybeHint(msg: string, raw: unknown): string {
             `\n\nHint: the gas station rejected this transaction's entry function. If you're using a Geomi\n` +
             `gas station, check the allowlist for this station at https://geomi.dev → "Gas Stations" →\n` +
             `<your station> → "Allowed functions". ACE needs at least:\n` +
-            `  • <ace>::worker_config::register_endpoint\n` +
+            `  • <ace>::worker_config::register_client_endpoint\n` +
             `  • <ace>::worker_config::register_pke_enc_key\n` +
             `  • <ace>::vss::*\n` +
             `  • <ace>::voting::vote\n` +

@@ -128,7 +128,7 @@ nodeCmd
     .option('--rpc-api-key <key>', 'Deployment RPC API key')
     .option('--gas-station-key <key>', 'Gas station API key')
     .option('--platform <platform>', 'Deployment platform (non-interactive currently supports gcp)')
-    .option('--mode <mode>', 'Mode: microservices, monolith, or metadata-management-only (default: microservices)')
+    .option('--mode <mode>', 'Mode: microservices or metadata-management-only (Cloud Run monolith is unavailable with offchain VSS)')
     .option('--alias <alias>', 'Node profile alias')
     .option('--image <image>', 'Worker image, e.g. aptoslabs/ace-node:3.1.0')
     .option('--project <id>', 'GCP project ID')
@@ -138,6 +138,9 @@ nodeCmd
     .option('--handler-service-name <name>', 'Cloud Run Handler service name for microservices mode')
     .option('--handler-max-instances <n>', 'Cloud Run Handler max instances for microservices mode')
     .option('--endpoint <url>', 'Node endpoint to register (required if not applying deploy with --yes)')
+    .option('--node-msg-endpoint <url>', 'Node-to-node message endpoint to register (required if not applying deploy with --yes)')
+    .option('--vss-store-url <url>', 'Persistent VSS store URL, e.g. sqlite:///path/to/node.db or postgres://...')
+    .option('--node-msg-listen <addr>', 'Local listen address for node-to-node VSS messages, e.g. 0.0.0.0:20500')
     .option('--chain-rpc-json <json>', 'JSON object of chain RPC overrides, e.g. {"aptosTestnetApi":"http://10.0.0.1:8080/v1"}')
     .action(async (opts: NodeNewOptions & { json?: boolean; setDefault?: boolean }) => {
         try {
@@ -169,7 +172,11 @@ nodeCmd
                     alias:       node.alias,
                     accountAddr: node.accountAddr,
                     pkeEk:       node.pkeEk,
+                    sigPk:       node.sigPk,
                     endpoint:    node.endpoint,
+                    nodeMsgEndpoint: node.nodeMsgEndpoint,
+                    vssStoreUrl: node.vssStoreUrl,
+                    nodeMsgListen: node.nodeMsgListen,
                     platform:    node.platform,
                     mode:        node.mode,
                     image:       node.image,

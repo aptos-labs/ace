@@ -4,7 +4,6 @@
 import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
 import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
@@ -14,7 +13,6 @@ import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
-import { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermission } from "./solana";
 
 export class AceDeployment {
     apiEndpoint: string;
@@ -38,22 +36,17 @@ export class AceDeployment {
 
 export class ContractID {
     static readonly SCHEME_APTOS = 0;
-    static readonly SCHEME_SOLANA = 1;
 
     scheme: number;
-    inner: AptosContractID | SolanaContractID;
+    inner: AptosContractID;
 
-    private constructor(scheme: number, inner: AptosContractID | SolanaContractID) {
+    private constructor(scheme: number, inner: AptosContractID) {
         this.scheme = scheme;
         this.inner = inner;
     }
 
     static newAptos({ chainId, moduleAddr, moduleName }: { chainId: number, moduleAddr: AccountAddress, moduleName: string }) {
         return new ContractID(ContractID.SCHEME_APTOS, new AptosContractID(chainId, moduleAddr, moduleName));
-    }
-
-    static newSolana({ knownChainName, programId }: { knownChainName: string, programId: string }) {
-        return new ContractID(ContractID.SCHEME_SOLANA, new SolanaContractID({knownChainName, programId}));
     }
 
     static dummy(): ContractID {
@@ -64,13 +57,10 @@ export class ContractID {
         const task = (extra: Record<string, any>) => {
             const scheme = deserializer.deserializeU8();
             extra['scheme'] = scheme;
-            if (scheme == ContractID.SCHEME_APTOS) {
+            if (scheme === ContractID.SCHEME_APTOS) {
                 return new ContractID(ContractID.SCHEME_APTOS, AptosContractID.deserialize(deserializer).unwrapOrThrow('ACE.ContractID.deserialize failed in aptos case'));
-            } else if (scheme == ContractID.SCHEME_SOLANA) {
-                return new ContractID(ContractID.SCHEME_SOLANA, SolanaContractID.deserialize(deserializer).unwrapOrThrow('ACE.ContractID.deserialize failed in solana case'));
-            } else {
-                throw 'ACE.ContractID.deserialize failed with unknown scheme';
             }
+            throw 'ACE.ContractID.deserialize failed with unknown scheme';
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -96,11 +86,8 @@ export class ContractID {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme == ContractID.SCHEME_APTOS) {
-            (this.inner as AptosContractID).serialize(serializer);
-        } else if (this.scheme == ContractID.SCHEME_SOLANA) {
-            (this.inner as SolanaContractID).serialize(serializer);
-        }
+        if (this.scheme !== ContractID.SCHEME_APTOS) throw 'ACE.ContractID.serialize failed with unknown scheme';
+        this.inner.serialize(serializer);
     }
 
     toBytes(): Uint8Array {
@@ -179,15 +166,8 @@ export class FullDecryptionDomain {
         return bytesToHex(this.toBytes());
     }
 
-    getSolanaContractID(): SolanaContractID {
-        if (this.contractId.scheme != ContractID.SCHEME_SOLANA) {
-            throw 'ACE.FullDecryptionDomain.getSolanaContractID failed with wrong scheme';
-        }
-        return this.contractId.inner as SolanaContractID;
-    }
-
     getAptosContractID(): AptosContractID {
-        if (this.contractId.scheme != ContractID.SCHEME_APTOS) {
+        if (this.contractId.scheme !== ContractID.SCHEME_APTOS) {
             throw 'ACE.FullDecryptionDomain.getAptosContractID failed with wrong scheme';
         }
         return this.contractId.inner as AptosContractID;
@@ -196,12 +176,11 @@ export class FullDecryptionDomain {
 
 export class ProofOfPermission {
     static readonly SCHEME_APTOS = 0;
-    static readonly SCHEME_SOLANA = 1;
 
     scheme: number;
-    inner: AptosProofOfPermission | SolanaProofOfPermission;
+    inner: AptosProofOfPermission;
 
-    private constructor(scheme: number, inner: AptosProofOfPermission | SolanaProofOfPermission) {
+    private constructor(scheme: number, inner: AptosProofOfPermission) {
         this.scheme = scheme;
         this.inner = inner;
     }
@@ -210,28 +189,14 @@ export class ProofOfPermission {
         return new ProofOfPermission(ProofOfPermission.SCHEME_APTOS, new AptosProofOfPermission({userAddr, publicKey, signature, fullMessage}));
     }
 
-    static createSolana({ txn }: { txn: Uint8Array }) {
-        try {
-            const versioned = VersionedTransaction.deserialize(txn);
-            if (versioned.version !== 'legacy') {
-                return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newVersioned(versioned));
-            }
-        } catch {}
-        const legacy = Transaction.from(Buffer.from(txn));
-        return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newUnversioned(legacy));
-    }
-
     static deserialize(deserializer: Deserializer): Result<ProofOfPermission> {
         const task = (extra: Record<string, any>) => {
             const scheme = deserializer.deserializeU8();
             extra['scheme'] = scheme;
-            if (scheme == ProofOfPermission.SCHEME_APTOS) {
+            if (scheme === ProofOfPermission.SCHEME_APTOS) {
                 return new ProofOfPermission(ProofOfPermission.SCHEME_APTOS, AptosProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.ProofOfPermission.deserialize failed in aptos case'));
-            } else if (scheme == ProofOfPermission.SCHEME_SOLANA) {
-                return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.deserialize(deserializer).unwrapOrThrow('ACE.ProofOfPermission.deserialize failed in solana case'));
-            } else {
-                throw 'ACE.ProofOfPermission.deserialize failed with unknown scheme';
             }
+            throw 'ACE.ProofOfPermission.deserialize failed with unknown scheme';
         };
         return Result.capture({task, recordsExecutionTimeMs: false});
     }
@@ -253,11 +218,8 @@ export class ProofOfPermission {
 
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
-        if (this.scheme == ProofOfPermission.SCHEME_APTOS) {
-            (this.inner as AptosProofOfPermission).serialize(serializer);
-        } else if (this.scheme == ProofOfPermission.SCHEME_SOLANA) {
-            (this.inner as SolanaProofOfPermission).serialize(serializer);
-        }
+        if (this.scheme !== ProofOfPermission.SCHEME_APTOS) throw 'ACE.ProofOfPermission.serialize failed with unknown scheme';
+        this.inner.serialize(serializer);
     }
 
     toBytes(): Uint8Array {
@@ -365,12 +327,9 @@ export class DecryptionRequestPayload {
 
 export class CustomFlowProof {
     static readonly SCHEME_APTOS = 0;
-    static readonly SCHEME_SOLANA = 1;
 
     scheme: number;
     private _aptosPayload?: Uint8Array;
-    private _solanaInnerScheme?: number;
-    private _solanaTxnBytes?: Uint8Array;
 
     private constructor(scheme: number) { this.scheme = scheme; }
 
@@ -380,26 +339,12 @@ export class CustomFlowProof {
         return p;
     }
 
-    static createSolana(txn: Uint8Array): CustomFlowProof {
-        const p = new CustomFlowProof(CustomFlowProof.SCHEME_SOLANA);
-        let innerScheme = 0;
-        try {
-            const versioned = VersionedTransaction.deserialize(txn);
-            if (versioned.version !== 'legacy') innerScheme = 1;
-        } catch {}
-        p._solanaInnerScheme = innerScheme;
-        p._solanaTxnBytes = txn;
-        return p;
-    }
-
     serialize(serializer: Serializer): void {
-        serializer.serializeU8(this.scheme);
-        if (this.scheme === CustomFlowProof.SCHEME_APTOS) {
-            serializer.serializeBytes(this._aptosPayload!);
-        } else {
-            serializer.serializeU8(this._solanaInnerScheme!);
-            serializer.serializeBytes(this._solanaTxnBytes!);
+        if (this.scheme !== CustomFlowProof.SCHEME_APTOS || this._aptosPayload === undefined) {
+            throw 'ACE.CustomFlowProof.serialize failed with unknown scheme';
         }
+        serializer.serializeU8(this.scheme);
+        serializer.serializeBytes(this._aptosPayload);
     }
 
     toBytes(): Uint8Array {
@@ -810,7 +755,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                     const [[endpoint], [ekHex]] = await Promise.all([
                         aptos.view({
                             payload: {
-                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                                function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
                                 typeArguments: [],
                                 functionArguments: [addrStr],
                             },
@@ -936,7 +881,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                     const [[endpoint], [ekHex]] = await Promise.all([
                         aptos.view({
                             payload: {
-                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                                function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
                                 typeArguments: [],
                                 functionArguments: [addrStr],
                             },
@@ -1064,7 +1009,7 @@ export async function buildPerNodeRequestCore({
                 const [[endpoint], [ekHex]] = await Promise.all([
                     aptos.view({
                         payload: {
-                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
+                            function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
                             typeArguments: [],
                             functionArguments: [addrStr],
                         },

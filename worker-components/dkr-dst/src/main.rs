@@ -31,6 +31,12 @@ struct RunArgs {
     dkr_session: String,
     #[arg(long)]
     pke_dk: String,
+    /// Ed25519 node-to-node messaging signing key hex (0x prefix optional).
+    #[arg(long)]
+    sig_sk: String,
+    /// Persistent VSS store URL.
+    #[arg(long)]
+    vss_store_url: String,
     #[arg(long)]
     account_addr: String,
     /// Ed25519 private key hex (0x prefix optional).
@@ -52,6 +58,8 @@ async fn main() {
                 pke_dk_hex: args.pke_dk,
                 account_addr: args.account_addr,
                 account_sk_hex: args.account_sk,
+                sig_sk_hex: args.sig_sk,
+                vss_store_url: args.vss_store_url,
             };
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

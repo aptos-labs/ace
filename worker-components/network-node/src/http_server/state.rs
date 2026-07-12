@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
-use crate::secrets::{LocalSecrets, SecretsProvider};
+use crate::secrets::SecretsProvider;
 use crate::ChainRpcConfig;
 
 /// Shared state for the user-facing request handler.
@@ -15,9 +15,4 @@ pub struct AppState {
     pub chain_rpc: Arc<ChainRpcConfig>,
     pub concurrency: Arc<Semaphore>,
     pub pke_dk_bytes: Arc<Vec<u8>>,
-}
-
-#[derive(Clone)]
-pub struct SecretsServerState {
-    pub local: LocalSecrets,
 }

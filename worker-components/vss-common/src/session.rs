@@ -25,6 +25,7 @@ pub struct Session {
     pub dealer: String,
     pub share_holders: Vec<String>,
     pub threshold: u64,
+    pub scheme: u8,
     /// `dealer_contribution_0` is empty if DC0 has not been submitted yet.
     /// Non-empty (sentinel `[1]`) once the dealer has called `on_dealer_contribution_0`.
     pub dealer_contribution_0: Vec<u8>,
@@ -43,7 +44,8 @@ impl Session {
     /// - `dealer: address`
     /// - `share_holders: vector<address>`
     /// - `threshold: u64`
-    /// - `public_base_element: group::Element` (we don't need the value — just skip it)
+    /// - `scheme: u8`
+    /// - `previous_commitment: Option<PreviousCommitment>`
     /// - `state_code: u8`
     /// - `deal_time_micros: u64`
     /// - `dealer_contribution_0: Option<DealerContribution0>` (struct, not raw bytes)
@@ -64,6 +66,23 @@ impl Session {
             raw.to_string()
                 .parse::<u64>()
                 .with_context(|| format!("parse u64 field {:?}", field))
+        };
+        let u8_field = |field: &str| -> Result<u8> {
+            let raw = data_json
+                .get(field)
+                .ok_or_else(|| anyhow!("missing field {:?}", field))?;
+            if let Some(n) = raw.as_u64() {
+                return n
+                    .try_into()
+                    .map_err(|_| anyhow!("u8 field {:?} out of range", field));
+            } else if let Some(st) = raw.as_str() {
+                return st
+                    .parse::<u8>()
+                    .with_context(|| format!("parse u8 field {:?}", field));
+            }
+            raw.to_string()
+                .parse::<u8>()
+                .with_context(|| format!("parse u8 field {:?}", field))
         };
 
         let dealer = data_json
@@ -87,12 +106,7 @@ impl Session {
         let share_holders = share_holders?;
 
         let threshold = u64_field("threshold")?;
-
-        // public_base_element: group::Element — present in Session.
-        // We only check it exists; we don't need the actual value.
-        if data_json.get("public_base_element").is_none() {
-            return Err(anyhow!("missing public_base_element in VSS session"));
-        }
+        let scheme = u8_field("scheme")?;
 
         let state_code_raw = data_json
             .get("state_code")
@@ -138,6 +152,7 @@ impl Session {
             dealer,
             share_holders,
             threshold,
+            scheme,
             dealer_contribution_0,
             share_holder_acks,
             dealer_contribution_1,
@@ -211,12 +226,18 @@ pub struct BcsSigmaDlogLinearProof {
     pub z_vals: Vec<BcsScalar>,
 }
 
+/// BCS mirror of `vss::PreviousCommitment`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BcsPreviousCommitment {
+    pub old_g: BcsElement,
+    pub old_h: BcsElement,
+    pub old_c: BcsElement,
+}
+
 /// BCS mirror of `vss::DealerContribution0`.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BcsDealerContribution0 {
     pub pcs_commitment: BcsPcsCommitment,
-    pub private_share_messages: Vec<crate::pke::Ciphertext>,
-    pub dealer_state: Option<crate::pke::Ciphertext>,
     pub consistency_proof: Option<BcsSigmaDlogLinearProof>,
 }
 
@@ -234,8 +255,8 @@ pub struct BcsSession {
     pub dealer: [u8; 32],
     pub share_holders: Vec<[u8; 32]>,
     pub threshold: u64,
-    pub base_point: BcsElement,
-    pub previous_public_key: Option<BcsElement>,
+    pub scheme: u8,
+    pub previous_commitment: Option<BcsPreviousCommitment>,
     pub pcs_context: BcsPcsPublicParams,
     pub state_code: u8,
     pub deal_time_micros: u64,

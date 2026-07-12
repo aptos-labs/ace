@@ -354,7 +354,7 @@ export async function deploymentNewCommand(): Promise<void> {
     }
     console.log();
 
-    console.log(`Threshold — minimum honest workers needed to decrypt. Constraints:`);
+    console.log(`Threshold — minimum honest workers needed to derive. Constraints:`);
     console.log(`  2 ≤ t ≤ ${nodeAddresses.length}    (at least 2)`);
     console.log(`  2·t > ${nodeAddresses.length}      (strict majority — Byzantine fault tolerance)`);
     console.log(`  Common choices for n=${nodeAddresses.length}: t=${Math.floor(nodeAddresses.length / 2) + 1} (smallest valid).`);

@@ -19,14 +19,7 @@ pub(in crate::verify) async fn verify(
             "verify_threshold_vrf_aptos: proof user_addr does not match payload account_address"
         ));
     }
-    let contract = match &req.payload.contract_id {
-        ContractId::Aptos(contract) => contract,
-        ContractId::Solana(_) => {
-            return Err(anyhow!(
-                "verify_threshold_vrf_aptos: threshold VRF origin checks require an Aptos contract"
-            ))
-        }
-    };
+    let ContractId::Aptos(contract) = &req.payload.contract_id;
     verify_account_proof(&req.payload, contract.chain_id, proof, chain_rpc).await?;
     let origin = extract_request_origin(proof)?;
     check_ace_request_hook(

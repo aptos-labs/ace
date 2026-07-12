@@ -17,11 +17,15 @@ path = "src/lib.rs"
 
 [dependencies]
 vss-common = { path = "../vss-common" }
+node-msg-gateway = { path = "../node-msg-gateway" }
+vss-store = { path = "../vss-store" }
 anyhow = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
+bcs = "0.1"
+async-trait = "0.1"
 ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"] }
 ark-ec = { version = "0.4", default-features = false }
 ark-ff = { version = "0.4", default-features = false }

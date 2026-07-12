@@ -36,6 +36,7 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
         identity: {
             accountAddr: node.accountAddr,
             pkeEk:       node.pkeEk ?? '',
+            sigPk:       node.sigPk ?? '',
         },
         blob: {
             rpcUrl:        node.rpcUrl,
@@ -62,6 +63,8 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             repoPath:               node.local?.repoPath,
             logMaxMb:               node.local?.logMaxMb,
             endpoint:               node.endpoint,
+            vssStoreUrl:            node.vssStoreUrl,
+            nodeMsgListen:          node.nodeMsgListen,
         },
     };
 }
@@ -73,6 +76,8 @@ function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
     merged.image         = edit.image ?? merged.image;
     merged.rpcApiKey     = edit.rpcApiKey;
     merged.gasStationKey = edit.gasStationKey;
+    merged.vssStoreUrl   = edit.vssStoreUrl;
+    merged.nodeMsgListen = edit.nodeMsgListen;
     merged.chainRpc      = edit.chainRpc;
 
     if (node.gcp) {
@@ -105,7 +110,9 @@ function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
 
 function diffSummary(before: TrackedNode, after: TrackedNode): string[] {
     const lines: string[] = [];
-    const keys: (keyof TrackedNode)[] = ['alias', 'endpoint', 'image', 'rpcApiKey', 'gasStationKey'];
+    const keys: (keyof TrackedNode)[] = [
+        'alias', 'endpoint', 'image', 'rpcApiKey', 'gasStationKey', 'vssStoreUrl', 'nodeMsgListen',
+    ];
     for (const k of keys) {
         const a = before[k];
         const b = after[k];
@@ -163,6 +170,9 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         accountAddr: node.accountAddr,
         accountSk:   node.accountSk ?? '',
         pkeDk:       node.pkeDk ?? '',
+        sigSk:       node.sigSk ?? '',
+        vssStoreUrl: updatedNode.vssStoreUrl ?? '',
+        nodeMsgListen: updatedNode.nodeMsgListen ?? '',
     };
     const { image, rpcApiKey, gasStationKey } = updatedNode;
     const chainRpc = updatedNode.chainRpc;

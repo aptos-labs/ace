@@ -10,7 +10,6 @@ use ark_bls12_381::Fr;
 use serde::Serialize;
 
 use crate::crypto::{fr_from_le_bytes, pedersen_commit_compressed};
-use crate::pke::Ciphertext;
 use crate::session::{
     BcsDealerContribution0, BcsDealerContribution1, BcsElement, BcsPcsCommitment, BcsPcsOpening,
     BcsPcsPublicParams, BcsScalar, BcsSigmaDlogLinearProof, SCHEME_BLS12381G1, SCHEME_BLS12381G2,
@@ -18,7 +17,10 @@ use crate::session::{
 
 // ── DealerState ───────────────────────────────────────────────────────────────
 
-/// Plaintext-only intermediate (gets PKE-encrypted into `dealer_state` before going on chain).
+/// Legacy plaintext-only intermediate.
+///
+/// New off-chain-share VSS stores dealer polynomials in the node-local store
+/// instead of putting this encrypted blob on chain.
 /// Wire: BCS enum tag (= scheme) || u64 LE n || BCS Vec<Vec<u8>> coefs_poly_p.
 #[derive(Serialize)]
 pub enum DealerState {
@@ -43,8 +45,8 @@ impl DealerState {
 
 // ── PrivateShareMessage plaintext ─────────────────────────────────────────────
 
-/// Plaintext of a per-recipient PKE ciphertext: BCS-encoded PCS opening at
-/// recipient position `eval_position`.
+/// Off-chain VSS share body: BCS-encoded PCS opening at recipient position
+/// `eval_position`.
 pub fn private_share_message_bytes(
     scheme: u8,
     eval_position: u64,
@@ -74,6 +76,10 @@ pub fn parse_private_share_opening(plaintext: &[u8]) -> Result<BcsPcsOpening> {
 
 pub fn opening_eval_value_p_fr(opening: &BcsPcsOpening) -> Result<Fr> {
     scalar_to_fr(&opening.eval_value_p)
+}
+
+pub fn opening_eval_value_r_fr(opening: &BcsPcsOpening) -> Result<Fr> {
+    scalar_to_fr(&opening.eval_value_r)
 }
 
 /// Verify a decrypted share holder message before ACKing:
@@ -125,8 +131,6 @@ pub fn pedersen_verify_private_share(
 pub fn dc0_bytes(
     scheme: u8,
     commitment_points: &[Vec<u8>],
-    share_ciphertexts: &[Ciphertext],
-    dealer_state_ct: &Ciphertext,
     consistency_proof: Option<BcsSigmaDlogLinearProof>,
 ) -> Result<Vec<u8>> {
     let dc0 = BcsDealerContribution0 {
@@ -136,8 +140,6 @@ pub fn dc0_bytes(
                 .map(|v| element_for_scheme(scheme, v))
                 .collect::<Result<Vec<_>>>()?,
         },
-        private_share_messages: share_ciphertexts.to_vec(),
-        dealer_state: Some(dealer_state_ct.clone()),
         consistency_proof,
     };
     Ok(bcs::to_bytes(&dc0).expect("bcs serialization failed"))
@@ -146,27 +148,23 @@ pub fn dc0_bytes(
 // ── DealerContribution1 payload ───────────────────────────────────────────────
 
 pub fn dc1_bytes(
-    scheme: u8,
     shares_to_reveal: &[Option<BcsPcsOpening>],
-    public_keys: &[Vec<u8>],
+    public_keys: &[BcsElement],
     public_key_proofs: &[Option<BcsSigmaDlogLinearProof>],
 ) -> Result<Vec<u8>> {
-    if public_keys.len() != shares_to_reveal.len()
-        || public_key_proofs.len() != shares_to_reveal.len()
+    if shares_to_reveal.len() != public_keys.len()
+        || shares_to_reveal.len() != public_key_proofs.len()
     {
         return Err(anyhow!(
-            "dc1 length mismatch: shares={} public_keys={} proofs={}",
+            "DC1 vector length mismatch: reveals={}, public_keys={}, proofs={}",
             shares_to_reveal.len(),
             public_keys.len(),
-            public_key_proofs.len()
+            public_key_proofs.len(),
         ));
     }
     let dc1 = BcsDealerContribution1 {
         shares_to_reveal: shares_to_reveal.to_vec(),
-        public_keys: public_keys
-            .iter()
-            .map(|v| element_for_scheme(scheme, v))
-            .collect::<Result<Vec<_>>>()?,
+        public_keys: public_keys.to_vec(),
         public_key_proofs: public_key_proofs.to_vec(),
     };
     Ok(bcs::to_bytes(&dc1).expect("bcs serialization failed"))
@@ -209,60 +207,45 @@ fn scalar_to_fr(s: &BcsScalar) -> Result<Fr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pke::{Ciphertext, ElGamalOtpRistretto255Ciphertext};
-
-    fn fake_ciphertext() -> Ciphertext {
-        Ciphertext::ElGamalOtpRistretto255(ElGamalOtpRistretto255Ciphertext {
-            c0: vec![0u8; 32],
-            c1: vec![0u8; 32],
-            sym_ciph: vec![0xaau8; 4],
-            mac: vec![0u8; 32],
-        })
+    fn minimal_dc0_base_g1() -> Vec<Vec<u8>> {
+        vec![vec![0u8; 48], vec![0u8; 48]]
     }
 
-    fn minimal_dc0_base_g1() -> (Vec<Vec<u8>>, Vec<Ciphertext>, Ciphertext) {
-        (
-            vec![vec![0u8; 48], vec![0u8; 48]],
-            vec![],
-            fake_ciphertext(),
-        )
-    }
-
-    fn minimal_dc0_base_g2() -> (Vec<Vec<u8>>, Vec<Ciphertext>, Ciphertext) {
-        (
-            vec![vec![0u8; 96], vec![0u8; 96]],
-            vec![],
-            fake_ciphertext(),
-        )
+    fn minimal_dc0_base_g2() -> Vec<Vec<u8>> {
+        vec![vec![0u8; 96], vec![0u8; 96]]
     }
 
     #[test]
-    fn dc0_bytes_g1_consistency_none_appends_zero() {
-        let (c, s, d) = minimal_dc0_base_g1();
-        let out = dc0_bytes(SCHEME_BLS12381G1, &c, &s, &d, None).unwrap();
-        assert_eq!(*out.last().unwrap(), 0x00);
+    fn dc0_bytes_g1_encodes_commitment_only() {
+        let c = minimal_dc0_base_g1();
+        let out = dc0_bytes(SCHEME_BLS12381G1, &c, None).unwrap();
+        assert!(!out.is_empty());
     }
 
     #[test]
-    fn dc0_bytes_g2_consistency_none_appends_zero() {
-        let (c, s, d) = minimal_dc0_base_g2();
-        let out = dc0_bytes(SCHEME_BLS12381G2, &c, &s, &d, None).unwrap();
-        assert_eq!(*out.last().unwrap(), 0x00);
+    fn dc0_bytes_g2_encodes_commitment_only() {
+        let c = minimal_dc0_base_g2();
+        let out = dc0_bytes(SCHEME_BLS12381G2, &c, None).unwrap();
+        assert!(!out.is_empty());
     }
 
     #[test]
     fn dc0_bytes_g1_wrong_size_rejected() {
         let bad = vec![vec![0u8; 47], vec![0u8; 47]];
-        let (_, s, d) = minimal_dc0_base_g1();
-        assert!(dc0_bytes(SCHEME_BLS12381G1, &bad, &s, &d, None).is_err());
+        assert!(dc0_bytes(SCHEME_BLS12381G1, &bad, None).is_err());
     }
 
     #[test]
-    fn dc1_requires_aligned_vectors() {
+    fn dc1_encodes_reveal_vector() {
         let opening = opening_for_scheme(SCHEME_BLS12381G1, 1, &[1u8; 32], &[2u8; 32]).unwrap();
         let shares = vec![None, Some(opening)];
-        let public_keys = vec![vec![0u8; 48]];
+        let public_keys = vec![
+            element_for_scheme(SCHEME_BLS12381G1, &[0u8; 48]).unwrap(),
+            element_for_scheme(SCHEME_BLS12381G1, &[0u8; 48]).unwrap(),
+        ];
         let proofs = vec![None, None];
-        assert!(dc1_bytes(SCHEME_BLS12381G1, &shares, &public_keys, &proofs).is_err());
+        assert!(!dc1_bytes(&shares, &public_keys, &proofs)
+            .unwrap()
+            .is_empty());
     }
 }

@@ -13,3 +13,6 @@ subdir = "aptos-framework"
 
 [dependencies.PKE]
 local = "../pke"
+
+[dependencies.SIG]
+local = "../sig"

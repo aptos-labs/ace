@@ -34,9 +34,6 @@ export interface ChainRpcOverrides {
     aptosLocalnetApikey?:  string;
     aptosShelbyPrivateBetaApi?:    string;
     aptosShelbyPrivateBetaApikey?: string;
-    solanaMainnetBetaRpc?: string;
-    solanaTestnetRpc?:     string;
-    solanaDevnetRpc?:      string;
 }
 
 export interface GcpConfig {
@@ -103,8 +100,13 @@ export interface TrackedNode {
     accountSk?:     string;
     pkeDk?:         string;
     pkeEk?:         string;
+    sigSk?:         string;
+    sigPk?:         string;
     alias?:         string;
     endpoint?:      string;
+    nodeMsgEndpoint?: string;
+    vssStoreUrl?:   string;
+    nodeMsgListen?: string;
     image?:         string;
     platform?:      Platform;
     /** Deployment mode. Missing = `monolith` for backwards compat with older configs. */
@@ -213,8 +215,13 @@ export function loadConfig(): Config {
                     accountSk:    n.accountSk,
                     pkeDk:        n.pkeDk,
                     pkeEk:        n.pkeEk,
+                    sigSk:        n.sigSk,
+                    sigPk:        n.sigPk,
                     alias:        n.alias,
                     endpoint:     n.endpoint,
+                    nodeMsgEndpoint: n.nodeMsgEndpoint,
+                    vssStoreUrl:  n.vssStoreUrl,
+                    nodeMsgListen: n.nodeMsgListen,
                     image:        n.image,
                     platform:     n.platform,
                     gcp:          n.gcp,

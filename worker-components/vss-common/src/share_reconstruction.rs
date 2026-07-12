@@ -6,16 +6,7 @@
 //! Both session types appear in `network::State.secrets`.
 
 use anyhow::{anyhow, Result};
-use ark_bls12_381::Fr;
-use ark_ff::Field;
-
-use crate::{
-    crypto::{fr_from_le_bytes, fr_to_le_bytes},
-    normalize_account_addr,
-    pke::{pke_decrypt, Ciphertext},
-    vss_types::{opening_eval_value_p_fr, parse_private_share_opening},
-    AptosRpc,
-};
+use crate::{normalize_account_addr, AptosRpc};
 
 /// Reconstruct this node's Shamir scalar share from a completed DKG or DKR session.
 ///
@@ -23,16 +14,17 @@ use crate::{
 /// - `scalar_le32`: 32-byte LE Fr scalar = this node's Shamir share of the secret
 /// - `keypair_id`: original DKG session address (= `keypairId` used by SDK clients)
 /// - `group_scheme`: byte from the underlying VSS session's `base_point` — 0 = BLS12-381 G1,
-///   1 = BLS12-381 G2. Determines which t-IBE variant the worker should serve from this share.
+///   1 = BLS12-381 G2. Determines which application protocols can consume this share.
 ///
-/// **DKG session**: `scalar = Σ_{k: done_flags[k]} decrypt(vss[k].share_messages[my_idx])`
-/// **DKR session**: `scalar = Σ_{j ∈ H} L_{j+1}^H(0) · decrypt(vss[j].share_messages[my_idx])`
+/// New VSS no longer publishes encrypted share messages on-chain. This legacy
+/// helper does not have a VSS store handle, so active clients use the
+/// store-aware reconstruction paths in `network-node` and `dkr-src` instead.
 pub async fn reconstruct_share(
     rpc: &AptosRpc,
     ace: &str,
     session_addr: &str,
     my_addr: &str,
-    pke_dk_bytes: &[u8],
+    _pke_dk_bytes: &[u8],
 ) -> Result<([u8; 32], String, u8)> {
     let session_addr = normalize_account_addr(session_addr);
     let my_addr = normalize_account_addr(my_addr);
@@ -42,13 +34,13 @@ pub async fn reconstruct_share(
         .get_resource_data(&session_addr, &format!("{}::dkr::Session", ace))
         .await
     {
-        Ok(dkr_data) => reconstruct_from_dkr(rpc, ace, &dkr_data, &my_addr, pke_dk_bytes).await,
+        Ok(dkr_data) => reconstruct_from_dkr(&dkr_data, &my_addr).await,
         Err(_) => {
             let dkg_data = rpc
                 .get_resource_data(&session_addr, &format!("{}::dkg::Session", ace))
                 .await
                 .map_err(|e| anyhow!("not DKR and not DKG at {}: {}", session_addr, e))?;
-            reconstruct_from_dkg(rpc, ace, &session_addr, &dkg_data, &my_addr, pke_dk_bytes).await
+            reconstruct_from_dkg(rpc, ace, &session_addr, &dkg_data, &my_addr).await
         }
     }
 }
@@ -60,7 +52,6 @@ async fn reconstruct_from_dkg(
     session_addr: &str,
     dkg_data: &serde_json::Value,
     my_addr: &str,
-    pke_dk_bytes: &[u8],
 ) -> Result<([u8; 32], String, u8)> {
     let my_addr_bytes = addr_to_bytes(my_addr)?;
 
@@ -76,8 +67,6 @@ async fn reconstruct_from_dkg(
     }
 
     let mut my_idx: Option<usize> = None;
-    let mut group_scheme: Option<u8> = None;
-    let mut share_fr = Fr::from(0u64);
 
     for (k, vss_addr) in vss_sessions.iter().enumerate() {
         if !done_flags[k] {
@@ -89,7 +78,7 @@ async fn reconstruct_from_dkg(
             .await
             .map_err(|e| anyhow!("decode DKG VSS {}: {}", vss_addr, e))?;
 
-        // Derive my_idx + group_scheme on the first done session.
+        // Derive my_idx on the first done session.
         if my_idx.is_none() {
             my_idx = bcs_session
                 .share_holders
@@ -102,41 +91,25 @@ async fn reconstruct_from_dkg(
                     vss_addr
                 ));
             }
-            group_scheme = Some(bcs_session.base_point.scheme());
         }
         let idx = my_idx.unwrap();
 
-        let dc0 = bcs_session
-            .dealer_contribution_0
-            .ok_or_else(|| anyhow!("DKG VSS {} (done=true) has no DC0", vss_addr))?;
-
-        let ct = dc0
-            .private_share_messages
-            .get(idx)
-            .ok_or_else(|| anyhow!("DKG VSS {} missing message[{}]", vss_addr, idx))?;
-
-        share_fr += decrypt_and_extract_fr(ct, pke_dk_bytes, vss_addr)?;
+        return Err(anyhow!(
+            "DKG share reconstruction now requires offchain VSS holder shares from local store; session={} holder_index={}",
+            vss_addr,
+            idx,
+        ));
     }
 
-    let group_scheme =
-        group_scheme.ok_or_else(|| anyhow!("no done VSS sessions in DKG {}", session_addr))?;
-
-    Ok((
-        fr_to_le_bytes(share_fr),
-        session_addr.to_string(),
-        group_scheme,
-    ))
+    Err(anyhow!("no done VSS sessions in DKG {}", session_addr))
 }
 
 /// DKR case: `keypair_id = original_session`, share = Lagrange combination at x=0 using old eval points.
 ///
 /// See `tests/e2e/test-dkr-protocol.ts:152-219` for the TypeScript reference implementation.
 async fn reconstruct_from_dkr(
-    rpc: &AptosRpc,
-    ace: &str,
     dkr_data: &serde_json::Value,
     my_addr: &str,
-    pke_dk_bytes: &[u8],
 ) -> Result<([u8; 32], String, u8)> {
     let original_session = normalize_account_addr(
         dkr_data["original_session"]
@@ -175,63 +148,17 @@ async fn reconstruct_from_dkr(
         return Err(anyhow!("no contributing VSS sessions in DKR session"));
     }
 
-    // Old eval points: x_j = j+1 (1-based) for each j ∈ H.
-    let old_evals: Vec<Fr> = contributing
-        .iter()
-        .map(|&j| Fr::from((j + 1) as u64))
-        .collect();
-
-    // Decrypt sub-share z_{j, my_idx} for each j ∈ H.
-    let mut sub_shares: Vec<Fr> = Vec::with_capacity(contributing.len());
-    let mut group_scheme: Option<u8> = None;
     for &j in &contributing {
         let vss_addr = &vss_sessions[j];
-        let bcs_session = rpc
-            .get_session_bcs_decoded(ace, vss_addr)
-            .await
-            .map_err(|e| anyhow!("decode DKR VSS {}: {}", vss_addr, e))?;
-
-        if group_scheme.is_none() {
-            group_scheme = Some(bcs_session.base_point.scheme());
-        }
-
-        let dc0 = bcs_session
-            .dealer_contribution_0
-            .ok_or_else(|| anyhow!("DKR VSS {} (contribution=true) has no DC0", vss_addr))?;
-
-        let ct = dc0
-            .private_share_messages
-            .get(my_idx)
-            .ok_or_else(|| anyhow!("DKR VSS {} missing message[{}]", vss_addr, my_idx))?;
-
-        sub_shares.push(decrypt_and_extract_fr(ct, pke_dk_bytes, vss_addr)?);
+        return Err(anyhow!(
+            "DKR share reconstruction now requires offchain VSS holder shares from local store; session={} holder_index={}",
+            vss_addr,
+            my_idx,
+        ));
     }
-    let group_scheme = group_scheme
-        .ok_or_else(|| anyhow!("no contributing VSS sessions yielded a group scheme"))?;
-
-    // Lagrange-combine at x=0 using old eval points {j+1 : j ∈ H}.
-    //   combined_share = Σ_{i} L_{x_i}^H(0) · z_{j_i, my_idx}
-    // where L_{x_i}^H(0) = Π_{k≠i} (0 - x_k) / (x_i - x_k)
-    let combined_share = sub_shares
-        .iter()
-        .enumerate()
-        .map(|(i, &z_j_m)| {
-            let xi = old_evals[i];
-            let mut lambda = Fr::from(1u64);
-            for (k, &xk) in old_evals.iter().enumerate() {
-                if k == i {
-                    continue;
-                }
-                lambda *= (-xk) * (xi - xk).inverse().expect("eval points are distinct");
-            }
-            lambda * z_j_m
-        })
-        .fold(Fr::from(0u64), |acc, term| acc + term);
-
-    Ok((
-        fr_to_le_bytes(combined_share),
+    Err(anyhow!(
+        "DKR share reconstruction now requires offchain VSS holder shares from local store; original_session={}",
         original_session,
-        group_scheme,
     ))
 }
 
@@ -265,34 +192,4 @@ fn parse_bool_array(v: &serde_json::Value) -> Result<Vec<bool>> {
                 .ok_or_else(|| anyhow!("expected bool, got {:?}", b))
         })
         .collect()
-}
-
-fn decrypt_and_extract_fr(ct: &Ciphertext, pke_dk_bytes: &[u8], context: &str) -> Result<Fr> {
-    let plaintext = pke_decrypt(pke_dk_bytes, ct)
-        .map_err(|e| anyhow!("VSS {} decrypt failed: {}", context, e))?;
-
-    if plaintext.len() == 76 {
-        if let Ok(opening) = parse_private_share_opening(&plaintext) {
-            return opening_eval_value_p_fr(&opening);
-        }
-    }
-
-    // Legacy fallback: [group scheme][ULEB128(32)=0x20][32B Fr LE]. Fr is the
-    // same prime field for both supported groups, so the y-bytes are interchangeable.
-    if plaintext.len() < 34
-        || (plaintext[0] != crate::session::SCHEME_BLS12381G1
-            && plaintext[0] != crate::session::SCHEME_BLS12381G2)
-        || plaintext[1] != 0x20
-    {
-        return Err(anyhow!(
-            "VSS {} invalid share format (len={}, prefix={:02x?})",
-            context,
-            plaintext.len(),
-            &plaintext[..2.min(plaintext.len())]
-        ));
-    }
-    let y_bytes: [u8; 32] = plaintext[2..34]
-        .try_into()
-        .map_err(|_| anyhow!("share bytes wrong length"))?;
-    Ok(fr_from_le_bytes(y_bytes))
 }

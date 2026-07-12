@@ -32,9 +32,8 @@ module ace::vss_tests {
 
     // ── DC1 golden parse tests ───────────────────────────────────────────────
 
-    // 3 domain points, all unopened -> all None, followed by empty public key
-    // and proof vectors.
-    // Bytes: shares_to_reveal=[None,None,None], public_keys=[], public_key_proofs=[].
+    // 3 domain points, all unopened -> all None.
+    // Bytes: shares_to_reveal=[None,None,None].
     #[test]
     fun test_dc1_all_none() {
         let bytes = x"030000000000";
@@ -62,11 +61,9 @@ module ace::vss_tests {
             option::none(),
             option::some(opening),
         ];
-        let public_keys: vector<group::Element> = vector[];
-        let public_key_proofs: vector<option::Option<sigma_dlog_linear::Proof>> = vector[];
         let bytes = bcs::to_bytes(&shares_to_reveal);
-        bytes.append(bcs::to_bytes(&public_keys));
-        bytes.append(bcs::to_bytes(&public_key_proofs));
+        bytes.append(bcs::to_bytes(&vector<group::Element>[]));
+        bytes.append(bcs::to_bytes(&vector<option::Option<sigma_dlog_linear::Proof>>[]));
 
         let dc1 = vss::dc1_from_bytes_for_testing(bytes);
         assert!(vss::dc1_len(&dc1) == 3, 0);

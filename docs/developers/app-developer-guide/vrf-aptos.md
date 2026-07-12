@@ -1,39 +1,15 @@
-# Derive per-app, per-account, per-label values with Aptos approval
+# Derive Per-App, Per-Label Values With Aptos Approval
 
-## TLDR
+ACE threshold VRF lets an app derive the same 32 bytes again later for the same ACE keypair, app contract, and label, but only when the app contract approves the derivation request.
 
-ACE VRF lets your app derive the same 32 bytes again later for the same app contract, Aptos account, and label, but only when the app contract approves the derivation request. Apps can map those bytes into per-object signing keys, deterministic grants, app-scoped randomness, private nonces, or other app-specific material.
+Use this guide when the app needs a deterministic value that is stable for a specific `(keypair, contract, label)` tuple and should not be derivable unless your Aptos policy says yes. The request carries an Aptos account for authorization, but that account is not part of the VRF input; include the account bytes in `label` if the output must be per-account.
 
-Use this guide when the app needs a value that is stable for a specific `(contract, account, label)` tuple, but should not be derivable unless your Aptos policy says yes.
+## Contract Hook
 
-To use it, you will:
-
-- In your Move module, expose `on_ace_vrf_request(...)` as the source of truth for derivation decisions.
-- Choose a stable derivation label, such as `access-key:v1:<blob_id>` or another app-specific label.
-- In your client, derive bytes with `ACE.VRF_Aptos` and map them into whatever your app needs.
-
-## Example: per-blob access keys
-
-In this example, we show one concrete use of ACE VRF: creating per-blob access keypairs. The high-level idea is to let an owner recreate the same private key for a blob, register the matching public key on-chain, and use the private key as grant material in a later off-chain identity access flow.
-
-For each encrypted blob, we define a canonical `blob_id`, then derive 32 bytes from this tuple:
-
-```text
-(contractId, ownerAddress, accessKeyLabel)
-where accessKeyLabel = "access-key:v1:" || blob_id
-```
-
-Conceptually, `derive(contractId, ownerAddress, accessKeyLabel)` produces deterministic private bytes scoped to that app contract, owner, and label. In this example, we map those bytes into an access private key, compute the matching public key, register that public key on-chain for the encrypted object, and later give the private key or a grant containing it to the reader. The off-chain identity access hook then verifies reader proofs against the registered public key.
-
-### Contract changes
-
-In this example, the Move module is named `vrf_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"vrf_access"`.
-
-The contract's job is to expose `on_ace_vrf_request` and allow requests signed for your deployed app origin.
-
-ACE calls the contract through a view function with this fixed name and signature:
+The worker calls a view function with this fixed name and signature:
 
 ```move
+#[view]
 public fun on_ace_vrf_request(
     label: vector<u8>,
     account: address,
@@ -41,39 +17,9 @@ public fun on_ace_vrf_request(
 ): bool
 ```
 
-First, we store the expected client origin in app-level config:
+`label` is the SDK request label, `account` is the Aptos account the user proves control of, and `origin` is extracted from the wallet/WebAuthn signed message. Return `true` only for requests your app wants ACE workers to serve.
 
-```move
-struct AppConfig has key {
-    client_origin: vector<u8>,
-}
-
-public entry fun set_client_origin(
-    admin: &signer,
-    origin: vector<u8>,
-) acquires AppConfig {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
-    assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-    let config = borrow_global_mut<AppConfig>(@admin);
-    config.client_origin = origin;
-}
-```
-
-Then the hook checks that the wallet-signed origin matches your deployed client.
-```move
-#[view]
-public fun on_ace_vrf_request(
-    _label: vector<u8>,
-    _account: address,
-    origin: String,
-): bool acquires AppConfig {
-    if (!exists<AppConfig>(@admin)) return false;
-    let config = borrow_global<AppConfig>(@admin);
-    origin.bytes() == &config.client_origin
-}
-```
-
-Putting those pieces together, the full module looks like this:
+A minimal origin-gated hook looks like this:
 
 ```move
 module admin::vrf_access {
@@ -91,16 +37,11 @@ module admin::vrf_access {
     public entry fun init(admin: &signer) {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<AppConfig>(@admin)) {
-            move_to(admin, AppConfig {
-                client_origin: vector::empty(),
-            });
+            move_to(admin, AppConfig { client_origin: vector[] });
         };
     }
 
-    public entry fun set_client_origin(
-        admin: &signer,
-        origin: vector<u8>,
-    ) acquires AppConfig {
+    public entry fun set_client_origin(admin: &signer, origin: vector<u8>) acquires AppConfig {
         assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
         assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
         let config = borrow_global_mut<AppConfig>(@admin);
@@ -108,11 +49,7 @@ module admin::vrf_access {
     }
 
     #[view]
-    public fun on_ace_vrf_request(
-        _label: vector<u8>,
-        _account: address,
-        origin: String,
-    ): bool acquires AppConfig {
+    public fun on_ace_vrf_request(_label: vector<u8>, _account: address, origin: String): bool acquires AppConfig {
         if (!exists<AppConfig>(@admin)) return false;
         let config = borrow_global<AppConfig>(@admin);
         origin.bytes() == &config.client_origin
@@ -120,17 +57,19 @@ module admin::vrf_access {
 }
 ```
 
-If the hook returns `true`, the SDK returns 32 bytes. In this example, we turn those bytes into access key material.
+Real apps usually also check the label and account against their policy state. The account gates authorization; it does not by itself change the derived bytes.
 
-Deploy the Move package and run `init`. After deploying the client, call `set_client_origin` once with the client's stable origin. Record:
+The cryptographic VRF input used by both the TypeScript SDK and the Rust worker is exactly:
 
-- `chainId`, `moduleAddr`, and `moduleName`.
-- `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
-- The object ID used by your follow-on access hook, and the derivation label built from it, for example `access-key:v1:<blob_id>`.
+```text
+("ace.threshold-vrf.input.v1", keypairId, contractId, label)
+```
 
-### Client changes
+`accountAddress`, `epoch`, and the response encryption key are still signed and sent to workers, but they are request authorization / freshness / transport fields, not VRF output inputs.
 
-Before the SDK calls, fill in the ACE deployment values and the app module identity:
+## Client Flow
+
+Fill in the ACE deployment values and your app module identity:
 
 ```typescript
 import * as ACE from "@aptos-labs/ace-sdk";
@@ -140,19 +79,18 @@ const aceDeployment = new ACE.AceDeployment({
   apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
   contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
 });
-const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
-const chainId = 2; // Aptos testnet
 
+const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const chainId = 2;
 const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
-const moduleName = "vrf_access"; // matches module <publisher>::vrf_access
+const moduleName = "vrf_access";
 ```
 
-In the client, we construct the same derivation label, ask the owner wallet to sign the derivation request, derive bytes, map them into key material, and register the public half on-chain. For a wallet or web app, prefer the session API:
+For a wallet or web app, prefer the session API:
 
 ```typescript
-const blobId = `@${ownerAddress.toStringLong().slice(2)}/song-1.mp3`;
-const objectId = new TextEncoder().encode(blobId);
-const accessKeyLabel = new TextEncoder().encode(`access-key:v1:${blobId}`);
+const label = new TextEncoder().encode("access-key:v1:blob-123");
+const ownerAddress = AccountAddress.fromString("0x<owner>");
 
 const contractId = ACE.ContractID.newAptos({
   chainId,
@@ -164,7 +102,7 @@ const session = await ACE.VRF_Aptos.DerivationSession.create({
   aceDeployment,
   keypairId,
   contractId,
-  label: accessKeyLabel,
+  label,
   accountAddress: ownerAddress,
 });
 
@@ -182,14 +120,7 @@ const vrfBytes = await session.deriveWithSignature({
   signature: signed.signature,
   fullMessage: signed.fullMessage,
 });
-
-const { accessPrivateKey, accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
-
-// Then submit your app's registration transaction, for example:
-// presigned_access::register(objectId, accessPublicKey)
 ```
-
-`vrfOutputToAccessKeypair` is your app's documented mapping from 32 derived bytes into the target key type. In the pre-signed-access example, we reduce the bytes into a BLS12-381 scalar for `accessPrivateKey` and compute the matching G1 public key. The public key is stored on-chain under the encrypted object's ID for later off-chain identity checks; the private key becomes the bearer capability that can sign reader grants.
 
 For CLIs or server-side jobs that sign directly with an Aptos account, build the same wallet-style `fullMessage` before signing:
 
@@ -200,7 +131,7 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
   chainId,
   moduleAddr,
   moduleName,
-  label: accessKeyLabel,
+  label,
   accountAddress: ownerAddress,
   sign: async (message) => {
     const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
@@ -219,18 +150,14 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
 });
 ```
 
-The remaining order is the same: we map `vrfBytes` into the access keypair, register the public key on-chain for `objectId`, and put the private key only in the grant or controlled client that is supposed to use it.
+The SDK encrypts each worker request to that worker's registered PKE key, decrypts the encrypted VRF shares returned by workers, verifies the share proofs, combines at least threshold many valid shares, and returns 32 bytes.
 
-As with Aptos account access, deploy the client first, learn the stable origin, then update the app config resource once to accept only that origin.
+## Output Handling
 
-## Remarks
+Use a canonical, app-specific label such as `access-key:v1:<blob_id>` or `randomness:v1:<round_id>`. Re-running the same `keypairId`, contract id, and label gives the same bytes. If distinct accounts need distinct bytes, encode the account into the label. Rotating output requires changing one of the VRF inputs.
 
-If you map the derived bytes into a private key, that private key is a bearer capability. Anyone who obtains it can sign whatever reader proof your follow-on access flow accepts, so do not log it, publish it on-chain, or put it in a client that should not be able to grant access.
+If you map the derived bytes into private key material or bearer capability bytes, treat the result as secret. Do not log it, publish it on-chain, or expose it to clients that should not be able to exercise that capability.
 
-Derivation is reproducible only for the exact ACE deployment key identifier, contract id, account, and label. Use a canonical, app-specific label such as `access-key:v1:<blob_id>`. Re-running the same tuple gives the same bytes; rotating the result requires changing the derivation inputs, not deriving the same tuple again.
+## Scenario
 
-## Ready-To-Run Examples
-
-- [`examples/presigned-access-aptos`](../../../examples/presigned-access-aptos): derives per-blob access keys, then uses off-chain identity access for readers.
-- [`scenarios/test-threshold-vrf-derive-flow.ts`](../../../scenarios/test-threshold-vrf-derive-flow.ts): end-to-end localnet VRF derivation scenario.
-- [`scenarios/threshold-vrf-origin`](../../../scenarios/threshold-vrf-origin): minimal origin-check Move hook.
+The maintained end-to-end localnet coverage is [`scenarios/test-threshold-vrf-derive-flow.ts`](../../../scenarios/test-threshold-vrf-derive-flow.ts).

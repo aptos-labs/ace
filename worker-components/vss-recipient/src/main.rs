@@ -36,6 +36,12 @@ struct RunArgs {
     /// Ed25519 private key hex (0x prefix optional).
     #[arg(long)]
     account_sk: String,
+    /// Ed25519 node-to-node messaging private key hex (0x prefix optional).
+    #[arg(long)]
+    sig_sk: Option<String>,
+    /// Persistent VSS store URL, e.g. sqlite:///tmp/vss.db or postgres://...
+    #[arg(long)]
+    vss_store_url: Option<String>,
 }
 
 #[tokio::main]
@@ -52,6 +58,8 @@ async fn main() {
                 pke_dk_hex: args.pke_dk,
                 account_addr: args.account_addr,
                 account_sk_hex: args.account_sk,
+                sig_sk_hex: args.sig_sk,
+                vss_store_url: args.vss_store_url,
             };
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

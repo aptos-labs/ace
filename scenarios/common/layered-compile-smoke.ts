@@ -15,6 +15,7 @@ function compile(pkg: string) {
 
 const which = process.argv[2] ?? 'all';
 if (which === 'vss' || which === 'all') {
+    compile('sig');
     compile('worker_config');
     compile('ace_vss');
     compile('vss_e2e');

@@ -2,7 +2,6 @@ module ace::epoch_change {
     use ace::dkr;
     use aptos_framework::object::{Self, ExtendRef};
     use ace::dkg;
-    use ace::group;
     use ace::secret_usage;
     use std::error;
 
@@ -101,7 +100,7 @@ module ace::epoch_change {
                 &caller,
                 session.nxt_nodes,
                 session.nxt_threshold,
-                group::rand_element(group_scheme),
+                group_scheme,
                 secret_usage::request_expected_usage(request),
                 secret_usage::request_note(request),
             );

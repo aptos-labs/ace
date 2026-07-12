@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * E2E for the network orchestration contract — default group/t-IBE pair:
- * BLS12-381 G2 + bfibe-bls12381-shortsig-aead (scheme = 1).
+ * E2E for the network orchestration contract with offchain VSS shares.
  *
- * Verifies that the full epoch flow (DKG → reshare via DKR → another DKG) works
- * end-to-end with G2 base points across Move + TS SDK + the network-node Rust
- * workers (which dispatch IDK-share extraction on the t-IBE scheme byte derived
- * from the DKG basepoint group). For G1 / shortpk-otp-hmac legacy regression
- * coverage see test-network-protocol-shortpk.ts.
+ * Verifies that the full epoch flow (DKG -> DKR reshare -> DKR reshare + another
+ * DKG) works end-to-end with G2 PCS commitments across Move + TS SDK + the
+ * network-node Rust workers.
  */
 
 import { Account } from '@aptos-labs/ts-sdk';
 import * as ace from '@aptos-labs/ace-sdk';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 import {
     startLocalnet,
     fundAccount,
@@ -28,15 +28,24 @@ import {
     serializeNewSecretProposal,
 } from './common/helpers';
 import { buildRustWorkspace, spawnNetworkNode } from './common/network-clients';
+import { makeNodeMsgEndpoints } from './common/vss-protocol-setup';
+
+function assertSameCommitment(label: string, expectedHex: string, actualHex: string): void {
+    if (actualHex !== expectedHex) {
+        throw `${label} commitment mismatch.\n  expected: ${expectedHex}\n  got:      ${actualHex}`;
+    }
+}
 
 async function main() {
     const localnetProc = await startLocalnet();
     const nodeProcs: ReturnType<typeof spawnNetworkNode>[] = [];
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'ace-network-'));
 
     try {
         const numWorkers = 3;
         const accounts: Account[] = Array.from({ length: numWorkers + 1 }, () => Account.generate());
         const encKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.pke.keygen()));
+        const sigKeypairs = await Promise.all(Array.from({ length: numWorkers }, () => ace.sig.keygen()));
         for (const account of accounts) {
             await fundAccount(account.accountAddress);
         }
@@ -47,17 +56,31 @@ async function main() {
 
         const committee = workerAccounts;
         const threshold = 2;
+        const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot, `node-${i}.db`)}`);
+        const nodeMsgEndpoints = makeNodeMsgEndpoints(numWorkers);
 
         log('Deploy contracts.');
-        await deployContracts(adminAccount, ['pke', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
+        await deployContracts(adminAccount, ['pke', 'sig', 'worker_config', 'group', 'secret-usage', 'fiat-shamir-transform', 'sigma-dlog-linear', 'pedersen-polynomial-commitment', 'vss', 'dkg', 'dkr', 'epoch-change', 'voting', 'network']);
 
-        log('Register PKE enc keys.');
+        log('Register worker keys and node-msg endpoints.');
         for (let i = 0; i < numWorkers; i++) {
             (await submitTxn({
                 signer: workerAccounts[i]!,
                 entryFunction: `${aceContract}::worker_config::register_pke_enc_key`,
                 args: [encKeypairs[i]!.encryptionKey.toBytes()],
             })).unwrapOrThrow('Failed to register worker.').asSuccessOrThrow();
+
+            (await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${aceContract}::worker_config::register_sig_verification_key`,
+                args: [sigKeypairs[i]!.publicKey.toBytes()],
+            })).unwrapOrThrow('Failed to register worker sig key.').asSuccessOrThrow();
+
+            (await submitTxn({
+                signer: workerAccounts[i]!,
+                entryFunction: `${aceContract}::worker_config::register_node_msg_endpoint`,
+                args: [nodeMsgEndpoints.registeredUrls[i]],
+            })).unwrapOrThrow('Failed to register worker node-msg endpoint.').asSuccessOrThrow();
         }
 
         log('Build network-node and start one process per worker.');
@@ -66,6 +89,9 @@ async function main() {
             nodeProcs.push(spawnNetworkNode({
                 runAs: workerAccounts[i]!,
                 pkeDkHex: `0x${Buffer.from(encKeypairs[i]!.decryptionKey.toBytes()).toString('hex')}`,
+                sigSkHex: sigKeypairs[i]!.signingKey.toHex(),
+                vssStoreUrl: storeUrls[i]!,
+                nodeMsgListen: nodeMsgEndpoints.listens[i]!,
                 aceDeploymentAddr: aceContract,
             }));
         }
@@ -77,15 +103,15 @@ async function main() {
             args: [committee.map(w => w.accountAddress), threshold, 60],
         })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
-        // ── Epoch 0→1: new_secret(primitive=1) — DKG over G2, t-IBE = shortsig-aead ─
+        // ── Epoch 0→1: new threshold-VRF secret — DKG over G2 ─
 
-        log('Propose new_secret(primitive=1) — DKG over BLS12-381 G2 → t-IBE = shortsig-aead.');
+        log('Propose new threshold-VRF secret — DKG over BLS12-381 G2.');
         const approvers = committee.slice(0, threshold);
         await proposeAndApprove(
             approvers[0]!,
             approvers,
             aceContract,
-            serializeNewSecretProposal(1),
+            serializeNewSecretProposal(ace.network.PRIMITIVE_BLS12381_THRESHOLD_VRF),
         );
 
         log('Poll until epoch=1 (DKG-G2 complete).');
@@ -107,12 +133,11 @@ async function main() {
         if (dkgSession.basePoint.scheme !== ace.vss.SCHEME_BLS12381G2) {
             throw `expected DKG base_point scheme=${ace.vss.SCHEME_BLS12381G2}, got ${dkgSession.basePoint.scheme}`;
         }
-        const baselinePk = dkgSession.resultPk;
-        if (!baselinePk) throw 'DKG resultPk absent despite epoch advance';
-        if (baselinePk.scheme !== ace.vss.SCHEME_BLS12381G2) {
-            throw `expected DKG resultPk scheme=${ace.vss.SCHEME_BLS12381G2}, got ${baselinePk.scheme}`;
+        if (dkgSession.commitmentPoints.length !== committee.length + 1) {
+            throw `expected ${committee.length + 1} DKG commitment points, got ${dkgSession.commitmentPoints.length}`;
         }
-        log(`Baseline G2 PK: ${baselinePk.toHex()}`);
+        const originalC0 = dkgSession.commitmentPoints[0]!.toHex();
+        log(`Original DKG C0: ${originalC0}`);
 
         // ── Epoch 1→2: timeout-triggered auto reshare ────────────────────────
 
@@ -128,15 +153,25 @@ async function main() {
             await sleep(5_000);
         }
         if (!state2 || state2.epoch !== 2) throw 'Epoch 1→2 (timeout) did not complete in time.';
+        if (state2.secrets.length !== 1) throw `Expected 1 secret after first DKR, got ${state2.secrets.length}`;
+
+        const firstDkrAddr = state2.secrets[0]!.currentSession;
+        const firstDkrSession = (await getDKRSession(adminAccount.accountAddress, firstDkrAddr))
+            .unwrapOrThrow('Failed to read first DKR session.');
+        if (!firstDkrSession.isCompleted()) throw 'First DKR session is not completed despite epoch advance.';
+        if (firstDkrSession.pcsContext.generatorG.scheme !== ace.vss.SCHEME_BLS12381G2) {
+            throw `first DKR PCS generator G scheme expected G2, got ${firstDkrSession.pcsContext.generatorG.scheme}`;
+        }
+        assertSameCommitment('first DKR reshared original secret', originalC0, firstDkrSession.commitmentPoints[0]!.toHex());
 
         // ── Epoch 2→3: new_secret proposal (DKR reshare + DKG for new secret) ─
 
-        log('Propose new_secret(primitive=1) again in epoch 2.');
+        log('Propose new G2 test-only secret again in epoch 2.');
         await proposeAndApprove(
             approvers[0]!,
             approvers,
             aceContract,
-            serializeNewSecretProposal(1),
+            serializeNewSecretProposal(ace.network.PRIMITIVE_BLS12381_G2_TEST_ONLY),
         );
 
         log('Poll until epoch=3.');
@@ -154,16 +189,16 @@ async function main() {
 
         if (finalState.secrets.length !== 2) throw `Expected 2 secrets, got ${finalState.secrets.length}`;
 
-        // secrets[0]: reshared original G2 secret. PK must be preserved across two DKR hops.
+        // secrets[0]: reshared original G2 secret. Its root Pedersen commitment
+        // must be preserved across DKG -> DKR -> DKR.
         const resharedAddr = finalState.secrets[0]!.currentSession;
         const resharedSession = (await getDKRSession(adminAccount.accountAddress, resharedAddr))
             .unwrapOrThrow('Failed to read reshared DKR session.');
-        if (resharedSession.publicBaseElement.scheme !== ace.vss.SCHEME_BLS12381G2) {
-            throw `reshared session publicBaseElement scheme expected G2, got ${resharedSession.publicBaseElement.scheme}`;
+        if (!resharedSession.isCompleted()) throw 'Second DKR session is not completed despite epoch advance.';
+        if (resharedSession.pcsContext.generatorG.scheme !== ace.vss.SCHEME_BLS12381G2) {
+            throw `reshared session PCS generator G scheme expected G2, got ${resharedSession.pcsContext.generatorG.scheme}`;
         }
-        if (resharedSession.secretlyScaledElement.toHex() !== baselinePk.toHex()) {
-            throw `PK mismatch on reshared secret.\n  baseline: ${baselinePk.toHex()}\n  got:      ${resharedSession.secretlyScaledElement.toHex()}`;
-        }
+        assertSameCommitment('second DKR reshared original secret', originalC0, resharedSession.commitmentPoints[0]!.toHex());
 
         // secrets[1]: freshly created DKG-G2 secret.
         const newDkgAddr = finalState.secrets[1]!.currentSession;
@@ -172,17 +207,17 @@ async function main() {
         if (newDkgSession.basePoint.scheme !== ace.vss.SCHEME_BLS12381G2) {
             throw `new DKG basePoint scheme expected G2, got ${newDkgSession.basePoint.scheme}`;
         }
-        if (!newDkgSession.resultPk) throw 'New DKG resultPk absent';
-        if (newDkgSession.resultPk.scheme !== ace.vss.SCHEME_BLS12381G2) {
-            throw `new DKG resultPk scheme expected G2, got ${newDkgSession.resultPk.scheme}`;
+        if (newDkgSession.commitmentPoints.length !== committee.length + 1) {
+            throw `expected ${committee.length + 1} new DKG commitment points, got ${newDkgSession.commitmentPoints.length}`;
         }
 
-        log(`Network test (shortsig) passed.`);
-        log(`  reshared G2 PK:  ${resharedSession.secretlyScaledElement.toHex()}`);
-        log(`  new DKG G2 PK:   ${newDkgSession.resultPk.toHex()}`);
+        log('Network test passed.');
+        log(`  preserved original C0: ${originalC0}`);
+        log(`  new DKG C0:            ${newDkgSession.commitmentPoints[0]!.toHex()}`);
     } finally {
         for (const proc of nodeProcs) proc.kill();
         localnetProc.kill();
+        rmSync(tmpRoot, { recursive: true, force: true });
     }
 }
 

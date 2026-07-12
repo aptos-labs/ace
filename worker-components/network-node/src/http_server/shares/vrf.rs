@@ -4,19 +4,16 @@
 use vss_common::group::SCHEME_BLS12381G2;
 
 use super::super::outcome::{Outcome, Reason};
-use super::lookup::lookup_share_or_reject;
 use crate::secret_usage;
-use crate::secrets::{ShareEntry, Snapshot};
+use crate::secrets::ShareEntry;
 
 pub(crate) fn preflight_threshold_vrf_share(
-    snapshot: &Snapshot,
+    entry: &ShareEntry,
     keypair_id: &str,
     epoch: u64,
-) -> Result<ShareEntry, Outcome> {
-    let entry = lookup_share_or_reject(snapshot, keypair_id, epoch)?;
-    ensure_threshold_vrf_usage(&entry, keypair_id, epoch)?;
-    ensure_threshold_vrf_group(&entry)?;
-    Ok(entry)
+) -> Result<(), Outcome> {
+    ensure_threshold_vrf_usage(entry, keypair_id, epoch)?;
+    ensure_threshold_vrf_group(entry)
 }
 
 fn ensure_threshold_vrf_usage(

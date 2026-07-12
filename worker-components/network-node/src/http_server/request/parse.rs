@@ -1,14 +1,12 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use vss_common::pke::pke_decrypt_bytes;
 
 use super::super::outcome::{Outcome, Reason, RequestContext};
 use super::super::state::AppState;
-use crate::secrets::Snapshot;
 use crate::verify::WorkerRequest;
 
 pub(crate) fn decrypt_and_parse_request(
@@ -22,17 +20,6 @@ pub(crate) fn decrypt_and_parse_request(
     ctx.decrypt_ms = Some(decrypt_start.elapsed().as_millis() as u64);
     bcs::from_bytes(&req_bytes)
         .map_err(|e| bad_request(format!("bcs decode WorkerRequest failed: {}", e)))
-}
-
-pub(crate) async fn fetch_snapshot(state: &AppState) -> Result<Arc<Snapshot>, Outcome> {
-    state
-        .provider
-        .snapshot()
-        .await
-        .map_err(|e| Outcome::Rejected {
-            reason: Reason::ServiceUnavailable,
-            detail: Some(format!("secrets fetch failed: {:#}", e)),
-        })
 }
 
 fn bad_request(detail: String) -> Outcome {

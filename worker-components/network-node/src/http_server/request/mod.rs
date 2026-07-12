@@ -5,6 +5,7 @@ mod body;
 mod dispatch;
 mod metadata;
 mod parse;
+mod share;
 
 use std::time::Instant;
 
@@ -37,9 +38,10 @@ async fn handle_request_inner(state: &AppState, body: &[u8], ctx: &mut RequestCo
         Ok(request) => request,
         Err(outcome) => return outcome,
     };
-    let snapshot = match parse::fetch_snapshot(state).await {
-        Ok(snapshot) => snapshot,
+    metadata::record(ctx, &request);
+    let share = match share::fetch_share(state, &request).await {
+        Ok(share) => share,
         Err(outcome) => return outcome,
     };
-    dispatch::dispatch_request(state, &snapshot, request, ctx).await
+    dispatch::dispatch_request(state, &share, request, ctx).await
 }

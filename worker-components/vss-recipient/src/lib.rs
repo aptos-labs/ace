@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use node_msg_gateway::{send_signed_node_message, sign_node_message, GatewayContext};
 use tokio::sync::oneshot;
-use vss_common::offchain::ShareRequest;
+use vss_common::offchain::{decrypt_share_response, ShareRequest};
 use vss_common::session::{
     STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
     STATE_VERIFY_DEALER_OPENING,
@@ -132,7 +132,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
                             continue;
                         }
                     };
-                    let share_result = obtain_offchain_share(
+                    let share_result = ensure_verified_offchain_share(
                         &rpc,
                         store,
                         sig_sk,
@@ -184,7 +184,9 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     }
 }
 
-async fn obtain_offchain_share(
+/// Ensures this holder's opening is present in the store and verified against
+/// the current on-chain DC0 commitment before the caller submits its ACK.
+async fn ensure_verified_offchain_share(
     rpc: &AptosRpc,
     store: &dyn VssStore,
     sig_sk: &ed25519_dalek::SigningKey,
@@ -193,36 +195,52 @@ async fn obtain_offchain_share(
     account_addr: &str,
     session: &vss_common::Session,
     my_idx: usize,
-) -> Result<Vec<u8>> {
-    if let Some(record) = store.get_holder_share(session_addr, my_idx as u64)? {
-        return Ok(record.share_bcs);
-    }
-
+) -> Result<()> {
     let bcs_session = rpc.get_session_bcs_decoded(ace, session_addr).await?;
     let dc0 = bcs_session
         .dealer_contribution_0
         .as_ref()
         .ok_or_else(|| anyhow!("dc0 missing in bcs session"))?;
+    if let Some(record) = store.get_holder_share(session_addr, my_idx as u64)? {
+        if pedersen_verify_private_share(
+            &record.share_bcs,
+            &bcs_session.pcs_context,
+            &dc0.pcs_commitment,
+            (my_idx + 1) as u64,
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+        eprintln!("vss-recipient: cached share failed current DC0 verification; fetching it again");
+    }
+
     let endpoint = rpc
         .get_worker_node_msg_endpoint(ace, &session.dealer)
         .await?;
     let chain_id = rpc.get_chain_id().await?;
     let context = GatewayContext::new(chain_id, ace, &session.dealer);
-    let body = bcs::to_bytes(&ShareRequest {
-        session_addr: session_addr.to_string(),
-        holder_index: my_idx as u64,
-    })
-    .map_err(|e| anyhow!("encode VSS share request: {}", e))?;
+    let (request, response_dk) = ShareRequest::new(session_addr, my_idx as u64);
+    let request_id = request.request_id()?;
+    let body = bcs::to_bytes(&request).map_err(|e| anyhow!("encode VSS share request: {}", e))?;
     let message = sign_node_message(
         &context,
         sig_sk,
         account_addr,
         "vss",
         "share-request",
-        format!("{session_addr}:{my_idx}"),
+        &request_id,
         body,
     )?;
-    let plaintext = send_signed_node_message(endpoint, &message).await?;
+    let encrypted_response = send_signed_node_message(endpoint, &message).await?;
+    let plaintext = decrypt_share_response(
+        &request,
+        &response_dk,
+        account_addr,
+        &session.dealer,
+        &request_id,
+        &encrypted_response,
+    )?;
     pedersen_verify_private_share(
         &plaintext,
         &bcs_session.pcs_context,
@@ -235,5 +253,5 @@ async fn obtain_offchain_share(
         holder_index: my_idx as u64,
         share_bcs: plaintext.clone(),
     })?;
-    Ok(plaintext)
+    Ok(())
 }

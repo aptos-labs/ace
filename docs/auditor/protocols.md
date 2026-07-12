@@ -26,6 +26,8 @@ serves registered VSS sessions from in-memory dealer state provided by the
 dealer client, avoiding chain or DB reads on each share request. Each share
 request is a signed node message; the dealer verifies the sender's registered
 node-message public key and checks that it matches the requested holder index.
+The request carries a fresh HPKE-X25519 response key, and the dealer
+returns the opening encrypted with AAD bound to the signed request transcript.
 
 ## DKG
 

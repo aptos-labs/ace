@@ -68,8 +68,10 @@ onto the chain. After DC0, the chain runs the touch-driven degree check before
 recipients may ACK.
 
 A holder requests its opening over the node-message gateway. The request is a
-signed node message whose sender must match the requested holder index. The
-dealer replies with the BCS opening \((i,p(i),r(i))\). The holder verifies:
+signed node message whose sender must match the requested holder index and
+includes a fresh HPKE-X25519 response key. The dealer encrypts the BCS
+opening \((i,p(i),r(i))\) under that key with AAD binding the response to the
+signed request transcript. The holder decrypts and verifies:
 
 \[
 p(i)G+r(i)H \stackrel{?}{=} V_i

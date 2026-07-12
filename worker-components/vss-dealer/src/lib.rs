@@ -28,7 +28,7 @@ use vss_common::crypto::{
     pedersen_commit_compressed, poly_eval,
 };
 use vss_common::group::BcsElement;
-use vss_common::offchain::ShareRequest;
+use vss_common::offchain::{encrypt_share_response, ShareRequest};
 use vss_common::session::{
     BcsPcsCommitment, BcsPcsOpening, BcsPcsPublicParams, BcsSigmaDlogLinearProof,
     ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
@@ -110,6 +110,13 @@ impl NodeMessageHandler for VssShareRequestHandler {
     async fn handle(&self, message: VerifiedNodeMessage) -> Result<Vec<u8>> {
         let request: ShareRequest = bcs::from_bytes(&message.body_bcs)
             .map_err(|e| anyhow!("decode VSS share request: {}", e))?;
+        let expected_request_id = request.request_id()?;
+        if message.request_id != expected_request_id {
+            return Err(anyhow!(
+                "share request ID does not match request body: expected {}",
+                expected_request_id
+            ));
+        }
         let requested_session = normalize_account_addr(&request.session_addr);
         let entry = get_registered_vss_dealer_session(&requested_session)?;
 
@@ -146,7 +153,13 @@ impl NodeMessageHandler for VssShareRequestHandler {
             &entry.pcs_commitment,
             eval_position,
         )?;
-        Ok(plaintext)
+        encrypt_share_response(
+            &request,
+            &message.sender,
+            &message.recipient,
+            &message.request_id,
+            &plaintext,
+        )
     }
 }
 

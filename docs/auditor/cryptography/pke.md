@@ -1,9 +1,9 @@
 # Public-Key Encryption (`pke::*`)
 
-The PKE layer is used for **client <-> worker request/response bodies**. It is
-no longer the VSS share-delivery mechanism: off-chain VSS shares are sent over
-the node-message gateway and authenticated with node-to-node signatures; see
-[`sig.md`](./sig.md) and [`vss.md`](./vss.md).
+The PKE layer is used for **client <-> worker request/response bodies** and for
+the confidential response leg of off-chain VSS share delivery. VSS requests
+are authenticated with node-to-node signatures and carry a fresh HPKE-X25519
+response key; see [`sig.md`](./sig.md) and [`vss.md`](./vss.md).
 
 Worker PKE encryption keys are still registered on chain in
 `worker_config::PkeEncryptionKey` so SDK clients can encrypt worker requests.
@@ -38,5 +38,7 @@ aad    = b""       (empty by default; callers do NOT pass AAD)
 **Security.** RFC 9180 base mode is IND-CCA2 under the X25519 GapDH assumption (or qDHI per the analysis in the HPKE RFC) and HKDF/ChaCha20-Poly1305 standard assumptions. ~128-bit security level.
 
 **Caveats / audit notes.**
-- AAD is hardcoded empty; callers cannot bind external context to a ciphertext via this layer. The application layer provides binding through signed Aptos request payloads and protocol transcripts.
+- General client/worker callers use empty AAD and provide binding through signed
+  Aptos request payloads. VSS share responses use transcript-bound AAD containing
+  the node-message participants, request ID, and complete signed share request.
 - Implementations across TS/Rust/Move use **independent** HPKE libraries — wire-compatibility is verified by the round-trip tests in `worker-components/vss-common/src/pke_hpke_x25519_chacha20poly1305.rs:166-307` and `contracts/pke/tests/`.

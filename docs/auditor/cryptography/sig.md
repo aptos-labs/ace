@@ -59,9 +59,10 @@ The recipient gateway:
 3. Verifies the Ed25519 signature over the domain-separated signing bytes.
 4. Dispatches to a registered `(protocol, route)` handler.
 
-The signature does not make the transport private. Deployments still need
-ordinary endpoint protections for availability, rate limiting, and metadata
-exposure.
+The signature does not make the transport private. VSS separately encrypts the
+share-response body to a request-scoped HPKE key, but node-message metadata
+remains visible. Deployments still need ordinary endpoint protections for
+availability, rate limiting, and metadata exposure.
 
 ## 3. Implementation Map
 

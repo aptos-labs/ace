@@ -23,9 +23,11 @@ The chain stores the session phase, public commitments, ACK state, and timeout-d
 
 Share delivery is point-to-point through the node-message gateway. The gateway
 serves registered VSS sessions from in-memory dealer state provided by the
-dealer client, avoiding chain or DB reads on each share request. Each share
-request is a signed node message; the dealer verifies the sender's registered
-node-message public key and checks that it matches the requested holder index.
+dealer client, avoiding chain or DB reads on each share request. Before enabling
+a session, the dealer also preloads each holder's registered node-message public
+key into the gateway. Each share request is a signed node message; the dealer
+verifies the sender from that in-memory registry and checks that it matches the
+requested holder index.
 The request carries a fresh HPKE-X25519 response key, and the dealer
 returns the opening encrypted with AAD bound to the signed request transcript.
 

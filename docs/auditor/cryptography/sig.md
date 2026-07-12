@@ -55,9 +55,15 @@ struct NodeMessageToSign {
 The recipient gateway:
 
 1. Checks the `recipient` matches its own worker address.
-2. Fetches the sender's registered `sig::PublicKey` from `worker_config`.
+2. Looks up the sender's `sig::PublicKey` in its in-memory registry.
 3. Verifies the Ed25519 signature over the domain-separated signing bytes.
 4. Dispatches to a registered `(protocol, route)` handler.
+
+Protocol clients populate the registry before enabling their request-serving
+state. For VSS, concurrent dealer clients single-flight the initial
+`worker_config` reads, then retain the immutable registered keys for the
+gateway process lifetime. A request whose key has not been preloaded is rejected
+immediately; request handling never fetches a key from chain or DB.
 
 The signature does not make the transport private. VSS separately encrypts the
 share-response body to a request-scoped HPKE key, but node-message metadata

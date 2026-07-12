@@ -18,8 +18,8 @@ use ark_bls12_381::Fr;
 use ark_ff::{PrimeField, UniformRand};
 use async_trait::async_trait;
 use node_msg_gateway::{
-    ensure_node_msg_gateway, AptosSigKeyResolver, GatewayContext, GatewayHandle,
-    NodeMessageHandler, NodeMsgRoute, VerifiedNodeMessage,
+    ensure_node_msg_gateway, GatewayContext, GatewayHandle, NodeMessageHandler, NodeMsgRoute,
+    VerifiedNodeMessage,
 };
 use rand::rngs::OsRng;
 use tokio::sync::oneshot;
@@ -292,7 +292,6 @@ pub async fn ensure_vss_share_gateway(
     let gateway = ensure_node_msg_gateway(
         node_msg_listen,
         GatewayContext::new(chain_id, ace, account_addr),
-        Arc::new(AptosSigKeyResolver::new(rpc.clone(), ace)),
     )
     .await?;
     gateway
@@ -302,6 +301,36 @@ pub async fn ensure_vss_share_gateway(
         )
         .await;
     Ok(gateway)
+}
+
+async fn preload_share_holder_sig_keys(
+    gateway: &GatewayHandle,
+    rpc: &AptosRpc,
+    ace: &str,
+    share_holders: &[String],
+) -> Result<()> {
+    let mut loads = tokio::task::JoinSet::new();
+    for holder in share_holders {
+        let holder = normalize_account_addr(holder);
+        let holder_for_load = holder.clone();
+        let gateway = gateway.clone();
+        let rpc = rpc.clone();
+        let ace = ace.to_string();
+        loads.spawn(async move {
+            gateway
+                .preload_sig_verification_key(&holder, move || async move {
+                    rpc.get_sig_verification_key_bcs(&ace, &holder_for_load)
+                        .await
+                })
+                .await
+                .map_err(|e| anyhow!("preload signature verification key for {holder}: {e:#}"))
+        });
+    }
+
+    while let Some(result) = loads.join_next().await {
+        result.map_err(|e| anyhow!("holder signature key preload task failed: {e}"))??;
+    }
+    Ok(())
 }
 
 /// Dealer state machine.
@@ -323,6 +352,7 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
     };
     let mut serving_guard = VssShareServingGuard::new(&session_addr);
     let mut dealer_state_bytes: Option<Vec<u8>> = None;
+    let mut holder_sig_keys_ready = false;
 
     println!(
         "vss-dealer: starting (account={} session={} ace={})",
@@ -366,11 +396,24 @@ pub async fn run(config: RunConfig, mut shutdown_rx: oneshot::Receiver<()>) -> R
             ));
         }
 
+        if !holder_sig_keys_ready {
+            if let Some(gateway) = gateway.as_ref() {
+                match preload_share_holder_sig_keys(gateway, &rpc, &ace, &session.share_holders)
+                    .await
+                {
+                    Ok(()) => holder_sig_keys_ready = true,
+                    Err(e) => {
+                        eprintln!("vss-dealer: holder signature key preload failed: {e:#}")
+                    }
+                }
+            }
+        }
+
         let should_serve_shares = session.state_code == STATE_RECIPIENT_ACK
             && !session.dealer_contribution_0.is_empty()
             && session.dealer_contribution_1.is_empty();
         if should_serve_shares {
-            if gateway.is_some() {
+            if gateway.is_some() && holder_sig_keys_ready {
                 let store = store
                     .as_deref()
                     .ok_or_else(|| anyhow!("vss-dealer requires --vss-store-url"))?;

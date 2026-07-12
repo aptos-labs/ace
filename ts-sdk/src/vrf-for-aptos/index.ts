@@ -33,6 +33,8 @@ import {
     NetworkState,
     WorkerRequest,
 } from "../_internal/common";
+import { postWithTimeout } from "../_internal/post-with-timeout";
+import { settleUntilThreshold } from "../_internal/settle-until-threshold";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 import { PcsPublicParams, PublicPoint } from "../vss";
 import { FR_MODULUS, frInv, frMod, frMul } from "../group/bls12381fr";
@@ -570,18 +572,19 @@ export class DerivationSession {
         }
         const workerErrors: string[] = [];
         let sawNotImplemented = false;
-        const shares: ThresholdVrfShare[] = [];
 
-        await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => {
-            try {
+        const taskResults = await settleUntilThreshold(
+            nodeInfos.map(({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => async (signal) => {
                 const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
-                const ctrl = new AbortController();
-                const tid = setTimeout(() => ctrl.abort(), 8000);
                 let resp: Response;
                 try {
-                    resp = await fetch(endpoint, { method: "POST", body: encReqHex, signal: ctrl.signal });
-                } finally {
-                    clearTimeout(tid);
+                    resp = await postWithTimeout(endpoint, encReqHex, signal);
+                } catch (e) {
+                    if (!signal.aborted) {
+                        console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
+                        workerErrors.push(`${nodeAddr}: ${e}`);
+                    }
+                    throw e;
                 }
                 if (!resp.ok) {
                     const body = await resp.text().catch(() => "");
@@ -589,14 +592,14 @@ export class DerivationSession {
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status}${detail ? ` - ${detail}` : ""}`);
                     if (resp.status === 501) sawNotImplemented = true;
                     workerErrors.push(`${nodeAddr}: HTTP ${resp.status}${detail ? ` ${detail}` : ""}`);
-                    return;
+                    throw new Error(`worker returned HTTP ${resp.status}`);
                 }
                 const hexText = (await resp.text()).trim();
                 const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
                 if (respCt === null) {
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
                     workerErrors.push(`${nodeAddr}: response ciphertext parse failed`);
-                    return;
+                    throw new Error("response ciphertext parse failed");
                 }
                 const shareBytes = (await pke.decrypt({
                     decryptionKey: this.responseDecryptionKey,
@@ -605,41 +608,44 @@ export class DerivationSession {
                 if (shareBytes === null) {
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response decryption failed`);
                     workerErrors.push(`${nodeAddr}: response decryption failed`);
-                    return;
+                    throw new Error("response decryption failed");
                 }
+                let share: ThresholdVrfShare;
                 try {
-                    const share = ThresholdVrfShare.fromBytes(shareBytes);
-                    if (!verifyThresholdVrfShare({
-                        share,
-                        sdkIdx,
-                        payload: this.payload!,
-                        pcsContext: currentSessionCommitments.pcsContext,
-                        shareCommitment: currentSessionCommitments.shareCommitments[sdkIdx],
-                        nodeAddr,
-                        endpoint,
-                    })) {
-                        workerErrors.push(`${nodeAddr}: invalid tVRF share`);
-                        return;
-                    }
-                    shares.push(share);
-                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): OK`);
+                    share = ThresholdVrfShare.fromBytes(shareBytes);
                 } catch (e) {
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share parse failed - ${e}`);
                     workerErrors.push(`${nodeAddr}: share parse failed`);
+                    throw e;
                 }
-            } catch (e) {
-                console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
-                workerErrors.push(`${nodeAddr}: ${e}`);
+                if (!verifyThresholdVrfShare({
+                    share,
+                    sdkIdx,
+                    payload: this.payload!,
+                    pcsContext: currentSessionCommitments.pcsContext,
+                    shareCommitment: currentSessionCommitments.shareCommitments[sdkIdx],
+                    nodeAddr,
+                    endpoint,
+                })) {
+                    workerErrors.push(`${nodeAddr}: invalid tVRF share`);
+                    throw new Error("invalid tVRF share");
+                }
+                console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): OK`);
+                return share;
+            }),
+            networkState.curThreshold,
+        );
+        const shares = taskResults.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+        if (shares.length < networkState.curThreshold) {
+            if (sawNotImplemented) {
+                throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
             }
-        }));
+            throw new Error(
+                `ACE.VRF_Aptos.DerivationSession.deriveWithSignature: need ${networkState.curThreshold} valid shares, got ${shares.length} (${workerErrors.join("; ")})`,
+            );
+        }
 
-        if (sawNotImplemented) {
-            throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: threshold VRF worker handler is not implemented yet");
-        }
-        if (shares.length >= networkState.curThreshold) {
-            return reconstructThresholdVrf(shares.slice(0, networkState.curThreshold));
-        }
-        throw new Error(`ACE.VRF_Aptos.DerivationSession.deriveWithSignature: need ${networkState.curThreshold} valid shares, got ${shares.length} (${workerErrors.join("; ")})`);
+        return reconstructThresholdVrf(shares);
     }
 
     /**

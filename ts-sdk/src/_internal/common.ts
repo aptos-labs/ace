@@ -13,7 +13,8 @@ import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
-import { fetchUntilThreshold, wasAbortedAfterThreshold } from "./fetch-until-threshold";
+import { postWithTimeout } from "./post-with-timeout";
+import { settleUntilThreshold } from "./settle-until-threshold";
 
 export class AceDeployment {
     apiEndpoint: string;
@@ -809,53 +810,55 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
 
-            const idkShares = await fetchUntilThreshold({
-                tasks: nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
+            const taskResults = await settleUntilThreshold(
+                nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
                     const nodeAddr = networkState.curNodes[i].toStringLong();
+                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+                    let resp: Response;
                     try {
-                        const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
-                        const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal});
-                        if (!resp.ok) {
-                            const body = await resp.text().catch(() => '');
-                            console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
-                            return null;
-                        }
-                        const hexText = (await resp.text()).trim();
-                        const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                        if (respCt === null) {
-                            console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
-                            return null;
-                        }
-                        const shareBytes = (await pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt})).okValue ?? null;
-                        if (shareBytes === null) {
-                            console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response decryption failed`);
-                            return null;
-                        }
-                        return {shareBytes, sdkIdx: i, nodeAddr, endpoint};
+                        resp = await postWithTimeout(endpoint, encReqHex, signal);
                     } catch (e) {
-                        if (!wasAbortedAfterThreshold(signal)) {
+                        if (!signal.aborted) {
                             console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
                         }
-                        return null;
+                        throw e;
                     }
-                }),
-                validate: ({shareBytes, sdkIdx, nodeAddr, endpoint}) => {
+                    if (!resp.ok) {
+                        const body = await resp.text().catch(() => '');
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
+                        throw new Error(`worker returned HTTP ${resp.status}`);
+                    }
+                    const hexText = (await resp.text()).trim();
+                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                    if (respCt === null) {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                        throw new Error('response ciphertext parse failed');
+                    }
+                    const shareBytes = (await pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt})).okValue ?? null;
+                    if (shareBytes === null) {
+                        console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                        throw new Error('response decryption failed');
+                    }
                     const share = parseAndVerifyIdkShare({
                         shareBytes,
                         expectedScheme: tibeScheme,
-                        sdkIdx,
+                        sdkIdx: i,
                         sessionPks: currentSessionPks,
                         id: fddBytes,
                         nodeAddr,
                         endpoint,
                         label: 'decrypt',
                     });
-                    if (share !== null) console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK`);
+                    if (share === null) throw new Error('identity key share validation failed');
+                    console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
-                },
-                threshold: networkState.curThreshold,
-                timeoutMs: 8000,
-            });
+                }),
+                networkState.curThreshold,
+            );
+            const idkShares = taskResults.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+            if (idkShares.length < networkState.curThreshold) {
+                throw `ACE.fetchIdentityKeySharesCore: need ${networkState.curThreshold} identity key shares, got ${idkShares.length}`;
+            }
 
             return idkShares;
         },
@@ -939,53 +942,55 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 
             const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, tibeScheme).toBytes();
 
-            const idkShares = await fetchUntilThreshold({
-                tasks: nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
+            const taskResults = await settleUntilThreshold(
+                nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
                     const nodeAddr = networkState.curNodes[i].toStringLong();
+                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+                    let resp: Response;
                     try {
-                        const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
-                        const resp = await fetch(endpoint, {method: 'POST', body: encReqHex, signal});
-                        if (!resp.ok) {
-                            const body = await resp.text().catch(() => '');
-                            console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
-                            return null;
-                        }
-                        const hexText = (await resp.text()).trim();
-                        const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                        if (respCt === null) {
-                            console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
-                            return null;
-                        }
-                        const shareBytes = (await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt})).okValue ?? null;
-                        if (shareBytes === null) {
-                            console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`);
-                            return null;
-                        }
-                        return {shareBytes, sdkIdx: i, nodeAddr, endpoint};
+                        resp = await postWithTimeout(endpoint, encReqHex, signal);
                     } catch (e) {
-                        if (!wasAbortedAfterThreshold(signal)) {
+                        if (!signal.aborted) {
                             console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
                         }
-                        return null;
+                        throw e;
                     }
-                }),
-                validate: ({shareBytes, sdkIdx, nodeAddr, endpoint}) => {
+                    if (!resp.ok) {
+                        const body = await resp.text().catch(() => '');
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
+                        throw new Error(`worker returned HTTP ${resp.status}`);
+                    }
+                    const hexText = (await resp.text()).trim();
+                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                    if (respCt === null) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                        throw new Error('response ciphertext parse failed');
+                    }
+                    const shareBytes = (await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt})).okValue ?? null;
+                    if (shareBytes === null) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                        throw new Error('response decryption failed');
+                    }
                     const share = parseAndVerifyIdkShare({
                         shareBytes,
                         expectedScheme: tibeScheme,
-                        sdkIdx,
+                        sdkIdx: i,
                         sessionPks: currentSessionPks,
                         id: fddBytes,
                         nodeAddr,
                         endpoint,
                         label: 'decrypt-custom',
                     });
-                    if (share !== null) console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
+                    if (share === null) throw new Error('identity key share validation failed');
+                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
-                },
-                threshold: networkState.curThreshold,
-                timeoutMs: 8000,
-            });
+                }),
+                networkState.curThreshold,
+            );
+            const idkShares = taskResults.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+            if (idkShares.length < networkState.curThreshold) {
+                throw `ACE.fetchIdentityKeySharesCoreCustom: need ${networkState.curThreshold} identity key shares, got ${idkShares.length}`;
+            }
 
             return idkShares;
         },

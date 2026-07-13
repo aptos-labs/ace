@@ -86,20 +86,12 @@ module ace::network {
     }
 
     struct EpochSnapshot has store, drop, copy {
-        epoch: u64,
-        epoch_start_time_micros: u64,
-        epoch_duration_micros: u64,
         nodes: vector<address>,
-        threshold: u64,
         secrets: vector<address>,
     }
 
     struct EpochSnapshotView has drop {
-        epoch: u64,
-        epoch_start_time_micros: u64,
-        epoch_duration_micros: u64,
         nodes: vector<address>,
-        threshold: u64,
         secrets: vector<SecretInfo>,
     }
 
@@ -137,31 +129,23 @@ module ace::network {
         epoch_change_info: Option<EpochChangeView>,
     }
 
-    fun secret_infos(secret_sessions: vector<address>): vector<SecretInfo> {
-        let n = secret_sessions.length();
-        let i = 0;
-        let result = vector[];
-        while (i < n) {
-            let addr = secret_sessions[i];
-            let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
-                dkg::keypair_id_scheme_usage_and_note(addr)
-            } else {
-                dkr::keypair_id_scheme_usage_and_note(addr)
-            };
-            result.push_back(SecretInfo { current_session: addr, keypair_id, scheme, expected_usage, note });
-            i += 1;
+    fun secret_info(addr: address): SecretInfo {
+        let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
+            dkg::keypair_id_scheme_usage_and_note(addr)
+        } else {
+            dkr::keypair_id_scheme_usage_and_note(addr)
         };
-        result
+        SecretInfo { current_session: addr, keypair_id, scheme, expected_usage, note }
+    }
+
+    fun secret_infos(secret_sessions: vector<address>): vector<SecretInfo> {
+        secret_sessions.map(|addr| secret_info(addr))
     }
 
     fun epoch_snapshot_view(snapshot: EpochSnapshot): EpochSnapshotView {
         EpochSnapshotView {
-            epoch: snapshot.epoch,
-            epoch_start_time_micros: snapshot.epoch_start_time_micros,
-            epoch_duration_micros: snapshot.epoch_duration_micros,
             nodes: snapshot.nodes,
-            threshold: snapshot.threshold,
-            secrets: secret_infos(snapshot.secrets),
+            secrets: snapshot.secrets.map(|addr| secret_info(addr)),
         }
     }
 
@@ -277,11 +261,7 @@ module ace::network {
             if (epoch_change::completed(session)) {
                 let (nodes, threshold, secrets, epoch_duration_micros) = epoch_change::results(session);
                 state.previous_epoch_info = option::some(EpochSnapshot {
-                    epoch: state.epoch,
-                    epoch_start_time_micros: state.epoch_start_time_micros,
-                    epoch_duration_micros: state.epoch_duration_micros,
                     nodes: state.cur_nodes,
-                    threshold: state.cur_threshold,
                     secrets: state.secrets,
                 });
                 state.epoch += 1;

@@ -171,35 +171,21 @@ export class EpochChangeView {
 /** Mirrors `ace::network::EpochSnapshotView` from `state_view_v0_bcs`. */
 export class EpochSnapshot {
     constructor(
-        readonly epoch: number,
-        readonly epochStartTimeMicros: bigint,
-        readonly epochDurationMicros: bigint,
         readonly nodes: AccountAddress[],
-        readonly threshold: number,
         readonly secrets: SecretInfo[],
     ) {}
 
     static deserialize(deserializer: Deserializer): EpochSnapshot {
-        const epoch = Number(deserializer.deserializeU64());
-        const epochStartTimeMicros = deserializer.deserializeU64();
-        const epochDurationMicros = deserializer.deserializeU64();
-
         const nodesLen = deserializer.deserializeUleb128AsU32();
         const nodes: AccountAddress[] = [];
         for (let i = 0; i < nodesLen; i++) nodes.push(AccountAddress.deserialize(deserializer));
-
-        const threshold = Number(deserializer.deserializeU64());
 
         const secretsLen = deserializer.deserializeUleb128AsU32();
         const secrets: SecretInfo[] = [];
         for (let i = 0; i < secretsLen; i++) secrets.push(SecretInfo.deserialize(deserializer));
 
         return new EpochSnapshot(
-            epoch,
-            epochStartTimeMicros,
-            epochDurationMicros,
             nodes,
-            threshold,
             secrets,
         );
     }

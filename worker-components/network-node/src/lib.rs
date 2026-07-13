@@ -160,55 +160,32 @@ fn resolve_max_concurrent(explicit: Option<usize>) -> usize {
 // ── Top-level run configuration ───────────────────────────────────────────────
 
 /// Deployment mode. See module-level docs.
-pub enum Mode {
-    /// One process does everything (default; backwards-compatible).
-    /// `handler` is `None` for chain-touching-only deployments that don't
-    /// serve user requests (e.g. test setups exercising DKG only).
-    Monolith {
-        maintainer: MaintainerConfig,
-        handler: Option<HandlerLocalConfig>,
-    },
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeMode {
+    /// One process drives protocol progress and optionally serves user requests.
+    Monolith,
     /// Secret maintenance only; no user-request HTTP server.
-    Maintainer { maintainer: MaintainerConfig },
+    Maintainer,
     /// Request handling only; syncs shares from the shared VSS DB.
-    /// `pke_dk` is loaded directly from CLI.
-    Handler {
-        ace_deployment_api: String,
-        ace_deployment_apikey: Option<String>,
-        ace_deployment_addr: String,
-        account_addr: String,
-        vss_store_url: String,
-        pke_dk: String,
-        port: u16,
-        chain_rpc: ChainRpcConfig,
-        max_concurrent: Option<usize>,
-    },
+    Handler,
 }
 
-/// Fields needed for secret maintenance (URH + on-chain DKR/touch).
-pub struct MaintainerConfig {
+/// Single runtime config. Some fields are mode-specific and intentionally unused
+/// by other modes, so CLI/env/config-file plumbing can stay uniform.
+pub struct RunConfig {
+    pub mode: RuntimeMode,
     pub ace_deployment_api: String,
     pub ace_deployment_apikey: Option<String>,
     pub ace_deployment_gaskey: Option<String>,
     pub ace_deployment_addr: String,
     pub account_addr: String,
     pub account_sk_hex: String,
-    /// PKE decryption key (hex). Passed to monolith/handler for user-request
-    /// decryption and kept with maintainer config for embedded protocol clients.
     pub pke_dk: String,
-    /// Ed25519 node-to-node messaging signing key hex used by embedded VSS clients.
     pub sig_sk_hex: String,
-    /// Persistent VSS store URL used by embedded VSS clients.
     pub vss_store_url: String,
-    /// Local listen address for embedded node-to-node VSS share gateway.
     pub node_msg_listen: String,
-}
-
-/// Fields needed for the user-request HTTP server when running in the same
-/// process as the maintainer (monolith only).
-pub struct HandlerLocalConfig {
-    pub port: u16,
-    pub chain_rpc: ChainRpcConfig,
+    pub port: Option<u16>,
+    pub chain_rpc: Option<ChainRpcConfig>,
     pub max_concurrent: Option<usize>,
 }
 
@@ -265,11 +242,7 @@ struct BcsSecretInfo {
 #[allow(dead_code)]
 #[derive(Clone, serde::Deserialize)]
 struct BcsEpochSnapshot {
-    epoch: u64,
-    epoch_start_time_micros: u64,
-    epoch_duration_micros: u64,
     nodes: Vec<[u8; 32]>,
-    threshold: u64,
     secrets: Vec<BcsSecretInfo>,
 }
 
@@ -650,39 +623,8 @@ fn stop_tasks(tasks: &mut HashMap<String, oneshot::Sender<()>>) {
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
-pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    match mode {
-        Mode::Monolith {
-            maintainer,
-            handler,
-        } => run_with_maintainer(maintainer, handler, shutdown_rx).await,
-        Mode::Maintainer { maintainer } => run_with_maintainer(maintainer, None, shutdown_rx).await,
-        Mode::Handler {
-            ace_deployment_api,
-            ace_deployment_apikey,
-            ace_deployment_addr,
-            account_addr,
-            vss_store_url,
-            pke_dk,
-            port,
-            chain_rpc,
-            max_concurrent,
-        } => {
-            run_handler(
-                ace_deployment_api,
-                ace_deployment_apikey,
-                ace_deployment_addr,
-                account_addr,
-                vss_store_url,
-                pke_dk,
-                port,
-                chain_rpc,
-                max_concurrent,
-                shutdown_rx,
-            )
-            .await
-        }
-    }
+pub async fn run(config: RunConfig, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+    run_with_config(config, shutdown_rx).await
 }
 
 // ── Runtime supervisor ────────────────────────────────────────────────────────
@@ -694,32 +636,6 @@ struct RuntimeCapabilities {
     can_serve: bool,
     can_drive_protocol: bool,
     can_touch: bool,
-}
-
-impl RuntimeCapabilities {
-    fn monolith() -> Self {
-        Self {
-            can_serve: true,
-            can_drive_protocol: true,
-            can_touch: true,
-        }
-    }
-
-    fn maintainer_only() -> Self {
-        Self {
-            can_serve: false,
-            can_drive_protocol: true,
-            can_touch: true,
-        }
-    }
-
-    fn handler_only() -> Self {
-        Self {
-            can_serve: true,
-            can_drive_protocol: false,
-            can_touch: false,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -944,11 +860,10 @@ fn desired_serving_epochs(
             < state
                 .epoch_start_time_micros
                 .saturating_add(PREVIOUS_EPOCH_GRACE_MICROS);
-        let is_previous_epoch = previous.epoch.saturating_add(1) == state.epoch;
-        if in_grace && is_previous_epoch {
+        if in_grace && state.epoch > 0 {
             if let Some(idx) = committee_index(&previous.nodes, account_addr) {
                 epochs.push(ServingEpoch {
-                    epoch: previous.epoch,
+                    epoch: state.epoch - 1,
                     eval_point: (idx + 1) as u64,
                     secrets: previous.secrets.clone(),
                 });
@@ -1101,55 +1016,91 @@ fn ensure_epoch_change_nxt(
     );
 }
 
-async fn run_with_maintainer(
-    config: MaintainerConfig,
-    handler_local: Option<HandlerLocalConfig>,
-    shutdown_rx: oneshot::Receiver<()>,
-) -> Result<()> {
-    let rpc = AptosRpc::new_with_gas_key(
-        config.ace_deployment_api.clone(),
-        config.ace_deployment_apikey.clone(),
-        config.ace_deployment_gaskey.clone(),
-    );
-    let account_addr = normalize_account_addr(&config.account_addr);
-    let ace = normalize_account_addr(&config.ace_deployment_addr);
-    let store = connect_vss_store(&config.vss_store_url)?;
-    let pke_dk_bytes = decode_pke_dk(&config.pke_dk)?;
-    let capabilities = if handler_local.is_some() {
-        RuntimeCapabilities::monolith()
-    } else {
-        RuntimeCapabilities::maintainer_only()
+async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+    require_config_field("ace_deployment_addr", &config.ace_deployment_addr)?;
+    require_config_field("account_addr", &config.account_addr)?;
+    require_config_field("pke_dk", &config.pke_dk)?;
+    require_config_field("vss_store_url", &config.vss_store_url)?;
+
+    let drive_protocol = matches!(config.mode, RuntimeMode::Monolith | RuntimeMode::Maintainer);
+    let serve_requests = match config.mode {
+        RuntimeMode::Monolith => config.port.is_some(),
+        RuntimeMode::Maintainer => false,
+        RuntimeMode::Handler => true,
     };
-    let user_server = handler_local.map(|h| UserServerConfig {
-        port: h.port,
-        chain_rpc: h.chain_rpc,
-        max_concurrent: h.max_concurrent,
-        pke_dk_bytes: pke_dk_bytes.clone(),
-    });
-    let protocol = ProtocolRuntimeConfig {
-        rpc_url: config.ace_deployment_api,
-        rpc_api_key: config.ace_deployment_apikey,
-        rpc_gas_key: config.ace_deployment_gaskey,
-        account_sk_hex: config.account_sk_hex,
-        pke_dk_hex: config.pke_dk,
-        sig_sk_hex: config.sig_sk_hex,
-        vss_store_url: config.vss_store_url,
-        node_msg_listen: config.node_msg_listen,
+    let capabilities = RuntimeCapabilities {
+        can_serve: serve_requests,
+        can_drive_protocol: drive_protocol,
+        can_touch: drive_protocol,
+    };
+
+    if drive_protocol {
+        require_config_field("account_sk_hex", &config.account_sk_hex)?;
+        require_config_field("sig_sk_hex", &config.sig_sk_hex)?;
+        require_config_field("node_msg_listen", &config.node_msg_listen)?;
+    }
+
+    let user_server = if serve_requests {
+        Some(UserServerConfig {
+            port: config
+                .port
+                .ok_or_else(|| anyhow!("handler mode requires port"))?,
+            chain_rpc: config
+                .chain_rpc
+                .take()
+                .ok_or_else(|| anyhow!("serving mode requires chain_rpc"))?,
+            max_concurrent: config.max_concurrent,
+            pke_dk_bytes: decode_pke_dk(&config.pke_dk)?,
+        })
+    } else {
+        None
+    };
+
+    let rpc = if drive_protocol {
+        AptosRpc::new_with_gas_key(
+            config.ace_deployment_api.clone(),
+            config.ace_deployment_apikey.clone(),
+            config.ace_deployment_gaskey.clone(),
+        )
+    } else {
+        AptosRpc::new_with_key(
+            config.ace_deployment_api.clone(),
+            config.ace_deployment_apikey.clone(),
+        )
+    };
+    let ace = normalize_account_addr(&config.ace_deployment_addr);
+    let account_addr = normalize_account_addr(&config.account_addr);
+    let store = connect_vss_store(&config.vss_store_url)?;
+    let mode_label = match config.mode {
+        RuntimeMode::Monolith if serve_requests => "monolith",
+        RuntimeMode::Monolith => "monolith-no-handler",
+        RuntimeMode::Maintainer => "maintainer-only",
+        RuntimeMode::Handler => "handler-only",
+    };
+    let protocol = if drive_protocol {
+        Some(ProtocolRuntimeConfig {
+            rpc_url: config.ace_deployment_api,
+            rpc_api_key: config.ace_deployment_apikey,
+            rpc_gas_key: config.ace_deployment_gaskey,
+            account_sk_hex: config.account_sk_hex,
+            pke_dk_hex: config.pke_dk,
+            sig_sk_hex: config.sig_sk_hex,
+            vss_store_url: config.vss_store_url,
+            node_msg_listen: config.node_msg_listen,
+        })
+    } else {
+        None
     };
 
     run_supervisor(
         NetworkSupervisorConfig {
-            mode_label: if capabilities.can_serve {
-                "monolith"
-            } else {
-                "maintainer-only"
-            },
+            mode_label,
             rpc,
             ace,
             account_addr,
             store,
             capabilities,
-            protocol: Some(protocol),
+            protocol,
             user_server,
         },
         shutdown_rx,
@@ -1157,44 +1108,14 @@ async fn run_with_maintainer(
     .await
 }
 
-// ── Handler-only ─────────────────────────────────────────────────────────────
-
-async fn run_handler(
-    ace_deployment_api: String,
-    ace_deployment_apikey: Option<String>,
-    ace_deployment_addr: String,
-    account_addr: String,
-    vss_store_url: String,
-    pke_dk: String,
-    port: u16,
-    chain_rpc: ChainRpcConfig,
-    max_concurrent: Option<usize>,
-    shutdown_rx: oneshot::Receiver<()>,
-) -> Result<()> {
-    let rpc = AptosRpc::new_with_key(ace_deployment_api, ace_deployment_apikey);
-    let ace = normalize_account_addr(&ace_deployment_addr);
-    let account_addr = normalize_account_addr(&account_addr);
-    let store = connect_vss_store(&vss_store_url)?;
-    let pke_dk_bytes = decode_pke_dk(&pke_dk)?;
-    run_supervisor(
-        NetworkSupervisorConfig {
-            mode_label: "handler-only",
-            rpc,
-            ace,
-            account_addr,
-            store,
-            capabilities: RuntimeCapabilities::handler_only(),
-            protocol: None,
-            user_server: Some(UserServerConfig {
-                port,
-                chain_rpc,
-                max_concurrent,
-                pke_dk_bytes,
-            }),
-        },
-        shutdown_rx,
-    )
-    .await
+fn require_config_field(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(anyhow!(
+            "missing required network-node config field {label}"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn decode_pke_dk(pke_dk: &str) -> Result<Arc<Vec<u8>>> {
@@ -1234,11 +1155,7 @@ mod tests {
             cur_threshold: 2,
             secrets: vec![secret(0x10, 0x20)],
             previous_epoch_info: Some(BcsEpochSnapshot {
-                epoch: 6,
-                epoch_start_time_micros: 0,
-                epoch_duration_micros: 90_000_000,
                 nodes: previous_nodes,
-                threshold: 2,
                 secrets: vec![secret(0x11, 0x21)],
             }),
             proposals: vec![],

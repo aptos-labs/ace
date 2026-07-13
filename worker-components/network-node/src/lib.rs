@@ -70,7 +70,7 @@ use vss_common::{
 };
 use vss_store::{connect_vss_store, read_verified_holder_opening, VssStore};
 
-use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry, ShareEvictionQueue, ShareMap};
+use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry, ShareMap};
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
 
@@ -253,13 +253,24 @@ struct BcsEpochChangeView {
 }
 
 #[allow(dead_code)]
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct BcsSecretInfo {
     current_session: [u8; 32],
     keypair_id: [u8; 32],
     scheme: u8,
     expected_usage: u64,
     note: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, serde::Deserialize)]
+struct BcsEpochSnapshot {
+    epoch: u64,
+    epoch_start_time_micros: u64,
+    epoch_duration_micros: u64,
+    nodes: Vec<[u8; 32]>,
+    threshold: u64,
+    secrets: Vec<BcsSecretInfo>,
 }
 
 #[derive(serde::Deserialize)]
@@ -271,6 +282,7 @@ struct BcsStateViewV0 {
     #[allow(dead_code)]
     cur_threshold: u64,
     secrets: Vec<BcsSecretInfo>,
+    previous_epoch_info: Option<BcsEpochSnapshot>,
     proposals: Vec<Option<BcsProposalView>>,
     epoch_change_info: Option<BcsEpochChangeView>,
 }
@@ -673,321 +685,476 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
     }
 }
 
-// ── Maintainer / monolith ─────────────────────────────────────────────────────
+// ── Runtime supervisor ────────────────────────────────────────────────────────
+
+const PREVIOUS_EPOCH_GRACE_MICROS: u64 = 30_000_000;
+
+#[derive(Clone, Copy)]
+struct RuntimeCapabilities {
+    can_serve: bool,
+    can_drive_protocol: bool,
+    can_touch: bool,
+}
+
+impl RuntimeCapabilities {
+    fn monolith() -> Self {
+        Self {
+            can_serve: true,
+            can_drive_protocol: true,
+            can_touch: true,
+        }
+    }
+
+    fn maintainer_only() -> Self {
+        Self {
+            can_serve: false,
+            can_drive_protocol: true,
+            can_touch: true,
+        }
+    }
+
+    fn handler_only() -> Self {
+        Self {
+            can_serve: true,
+            can_drive_protocol: false,
+            can_touch: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProtocolRuntimeConfig {
+    rpc_url: String,
+    rpc_api_key: Option<String>,
+    rpc_gas_key: Option<String>,
+    account_sk_hex: String,
+    pke_dk_hex: String,
+    sig_sk_hex: String,
+    vss_store_url: String,
+    node_msg_listen: String,
+}
+
+struct UserServerConfig {
+    port: u16,
+    chain_rpc: ChainRpcConfig,
+    max_concurrent: Option<usize>,
+    pke_dk_bytes: Arc<Vec<u8>>,
+}
+
+struct NetworkSupervisorConfig {
+    mode_label: &'static str,
+    rpc: AptosRpc,
+    ace: String,
+    account_addr: String,
+    store: Arc<dyn VssStore>,
+    capabilities: RuntimeCapabilities,
+    protocol: Option<ProtocolRuntimeConfig>,
+    user_server: Option<UserServerConfig>,
+}
+
+#[derive(Default)]
+struct RuntimeTasks {
+    epoch_change_cur: HashMap<String, oneshot::Sender<()>>,
+    epoch_change_nxt: HashMap<String, oneshot::Sender<()>>,
+}
+
+impl RuntimeTasks {
+    fn stop_all(&mut self) {
+        stop_tasks(&mut self.epoch_change_cur);
+        stop_tasks(&mut self.epoch_change_nxt);
+    }
+}
+
+struct ServingEpoch {
+    epoch: u64,
+    eval_point: u64,
+    secrets: Vec<BcsSecretInfo>,
+}
+
+async fn run_supervisor(
+    mut config: NetworkSupervisorConfig,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
+    wlog!(
+        "network-node: starting {} (account={} ace={})",
+        config.mode_label,
+        config.account_addr,
+        config.ace
+    );
+
+    let touch_keys = if config.capabilities.can_touch {
+        let protocol = config
+            .protocol
+            .as_ref()
+            .ok_or_else(|| anyhow!("can_touch requires protocol runtime config"))?;
+        let sk = parse_ed25519_signing_key_hex(&protocol.account_sk_hex)?;
+        let vk = sk.verifying_key();
+        Some((sk, vk))
+    } else {
+        None
+    };
+
+    let local = if config.capabilities.can_serve {
+        Some(LocalSecrets::empty())
+    } else {
+        None
+    };
+
+    if let Some(user_server) = config.user_server.take() {
+        let local = local
+            .as_ref()
+            .ok_or_else(|| anyhow!("user server requires serving capability"))?;
+        let state = http_server::AppState {
+            provider: Arc::new(SecretsProvider::Local(local.clone())),
+            chain_rpc: Arc::new(user_server.chain_rpc),
+            concurrency: Arc::new(Semaphore::new(resolve_max_concurrent(
+                user_server.max_concurrent,
+            ))),
+            pke_dk_bytes: user_server.pke_dk_bytes,
+        };
+        tokio::spawn(http_server::run_user_server(user_server.port, state));
+    }
+
+    let mut tasks = RuntimeTasks::default();
+    let mut next_delay = Duration::from_secs(0);
+
+    loop {
+        let sleep = tokio::time::sleep(next_delay);
+        tokio::pin!(sleep);
+        tokio::select! {
+            _ = &mut shutdown_rx => {
+                wlog!("network-node: shutdown signal received.");
+                tasks.stop_all();
+                return Ok(());
+            }
+            _ = &mut sleep => {}
+        }
+
+        let state = match fetch_state_view_v0(&config.rpc, &config.ace).await {
+            Ok(s) => s,
+            Err(e) => {
+                wlog!("network-node: fetch state view error: {:#}", e);
+                next_delay = Duration::from_secs(5);
+                continue;
+            }
+        };
+
+        let now_micros = unix_time_micros();
+        let cur_node_idx = committee_index(&state.cur_nodes, &config.account_addr);
+        let network_needs_progress = network_needs_progress(&state, now_micros);
+
+        if config.capabilities.can_touch
+            && cur_node_idx
+                .map(|idx| should_submit_rotating_touch(idx, state.cur_nodes.len()))
+                .unwrap_or(false)
+            && network_needs_progress
+        {
+            if let Some((sk, vk)) = &touch_keys {
+                if let Err(e) = config
+                    .rpc
+                    .submit_txn(
+                        sk,
+                        vk,
+                        &config.account_addr,
+                        &format!("{}::network::touch", config.ace),
+                        &[],
+                        &[],
+                    )
+                    .await
+                {
+                    wlog!("network-node: network::touch error: {:#}", e);
+                }
+            }
+        }
+
+        reconcile_epoch_change_clients(
+            &mut tasks,
+            config.capabilities,
+            config.protocol.as_ref(),
+            &state,
+            &config,
+        );
+
+        if let Some(local) = local.as_ref() {
+            let desired = desired_serving_epochs(&state, &config.account_addr, now_micros);
+            if let Err(e) = reconcile_serving_cache(
+                &config.rpc,
+                &config.ace,
+                &config.account_addr,
+                config.store.as_ref(),
+                local,
+                desired,
+            )
+            .await
+            {
+                wlog!("network-node: serving cache sync error: {:#}", e);
+            }
+        }
+
+        next_delay = if network_needs_progress {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(5)
+        };
+    }
+}
+
+fn unix_time_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
+fn network_needs_progress(state: &BcsStateViewV0, now_micros: u64) -> bool {
+    let epoch_timed_out = now_micros
+        >= state
+            .epoch_start_time_micros
+            .saturating_add(state.epoch_duration_micros);
+    let has_approved_proposal = state
+        .proposals
+        .iter()
+        .any(|p| p.as_ref().is_some_and(|pv| pv.voting_passed));
+    state.epoch_change_info.is_some() || epoch_timed_out || has_approved_proposal
+}
+
+fn committee_index(nodes: &[[u8; 32]], account_addr: &str) -> Option<usize> {
+    nodes
+        .iter()
+        .position(|node| addr_bytes_to_string(node) == account_addr)
+}
+
+fn desired_serving_epochs(
+    state: &BcsStateViewV0,
+    account_addr: &str,
+    now_micros: u64,
+) -> Vec<ServingEpoch> {
+    let mut epochs = Vec::new();
+
+    if let Some(idx) = committee_index(&state.cur_nodes, account_addr) {
+        epochs.push(ServingEpoch {
+            epoch: state.epoch,
+            eval_point: (idx + 1) as u64,
+            secrets: state.secrets.clone(),
+        });
+    }
+
+    if let Some(previous) = &state.previous_epoch_info {
+        let in_grace = now_micros
+            < state
+                .epoch_start_time_micros
+                .saturating_add(PREVIOUS_EPOCH_GRACE_MICROS);
+        let is_previous_epoch = previous.epoch.saturating_add(1) == state.epoch;
+        if in_grace && is_previous_epoch {
+            if let Some(idx) = committee_index(&previous.nodes, account_addr) {
+                epochs.push(ServingEpoch {
+                    epoch: previous.epoch,
+                    eval_point: (idx + 1) as u64,
+                    secrets: previous.secrets.clone(),
+                });
+            }
+        }
+    }
+
+    epochs
+}
+
+async fn reconcile_serving_cache(
+    rpc: &AptosRpc,
+    ace: &str,
+    account_addr: &str,
+    store: &dyn VssStore,
+    local: &LocalSecrets,
+    desired: Vec<ServingEpoch>,
+) -> Result<()> {
+    let mut refreshed = ShareMap::new();
+    for epoch in desired {
+        for secret in epoch.secrets {
+            let session_addr = addr_bytes_to_string(&secret.current_session);
+            let reconstructed =
+                reconstruct_share_from_store(rpc, ace, &session_addr, account_addr, store).await?;
+            let keypair_id = reconstructed.keypair_id.clone();
+            refreshed.insert(
+                (keypair_id, epoch.epoch),
+                ShareEntry {
+                    scalar_le32: reconstructed.scalar_le32,
+                    blinding_le32: reconstructed.blinding_le32,
+                    group_scheme: reconstructed.group_scheme,
+                    pcs_context: reconstructed.pcs_context,
+                    share_commitment: reconstructed.share_commitment,
+                    expected_usage: secret.expected_usage,
+                    eval_point: epoch.eval_point,
+                    note: secret.note,
+                },
+            );
+        }
+    }
+
+    local.replace_all(refreshed).await;
+    Ok(())
+}
+
+fn reconcile_epoch_change_clients(
+    tasks: &mut RuntimeTasks,
+    capabilities: RuntimeCapabilities,
+    protocol: Option<&ProtocolRuntimeConfig>,
+    state: &BcsStateViewV0,
+    config: &NetworkSupervisorConfig,
+) {
+    if !capabilities.can_drive_protocol {
+        tasks.stop_all();
+        return;
+    }
+    let Some(protocol) = protocol else {
+        tasks.stop_all();
+        return;
+    };
+
+    match &state.epoch_change_info {
+        Some(info) => {
+            let session = addr_bytes_to_string(&info.session_addr);
+            let in_cur_nodes = committee_index(&state.cur_nodes, &config.account_addr).is_some();
+            if in_cur_nodes {
+                ensure_epoch_change_cur(tasks, protocol, config, &session);
+            } else {
+                stop_tasks(&mut tasks.epoch_change_cur);
+            }
+
+            let in_nxt_nodes = committee_index(&info.nxt_nodes, &config.account_addr).is_some();
+            if in_nxt_nodes {
+                ensure_epoch_change_nxt(tasks, protocol, config, &session);
+            } else {
+                stop_tasks(&mut tasks.epoch_change_nxt);
+            }
+        }
+        None => tasks.stop_all(),
+    }
+}
+
+fn ensure_epoch_change_cur(
+    tasks: &mut RuntimeTasks,
+    protocol: &ProtocolRuntimeConfig,
+    config: &NetworkSupervisorConfig,
+    session: &str,
+) {
+    if tasks.epoch_change_cur.contains_key(session) {
+        return;
+    }
+    let (tx, rx) = oneshot::channel::<()>();
+    tasks.epoch_change_cur.insert(session.to_string(), tx);
+    let cfg = epoch_change_cur::RunConfig {
+        rpc_url: protocol.rpc_url.clone(),
+        rpc_api_key: protocol.rpc_api_key.clone(),
+        rpc_gas_key: protocol.rpc_gas_key.clone(),
+        ace_contract: config.ace.clone(),
+        epoch_change_session: session.to_string(),
+        account_addr: config.account_addr.clone(),
+        account_sk_hex: protocol.account_sk_hex.clone(),
+        pke_dk_hex: protocol.pke_dk_hex.clone(),
+        sig_sk_hex: protocol.sig_sk_hex.clone(),
+        vss_store_url: protocol.vss_store_url.clone(),
+        node_msg_listen: protocol.node_msg_listen.clone(),
+    };
+    tokio::spawn(async move {
+        if let Err(e) = epoch_change_cur::run(cfg, rx).await {
+            wlog!("network-node: epoch-change-cur error: {:#}", e);
+        }
+    });
+    wlog!(
+        "network-node: started epoch-change-cur for session={}",
+        session
+    );
+}
+
+fn ensure_epoch_change_nxt(
+    tasks: &mut RuntimeTasks,
+    protocol: &ProtocolRuntimeConfig,
+    config: &NetworkSupervisorConfig,
+    session: &str,
+) {
+    if tasks.epoch_change_nxt.contains_key(session) {
+        return;
+    }
+    let (tx, rx) = oneshot::channel::<()>();
+    tasks.epoch_change_nxt.insert(session.to_string(), tx);
+    let cfg = epoch_change_nxt::RunConfig {
+        rpc_url: protocol.rpc_url.clone(),
+        rpc_api_key: protocol.rpc_api_key.clone(),
+        rpc_gas_key: protocol.rpc_gas_key.clone(),
+        ace_contract: config.ace.clone(),
+        epoch_change_session: session.to_string(),
+        account_addr: config.account_addr.clone(),
+        account_sk_hex: protocol.account_sk_hex.clone(),
+        pke_dk_hex: protocol.pke_dk_hex.clone(),
+        sig_sk_hex: protocol.sig_sk_hex.clone(),
+        vss_store_url: protocol.vss_store_url.clone(),
+        node_msg_listen: protocol.node_msg_listen.clone(),
+    };
+    tokio::spawn(async move {
+        if let Err(e) = epoch_change_nxt::run(cfg, rx).await {
+            wlog!("network-node: epoch-change-nxt error: {:#}", e);
+        }
+    });
+    wlog!(
+        "network-node: started epoch-change-nxt for session={}",
+        session
+    );
+}
 
 async fn run_with_maintainer(
     config: MaintainerConfig,
     handler_local: Option<HandlerLocalConfig>,
-    mut shutdown_rx: oneshot::Receiver<()>,
+    shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let rpc = AptosRpc::new_with_gas_key(
         config.ace_deployment_api.clone(),
         config.ace_deployment_apikey.clone(),
         config.ace_deployment_gaskey.clone(),
     );
-    let sk = parse_ed25519_signing_key_hex(&config.account_sk_hex)?;
-    let vk = sk.verifying_key();
     let account_addr = normalize_account_addr(&config.account_addr);
     let ace = normalize_account_addr(&config.ace_deployment_addr);
-
-    let pke_dk_bytes: Arc<Vec<u8>> = {
-        let raw = config.pke_dk.trim().trim_start_matches("0x");
-        Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
+    let store = connect_vss_store(&config.vss_store_url)?;
+    let pke_dk_bytes = decode_pke_dk(&config.pke_dk)?;
+    let capabilities = if handler_local.is_some() {
+        RuntimeCapabilities::monolith()
+    } else {
+        RuntimeCapabilities::maintainer_only()
+    };
+    let user_server = handler_local.map(|h| UserServerConfig {
+        port: h.port,
+        chain_rpc: h.chain_rpc,
+        max_concurrent: h.max_concurrent,
+        pke_dk_bytes: pke_dk_bytes.clone(),
+    });
+    let protocol = ProtocolRuntimeConfig {
+        rpc_url: config.ace_deployment_api,
+        rpc_api_key: config.ace_deployment_apikey,
+        rpc_gas_key: config.ace_deployment_gaskey,
+        account_sk_hex: config.account_sk_hex,
+        pke_dk_hex: config.pke_dk,
+        sig_sk_hex: config.sig_sk_hex,
+        vss_store_url: config.vss_store_url,
+        node_msg_listen: config.node_msg_listen,
     };
 
-    let ec_rpc_url = config.ace_deployment_api.clone();
-    let ec_rpc_api_key = config.ace_deployment_apikey.clone();
-    let ec_rpc_gas_key = config.ace_deployment_gaskey.clone();
-    let ec_account_sk_hex = config.account_sk_hex.clone();
-    let ec_pke_dk_hex = config.pke_dk.clone();
-    let ec_sig_sk_hex = config.sig_sk_hex.clone();
-    let ec_vss_store_url = config.vss_store_url.clone();
-    let ec_node_msg_listen = config.node_msg_listen.clone();
-    let vss_store = connect_vss_store(&config.vss_store_url)?;
-
-    wlog!(
-        "network-node: starting (account={} ace={})",
-        account_addr,
-        ace
-    );
-
-    let local = LocalSecrets::empty();
-    let expiry_queue = ShareEvictionQueue::new(local.clone());
-
-    // Optional user-request server (monolith only).
-    if let Some(h) = handler_local {
-        let max_concurrent = resolve_max_concurrent(h.max_concurrent);
-        let state = http_server::AppState {
-            provider: Arc::new(SecretsProvider::Local(local.clone())),
-            chain_rpc: Arc::new(h.chain_rpc),
-            concurrency: Arc::new(Semaphore::new(max_concurrent)),
-            pke_dk_bytes: pke_dk_bytes.clone(),
-        };
-        tokio::spawn(http_server::run_user_server(h.port, state));
-    }
-
-    expiry_queue.spawn_cleanup_task(Duration::from_secs(5));
-
-    let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-    let mut epoch_change_cur_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-    let mut epoch_change_nxt_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
-
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            _ = &mut shutdown_rx => {
-                wlog!("network-node: shutdown signal received.");
-                stop_tasks(&mut urh_tasks);
-                stop_tasks(&mut epoch_change_cur_tasks);
-                stop_tasks(&mut epoch_change_nxt_tasks);
-                return Ok(());
-            }
-            _ = interval.tick() => {}
-        }
-
-        let state = match fetch_state_view_v0(&rpc, &ace).await {
-            Ok(s) => s,
-            Err(e) => {
-                wlog!("network-node: fetch state view error: {:#}", e);
-                continue;
-            }
-        };
-
-        let cur_node_idx = state
-            .cur_nodes
-            .iter()
-            .position(|n| addr_bytes_to_string(n) == account_addr);
-        let in_cur_nodes = cur_node_idx.is_some();
-
-        let now_micros = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-        let epoch_timed_out = now_micros
-            >= state
-                .epoch_start_time_micros
-                .saturating_add(state.epoch_duration_micros);
-        let has_approved_proposal = state
-            .proposals
-            .iter()
-            .any(|p| p.as_ref().is_some_and(|pv| pv.voting_passed));
-        if (state.epoch_change_info.is_some() || epoch_timed_out || has_approved_proposal)
-            && cur_node_idx
-                .map(|idx| should_submit_rotating_touch(idx, state.cur_nodes.len()))
-                .unwrap_or(false)
-        {
-            if let Err(e) = rpc
-                .submit_txn(
-                    &sk,
-                    &vk,
-                    &account_addr,
-                    &format!("{}::network::touch", ace),
-                    &[],
-                    &[],
-                )
-                .await
-            {
-                wlog!("network-node: network::touch error: {:#}", e);
-            }
-        }
-
-        match &state.epoch_change_info {
-            Some(info) => {
-                let session = addr_bytes_to_string(&info.session_addr);
-
-                if in_cur_nodes {
-                    if !epoch_change_cur_tasks.contains_key(&session) {
-                        let (tx, rx) = oneshot::channel::<()>();
-                        epoch_change_cur_tasks.insert(session.clone(), tx);
-                        let cfg = epoch_change_cur::RunConfig {
-                            rpc_url: ec_rpc_url.clone(),
-                            rpc_api_key: ec_rpc_api_key.clone(),
-                            rpc_gas_key: ec_rpc_gas_key.clone(),
-                            ace_contract: ace.clone(),
-                            epoch_change_session: session.clone(),
-                            account_addr: account_addr.clone(),
-                            account_sk_hex: ec_account_sk_hex.clone(),
-                            pke_dk_hex: ec_pke_dk_hex.clone(),
-                            sig_sk_hex: ec_sig_sk_hex.clone(),
-                            vss_store_url: ec_vss_store_url.clone(),
-                            node_msg_listen: ec_node_msg_listen.clone(),
-                        };
-                        tokio::spawn(async move {
-                            if let Err(e) = epoch_change_cur::run(cfg, rx).await {
-                                wlog!("network-node: epoch-change-cur error: {:#}", e);
-                            }
-                        });
-                        wlog!(
-                            "network-node: started epoch-change-cur for session={}",
-                            session
-                        );
-                    }
-                } else {
-                    stop_tasks(&mut epoch_change_cur_tasks);
-                }
-
-                let in_nxt_nodes = info
-                    .nxt_nodes
-                    .iter()
-                    .any(|n| addr_bytes_to_string(n) == account_addr);
-                if in_nxt_nodes {
-                    if !epoch_change_nxt_tasks.contains_key(&session) {
-                        let (tx, rx) = oneshot::channel::<()>();
-                        epoch_change_nxt_tasks.insert(session.clone(), tx);
-                        let cfg = epoch_change_nxt::RunConfig {
-                            rpc_url: ec_rpc_url.clone(),
-                            rpc_api_key: ec_rpc_api_key.clone(),
-                            rpc_gas_key: ec_rpc_gas_key.clone(),
-                            ace_contract: ace.clone(),
-                            epoch_change_session: session.clone(),
-                            account_addr: account_addr.clone(),
-                            account_sk_hex: ec_account_sk_hex.clone(),
-                            pke_dk_hex: ec_pke_dk_hex.clone(),
-                            sig_sk_hex: ec_sig_sk_hex.clone(),
-                            vss_store_url: ec_vss_store_url.clone(),
-                            node_msg_listen: ec_node_msg_listen.clone(),
-                        };
-                        tokio::spawn(async move {
-                            if let Err(e) = epoch_change_nxt::run(cfg, rx).await {
-                                wlog!("network-node: epoch-change-nxt error: {:#}", e);
-                            }
-                        });
-                        wlog!(
-                            "network-node: started epoch-change-nxt for session={}",
-                            session
-                        );
-                    }
-                } else {
-                    stop_tasks(&mut epoch_change_nxt_tasks);
-                }
-            }
-            None => {
-                stop_tasks(&mut epoch_change_cur_tasks);
-                stop_tasks(&mut epoch_change_nxt_tasks);
-            }
-        }
-
-        // This node's eval_point (1-based position) at the current epoch.
-        // URH stores it alongside each share so the handler doesn't have to
-        // re-derive committee state.
-        let my_eval_point: Option<u64> = state
-            .cur_nodes
-            .iter()
-            .position(|n| addr_bytes_to_string(n) == account_addr)
-            .map(|i| (i + 1) as u64);
-
-        let active_secrets: HashMap<String, (u64, String)> = if in_cur_nodes {
-            state
-                .secrets
-                .iter()
-                .map(|s| {
-                    (
-                        addr_bytes_to_string(&s.current_session),
-                        (s.expected_usage, s.note.clone()),
-                    )
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
-
-        for (secret_addr, (expected_usage, note)) in &active_secrets {
-            if urh_tasks.contains_key(secret_addr) {
-                continue;
-            }
-            let (tx, rx) = oneshot::channel::<()>();
-            urh_tasks.insert(secret_addr.clone(), tx);
-
-            let rpc2 = rpc.clone();
-            let ace2 = ace.clone();
-            let secret = secret_addr.clone();
-            let my = account_addr.clone();
-            let local2 = local.clone();
-            let expiry = expiry_queue.clone();
-            let store = vss_store.clone();
-            let epoch = state.epoch;
-            let expected_usage = *expected_usage;
-            let note = note.clone();
-            // eval_point at the time this share is being registered — sourced from
-            // the just-observed `cur_nodes`. Stored with the share so future
-            // requests (including stale-buffer-window ones after a committee
-            // change) use the correct value.
-            let eval_point = match my_eval_point {
-                Some(e) => e,
-                None => {
-                    // Should not happen — we only enter this block when
-                    // `in_cur_nodes` is true. Belt-and-suspenders.
-                    wlog!(
-                        "network-node: [urh] {} unexpected: in_cur_nodes but no eval_point",
-                        secret_addr
-                    );
-                    continue;
-                }
-            };
-
-            tokio::spawn(async move {
-                match reconstruct_share_from_store(&rpc2, &ace2, &secret, &my, store.as_ref()).await
-                {
-                    Ok(reconstructed) => {
-                        // Maintainer stores the raw share material plus
-                        // on-chain usage policy; handler derives
-                        // application-layer shares from the snapshot.
-                        let keypair_id = reconstructed.keypair_id.clone();
-                        let group_scheme = reconstructed.group_scheme;
-                        local2
-                            .insert_share(
-                                keypair_id.clone(),
-                                epoch,
-                                ShareEntry {
-                                    scalar_le32: reconstructed.scalar_le32,
-                                    blinding_le32: reconstructed.blinding_le32,
-                                    group_scheme,
-                                    pcs_context: reconstructed.pcs_context,
-                                    share_commitment: reconstructed.share_commitment,
-                                    expected_usage,
-                                    eval_point,
-                                    note,
-                                },
-                            )
-                            .await;
-                        wlog!(
-                            "network-node: [urh] registered keypair_id={} epoch={} group_scheme={} expected_usage={} eval_point={}",
-                            keypair_id, epoch, group_scheme, expected_usage, eval_point
-                        );
-                        let _ = rx.await;
-                        expiry.schedule_after(keypair_id.clone(), epoch, Duration::from_secs(30));
-                        wlog!(
-                            "network-node: [urh] scheduled eviction keypair_id={} epoch={} in 30s",
-                            keypair_id,
-                            epoch
-                        );
-                    }
-                    Err(e) => {
-                        wlog!(
-                            "network-node: [urh] reconstruct_share failed for {}: {:#}",
-                            secret,
-                            e
-                        );
-                    }
-                }
-            });
-            wlog!("network-node: started URH task for secret={}", secret_addr);
-        }
-
-        let stale_secrets: Vec<String> = urh_tasks
-            .keys()
-            .filter(|k| !active_secrets.contains_key(*k))
-            .cloned()
-            .collect();
-        for k in stale_secrets {
-            if let Some(tx) = urh_tasks.remove(&k) {
-                let _ = tx.send(());
-                wlog!("network-node: stopped URH task for secret={}", k);
-            }
-        }
-    }
+    run_supervisor(
+        NetworkSupervisorConfig {
+            mode_label: if capabilities.can_serve {
+                "monolith"
+            } else {
+                "maintainer-only"
+            },
+            rpc,
+            ace,
+            account_addr,
+            store,
+            capabilities,
+            protocol: Some(protocol),
+            user_server,
+        },
+        shutdown_rx,
+    )
+    .await
 }
 
 // ── Handler-only ─────────────────────────────────────────────────────────────
@@ -1004,103 +1171,116 @@ async fn run_handler(
     max_concurrent: Option<usize>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    wlog!(
-        "network-node: starting handler-only (account={} ace={} store={})",
-        normalize_account_addr(&account_addr),
-        normalize_account_addr(&ace_deployment_addr),
-        vss_store_url
-    );
-    let pke_dk_bytes: Arc<Vec<u8>> = {
-        let raw = pke_dk.trim().trim_start_matches("0x");
-        Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
-    };
     let rpc = AptosRpc::new_with_key(ace_deployment_api, ace_deployment_apikey);
     let ace = normalize_account_addr(&ace_deployment_addr);
     let account_addr = normalize_account_addr(&account_addr);
     let store = connect_vss_store(&vss_store_url)?;
-    let local = LocalSecrets::empty();
-
-    tokio::spawn(handler_store_sync_loop(
-        rpc,
-        ace,
-        account_addr,
-        store,
-        local.clone(),
-    ));
-
-    let state = http_server::AppState {
-        provider: Arc::new(SecretsProvider::Local(local)),
-        chain_rpc: Arc::new(chain_rpc),
-        concurrency: Arc::new(Semaphore::new(resolve_max_concurrent(max_concurrent))),
-        pke_dk_bytes,
-    };
-    tokio::spawn(http_server::run_user_server(port, state));
-    let _ = shutdown_rx.await;
-    wlog!("network-node: handler shutdown signal received.");
-    Ok(())
+    let pke_dk_bytes = decode_pke_dk(&pke_dk)?;
+    run_supervisor(
+        NetworkSupervisorConfig {
+            mode_label: "handler-only",
+            rpc,
+            ace,
+            account_addr,
+            store,
+            capabilities: RuntimeCapabilities::handler_only(),
+            protocol: None,
+            user_server: Some(UserServerConfig {
+                port,
+                chain_rpc,
+                max_concurrent,
+                pke_dk_bytes,
+            }),
+        },
+        shutdown_rx,
+    )
+    .await
 }
 
-async fn handler_store_sync_loop(
-    rpc: AptosRpc,
-    ace: String,
-    account_addr: String,
-    store: Arc<dyn VssStore>,
-    local: LocalSecrets,
-) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        interval.tick().await;
-        if let Err(e) =
-            handler_store_sync_once(&rpc, &ace, &account_addr, store.as_ref(), &local).await
-        {
-            wlog!("network-node: handler DB share sync error: {:#}", e);
+fn decode_pke_dk(pke_dk: &str) -> Result<Arc<Vec<u8>>> {
+    let raw = pke_dk.trim().trim_start_matches("0x");
+    Ok(Arc::new(
+        hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    fn secret(session_byte: u8, keypair_byte: u8) -> BcsSecretInfo {
+        BcsSecretInfo {
+            current_session: addr(session_byte),
+            keypair_id: addr(keypair_byte),
+            scheme: 1,
+            expected_usage: crate::secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
+            note: format!("secret-{session_byte}"),
         }
     }
-}
 
-async fn handler_store_sync_once(
-    rpc: &AptosRpc,
-    ace: &str,
-    account_addr: &str,
-    store: &dyn VssStore,
-    local: &LocalSecrets,
-) -> Result<()> {
-    let state = fetch_state_view_v0(rpc, ace).await?;
-    let my_eval_point = match state
-        .cur_nodes
-        .iter()
-        .position(|n| addr_bytes_to_string(n) == account_addr)
-    {
-        Some(idx) => (idx + 1) as u64,
-        None => {
-            local.clear().await;
-            return Ok(());
+    fn state_with_previous(
+        current_nodes: Vec<[u8; 32]>,
+        previous_nodes: Vec<[u8; 32]>,
+    ) -> BcsStateViewV0 {
+        BcsStateViewV0 {
+            epoch: 7,
+            epoch_start_time_micros: 1_000_000,
+            epoch_duration_micros: 90_000_000,
+            cur_nodes: current_nodes,
+            cur_threshold: 2,
+            secrets: vec![secret(0x10, 0x20)],
+            previous_epoch_info: Some(BcsEpochSnapshot {
+                epoch: 6,
+                epoch_start_time_micros: 0,
+                epoch_duration_micros: 90_000_000,
+                nodes: previous_nodes,
+                threshold: 2,
+                secrets: vec![secret(0x11, 0x21)],
+            }),
+            proposals: vec![],
+            epoch_change_info: None,
         }
-    };
+    }
 
-    let mut refreshed = ShareMap::new();
-    for secret in &state.secrets {
-        let session_addr = addr_bytes_to_string(&secret.current_session);
-        let reconstructed =
-            reconstruct_share_from_store(rpc, ace, &session_addr, account_addr, store).await?;
-        let keypair_id = reconstructed.keypair_id.clone();
-        refreshed.insert(
-            (keypair_id, state.epoch),
-            ShareEntry {
-                scalar_le32: reconstructed.scalar_le32,
-                blinding_le32: reconstructed.blinding_le32,
-                group_scheme: reconstructed.group_scheme,
-                pcs_context: reconstructed.pcs_context,
-                share_commitment: reconstructed.share_commitment,
-                expected_usage: secret.expected_usage,
-                eval_point: my_eval_point,
-                note: secret.note.clone(),
-            },
+    #[test]
+    fn desired_serving_epochs_includes_current_committee_membership() {
+        let me = addr(1);
+        let state = state_with_previous(vec![addr(9), me], vec![addr(8)]);
+        let desired = desired_serving_epochs(
+            &state,
+            &addr_bytes_to_string(&me),
+            state.epoch_start_time_micros,
         );
+
+        assert_eq!(desired.len(), 1);
+        assert_eq!(desired[0].epoch, 7);
+        assert_eq!(desired[0].eval_point, 2);
+        assert_eq!(desired[0].secrets[0].current_session, addr(0x10));
     }
 
-    let min_epoch_to_keep = state.epoch.saturating_sub(1);
-    local.replace_since(min_epoch_to_keep, refreshed).await;
-    Ok(())
+    #[test]
+    fn desired_serving_epochs_keeps_previous_only_inside_grace_window() {
+        let me = addr(1);
+        let state = state_with_previous(vec![addr(9)], vec![addr(8), me]);
+        let in_grace = desired_serving_epochs(
+            &state,
+            &addr_bytes_to_string(&me),
+            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS - 1,
+        );
+        assert_eq!(in_grace.len(), 1);
+        assert_eq!(in_grace[0].epoch, 6);
+        assert_eq!(in_grace[0].eval_point, 2);
+        assert_eq!(in_grace[0].secrets[0].current_session, addr(0x11));
+
+        let after_grace = desired_serving_epochs(
+            &state,
+            &addr_bytes_to_string(&me),
+            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS,
+        );
+        assert!(after_grace.is_empty());
+    }
 }

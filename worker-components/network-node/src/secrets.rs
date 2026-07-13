@@ -8,8 +8,7 @@
 //! handlers never fetch shares from a maintainer process.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::RwLock;
@@ -65,82 +64,13 @@ impl LocalSecrets {
             .cloned()
     }
 
-    pub(crate) async fn insert_share(&self, keypair_id: String, epoch: u64, entry: ShareEntry) {
+    #[cfg(test)]
+    async fn insert_share(&self, keypair_id: String, epoch: u64, entry: ShareEntry) {
         self.shares.write().await.insert((keypair_id, epoch), entry);
     }
 
-    pub(crate) async fn remove_share(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
-        self.shares
-            .write()
-            .await
-            .remove(&(keypair_id.to_string(), epoch))
-    }
-
-    pub(crate) async fn clear(&self) {
-        self.shares.write().await.clear();
-    }
-
-    pub(crate) async fn replace_since(&self, min_epoch: u64, refreshed: ShareMap) {
-        let mut guard = self.shares.write().await;
-        guard.retain(|(_, epoch), _| *epoch >= min_epoch);
-        for (key, entry) in refreshed {
-            guard.insert(key, entry);
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ShareEvictionQueue {
-    local: LocalSecrets,
-    pending: Arc<Mutex<Vec<(Instant, String, u64)>>>,
-}
-
-impl ShareEvictionQueue {
-    pub(crate) fn new(local: LocalSecrets) -> Self {
-        Self {
-            local,
-            pending: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub(crate) fn schedule_after(&self, keypair_id: String, epoch: u64, delay: Duration) {
-        self.pending
-            .lock()
-            .unwrap()
-            .push((Instant::now() + delay, keypair_id, epoch));
-    }
-
-    pub(crate) fn spawn_cleanup_task(&self, interval: Duration) {
-        let queue = self.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                queue.evict_due(Instant::now()).await;
-            }
-        });
-    }
-
-    async fn evict_due(&self, now: Instant) {
-        let expired: Vec<(String, u64)> = {
-            let mut q = self.pending.lock().unwrap();
-            let (done, pending): (Vec<_>, Vec<_>) =
-                q.drain(..).partition(|(deadline, _, _)| *deadline <= now);
-            *q = pending;
-            done.into_iter()
-                .map(|(_, keypair_id, epoch)| (keypair_id, epoch))
-                .collect()
-        };
-
-        for (keypair_id, epoch) in expired {
-            if self.local.remove_share(&keypair_id, epoch).await.is_some() {
-                crate::wlog!(
-                    "network-node: [cleanup] evicted keypair_id={} epoch={}",
-                    keypair_id,
-                    epoch
-                );
-            }
-        }
+    pub(crate) async fn replace_all(&self, refreshed: ShareMap) {
+        *self.shares.write().await = refreshed;
     }
 }
 
@@ -248,7 +178,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_since_retains_only_recent_epochs_and_refreshed_entries() {
+    async fn replace_all_drops_stale_entries_and_keeps_refreshed_entries() {
         let local = LocalSecrets::empty();
         local
             .insert_share("0xold".to_string(), 3, dummy_share("old"))
@@ -259,25 +189,11 @@ mod tests {
 
         let mut refreshed = ShareMap::new();
         refreshed.insert(("0xnew".to_string(), 5), dummy_share("new"));
-        local.replace_since(4, refreshed).await;
+        local.replace_all(refreshed).await;
 
         assert!(local.get_share("0xold", 3).await.is_none());
-        assert!(local.get_share("0xrecent", 4).await.is_some());
+        assert!(local.get_share("0xrecent", 4).await.is_none());
         assert_eq!(local.get_share("0xnew", 5).await.unwrap().note, "new");
-    }
-
-    #[tokio::test]
-    async fn eviction_queue_removes_due_share() {
-        let local = LocalSecrets::empty();
-        local
-            .insert_share("0xkp".to_string(), 9, dummy_share("evict me"))
-            .await;
-        let queue = ShareEvictionQueue::new(local.clone());
-
-        queue.schedule_after("0xkp".to_string(), 9, Duration::from_secs(0));
-        queue.evict_due(Instant::now()).await;
-
-        assert!(local.get_share("0xkp", 9).await.is_none());
     }
 
     fn dummy_share(note: &str) -> ShareEntry {

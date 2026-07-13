@@ -168,6 +168,43 @@ export class EpochChangeView {
     }
 }
 
+/** Mirrors `ace::network::EpochSnapshotView` from `state_view_v0_bcs`. */
+export class EpochSnapshot {
+    constructor(
+        readonly epoch: number,
+        readonly epochStartTimeMicros: bigint,
+        readonly epochDurationMicros: bigint,
+        readonly nodes: AccountAddress[],
+        readonly threshold: number,
+        readonly secrets: SecretInfo[],
+    ) {}
+
+    static deserialize(deserializer: Deserializer): EpochSnapshot {
+        const epoch = Number(deserializer.deserializeU64());
+        const epochStartTimeMicros = deserializer.deserializeU64();
+        const epochDurationMicros = deserializer.deserializeU64();
+
+        const nodesLen = deserializer.deserializeUleb128AsU32();
+        const nodes: AccountAddress[] = [];
+        for (let i = 0; i < nodesLen; i++) nodes.push(AccountAddress.deserialize(deserializer));
+
+        const threshold = Number(deserializer.deserializeU64());
+
+        const secretsLen = deserializer.deserializeUleb128AsU32();
+        const secrets: SecretInfo[] = [];
+        for (let i = 0; i < secretsLen; i++) secrets.push(SecretInfo.deserialize(deserializer));
+
+        return new EpochSnapshot(
+            epoch,
+            epochStartTimeMicros,
+            epochDurationMicros,
+            nodes,
+            threshold,
+            secrets,
+        );
+    }
+}
+
 /** Mirrors `ace::network::StateViewV0` from `state_view_v0_bcs`. */
 export class State {
     constructor(
@@ -177,6 +214,7 @@ export class State {
         readonly curNodes: AccountAddress[],
         readonly curThreshold: number,
         readonly secrets: SecretInfo[],
+        readonly previousEpochInfo: EpochSnapshot | null,
         /** proposals[i] is node i's active proposal, last slot is admin's. null = no proposal. */
         readonly proposals: (ProposalView | null)[],
         readonly epochChangeInfo: EpochChangeView | null,
@@ -208,6 +246,14 @@ export class State {
                 const secrets: SecretInfo[] = [];
                 for (let i = 0; i < secretsLen; i++) secrets.push(SecretInfo.deserialize(deserializer));
 
+                const previousEpochTag = deserializer.deserializeU8();
+                let previousEpochInfo: EpochSnapshot | null = null;
+                if (previousEpochTag === 1) {
+                    previousEpochInfo = EpochSnapshot.deserialize(deserializer);
+                } else if (previousEpochTag !== 0) {
+                    throw `previous_epoch_info option tag must be 0 or 1, got ${previousEpochTag}`;
+                }
+
                 const proposalsLen = deserializer.deserializeUleb128AsU32();
                 const proposals: (ProposalView | null)[] = [];
                 for (let i = 0; i < proposalsLen; i++) {
@@ -236,6 +282,7 @@ export class State {
                     curNodes,
                     curThreshold,
                     secrets,
+                    previousEpochInfo,
                     proposals,
                     epochChangeInfo,
                 );

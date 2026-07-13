@@ -10,7 +10,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::{normalize_account_addr, session::Session};
+use crate::{
+    normalize_account_addr,
+    pke::{self, ElGamalOtpRistretto255EncKey},
+    pke_hpke_x25519_chacha20poly1305 as hpke,
+    session::Session,
+};
 
 /// Process-global nonce counter for orderless transactions.
 /// Seeded from the current time in nanoseconds so that separate OS processes
@@ -727,77 +732,169 @@ impl AptosRpc {
         Ok(resp.json::<Vec<Value>>().await?)
     }
 
-    /// Fetch a worker's PKE encryption key via the `get_pke_enc_key_bcs` view function.
-    pub async fn get_pke_enc_key_bcs(
+    fn move_bytes_from_json(value: &Value, context: &str) -> Result<Vec<u8>> {
+        if let Some(hex) = value.as_str() {
+            return hex::decode(hex.trim_start_matches("0x"))
+                .map_err(|e| anyhow!("{}: hex decode: {}", context, e));
+        }
+        if let Some(values) = value.as_array() {
+            return values
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| {
+                    let byte = byte
+                        .as_u64()
+                        .ok_or_else(|| anyhow!("{}: byte {} is not a u64", context, i))?;
+                    u8::try_from(byte)
+                        .map_err(|_| anyhow!("{}: byte {} out of range: {}", context, i, byte))
+                })
+                .collect();
+        }
+        if let Some(data) = value.get("data") {
+            return Self::move_bytes_from_json(data, &format!("{}.data", context));
+        }
+        Err(anyhow!(
+            "{}: expected hex string, byte array, or data object",
+            context
+        ))
+    }
+
+    fn worker_pke_from_resource(data: &Value, context: &str) -> Result<crate::pke::EncryptionKey> {
+        let ek = data
+            .get("ek")
+            .ok_or_else(|| anyhow!("{}: missing ek", context))?;
+        let variant = ek
+            .get("__variant__")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("{}: missing ek.__variant__", context))?;
+        let inner = ek
+            .get("_0")
+            .ok_or_else(|| anyhow!("{}: missing ek._0", context))?;
+
+        match variant {
+            "ElGamalOtpRistretto255" => Ok(pke::EncryptionKey::ElGamalOtpRistretto255(
+                ElGamalOtpRistretto255EncKey {
+                    enc_base: Self::move_bytes_from_json(
+                        inner
+                            .get("enc_base")
+                            .ok_or_else(|| anyhow!("{}: missing ek._0.enc_base", context))?,
+                        &format!("{}.ek._0.enc_base", context),
+                    )?,
+                    public_point: Self::move_bytes_from_json(
+                        inner
+                            .get("public_point")
+                            .ok_or_else(|| anyhow!("{}: missing ek._0.public_point", context))?,
+                        &format!("{}.ek._0.public_point", context),
+                    )?,
+                },
+            )),
+            "HpkeX25519ChaCha20Poly1305" => {
+                let pk = Self::move_bytes_from_json(
+                    inner
+                        .get("pk")
+                        .ok_or_else(|| anyhow!("{}: missing ek._0.pk", context))?,
+                    &format!("{}.ek._0.pk", context),
+                )?;
+                let key_bcs = bcs::to_bytes(&hpke::EncryptionKey { pk })
+                    .map_err(|e| anyhow!("{}: encode HPKE key: {}", context, e))?;
+                Ok(pke::EncryptionKey::HpkeX25519ChaCha20Poly1305(
+                    hpke::EncryptionKey::from_bytes(&key_bcs)?,
+                ))
+            }
+            other => Err(anyhow!(
+                "{}: unsupported PKE key variant {}",
+                context,
+                other
+            )),
+        }
+    }
+
+    fn worker_sig_from_resource(data: &Value, context: &str) -> Result<crate::sig::PublicKey> {
+        let pk = data
+            .get("pk")
+            .ok_or_else(|| anyhow!("{}: missing pk", context))?;
+        let variant = pk
+            .get("__variant__")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("{}: missing pk.__variant__", context))?;
+        if variant != "Ed25519" {
+            return Err(anyhow!(
+                "{}: unsupported sig public key variant {}",
+                context,
+                variant
+            ));
+        }
+        let bytes = Self::move_bytes_from_json(
+            pk.pointer("/_0/bytes")
+                .ok_or_else(|| anyhow!("{}: missing pk._0.bytes", context))?,
+            &format!("{}.pk._0.bytes", context),
+        )?;
+        crate::sig::PublicKey::ed25519(bytes)
+    }
+
+    /// Fetch a worker's PKE encryption key from its `PkeEncryptionKey` resource.
+    pub async fn get_pke_enc_key(
         &self,
         ace: &str,
         worker_addr: &str,
     ) -> Result<crate::pke::EncryptionKey> {
-        let result = self
-            .call_view(
-                &format!("{}::worker_config::get_pke_enc_key_bcs", ace),
-                &[json!(worker_addr)],
+        let data = self
+            .get_resource_data(
+                worker_addr,
+                &format!("{}::worker_config::PkeEncryptionKey", ace),
             )
             .await?;
-        let hex = result
-            .first()
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("expected string in view result"))?;
-        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
-        bcs::from_bytes(&bytes).map_err(|e| anyhow!("EncryptionKey BCS decode: {}", e))
+        Self::worker_pke_from_resource(&data, "PkeEncryptionKey resource")
     }
 
     /// Fetch a worker's registered client-facing endpoint.
     pub async fn get_worker_client_endpoint(&self, ace: &str, worker_addr: &str) -> Result<String> {
-        let result = self
-            .call_view(
-                &format!("{}::worker_config::get_client_endpoint", ace),
-                &[json!(worker_addr)],
+        let data = self
+            .get_resource_data(
+                worker_addr,
+                &format!("{}::worker_config::ClientEndpoint", ace),
             )
             .await?;
-        result
-            .first()
-            .and_then(|v| v.as_str())
+        data.get("endpoint")
+            .and_then(Value::as_str)
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("expected string in get_client_endpoint result"))
+            .ok_or_else(|| anyhow!("ClientEndpoint resource missing endpoint string"))
     }
 
-    /// Fetch a worker's node-to-node messaging signature public key.
-    pub async fn get_sig_verification_key_bcs(
+    /// Fetch a worker's node-to-node messaging signature public key from its resource.
+    pub async fn get_sig_verification_key(
         &self,
         ace: &str,
         worker_addr: &str,
     ) -> Result<crate::sig::PublicKey> {
-        let result = self
-            .call_view(
-                &format!("{}::worker_config::get_sig_verification_key_bcs", ace),
-                &[json!(worker_addr)],
+        let data = self
+            .get_resource_data(
+                worker_addr,
+                &format!("{}::worker_config::SigVerificationKey", ace),
             )
             .await?;
-        let hex = result
-            .first()
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("expected string in get_sig_verification_key_bcs view result"))?;
-        let bytes = hex::decode(hex.trim_start_matches("0x"))?;
-        crate::sig::PublicKey::from_bytes(&bytes)
+        Self::worker_sig_from_resource(&data, "SigVerificationKey resource")
     }
 
     /// Fetch a worker's registered node-to-node message endpoint.
-    pub async fn get_worker_node_msg_endpoint(&self, ace: &str, worker_addr: &str) -> Result<String> {
+    pub async fn get_worker_node_msg_endpoint(
+        &self,
+        ace: &str,
+        worker_addr: &str,
+    ) -> Result<String> {
         let cell = self.metadata_cache.node_msg_endpoint_cell(ace, worker_addr);
         let endpoint = cell
             .get_or_try_init(|| async {
-                let result = self
-                    .call_view(
-                        &format!("{}::worker_config::get_node_msg_endpoint", ace),
-                        &[json!(worker_addr)],
+                let data = self
+                    .get_resource_data(
+                        worker_addr,
+                        &format!("{}::worker_config::NodeMsgEndpoint", ace),
                     )
                     .await?;
-                result
-                    .first()
-                    .and_then(|v| v.as_str())
+                data.get("endpoint")
+                    .and_then(Value::as_str)
                     .map(|s| s.to_string())
-                    .ok_or_else(|| anyhow!("expected string in get_node_msg_endpoint result"))
+                    .ok_or_else(|| anyhow!("NodeMsgEndpoint resource missing endpoint string"))
             })
             .await?;
         Ok(endpoint.clone())

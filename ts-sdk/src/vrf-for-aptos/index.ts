@@ -29,6 +29,7 @@ import {
     AceDeployment,
     ContractID,
     createAptos,
+    fetchCurrentWorkerNodeInfos,
     fetchNetworkState,
     NetworkState,
     WorkerRequest,
@@ -254,37 +255,6 @@ export class ThresholdVrfShareProof {
             zBlinding,
         });
     }
-}
-
-async function fetchCurrentNodeInfos(
-    aceDeployment: AceDeployment,
-    networkState: NetworkState,
-): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
-    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
-    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-
-    return Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-        const addrStr = nodeAddr.toStringLong();
-        const [[endpoint], [ekHex]] = await Promise.all([
-            aptos.view({
-                payload: {
-                    function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [addrStr],
-                },
-            }),
-            aptos.view({
-                payload: {
-                    function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [addrStr],
-                },
-            }),
-        ]);
-        const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, "")))
-            .unwrapOrThrow(`ACE.VRF_Aptos: parse pke enc key for ${addrStr}`);
-        return { nodeAddr: addrStr, endpoint: endpoint as string, nodeEncKey };
-    }));
 }
 
 async function fetchCurrentSessionCommitments(
@@ -562,7 +532,11 @@ export class DerivationSession {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: missing network state");
         }
         const [nodeInfos, currentSessionCommitments] = await Promise.all([
-            fetchCurrentNodeInfos(this.aceDeployment, networkState),
+            fetchCurrentWorkerNodeInfos({
+                aceDeployment: this.aceDeployment,
+                networkState,
+                pkeParseContext: "ACE.VRF_Aptos",
+            }),
             fetchCurrentSessionCommitments(this.aceDeployment, networkState, this.keypairId),
         ]);
         if (currentSessionCommitments.shareCommitments.length !== networkState.curNodes.length) {
@@ -675,7 +649,11 @@ export class DerivationSession {
         const requestBytes = WorkerRequest.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),
         ).toBytes();
-        const nodeInfos = await fetchCurrentNodeInfos(this.aceDeployment, networkState);
+        const nodeInfos = await fetchCurrentWorkerNodeInfos({
+            aceDeployment: this.aceDeployment,
+            networkState,
+            pkeParseContext: "ACE.VRF_Aptos",
+        });
         const target = args.targetEndpoint.replace(/\/$/, "");
         const sdkIdx = nodeInfos.findIndex(n => n.endpoint.replace(/\/$/, "") === target);
         if (sdkIdx < 0) {

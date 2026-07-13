@@ -142,14 +142,11 @@ export class NetworkClient {
 
     async getWorkerClientEndpoint(addr: string): Promise<string | null> {
         try {
-            const [result] = await this.aptos.view({
-                payload: {
-                    function: `${this.aceAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [addr],
-                },
+            const resource = await this.aptos.getAccountResource<{ endpoint?: string }>({
+                accountAddress: addr,
+                resourceType: `${this.aceAddr}::worker_config::ClientEndpoint`,
             });
-            return result as string;
+            return typeof resource.endpoint === 'string' ? resource.endpoint : null;
         } catch {
             return null;
         }

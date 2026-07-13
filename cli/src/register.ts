@@ -9,6 +9,7 @@ import {
     Network,
 } from '@aptos-labs/ts-sdk';
 import { GasStationTransactionSubmitter } from '@aptos-labs/gas-station-client';
+import { workerConfig } from '@aptos-labs/ace-sdk';
 
 function inferNetwork(rpcUrl: string): Network {
     const url = rpcUrl.toLowerCase();
@@ -47,14 +48,11 @@ function buildAptos(rpcUrl: string, rpcApiKey?: string, gasStationKey?: string):
     return new Aptos(new AptosConfig({ network, fullnode: rpcUrl, faucet, clientConfig }));
 }
 
-async function tryView(aptos: Aptos, fn: string, args: string[]): Promise<unknown[] | null> {
+async function tryResource<T extends object>(aptos: Aptos, accountAddress: string, resourceType: string): Promise<T | null> {
     try {
-        return await aptos.view({
-            payload: {
-                function: fn as `${string}::${string}::${string}`,
-                typeArguments: [],
-                functionArguments: args,
-            },
+        return await aptos.getAccountResource<T>({
+            accountAddress,
+            resourceType: resourceType as `${string}::${string}::${string}`,
         });
     } catch (e: unknown) {
         const msg = String((e as any)?.message ?? e);
@@ -113,12 +111,16 @@ export async function registerOnChain(
 
     // Client-facing endpoint
     process.stderr.write(`\nChecking client endpoint...\n`);
-    const endpointResult = await tryView(aptos, `${node.aceAddr}::worker_config::get_client_endpoint`, [node.accountAddr]);
-    if (endpointResult === null) {
+    const endpointResource = await tryResource<workerConfig.WorkerEndpointResource>(
+        aptos,
+        node.accountAddr,
+        `${node.aceAddr}::worker_config::ClientEndpoint`,
+    );
+    if (endpointResource === null) {
         process.stderr.write(`  not registered — submitting register_client_endpoint\n`);
         await submitEntry(`${node.aceAddr}::worker_config::register_client_endpoint`, [endpoint]);
     } else {
-        const onChain = endpointResult[0] as string;
+        const onChain = workerConfig.endpointFromResource(endpointResource, 'ClientEndpoint resource');
         if (onChain !== endpoint) {
             throw new Error(`Client endpoint mismatch:\n  on-chain : ${onChain}\n  input    : ${endpoint}`);
         }
@@ -127,12 +129,16 @@ export async function registerOnChain(
 
     // Node-message endpoint
     process.stderr.write(`\nChecking node-message endpoint...\n`);
-    const nodeMsgEndpointResult = await tryView(aptos, `${node.aceAddr}::worker_config::get_node_msg_endpoint`, [node.accountAddr]);
-    if (nodeMsgEndpointResult === null) {
+    const nodeMsgEndpointResource = await tryResource<workerConfig.WorkerEndpointResource>(
+        aptos,
+        node.accountAddr,
+        `${node.aceAddr}::worker_config::NodeMsgEndpoint`,
+    );
+    if (nodeMsgEndpointResource === null) {
         process.stderr.write(`  not registered — submitting register_node_msg_endpoint\n`);
         await submitEntry(`${node.aceAddr}::worker_config::register_node_msg_endpoint`, [nodeMsgEndpoint]);
     } else {
-        const onChain = nodeMsgEndpointResult[0] as string;
+        const onChain = workerConfig.endpointFromResource(nodeMsgEndpointResource, 'NodeMsgEndpoint resource');
         if (onChain !== nodeMsgEndpoint) {
             throw new Error(`Node-message endpoint mismatch:\n  on-chain : ${onChain}\n  input    : ${nodeMsgEndpoint}`);
         }
@@ -141,14 +147,21 @@ export async function registerOnChain(
 
     // PKE encryption key
     process.stderr.write(`\nChecking PKE encryption key...\n`);
-    const pkeResult = await tryView(aptos, `${node.aceAddr}::worker_config::get_pke_enc_key_bcs`, [node.accountAddr]);
+    const pkeResource = await tryResource<workerConfig.WorkerPkeEncryptionKeyResource>(
+        aptos,
+        node.accountAddr,
+        `${node.aceAddr}::worker_config::PkeEncryptionKey`,
+    );
     const profileEkHex = node.pkeEk.replace(/^0x/i, '').toLowerCase();
-    if (pkeResult === null) {
+    if (pkeResource === null) {
         process.stderr.write(`  not registered — submitting register_pke_enc_key\n`);
         const ekBytes = Array.from(Buffer.from(profileEkHex, 'hex'));
         await submitEntry(`${node.aceAddr}::worker_config::register_pke_enc_key`, [ekBytes]);
     } else {
-        const onChainHex = (pkeResult[0] as string).replace(/^0x/i, '').toLowerCase();
+        const onChainHex = workerConfig.pkeEncryptionKeyFromResource(pkeResource)
+            .toHex()
+            .replace(/^0x/i, '')
+            .toLowerCase();
         if (onChainHex !== profileEkHex) {
             throw new Error(`PKE enc key mismatch:\n  on-chain : 0x${onChainHex}\n  profile  : 0x${profileEkHex}`);
         }
@@ -157,14 +170,21 @@ export async function registerOnChain(
 
     // Node-message signature verification key
     process.stderr.write(`\nChecking node-message signature key...\n`);
-    const sigResult = await tryView(aptos, `${node.aceAddr}::worker_config::get_sig_verification_key_bcs`, [node.accountAddr]);
+    const sigResource = await tryResource<workerConfig.WorkerSigVerificationKeyResource>(
+        aptos,
+        node.accountAddr,
+        `${node.aceAddr}::worker_config::SigVerificationKey`,
+    );
     const profileSigPkHex = node.sigPk.replace(/^0x/i, '').toLowerCase();
-    if (sigResult === null) {
+    if (sigResource === null) {
         process.stderr.write(`  not registered — submitting register_sig_verification_key\n`);
         const sigPkBytes = Array.from(Buffer.from(profileSigPkHex, 'hex'));
         await submitEntry(`${node.aceAddr}::worker_config::register_sig_verification_key`, [sigPkBytes]);
     } else {
-        const onChainHex = (sigResult[0] as string).replace(/^0x/i, '').toLowerCase();
+        const onChainHex = workerConfig.sigVerificationKeyFromResource(sigResource)
+            .toHex()
+            .replace(/^0x/i, '')
+            .toLowerCase();
         if (onChainHex !== profileSigPkHex) {
             throw new Error(`Node-message sig key mismatch:\n  on-chain : 0x${onChainHex}\n  profile  : 0x${profileSigPkHex}`);
         }

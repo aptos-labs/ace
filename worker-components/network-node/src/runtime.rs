@@ -92,14 +92,6 @@ struct ServingEpoch {
     secrets: Vec<BcsSecretInfo>,
 }
 
-struct ServingCacheSync<'a> {
-    rpc: &'a AptosRpc,
-    ace: &'a str,
-    account_addr: &'a str,
-    store: &'a dyn VssStore,
-    local: &'a LocalSecrets,
-}
-
 async fn run_supervisor(
     mut config: NetworkSupervisorConfig,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -206,14 +198,7 @@ async fn run_supervisor(
 
         if let Some(local) = local.as_ref() {
             let desired_epochs = desired_serving_epochs(&state, &config.account_addr, now_micros);
-            let cache_sync = ServingCacheSync {
-                rpc: &config.rpc,
-                ace: &config.ace,
-                account_addr: &config.account_addr,
-                store: config.store.as_ref(),
-                local,
-            };
-            if let Err(e) = reconcile_serving_cache(cache_sync, desired_epochs).await {
+            if let Err(e) = reconcile_serving_cache(&config, local, desired_epochs).await {
                 wlog!("network-node: serving cache sync error: {:#}", e);
             }
         }
@@ -286,7 +271,8 @@ fn desired_serving_epochs(
 }
 
 async fn reconcile_serving_cache(
-    sync: ServingCacheSync<'_>,
+    config: &NetworkSupervisorConfig,
+    local: &LocalSecrets,
     desired_epochs: Vec<ServingEpoch>,
 ) -> Result<()> {
     let mut refreshed = ShareMap::new();
@@ -294,11 +280,11 @@ async fn reconcile_serving_cache(
         for secret in epoch.secrets {
             let session_addr = addr_bytes_to_string(&secret.current_session);
             let reconstructed = reconstruct_share_from_store(
-                sync.rpc,
-                sync.ace,
+                &config.rpc,
+                &config.ace,
                 &session_addr,
-                sync.account_addr,
-                sync.store,
+                &config.account_addr,
+                config.store.as_ref(),
             )
             .await?;
             let keypair_id = reconstructed.keypair_id.clone();
@@ -318,7 +304,7 @@ async fn reconcile_serving_cache(
         }
     }
 
-    sync.local.replace_all(refreshed).await;
+    local.replace_all(refreshed).await;
     Ok(())
 }
 

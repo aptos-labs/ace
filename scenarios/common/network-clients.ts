@@ -174,7 +174,7 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
     index: number;
     /** Total number of workers being spawned in this committee. */
     total: number;
-    /** Base port; handler/monolith uses `workerBasePort + index`. */
+    /** Base port; node i uses `base + 2*i` for split maintainer and `base + 2*i + 1` for handler/monolith. */
     workerBasePort: number;
 };
 
@@ -182,15 +182,15 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
  * Spawn one committee member in either monolith or split mode, chosen by index:
  * the front `ceil(total/2)` indices run as split (maintainer + handler) and the
  * rest run as monoliths. Returns the list of processes spawned (length 1 for
- * monolith, 2 for split). Callers register
- * `http://localhost:${workerBasePort + index}` as the on-chain endpoint
- * regardless of mode.
+ * monolith, 2 for split). Callers register the node-msg endpoint separately
+ * for split mode; monolith mode should register both on-chain endpoints to
+ * the single handler/monolith URL.
  *
  * Exercising both modes in every end-to-end scenario keeps the split-mode
  * codepaths under continuous CI coverage.
  */
 export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess[] {
-    const handlerPort = opts.workerBasePort + opts.index;
+    const handlerPort = opts.workerBasePort + (2 * opts.index) + 1;
     const isSplit = shouldSpawnSplitNetworkNode(opts.index, opts.total);
     if (isSplit) {
         const { maintainer, handler } = spawnNetworkNodeSplit({

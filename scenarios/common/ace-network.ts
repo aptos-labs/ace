@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import * as path from 'path';
 
-import { LOCALNET_URL, WORKER_BASE_PORT } from './config';
+import { LOCALNET_URL } from './config';
 import {
     BaseAceActors,
     assertTxnSuccess,
@@ -135,9 +135,9 @@ export async function setupAceNetworkAndWorkers(
     });
     const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(vssStoreTmpRoot, `node-${i}.db`)}`);
     for (let i = 0; i < totalWorkers; i++) {
-        const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
+        const endpoint = nodeMsgEndpoints.clientUrls[i]!;
         const nodeMsgEndpoint = shouldSpawnSplitNetworkNode(i, totalWorkers)
-            ? nodeMsgEndpoints.registeredUrls[i]!
+            ? nodeMsgEndpoints.nodeMsgUrls[i]!
             : endpoint;
         assertTxnSuccess(
             await submitTxn({
@@ -198,10 +198,10 @@ export async function setupAceNetworkAndWorkers(
             pkeDkHex,
             sigSkHex: sigKeypairs[i]!.signingKey.toHex(),
             vssStoreUrl: storeUrls[i]!,
-            nodeMsgListen: nodeMsgEndpoints.listens[i]!,
+            nodeMsgListen: nodeMsgEndpoints.nodeMsgListens[i]!,
             aceDeploymentAddr: adminAddr,
             aceDeploymentApi: LOCALNET_URL,
-            workerBasePort: WORKER_BASE_PORT,
+            workerBasePort: nodeMsgEndpoints.basePort,
         }));
     }
     await sleep(2000);

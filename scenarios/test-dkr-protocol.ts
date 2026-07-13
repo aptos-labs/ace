@@ -65,7 +65,7 @@ async function main() {
             (await submitTxn({
                 signer: workerAccounts[i],
                 entryFunction: `${adminAccount.accountAddress}::worker_config::register_node_msg_endpoint`,
-                args: [nodeMsgEndpoints.registeredUrls[i]],
+                args: [nodeMsgEndpoints.nodeMsgUrls[i]],
             })).unwrapOrThrow('Failed to register worker node-msg endpoint.').asSuccessOrThrow();
         }
 
@@ -97,7 +97,7 @@ async function main() {
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             sigSkHex: sigKeypairs[i].signingKey.toHex(),
             vssStoreUrl: storeUrls[i],
-            nodeMsgListen: nodeMsgEndpoints.listens[i],
+            nodeMsgListen: nodeMsgEndpoints.nodeMsgListens[i],
             dkgSessionAddr,
             aceDeploymentAddr: aceContract,
         }));
@@ -150,7 +150,7 @@ async function main() {
             pkeDkHex: `0x${Buffer.from(encKeypairs[i].decryptionKey.toBytes()).toString('hex')}`,
             sigSkHex: sigKeypairs[i].signingKey.toHex(),
             vssStoreUrl: storeUrls[i],
-            nodeMsgListen: nodeMsgEndpoints.listens[i],
+            nodeMsgListen: nodeMsgEndpoints.nodeMsgListens[i],
             dkrSessionAddr,
             aceDeploymentAddr: aceContract,
         }));

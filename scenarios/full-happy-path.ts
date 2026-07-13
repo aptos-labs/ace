@@ -49,7 +49,6 @@ import {
     ACCESS_CONTROL_CONTRACT_DIR,
     CHAIN_ID,
     LOCALNET_URL,
-    WORKER_BASE_PORT,
 } from './common/config';
 import {
     assertTxnSuccess,
@@ -189,11 +188,11 @@ async function main() {
         const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot!, `node-${i}.db`)}`);
         const nodeMsgEndpoints = makeNodeMsgEndpoints(TOTAL_WORKERS);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
-            const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
+            const endpoint = nodeMsgEndpoints.clientUrls[i]!;
             const nodeMsgEndpoint = shouldSpawnSplitNetworkNode(i, TOTAL_WORKERS)
-                ? nodeMsgEndpoints.registeredUrls[i]
+                ? nodeMsgEndpoints.nodeMsgUrls[i]
                 : endpoint;
-            console.log(`  Registering worker ${i}: ${endpoint}`);
+            console.log(`  Registering worker ${i}: node-msg=${nodeMsgEndpoint}, client=${endpoint}`);
             assertTxnSuccess(
                 await submitTxn({
                     signer: workerAccounts[i],
@@ -259,10 +258,10 @@ async function main() {
                 pkeDkHex,
                 sigSkHex: sigKeypairs[i].signingKey.toHex(),
                 vssStoreUrl: storeUrls[i],
-                nodeMsgListen: nodeMsgEndpoints.listens[i],
+                nodeMsgListen: nodeMsgEndpoints.nodeMsgListens[i],
                 aceDeploymentAddr: adminAddr,
                 aceDeploymentApi: LOCALNET_URL,
-                workerBasePort: WORKER_BASE_PORT,
+                workerBasePort: nodeMsgEndpoints.basePort,
             }));
         }
 

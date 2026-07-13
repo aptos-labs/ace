@@ -15,7 +15,7 @@ path = "src/lib.rs"
 vss-common = { path = "../vss-common" }
 anyhow = "1"
 async-trait = "0.1"
-axum = { version = "0.7", features = ["http1"] }
+axum = { version = "0.7", features = ["http1", "http2"] }
 bcs = "0.1"
 ed25519-dalek = "2"
 hex = "0.4"

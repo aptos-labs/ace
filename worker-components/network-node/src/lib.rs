@@ -58,9 +58,9 @@ use anyhow::{anyhow, Result};
 use ark_bls12_381::Fr;
 use ark_ff::{Field, Zero};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tokio::sync::{oneshot, RwLock, Semaphore};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{oneshot, Semaphore};
 use vss_common::crypto::fr_to_le_bytes;
 use vss_common::group::{BcsElement, BcsScalar};
 use vss_common::session::BcsPcsPublicParams;
@@ -70,7 +70,7 @@ use vss_common::{
 };
 use vss_store::{connect_vss_store, read_verified_holder_opening, VssStore};
 
-use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry};
+use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry, ShareEvictionQueue, ShareMap};
 
 // ── Per-chain RPC configuration ──────────────────────────────────────────────
 
@@ -711,23 +711,8 @@ async fn run_with_maintainer(
         ace
     );
 
-    // `(keypair_id, epoch) → ShareEntry` — flat map, one lookup per request.
-    // `eval_point`, `group_scheme`, and `expected_usage` are captured per-entry at URH
-    // registration time so stale buffer-window entries from a previous epoch
-    // use the right values even after committee membership changes.
-    //
-    // No separate "am I in the committee" flag: an empty map already means
-    // "nothing to serve" (whether because the node is genuinely not in
-    // `cur_nodes` or because URH hasn't completed yet). The handler returns
-    // NotFound on lookup miss either way.
-    let shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let local = LocalSecrets {
-        shares: shares.clone(),
-    };
+    let local = LocalSecrets::empty();
+    let expiry_queue = ShareEvictionQueue::new(local.clone());
 
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
@@ -741,37 +726,7 @@ async fn run_with_maintainer(
         tokio::spawn(http_server::run_user_server(h.port, state));
     }
 
-    // Share cleanup timer.
-    {
-        let s = shares.clone();
-        let eq = expiry_queue.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            loop {
-                ticker.tick().await;
-                let now = Instant::now();
-                let expired: Vec<(String, u64)> = {
-                    let mut q = eq.lock().unwrap();
-                    let (done, pending): (Vec<_>, Vec<_>) =
-                        q.drain(..).partition(|(t, _, _)| *t <= now);
-                    *q = pending;
-                    done.into_iter().map(|(_, k, e)| (k, e)).collect()
-                };
-                if !expired.is_empty() {
-                    let mut w = s.write().await;
-                    for (keypair_id, epoch) in expired {
-                        if w.remove(&(keypair_id.clone(), epoch)).is_some() {
-                            wlog!(
-                                "network-node: [cleanup] evicted keypair_id={} epoch={}",
-                                keypair_id,
-                                epoch
-                            );
-                        }
-                    }
-                }
-            }
-        });
-    }
+    expiry_queue.spawn_cleanup_task(Duration::from_secs(5));
 
     let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut epoch_change_cur_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -949,7 +904,7 @@ async fn run_with_maintainer(
             let ace2 = ace.clone();
             let secret = secret_addr.clone();
             let my = account_addr.clone();
-            let shares2 = shares.clone();
+            let local2 = local.clone();
             let expiry = expiry_queue.clone();
             let store = vss_store.clone();
             let epoch = state.epoch;
@@ -981,29 +936,28 @@ async fn run_with_maintainer(
                         // application-layer shares from the snapshot.
                         let keypair_id = reconstructed.keypair_id.clone();
                         let group_scheme = reconstructed.group_scheme;
-                        shares2.write().await.insert(
-                            (keypair_id.clone(), epoch),
-                            ShareEntry {
-                                scalar_le32: reconstructed.scalar_le32,
-                                blinding_le32: reconstructed.blinding_le32,
-                                group_scheme,
-                                pcs_context: reconstructed.pcs_context,
-                                share_commitment: reconstructed.share_commitment,
-                                expected_usage,
-                                eval_point,
-                                note,
-                            },
-                        );
+                        local2
+                            .insert_share(
+                                keypair_id.clone(),
+                                epoch,
+                                ShareEntry {
+                                    scalar_le32: reconstructed.scalar_le32,
+                                    blinding_le32: reconstructed.blinding_le32,
+                                    group_scheme,
+                                    pcs_context: reconstructed.pcs_context,
+                                    share_commitment: reconstructed.share_commitment,
+                                    expected_usage,
+                                    eval_point,
+                                    note,
+                                },
+                            )
+                            .await;
                         wlog!(
                             "network-node: [urh] registered keypair_id={} epoch={} group_scheme={} expected_usage={} eval_point={}",
                             keypair_id, epoch, group_scheme, expected_usage, eval_point
                         );
                         let _ = rx.await;
-                        let deadline = Instant::now() + Duration::from_secs(30);
-                        expiry
-                            .lock()
-                            .unwrap()
-                            .push((deadline, keypair_id.clone(), epoch));
+                        expiry.schedule_after(keypair_id.clone(), epoch, Duration::from_secs(30));
                         wlog!(
                             "network-node: [urh] scheduled eviction keypair_id={} epoch={} in 30s",
                             keypair_id,
@@ -1064,18 +1018,14 @@ async fn run_handler(
     let ace = normalize_account_addr(&ace_deployment_addr);
     let account_addr = normalize_account_addr(&account_addr);
     let store = connect_vss_store(&vss_store_url)?;
-    let shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-    let local = LocalSecrets {
-        shares: shares.clone(),
-    };
+    let local = LocalSecrets::empty();
 
     tokio::spawn(handler_store_sync_loop(
         rpc,
         ace,
         account_addr,
         store,
-        shares,
+        local.clone(),
     ));
 
     let state = http_server::AppState {
@@ -1095,14 +1045,14 @@ async fn handler_store_sync_loop(
     ace: String,
     account_addr: String,
     store: Arc<dyn VssStore>,
-    shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
+    local: LocalSecrets,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
         if let Err(e) =
-            handler_store_sync_once(&rpc, &ace, &account_addr, store.as_ref(), &shares).await
+            handler_store_sync_once(&rpc, &ace, &account_addr, store.as_ref(), &local).await
         {
             wlog!("network-node: handler DB share sync error: {:#}", e);
         }
@@ -1114,7 +1064,7 @@ async fn handler_store_sync_once(
     ace: &str,
     account_addr: &str,
     store: &dyn VssStore,
-    shares: &Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
+    local: &LocalSecrets,
 ) -> Result<()> {
     let state = fetch_state_view_v0(rpc, ace).await?;
     let my_eval_point = match state
@@ -1124,12 +1074,12 @@ async fn handler_store_sync_once(
     {
         Some(idx) => (idx + 1) as u64,
         None => {
-            shares.write().await.clear();
+            local.clear().await;
             return Ok(());
         }
     };
 
-    let mut refreshed: HashMap<(String, u64), ShareEntry> = HashMap::new();
+    let mut refreshed = ShareMap::new();
     for secret in &state.secrets {
         let session_addr = addr_bytes_to_string(&secret.current_session);
         let reconstructed =
@@ -1151,10 +1101,6 @@ async fn handler_store_sync_once(
     }
 
     let min_epoch_to_keep = state.epoch.saturating_sub(1);
-    let mut guard = shares.write().await;
-    guard.retain(|(_, epoch), _| *epoch >= min_epoch_to_keep);
-    for (key, entry) in refreshed {
-        guard.insert(key, entry);
-    }
+    local.replace_since(min_epoch_to_keep, refreshed).await;
     Ok(())
 }

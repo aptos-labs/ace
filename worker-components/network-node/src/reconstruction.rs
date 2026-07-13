@@ -2,12 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{anyhow, Result};
-use ark_bls12_381::Fr;
-use ark_ff::{Field, Zero};
-use vss_common::crypto::fr_to_le_bytes;
-use vss_common::group::BcsElement;
+use vss_common::group::{scalar_linear_combination, scalar_sum, BcsElement, BcsScalar};
 use vss_common::session::BcsPcsPublicParams;
-use vss_common::vss_types::{opening_eval_value_p_fr, opening_eval_value_r_fr};
 use vss_common::{normalize_account_addr, AptosRpc};
 use vss_store::{read_verified_holder_opening, VssStore};
 
@@ -81,10 +77,9 @@ async fn reconstruct_from_dkg_store(
         ));
     }
 
-    let mut secret = Fr::zero();
-    let mut blinding = Fr::zero();
+    let mut secret_scalars = Vec::<BcsScalar>::new();
+    let mut blinding_scalars = Vec::<BcsScalar>::new();
     let mut group_scheme: Option<u8> = None;
-    let mut num_contributions = 0usize;
     for (idx, vss_addr) in vss_sessions.iter().enumerate() {
         if !done_flags[idx] {
             continue;
@@ -101,17 +96,22 @@ async fn reconstruct_from_dkg_store(
             ));
         }
         let scheme = opening.eval_value_p.scheme();
+        if opening.eval_value_r.scheme() != scheme {
+            return Err(anyhow!(
+                "VSS opening p/r scheme mismatch in DKG {}",
+                session_addr
+            ));
+        }
         if group_scheme
             .replace(scheme)
             .is_some_and(|existing| existing != scheme)
         {
             return Err(anyhow!("mixed VSS scalar schemes in DKG {}", session_addr));
         }
-        secret += opening_eval_value_p_fr(&opening)?;
-        blinding += opening_eval_value_r_fr(&opening)?;
-        num_contributions += 1;
+        secret_scalars.push(opening.eval_value_p.clone());
+        blinding_scalars.push(opening.eval_value_r.clone());
     }
-    if num_contributions == 0 {
+    if secret_scalars.is_empty() {
         return Err(anyhow!("no done VSS sessions in DKG {}", session_addr));
     }
     let scheme =
@@ -135,9 +135,11 @@ async fn reconstruct_from_dkg_store(
             session_addr
         ));
     }
+    let secret = scalar_sum(&secret_scalars)?;
+    let blinding = scalar_sum(&blinding_scalars)?;
     Ok(ReconstructedShare {
-        scalar_le32: fr_to_le_bytes(secret),
-        blinding_le32: fr_to_le_bytes(blinding),
+        scalar_le32: secret.to_le_bytes()?,
+        blinding_le32: blinding.to_le_bytes()?,
         keypair_id: session_addr.to_string(),
         group_scheme: scheme,
         pcs_context: dkg_session.pcs_context.clone(),
@@ -174,13 +176,30 @@ async fn reconstruct_from_dkr_store(
         ));
     }
 
-    let mut secret_points = Vec::new();
-    let mut blinding_points = Vec::new();
+    let num_contributions = vss_contribution_flags.iter().filter(|flag| **flag).count();
+    if dkr_session.lagrange_coeffs_at_zero.len() != num_contributions {
+        return Err(anyhow!(
+            "DKR lagrange_coeffs_at_zero.len()={} != contributing VSS count={} for original_session={}",
+            dkr_session.lagrange_coeffs_at_zero.len(),
+            num_contributions,
+            original_session
+        ));
+    }
+
+    let mut secret_terms = Vec::<(BcsScalar, BcsScalar)>::new();
+    let mut blinding_terms = Vec::<(BcsScalar, BcsScalar)>::new();
     let mut group_scheme: Option<u8> = None;
+    let mut coeff_idx = 0usize;
     for (idx, vss_addr) in vss_sessions.iter().enumerate() {
         if !vss_contribution_flags[idx] {
             continue;
         }
+        let coeff = dkr_session
+            .lagrange_coeffs_at_zero
+            .get(coeff_idx)
+            .ok_or_else(|| anyhow!("missing DKR Lagrange coefficient {}", coeff_idx))?
+            .clone();
+        coeff_idx += 1;
         let opening =
             read_verified_holder_opening(rpc, ace, store, vss_addr, my_idx as u64).await?;
         let expected_position = my_idx as u64 + 1;
@@ -193,6 +212,12 @@ async fn reconstruct_from_dkr_store(
             ));
         }
         let scheme = opening.eval_value_p.scheme();
+        if opening.eval_value_r.scheme() != scheme {
+            return Err(anyhow!(
+                "VSS opening p/r scheme mismatch in DKR original_session={}",
+                original_session
+            ));
+        }
         if group_scheme
             .replace(scheme)
             .is_some_and(|existing| existing != scheme)
@@ -202,11 +227,10 @@ async fn reconstruct_from_dkr_store(
                 original_session
             ));
         }
-        let old_eval_position = idx as u64 + 1;
-        secret_points.push((old_eval_position, opening_eval_value_p_fr(&opening)?));
-        blinding_points.push((old_eval_position, opening_eval_value_r_fr(&opening)?));
+        secret_terms.push((opening.eval_value_p.clone(), coeff.clone()));
+        blinding_terms.push((opening.eval_value_r.clone(), coeff));
     }
-    if secret_points.is_empty() {
+    if secret_terms.is_empty() {
         return Err(anyhow!(
             "no contributing VSS sessions in DKR {}",
             original_session
@@ -233,37 +257,14 @@ async fn reconstruct_from_dkr_store(
             original_session
         ));
     }
+    let secret = scalar_linear_combination(&secret_terms)?;
+    let blinding = scalar_linear_combination(&blinding_terms)?;
     Ok(ReconstructedShare {
-        scalar_le32: fr_to_le_bytes(lagrange_at_zero(&secret_points)?),
-        blinding_le32: fr_to_le_bytes(lagrange_at_zero(&blinding_points)?),
+        scalar_le32: secret.to_le_bytes()?,
+        blinding_le32: blinding.to_le_bytes()?,
         keypair_id: original_session,
         group_scheme: scheme,
         pcs_context: dkr_session.pcs_context.clone(),
         share_commitment,
     })
-}
-
-fn lagrange_at_zero(points: &[(u64, Fr)]) -> Result<Fr> {
-    if points.is_empty() {
-        return Err(anyhow!("lagrange_at_zero: no points"));
-    }
-    let mut acc = Fr::zero();
-    for (i, (x_i_raw, y_i)) in points.iter().enumerate() {
-        let x_i = Fr::from(*x_i_raw);
-        let mut numerator = Fr::from(1u64);
-        let mut denominator = Fr::from(1u64);
-        for (j, (x_j_raw, _)) in points.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let x_j = Fr::from(*x_j_raw);
-            numerator *= -x_j;
-            denominator *= x_i - x_j;
-        }
-        let denominator_inv = denominator
-            .inverse()
-            .ok_or_else(|| anyhow!("duplicate interpolation point {}", x_i_raw))?;
-        acc += *y_i * numerator * denominator_inv;
-    }
-    Ok(acc)
 }

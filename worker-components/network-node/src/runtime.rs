@@ -92,6 +92,14 @@ struct ServingEpoch {
     secrets: Vec<BcsSecretInfo>,
 }
 
+struct ServingCacheSync<'a> {
+    rpc: &'a AptosRpc,
+    ace: &'a str,
+    account_addr: &'a str,
+    store: &'a dyn VssStore,
+    local: &'a LocalSecrets,
+}
+
 async fn run_supervisor(
     mut config: NetworkSupervisorConfig,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -197,17 +205,15 @@ async fn run_supervisor(
         );
 
         if let Some(local) = local.as_ref() {
-            let desired = desired_serving_epochs(&state, &config.account_addr, now_micros);
-            if let Err(e) = reconcile_serving_cache(
-                &config.rpc,
-                &config.ace,
-                &config.account_addr,
-                config.store.as_ref(),
+            let desired_epochs = desired_serving_epochs(&state, &config.account_addr, now_micros);
+            let cache_sync = ServingCacheSync {
+                rpc: &config.rpc,
+                ace: &config.ace,
+                account_addr: &config.account_addr,
+                store: config.store.as_ref(),
                 local,
-                desired,
-            )
-            .await
-            {
+            };
+            if let Err(e) = reconcile_serving_cache(cache_sync, desired_epochs).await {
                 wlog!("network-node: serving cache sync error: {:#}", e);
             }
         }
@@ -280,19 +286,21 @@ fn desired_serving_epochs(
 }
 
 async fn reconcile_serving_cache(
-    rpc: &AptosRpc,
-    ace: &str,
-    account_addr: &str,
-    store: &dyn VssStore,
-    local: &LocalSecrets,
-    desired: Vec<ServingEpoch>,
+    sync: ServingCacheSync<'_>,
+    desired_epochs: Vec<ServingEpoch>,
 ) -> Result<()> {
     let mut refreshed = ShareMap::new();
-    for epoch in desired {
+    for epoch in desired_epochs {
         for secret in epoch.secrets {
             let session_addr = addr_bytes_to_string(&secret.current_session);
-            let reconstructed =
-                reconstruct_share_from_store(rpc, ace, &session_addr, account_addr, store).await?;
+            let reconstructed = reconstruct_share_from_store(
+                sync.rpc,
+                sync.ace,
+                &session_addr,
+                sync.account_addr,
+                sync.store,
+            )
+            .await?;
             let keypair_id = reconstructed.keypair_id.clone();
             refreshed.insert(
                 (keypair_id, epoch.epoch),
@@ -310,7 +318,7 @@ async fn reconcile_serving_cache(
         }
     }
 
-    local.replace_all(refreshed).await;
+    sync.local.replace_all(refreshed).await;
     Ok(())
 }
 

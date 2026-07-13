@@ -4,6 +4,10 @@
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { Result } from "../result";
 import * as pke from "../pke";
+import {
+    MAX_WORKER_RESPONSE_BODY_BYTES,
+    MAX_WORKER_RESPONSE_HEADER_BYTES,
+} from "./worker-request-limits";
 
 const NODE_REQUEST_WORKER_REQUEST = 1;
 const NODE_RESPONSE_WORKER_RESPONSE = 1;
@@ -46,7 +50,75 @@ export async function buildWorkerNodeRequestBody({
 }
 
 export async function readWorkerNodeResponseCiphertext(resp: Response): Promise<pke.Ciphertext> {
-    const bytes = new Uint8Array(await resp.arrayBuffer());
+    const bytes = await readWorkerResponseBytes(resp);
     return decodeWorkerNodeResponse(bytes)
         .unwrapOrThrow("readWorkerNodeResponseCiphertext");
+}
+
+/**
+ * Read a worker response without allowing an untrusted committee member to
+ * make the client buffer an arbitrarily large body. The stream is cancelled
+ * as soon as the configured limit is exceeded.
+ */
+export async function readWorkerResponseBytes(
+    resp: Response,
+    maxBytes = MAX_WORKER_RESPONSE_BODY_BYTES,
+    maxHeaderBytes = MAX_WORKER_RESPONSE_HEADER_BYTES,
+): Promise<Uint8Array> {
+    const encoder = new TextEncoder();
+    let headerBytes = 2; // final CRLF
+    resp.headers.forEach((value, name) => {
+        headerBytes += encoder.encode(name).byteLength
+            + 2
+            + encoder.encode(value).byteLength
+            + 2;
+    });
+    if (headerBytes > maxHeaderBytes) {
+        await resp.body?.cancel().catch(() => undefined);
+        throw new Error(`worker response headers exceed max ${maxHeaderBytes} bytes`);
+    }
+
+    const contentLength = resp.headers.get("content-length");
+    if (contentLength !== null) {
+        const declaredBytes = Number(contentLength);
+        if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+            await resp.body?.cancel().catch(() => undefined);
+            throw new Error(`worker response body exceeds max ${maxBytes} bytes`);
+        }
+    }
+
+    if (resp.body === null) return new Uint8Array(0);
+
+    const reader = resp.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+                await reader.cancel().catch(() => undefined);
+                throw new Error(`worker response body exceeds max ${maxBytes} bytes`);
+            }
+            chunks.push(value);
+        }
+    } finally {
+        reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return bytes;
+}
+
+export async function readWorkerResponseText(
+    resp: Response,
+    maxBytes = MAX_WORKER_RESPONSE_BODY_BYTES,
+): Promise<string> {
+    return new TextDecoder().decode(await readWorkerResponseBytes(resp, maxBytes));
 }

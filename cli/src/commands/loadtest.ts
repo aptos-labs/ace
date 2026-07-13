@@ -206,36 +206,25 @@ export async function loadtestRunCommand(opts: {
     console.log(`Network:         ${network}`);
     console.log(`Test account:    ${state.accountAddr}\n`);
 
-    // SDK setup. By default we target ts-sdk knownDeployments.preview20260610;
-    // operators can override with --contract/--keypair/--chain-id (must travel
-    // together — they all describe the same deployment).
+    // The deployment tuple must travel together: all three values describe the
+    // same ACE deployment, and there is no durable public default yet.
     const customCount = [opts.contract, opts.keypair, opts.chainId].filter(Boolean).length;
-    if (customCount !== 0 && customCount !== 3) {
+    if (customCount !== 3) {
         throw new Error(
-            '--contract, --keypair, and --chain-id must be passed together (or all omitted).',
+            '--contract, --keypair, and --chain-id must all be provided.',
         );
     }
     const rpcUrl = state.rpcUrl ?? DEFAULT_RPC[network] ?? DEFAULT_RPC[DEFAULT_NETWORK];
-    let aceDeployment: ACE.AceDeployment;
-    let keypairId: AccountAddress;
-    let chainId: number;
-    if (customCount === 3) {
-        aceDeployment = new ACE.AceDeployment({
-            apiEndpoint:  rpcUrl,
-            contractAddr: AccountAddress.fromString(opts.contract!),
-        });
-        keypairId = AccountAddress.fromString(opts.keypair!);
-        chainId   = Number(opts.chainId!);
-        if (!Number.isFinite(chainId) || chainId <= 0) {
-            throw new Error(`--chain-id must be a positive integer, got "${opts.chainId}"`);
-        }
-        console.log(`Custom deployment: contract=${opts.contract} keypair=${opts.keypair} chainId=${chainId}`);
-    } else {
-        const known = ACE.knownDeployments.preview20260610;
-        aceDeployment = known.aceDeployment;
-        keypairId = known.vrfKeypairId;
-        chainId = known.chainId;
+    const aceDeployment = new ACE.AceDeployment({
+        apiEndpoint: rpcUrl,
+        contractAddr: AccountAddress.fromString(opts.contract!),
+    });
+    const keypairId = AccountAddress.fromString(opts.keypair!);
+    const chainId = Number(opts.chainId!);
+    if (!Number.isFinite(chainId) || chainId <= 0) {
+        throw new Error(`--chain-id must be a positive integer, got "${opts.chainId}"`);
     }
+    console.log(`ACE deployment: contract=${opts.contract} keypair=${opts.keypair} chainId=${chainId}`);
 
     const loadtester = loadtesterAccountFromSk(state.accountSk);
     if (opts.postUrl) {

@@ -3,6 +3,7 @@ packages:
   - "worker"
   - "cli"
   - "scenarios"
+  - "examples/*"
 allowBuilds:
   bufferutil: false
   esbuild: true

@@ -1,0 +1,25 @@
+{
+  "name": "tutorial-aptos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Step-by-step ACE tutorial on Aptos testnet — a pay-to-download marketplace",
+  "type": "module",
+  "scripts": {
+    "1-setup": "tsx scripts/1-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-list": "tsx scripts/3-list.ts",
+    "4-decrypt-fail": "tsx scripts/4-decrypt-fail.ts",
+    "5-buy": "tsx scripts/5-buy.ts",
+    "6-decrypt": "tsx scripts/6-decrypt.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@aptos-labs/ts-sdk": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

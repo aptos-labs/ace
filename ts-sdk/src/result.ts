@@ -73,8 +73,17 @@ export class Result<T> {
         }
     }
 
-    unwrapOrThrow(tothrow: any): T {
-        if (!this.isOk) throw tothrow;
+    unwrapOrThrow(context: any): T {
+        if (!this.isOk) {
+            const message = context instanceof Error ? context.message : String(context);
+            const wrapped = new Error(message);
+            Object.defineProperty(wrapped, "cause", {
+                configurable: true,
+                value: this.errValue,
+                writable: true,
+            });
+            throw wrapped;
+        }
         return this.okValue!;
     }
 
@@ -83,4 +92,3 @@ export class Result<T> {
         return this.errValue;
     }
 }
-

@@ -10,6 +10,11 @@ export const MAX_WORKER_REQUEST_FULL_MESSAGE_BYTES = 16 * 1024;
 export const MAX_WORKER_REQUEST_WEBAUTHN_CLIENT_DATA_JSON_BYTES = 16 * 1024;
 export const MAX_WORKER_REQUEST_WEBAUTHN_AUTHENTICATOR_DATA_BYTES = 4 * 1024;
 
+// Client-side defense against a committee member returning an unbounded body.
+// This is intentionally independent of the request limits enforced by workers.
+export const MAX_WORKER_RESPONSE_BODY_BYTES = 64 * 1024;
+export const MAX_WORKER_RESPONSE_HEADER_BYTES = 16 * 1024;
+
 const ENCODER = new TextEncoder();
 
 function utf8Len(value: string): number {

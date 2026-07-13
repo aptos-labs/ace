@@ -17,6 +17,7 @@ import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermiss
 import {
     buildWorkerNodeRequestBody,
     readWorkerNodeResponseCiphertext,
+    readWorkerResponseText,
 } from "./node-request";
 import { postWithTimeout } from "./post-with-timeout";
 import { settleUntilThreshold } from "./settle-until-threshold";
@@ -25,11 +26,18 @@ import {
     assertWorkerLabelLimit,
     assertWorkerRequestPlaintextLimit,
 } from "./worker-request-limits";
+import { collectSettledWorkerMetadata } from "./worker-metadata";
 
 export type WorkerNodeInfo = {
+    sdkIdx: number;
     nodeAddr: string;
     endpoint: string;
     nodeEncKey: pke.EncryptionKey;
+};
+
+export type WorkerNodeInfoCollection = {
+    nodeInfos: WorkerNodeInfo[];
+    errors: string[];
 };
 
 export class AceDeployment {
@@ -776,11 +784,13 @@ export async function fetchWorkerPkeEncryptionKey(aptos: Aptos, aceContractAddr:
 export async function fetchWorkerNodeInfo({
     aptos,
     aceContractAddr,
+    sdkIdx,
     nodeAddr,
     pkeParseContext,
 }: {
     aptos: Aptos,
     aceContractAddr: string,
+    sdkIdx: number,
     nodeAddr: AccountAddress,
     pkeParseContext: string,
 }): Promise<WorkerNodeInfo> {
@@ -789,7 +799,7 @@ export async function fetchWorkerNodeInfo({
         fetchWorkerClientEndpoint(aptos, aceContractAddr, addrStr),
         fetchWorkerPkeEncryptionKey(aptos, aceContractAddr, addrStr, `${pkeParseContext} for ${addrStr}`),
     ]);
-    return { nodeAddr: addrStr, endpoint, nodeEncKey };
+    return { sdkIdx, nodeAddr: addrStr, endpoint, nodeEncKey };
 }
 
 export async function fetchCurrentWorkerNodeInfos({
@@ -800,15 +810,23 @@ export async function fetchCurrentWorkerNodeInfos({
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     pkeParseContext: string,
-}): Promise<WorkerNodeInfo[]> {
+}): Promise<WorkerNodeInfoCollection> {
     const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-    return Promise.all(networkState.curNodes.map((nodeAddr) => fetchWorkerNodeInfo({
-        aptos,
-        aceContractAddr,
-        nodeAddr,
-        pkeParseContext,
-    })));
+    const settled = await Promise.allSettled(networkState.curNodes.map((nodeAddr, sdkIdx) =>
+        fetchWorkerNodeInfo({
+            aptos,
+            aceContractAddr,
+            sdkIdx,
+            nodeAddr,
+            pkeParseContext,
+        }),
+    ));
+    const { values, errors } = collectSettledWorkerMetadata(
+        settled,
+        networkState.curNodes.map(nodeAddr => nodeAddr.toStringLong()),
+    );
+    return { nodeInfos: values, errors };
 }
 
 export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
@@ -844,7 +862,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
             });
             const fddBytes = fdd.toBytes();
 
-            const [nodeInfos, currentSessionPks] = await Promise.all([
+            const [workerNodeInfoCollection, currentSessionPks] = await Promise.all([
                 fetchCurrentWorkerNodeInfos({
                     aceDeployment,
                     networkState,
@@ -852,16 +870,19 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                 }),
                 fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
             ]);
+            const { nodeInfos, errors: metadataErrors } = workerNodeInfoCollection;
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
                 throw `ACE.fetchIdentityKeySharesCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+            }
+            if (nodeInfos.length < networkState.curThreshold) {
+                throw `ACE.fetchIdentityKeySharesCore: need metadata for ${networkState.curThreshold} workers, got ${nodeInfos.length} (${metadataErrors.join('; ')})`;
             }
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
 
             const taskResults = await settleUntilThreshold(
-                nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
-                    const nodeAddr = networkState.curNodes[i].toStringLong();
+                nodeInfos.map(({sdkIdx, nodeAddr, endpoint, nodeEncKey}) => async (signal) => {
                     const requestBody = await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes});
                     let resp: Response;
                     try {
@@ -873,7 +894,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                         throw e;
                     }
                     if (!resp.ok) {
-                        const body = await resp.text().catch(() => '');
+                        const body = await readWorkerResponseText(resp).catch(() => '');
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
                         throw new Error(`worker returned HTTP ${resp.status}`);
                     }
@@ -892,7 +913,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                     const share = parseAndVerifyIdkShare({
                         shareBytes,
                         expectedScheme: tibeScheme,
-                        sdkIdx: i,
+                        sdkIdx,
                         sessionPks: currentSessionPks,
                         id: fddBytes,
                         nodeAddr,
@@ -957,7 +978,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
             });
             const fddBytes = fdd.toBytes();
 
-            const [nodeInfos, currentSessionPks] = await Promise.all([
+            const [workerNodeInfoCollection, currentSessionPks] = await Promise.all([
                 fetchCurrentWorkerNodeInfos({
                     aceDeployment,
                     networkState,
@@ -965,16 +986,19 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                 }),
                 fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
             ]);
+            const { nodeInfos, errors: metadataErrors } = workerNodeInfoCollection;
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
                 throw `ACE.fetchIdentityKeySharesCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
+            }
+            if (nodeInfos.length < networkState.curThreshold) {
+                throw `ACE.fetchIdentityKeySharesCoreCustom: need metadata for ${networkState.curThreshold} workers, got ${nodeInfos.length} (${metadataErrors.join('; ')})`;
             }
 
             const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, tibeScheme).toBytes();
 
             const taskResults = await settleUntilThreshold(
-                nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
-                    const nodeAddr = networkState.curNodes[i].toStringLong();
+                nodeInfos.map(({sdkIdx, nodeAddr, endpoint, nodeEncKey}) => async (signal) => {
                     const requestBody = await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes});
                     let resp: Response;
                     try {
@@ -986,7 +1010,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                         throw e;
                     }
                     if (!resp.ok) {
-                        const body = await resp.text().catch(() => '');
+                        const body = await readWorkerResponseText(resp).catch(() => '');
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
                         throw new Error(`worker returned HTTP ${resp.status}`);
                     }
@@ -1005,7 +1029,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                     const share = parseAndVerifyIdkShare({
                         shareBytes,
                         expectedScheme: tibeScheme,
-                        sdkIdx: i,
+                        sdkIdx,
                         sessionPks: currentSessionPks,
                         id: fddBytes,
                         nodeAddr,
@@ -1073,17 +1097,17 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const nodeInfos = await fetchCurrentWorkerNodeInfos({
+            const { nodeInfos, errors: metadataErrors } = await fetchCurrentWorkerNodeInfos({
                 aceDeployment,
                 networkState,
                 pkeParseContext: 'ACE.buildPerNodeRequest',
             });
 
-            const sdkIdx = nodeInfos.findIndex(n => n.endpoint === targetEndpoint);
-            if (sdkIdx < 0) {
-                throw `ACE.buildPerNodeRequest: targetEndpoint ${targetEndpoint} is not in the current committee. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(', ')}`;
+            const nodeInfo = nodeInfos.find(n => n.endpoint === targetEndpoint);
+            if (nodeInfo === undefined) {
+                throw `ACE.buildPerNodeRequest: targetEndpoint ${targetEndpoint} is not in the readable current committee metadata. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(', ')}. Metadata errors: ${metadataErrors.join('; ')}`;
             }
-            const { nodeEncKey } = nodeInfos[sdkIdx];
+            const { nodeEncKey, sdkIdx } = nodeInfo;
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
             const encReqHex = bytesToHex(await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes}));

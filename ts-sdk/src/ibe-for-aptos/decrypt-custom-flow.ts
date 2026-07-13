@@ -30,29 +30,34 @@ export async function fetchIdentityKeySharesCustomFlow({
     moduleName: string,
     tibeScheme?: number,
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
-    const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
-        .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encPk');
-    const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
-        .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encSk');
+    return Result.captureAsync({
+        recordsExecutionTimeMs: true,
+        task: async () => {
+            const callerEncPk = pke.EncryptionKey.fromBytes(encPk)
+                .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encPk');
+            const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
+                .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encSk');
 
-    const networkState = await fetchNetworkState(aceDeployment);
-    const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
-    const proof = CustomFlowProof.createAptos(payload);
-    const customRequest = new CustomFlowRequest({
-        keypairId,
-        epoch: networkState.epoch,
-        contractId,
-        label,
-        encPk: callerEncPk,
-        proof,
-    });
+            const networkState = await fetchNetworkState(aceDeployment);
+            const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
+            const proof = CustomFlowProof.createAptos(payload);
+            const customRequest = new CustomFlowRequest({
+                keypairId,
+                epoch: networkState.epoch,
+                contractId,
+                label,
+                encPk: callerEncPk,
+                proof,
+            });
 
-    return fetchIdentityKeySharesCoreCustom({
-        aceDeployment,
-        networkState,
-        customRequest,
-        callerDecryptionKey: callerDecSk,
-        tibeScheme: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+            return (await fetchIdentityKeySharesCoreCustom({
+                aceDeployment,
+                networkState,
+                customRequest,
+                callerDecryptionKey: callerDecSk,
+                tibeScheme: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+            })).unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares failed');
+        },
     });
 }
 
@@ -67,24 +72,29 @@ export async function decryptCustomFlow(args: {
     chainId: number,
     moduleAddr: AccountAddress,
     moduleName: string,
-}): Promise<Uint8Array> {
-    const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
-        .unwrapOrThrow('AptosCustomFlow.decrypt failed')
-        .scheme;
-    const identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
-        label: args.label,
-        encPk: args.encPk,
-        encSk: args.encSk,
-        payload: args.payload,
-        aceDeployment: args.aceDeployment,
-        keypairId: args.keypairId,
-        chainId: args.chainId,
-        moduleAddr: args.moduleAddr,
-        moduleName: args.moduleName,
-        tibeScheme,
+}): Promise<Result<Uint8Array>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: true,
+        task: async () => {
+            const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
+                .unwrapOrThrow('AptosCustomFlow.decrypt failed')
+                .scheme;
+            const identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
+                label: args.label,
+                encPk: args.encPk,
+                encSk: args.encSk,
+                payload: args.payload,
+                aceDeployment: args.aceDeployment,
+                keypairId: args.keypairId,
+                chainId: args.chainId,
+                moduleAddr: args.moduleAddr,
+                moduleName: args.moduleName,
+                tibeScheme,
+            });
+            return decryptWithIdentityKeyShares({
+                ciphertext: args.ciphertext,
+                identityKeyShares: identityKeySharesResult.unwrapOrThrow('AptosCustomFlow.decrypt failed'),
+            }).unwrapOrThrow('AptosCustomFlow.decrypt failed');
+        },
     });
-    return decryptWithIdentityKeyShares({
-        ciphertext: args.ciphertext,
-        identityKeyShares: identityKeySharesResult.unwrapOrThrow('AptosCustomFlow.decrypt failed'),
-    }).unwrapOrThrow('AptosCustomFlow.decrypt failed');
 }

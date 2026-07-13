@@ -2,7 +2,7 @@
 
 ## TLDR
 
-ACE lets your app answer "can off-chain identity X access object Y?" from an Aptos contract. Use this guide when readers should prove access with an app-defined credential, such as a signed grant, ZK proof, Merkle witness, or attestation, instead of an Aptos wallet login.
+ACE lets your app answer "can off-chain identity X access object Y?" from an Aptos contract. Use this guide when readers should prove access with an app-defined credential, such as a bearer signing capability, ZK proof, Merkle witness, or attestation, instead of an Aptos wallet login.
 
 To use it, you will:
 
@@ -10,11 +10,11 @@ To use it, you will:
 - Define the proof data your off-chain identity or credential will present.
 - In your client, encrypt and decrypt objects with the SDK's `ACE.IBE_Aptos` custom-flow APIs.
 
-## Example: pre-signed access grants
+## Example: bearer signing capabilities
 
-In this example, we show how to build pre-signed access grants with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key when decrypting.
+In this example, we show how to build bearer signing capabilities with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key when decrypting.
 
-The reader does not need an Aptos account in this pattern. The grant is simply possession of `accessPrivateKey`. When the reader wants to decrypt, they first generate a one-time public encryption key, `enc_pk`, and keep the matching secret key locally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a small statement that names the object, the deployed app origin, and that `enc_pk`.
+The reader does not need an Aptos account in this pattern. The capability is possession of `accessPrivateKey`. When the reader wants to decrypt, they create a custom decryption session. The session generates a one-time public encryption key, `enc_pk`, and retains the matching secret key internally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a small statement that names the object, the deployed app origin, and that `enc_pk`.
 
 Concretely, the signed statement has these fields:
 
@@ -27,13 +27,13 @@ Concretely, the signed statement has these fields:
 
 The client sends `origin` and `sig` to ACE, encoded as `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.
 
-Each signed field has a job. Including `label` prevents a grant for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid `origin` and `sig` pair from replaying it with a different `enc_pk`. Including `origin` keeps the grant scoped to the deployed app.
+Each signed field has a job. Including `label` prevents a capability for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid `origin` and `sig` pair from replaying it with a different `enc_pk`. Including `origin` scopes the proof to the deployed app: the access key authorizes the reader, while the independently signed origin protects users from a malicious dapp replaying or soliciting a proof for a different application context.
 
 ### Contract changes
 
-In this example, the Move module is named `presigned_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"presigned_access"`.
+In this example, the Move module is named `capability_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"capability_access"`.
 
-In the contract, we define the statement the grant key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the decryption request.
+In the contract, we define the statement the capability key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the decryption request.
 
 ACE calls the contract through a view function with this fixed name and shape:
 
@@ -52,7 +52,7 @@ Before writing the hook, define exactly what the reader signs. In this app, the 
 We encode that meaning as `SignableRequest`. The `dst` field is a version tag for this app and message format:
 
 ```move
-const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
+const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_BEARER_CAPABILITY_v1";
 
 struct SignableRequest has copy, drop {
     dst: vector<u8>,
@@ -62,7 +62,7 @@ struct SignableRequest has copy, drop {
 }
 ```
 
-Next, we store the public half of each grant. In this example, each encrypted object `label` has one registered BLS public key:
+Next, we store the public half of each capability. In this example, each encrypted object `label` has one registered BLS public key:
 
 ```move
 struct Registry has key {
@@ -73,13 +73,13 @@ public entry fun register(
     admin: &signer,
     label: vector<u8>,
     access_public_key: vector<u8>,
-) acquires Registry {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+) {
+    assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
     assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
     let pk_opt = bls12381::public_key_from_bytes(access_public_key);
-    assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
+    assert!(pk_opt.is_some(), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
 
-    let registry = borrow_global_mut<Registry>(@admin);
+    let registry = &mut Registry[@admin];
     registry.access_public_keys.upsert(label, access_public_key);
 }
 ```
@@ -94,10 +94,10 @@ struct AppConfig has key {
 public entry fun set_client_origin(
     admin: &signer,
     origin: vector<u8>,
-) acquires AppConfig {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+) {
+    assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
     assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-    let config = borrow_global_mut<AppConfig>(@admin);
+    let config = &mut AppConfig[@admin];
     config.client_origin = origin;
 }
 ```
@@ -110,11 +110,11 @@ public fun on_ace_decryption_request_custom_flow(
     label: vector<u8>,
     enc_pk: vector<u8>,
     payload: vector<u8>,
-): bool acquires Registry, AppConfig {
+): bool {
     if (!exists<Registry>(@admin)) return false;
     if (!exists<AppConfig>(@admin)) return false;
-    let registry = borrow_global<Registry>(@admin);
-    let config = borrow_global<AppConfig>(@admin);
+    let registry = &Registry[@admin];
+    let config = &AppConfig[@admin];
     if (!registry.access_public_keys.contains(label)) return false;
     let access_public_key_bytes = *registry.access_public_keys.borrow(label);
 
@@ -125,8 +125,8 @@ public fun on_ace_decryption_request_custom_flow(
     if (&claimed_origin != &config.client_origin) return false;
 
     let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
-    if (!option::is_some(&pk_opt)) return false;
-    let pk = option::extract(&mut pk_opt);
+    if (!pk_opt.is_some()) return false;
+    let pk = pk_opt.extract();
     let sig = bls12381::signature_from_bytes(sig_bytes);
     let msg = bcs::to_bytes(&SignableRequest {
         dst: SIGNABLE_REQUEST_DST,
@@ -141,20 +141,18 @@ public fun on_ace_decryption_request_custom_flow(
 Putting those pieces together, the full module looks like this:
 
 ```move
-module admin::presigned_access {
+module admin::capability_access {
     use aptos_std::bcs;
     use aptos_std::bcs_stream;
     use aptos_std::bls12381;
     use aptos_std::table;
     use aptos_std::table::Table;
     use std::error;
-    use std::option;
-    use std::signer;
 
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
     const E_INVALID_ACCESS_PUBLIC_KEY: u64 = 3;
-    const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_PRESIGNED_ACCESS_v1";
+    const SIGNABLE_REQUEST_DST: vector<u8> = b"ACE_BEARER_CAPABILITY_v1";
 
     struct SignableRequest has copy, drop {
         dst: vector<u8>,
@@ -172,7 +170,7 @@ module admin::presigned_access {
     }
 
     public entry fun init(admin: &signer) {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<Registry>(@admin)) {
             move_to(admin, Registry {
                 access_public_keys: table::new(),
@@ -180,7 +178,7 @@ module admin::presigned_access {
         };
         if (!exists<AppConfig>(@admin)) {
             move_to(admin, AppConfig {
-                client_origin: vector::empty(),
+                client_origin: vector[],
             });
         };
     }
@@ -188,10 +186,10 @@ module admin::presigned_access {
     public entry fun set_client_origin(
         admin: &signer,
         origin: vector<u8>,
-    ) acquires AppConfig {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    ) {
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-        let config = borrow_global_mut<AppConfig>(@admin);
+        let config = &mut AppConfig[@admin];
         config.client_origin = origin;
     }
 
@@ -199,13 +197,13 @@ module admin::presigned_access {
         admin: &signer,
         label: vector<u8>,
         access_public_key: vector<u8>,
-    ) acquires Registry {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    ) {
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         assert!(exists<Registry>(@admin), error::not_found(E_NOT_INITIALIZED));
         let pk_opt = bls12381::public_key_from_bytes(access_public_key);
-        assert!(option::is_some(&pk_opt), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
+        assert!(pk_opt.is_some(), error::invalid_argument(E_INVALID_ACCESS_PUBLIC_KEY));
 
-        let registry = borrow_global_mut<Registry>(@admin);
+        let registry = &mut Registry[@admin];
         registry.access_public_keys.upsert(label, access_public_key);
     }
 
@@ -214,11 +212,11 @@ module admin::presigned_access {
         label: vector<u8>,
         enc_pk: vector<u8>,
         payload: vector<u8>,
-    ): bool acquires Registry, AppConfig {
+    ): bool {
         if (!exists<Registry>(@admin)) return false;
         if (!exists<AppConfig>(@admin)) return false;
-        let registry = borrow_global<Registry>(@admin);
-        let config = borrow_global<AppConfig>(@admin);
+        let registry = &Registry[@admin];
+        let config = &AppConfig[@admin];
         if (!registry.access_public_keys.contains(label)) return false;
         let access_public_key_bytes = *registry.access_public_keys.borrow(label);
 
@@ -230,8 +228,8 @@ module admin::presigned_access {
         if (&claimed_origin != &config.client_origin) return false;
 
         let pk_opt = bls12381::public_key_from_bytes(access_public_key_bytes);
-        if (!option::is_some(&pk_opt)) return false;
-        let pk = option::extract(&mut pk_opt);
+        if (!pk_opt.is_some()) return false;
+        let pk = pk_opt.extract();
         let sig = bls12381::signature_from_bytes(sig_bytes);
         let msg = bcs::to_bytes(&SignableRequest {
             dst: SIGNABLE_REQUEST_DST,
@@ -246,7 +244,14 @@ module admin::presigned_access {
 
 The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode the third argument as `BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
 
-Before readers decrypt, we create or derive the access keypair for each `label`. The [Aptos-approved derivation guide](./vrf-aptos.md) shows a deterministic owner-side derivation; a server or issuer could also generate the keypair directly. Register only `accessPublicKey` on-chain. Keep `accessPrivateKey` off-chain and give it only to readers or grant-issuing systems that should be able to sign access statements.
+Before readers decrypt, generate a BLS access keypair directly with a cryptographically secure random source. Do not reinterpret unrelated 32-byte output as a BLS scalar. Register only `accessPublicKey` on-chain; keep `accessPrivateKey` off-chain and give it only to readers or capability-issuing systems that should be able to sign access statements.
+
+```typescript
+const accessPrivateKey = bls12_381.utils.randomPrivateKey();
+const accessPublicKey = bls12_381.getPublicKey(accessPrivateKey);
+// Submit accessPublicKey to capability_access::register and distribute
+// accessPrivateKey only through your secure capability-delivery channel.
+```
 
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
@@ -262,6 +267,7 @@ Before the SDK calls, fill in the ACE deployment values and the app module ident
 import * as ACE from "@aptos-labs/ace-sdk";
 import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
 import { bls12_381 } from "@noble/curves/bls12-381";
+import { bytesToNumberBE } from "@noble/curves/utils";
 
 const aceDeployment = new ACE.AceDeployment({
   apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
@@ -271,7 +277,7 @@ const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
 const chainId = 2; // Aptos testnet
 
 const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
-const moduleName = "presigned_access"; // matches module <publisher>::presigned_access
+const moduleName = "capability_access"; // matches module <publisher>::capability_access
 ```
 
 In the client, encrypt under the module that contains the custom hook. The SDK calls the object ID bytes `label`; this example uses `objectId` as that label.
@@ -311,15 +317,21 @@ const ciphertext = (await ACE.IBE_Aptos.encrypt({
 })).unwrapOrThrow("ACE encrypt failed");
 ```
 
-For decryption, we generate a fresh one-time encryption keypair, build the signed statement, encode `origin` and `sig` for the SDK, and submit them. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
+For decryption, create a session that owns the fresh one-time encryption keypair, build the signed statement against its `encPk`, encode `origin` and `sig`, and submit them through that same session. In this example, `accessPrivateKey` is the BLS private key whose public key was registered for `label`:
 
 ```typescript
-const { encryptionKey, decryptionKey } = await ACE.pke.keygen();
-const encPk = encryptionKey.toBytes();
-const encSk = decryptionKey.toBytes();
+const session = await ACE.IBE_Aptos.CustomDecryptionSession.create({
+  aceDeployment,
+  keypairId,
+  chainId,
+  moduleAddr,
+  moduleName,
+  label,
+});
+const encPk = session.getEncryptionKeyBytes();
 
 const origin = new TextEncoder().encode(window.location.origin);
-const dst = new TextEncoder().encode("ACE_PRESIGNED_ACCESS_v1");
+const dst = new TextEncoder().encode("ACE_BEARER_CAPABILITY_v1");
 const blsDst = new TextEncoder().encode("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_");
 
 const signable = new Serializer();
@@ -328,7 +340,7 @@ signable.serializeBytes(label);
 signable.serializeBytes(encPk);
 signable.serializeBytes(origin);
 const sig = bls12_381.G2.hashToCurve(signable.toUint8Array(), { DST: blsDst })
-  .multiply(accessPrivateKey)
+  .multiply(bytesToNumberBE(accessPrivateKey))
   .toRawBytes(true);
 
 const payloadSerializer = new Serializer();
@@ -336,34 +348,18 @@ payloadSerializer.serializeBytes(origin);
 payloadSerializer.serializeBytes(sig);
 const payload = payloadSerializer.toUint8Array();
 
-const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
+const plaintext = (await session.decrypt({
   ciphertext,
-  label,
-  encPk,
-  encSk,
   payload,
-  aceDeployment,
-  keypairId,
-  chainId,
-  moduleAddr,
-  moduleName,
-});
+})).unwrapOrThrow("ACE custom decrypt failed");
 ```
 
-If your UI has multiple phases, keep `encPk`, `encSk`, and the proof inputs in your own session state until the user finishes the proof step. You can also fetch the worker results first and open the ciphertext locally later. If the ciphertext uses a non-default t-IBE scheme, pass the same `tibeScheme` to the fetch call.
+Keep the session alive until the proof and decrypt phases finish; it prevents mixing an `encPk` from one request with an `encSk` from another. You can also fetch the worker results first and open the ciphertext locally later. If the ciphertext uses a non-default t-IBE scheme, pass the same `tibeScheme` to the fetch call.
 
 ```typescript
 const identityKeyShares =
-  (await ACE.IBE_Aptos.fetchIdentityKeySharesCustomFlow({
-    label,
-    encPk,
-    encSk,
+  (await session.fetchIdentityKeyShares({
     payload,
-    aceDeployment,
-    keypairId,
-    chainId,
-    moduleAddr,
-    moduleName,
   })).unwrapOrThrow("ACE fetch identity key shares failed");
 
 const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
@@ -372,13 +368,13 @@ const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
 }).unwrapOrThrow("ACE local decrypt failed");
 ```
 
-Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, include it in the app-defined bytes passed as the SDK `payload` argument, and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
+Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, include it in the app-defined bytes passed as the SDK `payload` argument and verify it in the hook. The trusted capability signer should derive the actual origin from its application or wallet context rather than accepting an arbitrary caller-supplied claim. Deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
 
 ## Remarks
 
-In the pre-signed-access pattern, the private key is a bearer capability. Anyone who obtains it can sign a valid statement for that `label`, so only hand it to readers who should have that power and avoid logging it or embedding it in an untrusted client. If you need identity-bound access instead of bearer access, make the signed statement or proof identify the reader, or use the Aptos account access flow.
+This pattern intentionally grants a bearer signing capability. Anyone who obtains the private key can issue any number of fresh requests for that `label`; rotating the label's registered public key revokes every holder of the old key at once, not one reader individually. Only hand the key to readers who should have that power, and avoid logging it or embedding it in an untrusted dapp. If you need identity-bound or per-reader revocation, encode reader identity into the proof and policy, or use the Aptos account access flow.
 
 ## Ready-To-Run Examples
 
-- [`examples/presigned-access-aptos`](../../../examples/presigned-access-aptos): pre-signed access grants with origin-bound signatures.
+- [`examples/bearer-capability-aptos`](../../../examples/bearer-capability-aptos): bearer signing capabilities with origin-bound signatures.
 - [`scenarios/custom-flow-aptos`](../../../scenarios/custom-flow-aptos): small code-based custom-flow scenario.

@@ -37,17 +37,17 @@ We allow the owner of an object to update its allowlist using the following entr
 /// We assume the full object ID contains owner info.
 fun extract_owner_from_full_object_id(object_id: vector<u8>): address;
 
-public entry fun register_item(owner: &signer, full_object_id: vector<u8>) acquires Catalog {
-    assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
-    let catalog = borrow_global_mut<Catalog>(@admin);
+public entry fun register_item(owner: &signer, full_object_id: vector<u8>) {
+    assert!(owner.address_of() == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
+    let catalog = &mut Catalog[@admin];
     if (!catalog.items.contains(full_object_id)) {
-        catalog.items.add(full_object_id, ItemInfo { allowlist: vector::empty() });
+        catalog.items.add(full_object_id, ItemInfo { allowlist: vector[] });
     };
 }
 
-public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) acquires Catalog {
-    assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
-    let catalog = borrow_global_mut<Catalog>(@admin);
+public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) {
+    assert!(owner.address_of() == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
+    let catalog = &mut Catalog[@admin];
     assert!(catalog.items.contains(full_object_id), error::not_found(E_ITEM_NOT_FOUND));
     let item = catalog.items.borrow_mut(full_object_id);
     if (!item.allowlist.contains(&reader)) {
@@ -64,12 +64,12 @@ public fun on_ace_decryption_request(
     full_object_id: vector<u8>,
     user: address,
     origin: String,
-): bool acquires Catalog {
+): bool {
     // Owner should always have access.
     if (extract_owner_from_full_object_id(full_object_id) == user) return true;
 
     if (!exists<Catalog>(@admin)) return false;
-    let catalog = borrow_global<Catalog>(@admin);
+    let catalog = &Catalog[@admin];
     if (!catalog.items.contains(full_object_id)) return false;
     let item = catalog.items.borrow(full_object_id);
     item.allowlist.contains(&user)
@@ -152,17 +152,23 @@ const session = await ACE.IBE_Aptos.BasicDecryptionSession.create({
 });
 
 const message = await session.getRequestToSign();
+// AIP-62 signMessage does not return the account public key. Obtain and
+// normalize this from the wallet's connected account as an Aptos `PublicKey`.
+const connectedAccountPublicKey = getConnectedAccountPublicKey();
 const signed = await wallet.signMessage({
   message,
   nonce: crypto.randomUUID(),
+  address: true,
   application: true,
-  chainId,
-  address: userAddress,
+  chainId: true,
 });
+
+// This assumes the adapter returns an Aptos SDK `Signature` object. If it
+// returns serialized bytes or hex instead, normalize it at the adapter boundary.
 
 const plaintext = (await session.decryptWithProof({
   userAddr: userAddress,
-  publicKey: signed.publicKey,
+  publicKey: connectedAccountPublicKey,
   signature: signed.signature,
   fullMessage: signed.fullMessage,
 })).unwrapOrThrow("ACE decrypt failed");
@@ -173,7 +179,7 @@ If you need to store or pass around the worker results before opening the cipher
 ```typescript
 const identityKeyShares = (await session.fetchIdentityKeySharesWithProof({
   userAddr: userAddress,
-  publicKey: signed.publicKey,
+  publicKey: connectedAccountPublicKey,
   signature: signed.signature,
   fullMessage: signed.fullMessage,
 })).unwrapOrThrow("ACE fetch identity key shares failed");
@@ -182,6 +188,31 @@ const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
   ciphertext,
   identityKeyShares,
 }).unwrapOrThrow("ACE local decrypt failed");
+```
+
+The `address`, `application`, and `chainId` AIP-62 inputs are boolean inclusion flags, not address or chain-id values. ACE verifies that `fullMessage` contains the exact SDK-generated hexadecimal BCS request, verifies the signature and connected account key against Aptos, and passes the signed `application` value to the Move hook as `origin`.
+
+For passkey accounts, use the dedicated WebAuthn path. The SDK constructs the challenge and converts the browser's DER ECDSA assertion into the Aptos WebAuthn proof shape:
+
+```typescript
+const challenge = await session.getRequestToSignForWebAuthn();
+const credential = await navigator.credentials.get({
+  publicKey: {
+    challenge,
+    rpId: window.location.hostname,
+    allowCredentials,
+    userVerification: "required",
+  },
+}) as PublicKeyCredential;
+const response = credential.response as AuthenticatorAssertionResponse;
+
+const plaintext = (await session.decryptWithWebAuthnAssertion({
+  userAddr: userAddress,
+  publicKey: connectedPasskeyPublicKey,
+  authenticatorData: new Uint8Array(response.authenticatorData),
+  clientDataJSON: new Uint8Array(response.clientDataJSON),
+  signature: new Uint8Array(response.signature),
+})).unwrapOrThrow("ACE passkey decrypt failed");
 ```
 
 For key reuse before you have a specific ciphertext, create the session with `tibeScheme` instead of `ciphertext`.
@@ -231,10 +262,10 @@ struct AppConfig has key {
 public entry fun set_client_origin(
     admin: &signer,
     origin: vector<u8>,
-) acquires AppConfig {
-    assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+) {
+    assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
     assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-    let config = borrow_global_mut<AppConfig>(@admin);
+    let config = &mut AppConfig[@admin];
     config.client_origin = origin;
 }
 ```
@@ -247,11 +278,11 @@ public fun on_ace_decryption_request(
     full_object_id: vector<u8>,
     user: address,
     origin: String,
-): bool acquires Catalog, AppConfig {
+): bool {
     if (!exists<Catalog>(@admin)) return false;
     if (!exists<AppConfig>(@admin)) return false;
-    let catalog = borrow_global<Catalog>(@admin);
-    let config = borrow_global<AppConfig>(@admin);
+    let catalog = &Catalog[@admin];
+    let config = &AppConfig[@admin];
     if (origin.bytes() != &config.client_origin) return false;
     if (extract_owner_from_full_object_id(full_object_id) == user) return true;
     if (!catalog.items.contains(full_object_id)) return false;
@@ -260,14 +291,13 @@ public fun on_ace_decryption_request(
 }
 ```
 
-Putting those pieces together, the final module looks like this:
+Putting those pieces together, the assembled module sketch looks like this. It intentionally leaves the app-specific `extract_owner_from_full_object_id` parser as a declaration; replace that declaration with your encoding's real implementation before compiling.
 
 ```move
 module admin::content_access {
     use aptos_std::table;
     use aptos_std::table::Table;
     use std::error;
-    use std::signer;
     use std::string::String;
 
     const E_NOT_ADMIN: u64 = 1;
@@ -288,7 +318,7 @@ module admin::content_access {
     }
 
     public entry fun init(admin: &signer) {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<Catalog>(@admin)) {
             move_to(admin, Catalog {
                 items: table::new(),
@@ -296,7 +326,7 @@ module admin::content_access {
         };
         if (!exists<AppConfig>(@admin)) {
             move_to(admin, AppConfig {
-                client_origin: vector::empty(),
+                client_origin: vector[],
             });
         };
     }
@@ -307,24 +337,24 @@ module admin::content_access {
     public entry fun set_client_origin(
         admin: &signer,
         origin: vector<u8>,
-    ) acquires AppConfig {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    ) {
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-        let config = borrow_global_mut<AppConfig>(@admin);
+        let config = &mut AppConfig[@admin];
         config.client_origin = origin;
     }
 
-    public entry fun register_item(owner: &signer, full_object_id: vector<u8>) acquires Catalog {
-        assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
-        let catalog = borrow_global_mut<Catalog>(@admin);
+    public entry fun register_item(owner: &signer, full_object_id: vector<u8>) {
+        assert!(owner.address_of() == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
+        let catalog = &mut Catalog[@admin];
         if (!catalog.items.contains(full_object_id)) {
-            catalog.items.add(full_object_id, ItemInfo { allowlist: vector::empty() });
+            catalog.items.add(full_object_id, ItemInfo { allowlist: vector[] });
         };
     }
 
-    public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) acquires Catalog {
-        assert!(signer::address_of(owner) == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
-        let catalog = borrow_global_mut<Catalog>(@admin);
+    public entry fun grant(owner: &signer, full_object_id: vector<u8>, reader: address) {
+        assert!(owner.address_of() == extract_owner_from_full_object_id(full_object_id), error::permission_denied(E_NOT_OWNER));
+        let catalog = &mut Catalog[@admin];
         assert!(catalog.items.contains(full_object_id), error::not_found(E_ITEM_NOT_FOUND));
         let item = catalog.items.borrow_mut(full_object_id);
         if (!item.allowlist.contains(&reader)) {
@@ -337,11 +367,11 @@ module admin::content_access {
         full_object_id: vector<u8>,
         user: address,
         origin: String,
-    ): bool acquires Catalog, AppConfig {
+    ): bool {
         if (!exists<Catalog>(@admin)) return false;
         if (!exists<AppConfig>(@admin)) return false;
-        let catalog = borrow_global<Catalog>(@admin);
-        let config = borrow_global<AppConfig>(@admin);
+        let catalog = &Catalog[@admin];
+        let config = &AppConfig[@admin];
         if (origin.bytes() != &config.client_origin) return false;
         if (extract_owner_from_full_object_id(full_object_id) == user) return true;
         if (!catalog.items.contains(full_object_id)) return false;

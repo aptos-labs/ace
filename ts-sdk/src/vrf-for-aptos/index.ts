@@ -37,6 +37,7 @@ import {
 import {
     buildWorkerNodeRequestBody,
     readWorkerNodeResponseCiphertext,
+    readWorkerResponseText,
 } from "../_internal/node-request";
 import { postWithTimeout } from "../_internal/post-with-timeout";
 import { settleUntilThreshold } from "../_internal/settle-until-threshold";
@@ -48,6 +49,7 @@ import {
 } from "../_internal/worker-request-limits";
 import { PcsPublicParams, PublicPoint } from "../vss";
 import { FR_MODULUS, frInv, frMod, frMul } from "../group/bls12381fr";
+import { Result } from "../result";
 
 export { buildAptosWalletFullMessage } from "../_internal/aptos-wallet-message";
 
@@ -523,6 +525,17 @@ export class DerivationSession {
         pubKey: PublicKey;
         signature: Signature;
         fullMessage: string;
+    }): Promise<Result<Uint8Array>> {
+        return Result.captureAsync({
+            task: async () => this.deriveWithSignatureInner(args),
+            recordsExecutionTimeMs: true,
+        });
+    }
+
+    private async deriveWithSignatureInner(args: {
+        pubKey: PublicKey;
+        signature: Signature;
+        fullMessage: string;
     }): Promise<Uint8Array> {
         if (this.payload === undefined || this.message === undefined) {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: call getRequestToSign() first");
@@ -542,7 +555,7 @@ export class DerivationSession {
         if (networkState === undefined) {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: missing network state");
         }
-        const [nodeInfos, currentSessionCommitments] = await Promise.all([
+        const [workerNodeInfoCollection, currentSessionCommitments] = await Promise.all([
             fetchCurrentWorkerNodeInfos({
                 aceDeployment: this.aceDeployment,
                 networkState,
@@ -550,16 +563,22 @@ export class DerivationSession {
             }),
             fetchCurrentSessionCommitments(this.aceDeployment, networkState, this.keypairId),
         ]);
+        const { nodeInfos, errors: metadataErrors } = workerNodeInfoCollection;
         if (currentSessionCommitments.shareCommitments.length !== networkState.curNodes.length) {
             throw new Error(
                 `ACE.VRF_Aptos.DerivationSession.deriveWithSignature: shareCommitments length ${currentSessionCommitments.shareCommitments.length} != curNodes length ${networkState.curNodes.length}`,
             );
         }
-        const workerErrors: string[] = [];
+        if (nodeInfos.length < networkState.curThreshold) {
+            throw new Error(
+                `ACE.VRF_Aptos.DerivationSession.deriveWithSignature: need metadata for ${networkState.curThreshold} workers, got ${nodeInfos.length} (${metadataErrors.join("; ")})`,
+            );
+        }
+        const workerErrors: string[] = [...metadataErrors];
         let sawNotImplemented = false;
 
         const taskResults = await settleUntilThreshold(
-            nodeInfos.map(({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => async (signal) => {
+            nodeInfos.map(({ sdkIdx, nodeAddr, endpoint, nodeEncKey }) => async (signal) => {
                 const requestBody = await buildWorkerNodeRequestBody({ nodeEncKey, plaintext: requestBytes });
                 let resp: Response;
                 try {
@@ -572,7 +591,7 @@ export class DerivationSession {
                     throw e;
                 }
                 if (!resp.ok) {
-                    const body = await resp.text().catch(() => "");
+                    const body = await readWorkerResponseText(resp).catch(() => "");
                     const detail = body.trim().slice(0, 120);
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status}${detail ? ` - ${detail}` : ""}`);
                     if (resp.status === 501) sawNotImplemented = true;
@@ -661,19 +680,19 @@ export class DerivationSession {
         const requestBytes = WorkerRequest.newThresholdVrf(
             new ThresholdVrfRequest({ payload: this.payload, authProof }),
         ).toBytes();
-        const nodeInfos = await fetchCurrentWorkerNodeInfos({
+        const { nodeInfos, errors: metadataErrors } = await fetchCurrentWorkerNodeInfos({
             aceDeployment: this.aceDeployment,
             networkState,
             pkeParseContext: "ACE.VRF_Aptos",
         });
         const target = args.targetEndpoint.replace(/\/$/, "");
-        const sdkIdx = nodeInfos.findIndex(n => n.endpoint.replace(/\/$/, "") === target);
-        if (sdkIdx < 0) {
+        const nodeInfo = nodeInfos.find(n => n.endpoint.replace(/\/$/, "") === target);
+        if (nodeInfo === undefined) {
             throw new Error(
-                `ACE.VRF_Aptos.DerivationSession.buildPerNodeRequest: targetEndpoint ${args.targetEndpoint} is not in the current committee. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(", ")}`,
+                `ACE.VRF_Aptos.DerivationSession.buildPerNodeRequest: targetEndpoint ${args.targetEndpoint} is not in the readable current committee metadata. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(", ")}. Metadata errors: ${metadataErrors.join("; ")}`,
             );
         }
-        const { nodeEncKey } = nodeInfos[sdkIdx]!;
+        const { nodeEncKey, sdkIdx } = nodeInfo;
         const encReqHex = bytesToHex(await buildWorkerNodeRequestBody({ nodeEncKey, plaintext: requestBytes }));
         return { encReqHex, epoch: networkState.epoch, sdkIdx };
     }
@@ -683,29 +702,34 @@ export class DerivationSession {
         authenticatorData: Uint8Array;
         clientDataJSON: Uint8Array;
         signature: Uint8Array;
-    }): Promise<Uint8Array> {
-        if (this.payload === undefined || this.message === undefined) {
-            throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
-        }
-        assertWorkerWebAuthnLimits({
-            authenticatorData: args.authenticatorData,
-            clientDataJSON: args.clientDataJSON,
-        });
+    }): Promise<Result<Uint8Array>> {
+        return Result.captureAsync({
+            recordsExecutionTimeMs: true,
+            task: async () => {
+                if (this.payload === undefined || this.message === undefined) {
+                    throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
+                }
+                assertWorkerWebAuthnLimits({
+                    authenticatorData: args.authenticatorData,
+                    clientDataJSON: args.clientDataJSON,
+                });
 
-        const sigRs = derEcdsaToRawLowS(args.signature);
-        const cdjHash = sha256(args.clientDataJSON);
-        const preimage = new Uint8Array(args.authenticatorData.length + cdjHash.length);
-        preimage.set(args.authenticatorData, 0);
-        preimage.set(cdjHash, args.authenticatorData.length);
+                const sigRs = derEcdsaToRawLowS(args.signature);
+                const cdjHash = sha256(args.clientDataJSON);
+                const preimage = new Uint8Array(args.authenticatorData.length + cdjHash.length);
+                preimage.set(args.authenticatorData, 0);
+                preimage.set(cdjHash, args.authenticatorData.length);
 
-        return this.deriveWithSignature({
-            pubKey: new AnyPublicKey(args.pubKey),
-            signature: new AnySignature(new WebAuthnSignature(
-                sigRs,
-                args.authenticatorData,
-                args.clientDataJSON,
-            )),
-            fullMessage: bytesToHex(preimage),
+                return this.deriveWithSignatureInner({
+                    pubKey: new AnyPublicKey(args.pubKey),
+                    signature: new AnySignature(new WebAuthnSignature(
+                        sigRs,
+                        args.authenticatorData,
+                        args.clientDataJSON,
+                    )),
+                    fullMessage: bytesToHex(preimage),
+                });
+            },
         });
     }
 }
@@ -731,14 +755,14 @@ function derEcdsaToRawLowS(der: Uint8Array): Uint8Array {
  *
  * Example:
  *
- *   const vrfBytes = await ACE.VRF_Aptos.derive({
+ *   const vrfBytes = (await ACE.VRF_Aptos.derive({
  *       aceDeployment, keypairId, chainId, moduleAddr, moduleName,
  *       label, accountAddress: owner.accountAddress,
  *       sign: async msg => {
  *           const fullMessage = buildAptosWalletFullMessage({ ... message: msg, ... });
  *           return { pubKey: owner.publicKey, signature: owner.sign(fullMessage), fullMessage };
  *       },
- *   });
+ *   })).unwrapOrThrow("tVRF derive failed");
  */
 export async function derive(args: {
     aceDeployment: AceDeployment;
@@ -753,18 +777,24 @@ export async function derive(args: {
         signature: Signature;
         fullMessage: string;
     }>;
-}): Promise<Uint8Array> {
-    const session = await DerivationSession.create({
-        aceDeployment: args.aceDeployment,
-        keypairId: args.keypairId,
-        contractId: ContractID.newAptos({
-            chainId: args.chainId,
-            moduleAddr: args.moduleAddr,
-            moduleName: args.moduleName,
-        }),
-        label: args.label,
-        accountAddress: args.accountAddress,
+}): Promise<Result<Uint8Array>> {
+    return Result.captureAsync({
+        recordsExecutionTimeMs: true,
+        task: async () => {
+            const session = await DerivationSession.create({
+                aceDeployment: args.aceDeployment,
+                keypairId: args.keypairId,
+                contractId: ContractID.newAptos({
+                    chainId: args.chainId,
+                    moduleAddr: args.moduleAddr,
+                    moduleName: args.moduleName,
+                }),
+                label: args.label,
+                accountAddress: args.accountAddress,
+            });
+            const message = await session.getRequestToSign();
+            return (await session.deriveWithSignature(await args.sign(message)))
+                .unwrapOrThrow("ACE.VRF_Aptos.derive failed");
+        },
     });
-    const message = await session.getRequestToSign();
-    return session.deriveWithSignature(await args.sign(message));
 }

@@ -6,6 +6,7 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
+use vss_common::pke;
 
 use super::{fields::add_optional_fields, Flow, Outcome, RequestContext};
 use crate::now_utc_iso;
@@ -19,14 +20,16 @@ pub(crate) fn finish_response(
     start: Instant,
     ctx: &RequestContext,
     outcome: Outcome,
-) -> Result<String, StatusCode> {
+) -> Result<pke::Ciphertext, StatusCode> {
     let mut log = base_log(handling_session_id, start, ctx);
     match outcome {
-        Outcome::Ok { share_hex } => {
+        Outcome::Ok { ciphertext } => {
             log["result"] = json!("ok");
-            log["share_bytes"] = json!(share_hex.len() / 2);
+            log["share_bytes"] = json!(bcs::to_bytes(&ciphertext)
+                .map(|bytes| bytes.len())
+                .unwrap_or_default());
             eprintln!("{}", log);
-            Ok(share_hex)
+            Ok(ciphertext)
         }
         Outcome::Rejected { reason, detail } => {
             log["result"] = json!(reason.result_label());

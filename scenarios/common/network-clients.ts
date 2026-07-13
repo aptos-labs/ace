@@ -58,7 +58,7 @@ export type NetworkNodeSpawnInput = {
     sigSkHex?: string;
     /** Persistent VSS store URL, e.g. `sqlite:///tmp/node.db`. */
     vssStoreUrl?: string;
-    /** Local listen address for embedded node-to-node VSS share requests. */
+    /** Local listen address for split-mode maintainer node messages. */
     nodeMsgListen?: string;
     /** Published module address (`admin` / ace contract). */
     aceDeploymentAddr: string;
@@ -81,6 +81,7 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
     const rpc = opts.aceDeploymentApi ?? LOCALNET_URL;
     const accountAddr = opts.runAs.accountAddress.toStringLong();
     const pkeDkHex = opts.pkeDkHex.startsWith('0x') ? opts.pkeDkHex : `0x${opts.pkeDkHex}`;
+    const port = opts.port ?? (opts.nodeMsgListen === undefined ? undefined : portFromListen(opts.nodeMsgListen));
     const args = [
         'run',
         '--ace-deployment-api', rpc,
@@ -95,11 +96,8 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
     if (opts.vssStoreUrl !== undefined) {
         args.push('--vss-store-url', opts.vssStoreUrl);
     }
-    if (opts.nodeMsgListen !== undefined) {
-        args.push('--node-msg-listen', opts.nodeMsgListen);
-    }
-    if (opts.port !== undefined) {
-        args.push('--port', String(opts.port));
+    if (port !== undefined) {
+        args.push('--port', String(port));
     }
     return spawnWithLog(NETWORK_NODE_BINARY, args, `ace-node-${accountAddr}`);
 }
@@ -131,6 +129,10 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
     if (opts.vssStoreUrl === undefined) {
         throw new Error('spawnNetworkNodeSplit: opts.vssStoreUrl is required');
     }
+    if (opts.nodeMsgListen === undefined) {
+        throw new Error('spawnNetworkNodeSplit: opts.nodeMsgListen (maintainer listen) is required');
+    }
+    const maintainerPort = portFromListen(opts.nodeMsgListen);
 
     const maintainer = spawnWithLog(
         NETWORK_NODE_BINARY,
@@ -144,7 +146,7 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
             '--pke-dk', pkeDkHex,
             ...(opts.sigSkHex !== undefined ? ['--sig-sk', opts.sigSkHex] : []),
             '--vss-store-url', opts.vssStoreUrl,
-            ...(opts.nodeMsgListen !== undefined ? ['--node-msg-listen', opts.nodeMsgListen] : []),
+            '--port', String(maintainerPort),
         ],
         `ace-node-maintainer-${accountAddr}`,
     );
@@ -172,7 +174,7 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
     index: number;
     /** Total number of workers being spawned in this committee. */
     total: number;
-    /** Base port; handler/monolith uses `workerBasePort + index`. */
+    /** Base port; node i uses `base + 2*i` for split maintainer and `base + 2*i + 1` for handler/monolith. */
     workerBasePort: number;
 };
 
@@ -180,16 +182,16 @@ export type WorkerSpawnInput = Omit<NetworkNodeSpawnInput, 'port'> & {
  * Spawn one committee member in either monolith or split mode, chosen by index:
  * the front `ceil(total/2)` indices run as split (maintainer + handler) and the
  * rest run as monoliths. Returns the list of processes spawned (length 1 for
- * monolith, 2 for split). Callers register
- * `http://localhost:${workerBasePort + index}` as the on-chain endpoint
- * regardless of mode.
+ * monolith, 2 for split). Callers register the node-msg endpoint separately
+ * for split mode; monolith mode should register both on-chain endpoints to
+ * the single handler/monolith URL.
  *
  * Exercising both modes in every end-to-end scenario keeps the split-mode
  * codepaths under continuous CI coverage.
  */
 export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess[] {
-    const handlerPort = opts.workerBasePort + opts.index;
-    const isSplit = opts.index < Math.ceil(opts.total / 2);
+    const handlerPort = opts.workerBasePort + (2 * opts.index) + 1;
+    const isSplit = shouldSpawnSplitNetworkNode(opts.index, opts.total);
     if (isSplit) {
         const { maintainer, handler } = spawnNetworkNodeSplit({
             runAs: opts.runAs,
@@ -213,6 +215,21 @@ export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess
         aceDeploymentApi: opts.aceDeploymentApi,
         port: handlerPort,
     })];
+}
+
+export function shouldSpawnSplitNetworkNode(index: number, total: number): boolean {
+    return index < Math.ceil(total / 2);
+}
+
+function portFromListen(listen: string): number {
+    const raw = listen.trim();
+    const lastColon = raw.lastIndexOf(':');
+    const portText = lastColon >= 0 ? raw.slice(lastColon + 1) : raw;
+    const port = Number(portText);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        throw new Error(`invalid listen port: ${listen}`);
+    }
+    return port;
 }
 
 function spawnWithLog(bin: string, args: string[], label: string): ChildProcess {

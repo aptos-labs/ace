@@ -49,7 +49,6 @@ import {
     ACCESS_CONTROL_CONTRACT_DIR,
     CHAIN_ID,
     LOCALNET_URL,
-    WORKER_BASE_PORT,
 } from './common/config';
 import {
     assertTxnSuccess,
@@ -72,6 +71,7 @@ import {
 import {
     buildRustWorkspace,
     killStaleNetworkNodes,
+    shouldSpawnSplitNetworkNode,
     spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
 import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
@@ -188,8 +188,11 @@ async function main() {
         const storeUrls = workerAccounts.map((_, i) => `sqlite://${path.join(tmpRoot!, `node-${i}.db`)}`);
         const nodeMsgEndpoints = makeNodeMsgEndpoints(TOTAL_WORKERS);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
-            const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
-            console.log(`  Registering worker ${i}: ${endpoint}`);
+            const endpoint = nodeMsgEndpoints.clientUrls[i]!;
+            const nodeMsgEndpoint = shouldSpawnSplitNetworkNode(i, TOTAL_WORKERS)
+                ? nodeMsgEndpoints.nodeMsgUrls[i]
+                : endpoint;
+            console.log(`  Registering worker ${i}: node-msg=${nodeMsgEndpoint}, client=${endpoint}`);
             assertTxnSuccess(
                 await submitTxn({
                     signer: workerAccounts[i],
@@ -218,7 +221,7 @@ async function main() {
                 await submitTxn({
                     signer: workerAccounts[i],
                     entryFunction: `${adminAddr}::worker_config::register_node_msg_endpoint`,
-                    args: [nodeMsgEndpoints.registeredUrls[i]],
+                    args: [nodeMsgEndpoint],
                 }),
                 `register_node_msg_endpoint worker ${i}`,
             );
@@ -255,10 +258,10 @@ async function main() {
                 pkeDkHex,
                 sigSkHex: sigKeypairs[i].signingKey.toHex(),
                 vssStoreUrl: storeUrls[i],
-                nodeMsgListen: nodeMsgEndpoints.listens[i],
+                nodeMsgListen: nodeMsgEndpoints.nodeMsgListens[i],
                 aceDeploymentAddr: adminAddr,
                 aceDeploymentApi: LOCALNET_URL,
-                workerBasePort: WORKER_BASE_PORT,
+                workerBasePort: nodeMsgEndpoints.basePort,
             }));
         }
 

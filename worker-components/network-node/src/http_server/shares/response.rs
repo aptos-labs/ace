@@ -30,11 +30,8 @@ pub(crate) fn encrypt_response_bytes(
     share_bytes: &[u8],
 ) -> Outcome {
     let resp_ct = pke_encrypt(response_enc_key, share_bytes);
-    match bcs::to_bytes(&resp_ct) {
-        Ok(b) => Outcome::Ok {
-            share_hex: hex::encode(b),
-        },
-        Err(e) => internal(format!("bcs encode response: {}", e)),
+    Outcome::Ok {
+        ciphertext: resp_ct,
     }
 }
 

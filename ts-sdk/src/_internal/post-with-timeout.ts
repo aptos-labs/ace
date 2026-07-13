@@ -6,7 +6,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 /** POST a worker request with both caller cancellation and a local deadline. */
 export async function postWithTimeout(
     endpoint: string,
-    body: string,
+    body: BodyInit | Uint8Array,
     parentSignal: AbortSignal,
     timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<Response> {
@@ -20,7 +20,10 @@ export async function postWithTimeout(
     const timeoutId = setTimeout(() => controller.abort(new Error(`worker request timed out after ${timeoutMs}ms`)), timeoutMs);
 
     try {
-        return await fetch(endpoint, { method: "POST", body, signal: controller.signal });
+        const fetchBody: BodyInit = body instanceof Uint8Array
+            ? (new Uint8Array(body).buffer as ArrayBuffer)
+            : body;
+        return await fetch(endpoint, { method: "POST", body: fetchBody, signal: controller.signal });
     } finally {
         clearTimeout(timeoutId);
         parentSignal.removeEventListener("abort", forwardAbort);

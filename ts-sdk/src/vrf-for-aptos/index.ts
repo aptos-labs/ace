@@ -34,6 +34,10 @@ import {
     NetworkState,
     WorkerRequest,
 } from "../_internal/common";
+import {
+    buildWorkerNodeRequestBody,
+    readWorkerNodeResponseCiphertext,
+} from "../_internal/node-request";
 import { postWithTimeout } from "../_internal/post-with-timeout";
 import { settleUntilThreshold } from "../_internal/settle-until-threshold";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
@@ -556,10 +560,10 @@ export class DerivationSession {
 
         const taskResults = await settleUntilThreshold(
             nodeInfos.map(({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => async (signal) => {
-                const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
+                const requestBody = await buildWorkerNodeRequestBody({ nodeEncKey, plaintext: requestBytes });
                 let resp: Response;
                 try {
-                    resp = await postWithTimeout(endpoint, encReqHex, signal);
+                    resp = await postWithTimeout(endpoint, requestBody, signal);
                 } catch (e) {
                     if (!signal.aborted) {
                         console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
@@ -575,12 +579,13 @@ export class DerivationSession {
                     workerErrors.push(`${nodeAddr}: HTTP ${resp.status}${detail ? ` ${detail}` : ""}`);
                     throw new Error(`worker returned HTTP ${resp.status}`);
                 }
-                const hexText = (await resp.text()).trim();
-                const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                if (respCt === null) {
+                let respCt: pke.Ciphertext;
+                try {
+                    respCt = await readWorkerNodeResponseCiphertext(resp);
+                } catch (e) {
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
                     workerErrors.push(`${nodeAddr}: response ciphertext parse failed`);
-                    throw new Error("response ciphertext parse failed");
+                    throw e;
                 }
                 const shareBytes = (await pke.decrypt({
                     decryptionKey: this.responseDecryptionKey,
@@ -630,9 +635,9 @@ export class DerivationSession {
     }
 
     /**
-     * Build the encrypted POST body for one specific worker. This does not fan
-     * out to the committee and does not reconstruct the final VRF output.
-     * It is intended for load testing and low-level tooling.
+     * Build the BCS NodeRequest POST body for one specific worker. This does
+     * not fan out to the committee and does not reconstruct the final VRF
+     * output. It is intended for load testing and low-level tooling.
      */
     async buildPerNodeRequest(args: {
         pubKey: PublicKey;
@@ -669,7 +674,7 @@ export class DerivationSession {
             );
         }
         const { nodeEncKey } = nodeInfos[sdkIdx]!;
-        const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
+        const encReqHex = bytesToHex(await buildWorkerNodeRequestBody({ nodeEncKey, plaintext: requestBytes }));
         return { encReqHex, epoch: networkState.epoch, sdkIdx };
     }
 

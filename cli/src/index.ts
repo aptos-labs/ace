@@ -140,7 +140,7 @@ nodeCmd
     .option('--endpoint <url>', 'Node endpoint to register (required if not applying deploy with --yes)')
     .option('--node-msg-endpoint <url>', 'Node-to-node message endpoint to register (required if not applying deploy with --yes)')
     .option('--vss-store-url <url>', 'Persistent VSS store URL, e.g. sqlite:///path/to/node.db or postgres://...')
-    .option('--node-msg-listen <addr>', 'Local listen address for node-to-node VSS messages, e.g. 0.0.0.0:20500')
+    .option('--node-msg-listen <addr>', 'Node-message bind metadata for endpoint defaults; network-node itself listens on --port')
     .option('--chain-rpc-json <json>', 'JSON object of chain RPC overrides, e.g. {"aptosTestnetApi":"http://10.0.0.1:8080/v1"}')
     .action(async (opts: NodeNewOptions & { json?: boolean; setDefault?: boolean }) => {
         try {

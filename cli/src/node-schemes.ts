@@ -305,7 +305,7 @@ function runtimeLines(t: TemplateInputs, nodeMsgComment: string): string {
     const d = t.defaults;
     return [
         `vssStoreUrl      = "${e.vssStoreUrl ?? d.vssStoreUrl ?? ''}"          # → --vss-store-url. Persistent VSS DB; sqlite://... for local, postgres://... for shared DB`,
-        `nodeMsgListen    = "${e.nodeMsgListen ?? d.nodeMsgListen ?? ''}"      # → --node-msg-listen. ${nodeMsgComment}`,
+        `nodeMsgListen    = "${e.nodeMsgListen ?? d.nodeMsgListen ?? ''}"      # endpoint-default metadata; network-node listens on --port. ${nodeMsgComment}`,
     ].join('\n');
 }
 

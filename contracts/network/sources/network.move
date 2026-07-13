@@ -53,6 +53,7 @@ module ace::network {
         cur_nodes: vector<address>,
         cur_threshold: u64,
         secrets: vector<address>,
+        previous_epoch_info: Option<EpochSnapshot>,
         /// Stores proposals from nodes and admin, therefore having length n+1. indices 0..<n are for nodes, n is for admin.
         proposals: vector<Option<ProposalState>>,
         epoch_change_info: Option<EpochChangeInfo>,
@@ -84,6 +85,16 @@ module ace::network {
         note: String,
     }
 
+    struct EpochSnapshot has store, drop, copy {
+        nodes: vector<address>,
+        secrets: vector<address>,
+    }
+
+    struct EpochSnapshotView has drop {
+        nodes: vector<address>,
+        secrets: vector<SecretInfo>,
+    }
+
     #[view]
     public fun state_bcs(): vector<u8> {
         bcs::to_bytes(&State[@ace])
@@ -112,9 +123,30 @@ module ace::network {
         cur_nodes: vector<address>,
         cur_threshold: u64,
         secrets: vector<SecretInfo>,
+        previous_epoch_info: Option<EpochSnapshotView>,
         /// Length == cur_nodes.length() + 1; index i is node i's proposal, last index is admin's.
         proposals: vector<Option<ProposalView>>,
         epoch_change_info: Option<EpochChangeView>,
+    }
+
+    fun secret_info(addr: address): SecretInfo {
+        let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
+            dkg::keypair_id_scheme_usage_and_note(addr)
+        } else {
+            dkr::keypair_id_scheme_usage_and_note(addr)
+        };
+        SecretInfo { current_session: addr, keypair_id, scheme, expected_usage, note }
+    }
+
+    fun secret_infos(secret_sessions: vector<address>): vector<SecretInfo> {
+        secret_sessions.map(|addr| secret_info(addr))
+    }
+
+    fun epoch_snapshot_view(snapshot: EpochSnapshot): EpochSnapshotView {
+        EpochSnapshotView {
+            nodes: snapshot.nodes,
+            secrets: snapshot.secrets.map(|addr| secret_info(addr)),
+        }
     }
 
     // Single BCS-encoded snapshot covering network::State plus all sub-protocol data nodes
@@ -161,21 +193,10 @@ module ace::network {
             option::none()
         };
 
-        let secrets = {
-            let n = state.secrets.length();
-            let i = 0;
-            let result = vector[];
-            while (i < n) {
-                let addr = state.secrets[i];
-                let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
-                    dkg::keypair_id_scheme_usage_and_note(addr)
-                } else {
-                    dkr::keypair_id_scheme_usage_and_note(addr)
-                };
-                result.push_back(SecretInfo { current_session: addr, keypair_id, scheme, expected_usage, note });
-                i += 1;
-            };
-            result
+        let previous_epoch_info = if (state.previous_epoch_info.is_some()) {
+            option::some(epoch_snapshot_view(*state.previous_epoch_info.borrow()))
+        } else {
+            option::none()
         };
 
         bcs::to_bytes(&StateViewV0 {
@@ -184,7 +205,8 @@ module ace::network {
             epoch_duration_micros: state.epoch_duration_micros,
             cur_nodes: state.cur_nodes,
             cur_threshold: state.cur_threshold,
-            secrets,
+            secrets: secret_infos(state.secrets),
+            previous_epoch_info,
             proposals,
             epoch_change_info,
         })
@@ -214,6 +236,7 @@ module ace::network {
             cur_nodes: nodes,
             cur_threshold: threshold,
             secrets: vector[],
+            previous_epoch_info: option::none(),
             proposals: range(0, n+1).map(|_| option::none()),
             epoch_change_info: option::none(),
         });
@@ -237,6 +260,10 @@ module ace::network {
             let session = state.epoch_change_info.borrow().session_addr;
             if (epoch_change::completed(session)) {
                 let (nodes, threshold, secrets, epoch_duration_micros) = epoch_change::results(session);
+                state.previous_epoch_info = option::some(EpochSnapshot {
+                    nodes: state.cur_nodes,
+                    secrets: state.secrets,
+                });
                 state.epoch += 1;
                 state.epoch_start_time_micros = now_micros;
                 state.cur_nodes = nodes;

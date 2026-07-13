@@ -32,8 +32,11 @@ export type VSSActors = {
 };
 
 export type NodeMsgEndpoints = {
-    listens: string[];
-    registeredUrls: string[];
+    basePort: number;
+    nodeMsgListens: string[];
+    nodeMsgUrls: string[];
+    clientPorts: number[];
+    clientUrls: string[];
 };
 
 export type VSSStoreSetup = {
@@ -59,11 +62,15 @@ export async function createFundedVSSActors(numWorkers: number): Promise<VSSActo
 }
 
 export function makeNodeMsgEndpoints(numWorkers: number): NodeMsgEndpoints {
-    const nodeMsgBasePort = 20500 + Math.floor(Math.random() * 2000);
-    const listens = Array.from({ length: numWorkers }, (_, i) => `127.0.0.1:${nodeMsgBasePort + i}`);
+    const basePort = 20500 + (2 * Math.floor(Math.random() * 1000));
+    const nodeMsgListens = Array.from({ length: numWorkers }, (_, i) => `127.0.0.1:${basePort + (2 * i)}`);
+    const clientPorts = Array.from({ length: numWorkers }, (_, i) => basePort + (2 * i) + 1);
     return {
-        listens,
-        registeredUrls: listens.map(listen => `http://${listen}`),
+        basePort,
+        nodeMsgListens,
+        nodeMsgUrls: nodeMsgListens.map(listen => `http://${listen}`),
+        clientPorts,
+        clientUrls: clientPorts.map(port => `http://localhost:${port}`),
     };
 }
 
@@ -101,7 +108,7 @@ export async function registerVSSWorkers(opts: {
         (await submitTxn({
             signer: opts.actors.holderAccounts[i],
             entryFunction: `${opts.aceContract}::worker_config::register_node_msg_endpoint`,
-            args: [opts.nodeMsgEndpoints.registeredUrls[i]],
+            args: [opts.nodeMsgEndpoints.nodeMsgUrls[i]],
         })).unwrapOrThrow('register_node_msg_endpoint failed').asSuccessOrThrow();
     }
 }
@@ -169,7 +176,7 @@ export function spawnVSSClients(opts: {
         aceDeploymentAddr: opts.aceContract,
         sigSkHex: opts.actors.sigKeypairs[0].signingKey.toHex(),
         vssStoreUrl: opts.storeUrls[0],
-        nodeMsgListen: opts.nodeMsgEndpoints.listens[0],
+        nodeMsgListen: opts.nodeMsgEndpoints.nodeMsgListens[0],
     });
     const holderProcs = opts.actors.holderAccounts.map((account, i) =>
         spawnVSSRecipientRun({

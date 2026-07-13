@@ -33,18 +33,44 @@ pub struct ShareEntry {
     pub note: String,
 }
 
+pub(crate) type ShareKey = (String, u64);
+pub(crate) type ShareMap = HashMap<ShareKey, ShareEntry>;
+type SharedShareMap = Arc<RwLock<ShareMap>>;
+
 #[derive(Clone)]
 pub struct LocalSecrets {
-    pub shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
+    shares: SharedShareMap,
 }
 
 impl LocalSecrets {
+    pub(crate) fn empty() -> Self {
+        Self {
+            shares: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_map(shares: ShareMap) -> Self {
+        Self {
+            shares: Arc::new(RwLock::new(shares)),
+        }
+    }
+
     pub async fn get_share(&self, keypair_id: &str, epoch: u64) -> Option<ShareEntry> {
         self.shares
             .read()
             .await
             .get(&(keypair_id.to_string(), epoch))
             .cloned()
+    }
+
+    #[cfg(test)]
+    async fn insert_share(&self, keypair_id: String, epoch: u64, entry: ShareEntry) {
+        self.shares.write().await.insert((keypair_id, epoch), entry);
+    }
+
+    pub(crate) async fn replace_all(&self, refreshed: ShareMap) {
+        *self.shares.write().await = refreshed;
     }
 }
 
@@ -112,28 +138,29 @@ mod tests {
             },
         );
 
-        let local = LocalSecrets {
-            shares: Arc::new(RwLock::new(shares)),
-        };
+        let local = LocalSecrets::from_map(shares);
 
         let first = local.get_share("0xkp", 5).await.expect("epoch 5 share");
         assert_eq!(first.group_scheme, 0);
-        assert_eq!(
-            first.expected_usage,
-            0
-        );
+        assert_eq!(first.expected_usage, 0);
         assert_eq!(first.note, "test-only g1");
         local
-            .shares
-            .write()
-            .await
-            .get_mut(&("0xkp".to_string(), 5))
-            .unwrap()
-            .note = "updated live share".to_string();
-        assert_eq!(
-            first.note,
-            "test-only g1"
-        );
+            .insert_share(
+                "0xkp".to_string(),
+                5,
+                ShareEntry {
+                    scalar_le32: [0xee; 32],
+                    blinding_le32: [0xdd; 32],
+                    group_scheme: 0,
+                    pcs_context: dummy_pcs_context(),
+                    share_commitment: dummy_commitment(),
+                    expected_usage: 0,
+                    eval_point: 2,
+                    note: "updated live share".to_string(),
+                },
+            )
+            .await;
+        assert_eq!(first.note, "test-only g1");
 
         let second = local.get_share("0xkp", 6).await.expect("epoch 6 share");
         assert_eq!(second.group_scheme, 1);
@@ -146,9 +173,39 @@ mod tests {
 
     #[tokio::test]
     async fn local_get_share_returns_none_when_missing() {
-        let local = LocalSecrets {
-            shares: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let local = LocalSecrets::empty();
         assert!(local.get_share("0xmissing", 7).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn replace_all_drops_stale_entries_and_keeps_refreshed_entries() {
+        let local = LocalSecrets::empty();
+        local
+            .insert_share("0xold".to_string(), 3, dummy_share("old"))
+            .await;
+        local
+            .insert_share("0xrecent".to_string(), 4, dummy_share("recent"))
+            .await;
+
+        let mut refreshed = ShareMap::new();
+        refreshed.insert(("0xnew".to_string(), 5), dummy_share("new"));
+        local.replace_all(refreshed).await;
+
+        assert!(local.get_share("0xold", 3).await.is_none());
+        assert!(local.get_share("0xrecent", 4).await.is_none());
+        assert_eq!(local.get_share("0xnew", 5).await.unwrap().note, "new");
+    }
+
+    fn dummy_share(note: &str) -> ShareEntry {
+        ShareEntry {
+            scalar_le32: [0xab; 32],
+            blinding_le32: [0xba; 32],
+            group_scheme: SCHEME_BLS12381G2,
+            pcs_context: dummy_pcs_context(),
+            share_commitment: dummy_commitment(),
+            expected_usage: crate::secret_usage::USAGE_BLS12381_THRESHOLD_VRF,
+            eval_point: 2,
+            note: note.to_string(),
+        }
     }
 }

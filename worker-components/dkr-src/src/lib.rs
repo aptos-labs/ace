@@ -11,12 +11,9 @@
 //! spawned once `vss_sessions[my_src_idx]` appears on-chain.
 
 use anyhow::{anyhow, Result};
-use ark_bls12_381::Fr;
-use ark_ff::{Field, Zero};
 use serde_json::Value;
 use tokio::sync::oneshot;
-use vss_common::crypto::fr_to_le_bytes;
-use vss_common::vss_types::{opening_eval_value_p_fr, opening_eval_value_r_fr};
+use vss_common::group::{scalar_lagrange_at_zero, scalar_sum, BcsScalar};
 use vss_common::{
     normalize_account_addr, parse_ed25519_signing_key_hex, should_submit_rotating_touch, AptosRpc,
     TxnArg,
@@ -307,9 +304,9 @@ async fn reconstruct_from_dkg_store(
         ));
     }
 
-    let mut secret = Fr::zero();
-    let mut blinding = Fr::zero();
-    let mut num_contributions = 0usize;
+    let mut secret_scalars = Vec::<BcsScalar>::new();
+    let mut blinding_scalars = Vec::<BcsScalar>::new();
+    let mut group_scheme: Option<u8> = None;
     for (idx, vss_addr) in vss_sessions.iter().enumerate() {
         if !done_flags[idx] {
             continue;
@@ -324,16 +321,30 @@ async fn reconstruct_from_dkg_store(
                 session_addr
             ));
         }
-        secret += opening_eval_value_p_fr(&opening)?;
-        blinding += opening_eval_value_r_fr(&opening)?;
-        num_contributions += 1;
+        let scheme = opening.eval_value_p.scheme();
+        if opening.eval_value_r.scheme() != scheme {
+            return Err(anyhow!(
+                "VSS opening p/r scheme mismatch in DKG {}",
+                session_addr
+            ));
+        }
+        if group_scheme
+            .replace(scheme)
+            .is_some_and(|existing| existing != scheme)
+        {
+            return Err(anyhow!("mixed VSS scalar schemes in DKG {}", session_addr));
+        }
+        secret_scalars.push(opening.eval_value_p.clone());
+        blinding_scalars.push(opening.eval_value_r.clone());
     }
-    if num_contributions == 0 {
+    if secret_scalars.is_empty() {
         return Err(anyhow!("no done VSS sessions in DKG {}", session_addr));
     }
+    let secret = scalar_sum(&secret_scalars)?;
+    let blinding = scalar_sum(&blinding_scalars)?;
     Ok(PreviousShareOpening {
-        secret: fr_to_le_bytes(secret),
-        blinding: fr_to_le_bytes(blinding),
+        secret: secret.to_le_bytes()?,
+        blinding: blinding.to_le_bytes()?,
     })
 }
 
@@ -360,8 +371,9 @@ async fn reconstruct_from_dkr_store(
         ));
     }
 
-    let mut secret_points = Vec::new();
-    let mut blinding_points = Vec::new();
+    let mut secret_points = Vec::<(u64, BcsScalar)>::new();
+    let mut blinding_points = Vec::<(u64, BcsScalar)>::new();
+    let mut group_scheme: Option<u8> = None;
     for (idx, vss_addr) in vss_sessions.iter().enumerate() {
         if !vss_contribution_flags[idx] {
             continue;
@@ -377,42 +389,29 @@ async fn reconstruct_from_dkr_store(
             ));
         }
         let old_eval_position = idx as u64 + 1;
-        secret_points.push((old_eval_position, opening_eval_value_p_fr(&opening)?));
-        blinding_points.push((old_eval_position, opening_eval_value_r_fr(&opening)?));
+        let scheme = opening.eval_value_p.scheme();
+        if opening.eval_value_r.scheme() != scheme {
+            return Err(anyhow!("VSS opening p/r scheme mismatch in previous DKR"));
+        }
+        if group_scheme
+            .replace(scheme)
+            .is_some_and(|existing| existing != scheme)
+        {
+            return Err(anyhow!("mixed VSS scalar schemes in previous DKR"));
+        }
+        secret_points.push((old_eval_position, opening.eval_value_p.clone()));
+        blinding_points.push((old_eval_position, opening.eval_value_r.clone()));
     }
     if secret_points.is_empty() {
         return Err(anyhow!("no contributing VSS sessions in previous DKR"));
     }
 
+    let secret = scalar_lagrange_at_zero(&secret_points)?;
+    let blinding = scalar_lagrange_at_zero(&blinding_points)?;
     Ok(PreviousShareOpening {
-        secret: fr_to_le_bytes(lagrange_at_zero(&secret_points)?),
-        blinding: fr_to_le_bytes(lagrange_at_zero(&blinding_points)?),
+        secret: secret.to_le_bytes()?,
+        blinding: blinding.to_le_bytes()?,
     })
-}
-
-fn lagrange_at_zero(points: &[(u64, Fr)]) -> Result<Fr> {
-    if points.is_empty() {
-        return Err(anyhow!("lagrange_at_zero: no points"));
-    }
-    let mut acc = Fr::zero();
-    for (i, (x_i_raw, y_i)) in points.iter().enumerate() {
-        let x_i = Fr::from(*x_i_raw);
-        let mut numerator = Fr::from(1u64);
-        let mut denominator = Fr::from(1u64);
-        for (j, (x_j_raw, _)) in points.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let x_j = Fr::from(*x_j_raw);
-            numerator *= -x_j;
-            denominator *= x_i - x_j;
-        }
-        let denominator_inv = denominator
-            .inverse()
-            .ok_or_else(|| anyhow!("duplicate interpolation point {}", x_i_raw))?;
-        acc += *y_i * numerator * denominator_inv;
-    }
-    Ok(acc)
 }
 
 fn parse_addr_array(v: &Value) -> Result<Vec<String>> {

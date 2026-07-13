@@ -41,7 +41,8 @@ failed reads are not cached.
 DKG composes `n` VSS sessions. A DKG worker client:
 
 1. Ensures the VSS store client exists for `--vss-store-url`.
-2. Ensures the node message gateway exists for `--node-msg-listen` when it may deal shares.
+2. Ensures the node HTTP server exists when it may deal shares (`--port` in
+   `network-node`; `--node-msg-listen` in standalone low-level clients).
 3. Follows the DKG session state on-chain.
 4. Starts VSS dealer/recipient clients as required for the worker's role.
 5. Lets Move aggregate accepted VSS commitment points and public keys into the resulting secret metadata.

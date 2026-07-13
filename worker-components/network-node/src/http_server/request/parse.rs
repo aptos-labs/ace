@@ -3,19 +3,19 @@
 
 use std::time::Instant;
 
-use vss_common::pke::pke_decrypt_bytes;
+use vss_common::pke::{pke_decrypt, Ciphertext};
 
 use super::super::outcome::{Outcome, Reason, RequestContext};
 use super::super::state::AppState;
 use crate::verify::{WorkerRequest, MAX_WORKER_REQUEST_PLAINTEXT_BYTES};
 
-pub(crate) fn decrypt_and_parse_request(
+pub(crate) fn decrypt_and_parse_request_ciphertext(
     state: &AppState,
-    ct_bytes: &[u8],
+    ciphertext: &Ciphertext,
     ctx: &mut RequestContext,
 ) -> Result<WorkerRequest, Outcome> {
     let decrypt_start = Instant::now();
-    let req_bytes = pke_decrypt_bytes(state.pke_dk_bytes.as_ref(), ct_bytes)
+    let req_bytes = pke_decrypt(state.pke_dk_bytes.as_ref(), ciphertext)
         .map_err(|e| bad_request(format!("pke decrypt failed: {:#}", e)))?;
     ctx.decrypt_ms = Some(decrypt_start.elapsed().as_millis() as u64);
     if req_bytes.len() > MAX_WORKER_REQUEST_PLAINTEXT_BYTES {

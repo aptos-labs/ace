@@ -20,35 +20,43 @@ The on-chain `sig` package stores the BCS enum `sig::PublicKey`; the current
 variant is Ed25519 only. The public key payload is the raw 32-byte Ed25519
 verification key.
 
-## 2. Signed Node Messages
+## 2. Signed VSS Share Requests
 
-The node-message gateway accepts JSON at `POST /node-msg`:
+The node HTTP server accepts BCS `NodeRequest` bytes at `POST /`. The VSS
+variant is signed directly:
 
 ```rust
-struct SignedNodeMessage {
+enum NodeRequest {
+    VssShareRequest(VssShareRequest), // tag 0
+    WorkerRequest(pke::Ciphertext),   // tag 1
+}
+
+struct VssShareRequest {
+    payload: VssShareRequestPayload,
+    sig: sig::Signature,
+}
+
+struct VssShareRequestPayload {
     sender: String,
     recipient: String,
-    protocol: String,
-    route: String,
-    request_id: String,
-    body_bcs_hex: String,
-    signature_bcs_hex: String,
+    session_addr: String,
+    holder_index: u64,
+    response_enc_key: pke::EncryptionKey,
 }
 ```
 
 The signature covers the BCS encoding of:
 
 ```rust
-struct NodeMessageToSign {
-    domain: Vec<u8>,       // b"ace::node-msg-gateway::v1"
+struct VssShareRequestToSign {
+    domain: Vec<u8>,       // b"ace::node-request::vss-share-request::v1"
     chain_id: u8,
     ace_addr: Vec<u8>,     // 32-byte ACE package address
     sender: Vec<u8>,       // 32-byte worker address
     recipient: Vec<u8>,    // 32-byte worker address
-    protocol: String,
-    route: String,
-    request_id: String,
-    body_bcs: Vec<u8>,
+    session_addr: Vec<u8>, // 32-byte VSS session address
+    holder_index: u64,
+    response_enc_key: pke::EncryptionKey,
 }
 ```
 
@@ -57,7 +65,7 @@ The recipient gateway:
 1. Checks the `recipient` matches its own worker address.
 2. Looks up the sender's `sig::PublicKey` in its in-memory registry.
 3. Verifies the Ed25519 signature over the domain-separated signing bytes.
-4. Dispatches to a registered `(protocol, route)` handler.
+4. Dispatches to its registered VSS share handler.
 
 Protocol clients populate the registry before enabling their request-serving
 state. For VSS, concurrent dealer clients single-flight the initial

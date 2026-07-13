@@ -72,14 +72,8 @@ struct RunArgs {
     /// Persistent VSS store URL used by embedded VSS clients.
     #[arg(long, default_value = "")]
     vss_store_url: String,
-    /// Local listen address for embedded node-to-node VSS share gateway.
-    #[arg(long, default_value = "")]
-    node_msg_listen: String,
-
     // ── HTTP-server port ─────────────────────────────────────────────────────
-    /// TCP port. In monolith and handler modes serves `POST /` (user requests);
-    /// Optional in monolith mode (omitting it runs chain-touching only, useful
-    /// for DKG-only test setups).
+    /// TCP port for this process's single node HTTP server.
     #[arg(long)]
     port: Option<u16>,
     /// Maximum concurrent in-flight HTTP requests.
@@ -112,7 +106,6 @@ struct EnvConfig {
     pke_dk: Option<String>,
     sig_sk: Option<String>,
     vss_store_url: Option<String>,
-    node_msg_listen: Option<String>,
     deployment_api_key: Option<String>,
     deployment_gas_key: Option<String>,
     aptos_mainnet_api_key: Option<String>,
@@ -173,11 +166,6 @@ impl RunArgs {
             "ACE_VSS_STORE_URL",
             cfg.vss_store_url.clone(),
         );
-        self.node_msg_listen = string_or_env_or_config(
-            self.node_msg_listen,
-            "ACE_NODE_MSG_LISTEN",
-            cfg.node_msg_listen.clone(),
-        );
         self.aptos_mainnet_apikey = option_or_env_or_config(
             self.aptos_mainnet_apikey,
             "ACE_APTOS_MAINNET_APIKEY",
@@ -202,24 +190,6 @@ impl RunArgs {
     }
 }
 
-fn require<T>(label: &str, v: Option<T>) -> T {
-    v.unwrap_or_else(|| {
-        eprintln!("network-node: missing required flag --{}", label);
-        std::process::exit(2);
-    })
-}
-
-fn require_str(label: &str, v: &str) -> String {
-    if v.is_empty() {
-        eprintln!(
-            "network-node: missing required flag --{} (or matching ACE_CONFIG_JSON / ACE_* env var)",
-            label
-        );
-        std::process::exit(2);
-    }
-    v.to_string()
-}
-
 fn build_chain_rpc(args: &RunArgs) -> network_node::ChainRpcConfig {
     network_node::ChainRpcConfig {
         aptos_mainnet: AptosRpc::new_with_key(
@@ -240,18 +210,33 @@ fn build_chain_rpc(args: &RunArgs) -> network_node::ChainRpcConfig {
     }
 }
 
-fn build_maintainer_config(args: &RunArgs) -> network_node::MaintainerConfig {
-    network_node::MaintainerConfig {
+fn runtime_mode(mode: CliMode) -> network_node::RuntimeMode {
+    match mode {
+        CliMode::Monolith => network_node::RuntimeMode::Monolith,
+        CliMode::Maintainer => network_node::RuntimeMode::Maintainer,
+        CliMode::Handler => network_node::RuntimeMode::Handler,
+    }
+}
+
+fn build_run_config(args: &RunArgs) -> network_node::RunConfig {
+    network_node::RunConfig {
+        mode: runtime_mode(args.mode),
         ace_deployment_api: args.ace_deployment_api.clone(),
         ace_deployment_apikey: args.ace_deployment_apikey.clone(),
         ace_deployment_gaskey: args.ace_deployment_gaskey.clone(),
-        ace_deployment_addr: require_str("ace-deployment-addr", &args.ace_deployment_addr),
-        account_addr: require_str("account-addr", &args.account_addr),
-        account_sk_hex: require_str("account-sk", &args.account_sk),
-        pke_dk: require_str("pke-dk", &args.pke_dk),
-        sig_sk_hex: require_str("sig-sk", &args.sig_sk),
-        vss_store_url: require_str("vss-store-url", &args.vss_store_url),
-        node_msg_listen: require_str("node-msg-listen", &args.node_msg_listen),
+        ace_deployment_addr: args.ace_deployment_addr.clone(),
+        account_addr: args.account_addr.clone(),
+        account_sk_hex: args.account_sk.clone(),
+        pke_dk: args.pke_dk.clone(),
+        sig_sk_hex: args.sig_sk.clone(),
+        vss_store_url: args.vss_store_url.clone(),
+        port: args.port,
+        chain_rpc: if matches!(args.mode, CliMode::Maintainer) {
+            None
+        } else {
+            Some(build_chain_rpc(args))
+        },
+        max_concurrent: args.max_concurrent,
     }
 }
 
@@ -261,34 +246,7 @@ async fn main() {
     match cli.command {
         Commands::Run(args) => {
             let args = args.apply_env_fallbacks();
-            let mode = match args.mode {
-                CliMode::Monolith => network_node::Mode::Monolith {
-                    maintainer: build_maintainer_config(&args),
-                    // No --port → run chain-touching only (matches pre-split behavior).
-                    handler: args.port.map(|p| network_node::HandlerLocalConfig {
-                        port: p,
-                        chain_rpc: build_chain_rpc(&args),
-                        max_concurrent: args.max_concurrent,
-                    }),
-                },
-                CliMode::Maintainer => network_node::Mode::Maintainer {
-                    maintainer: build_maintainer_config(&args),
-                },
-                CliMode::Handler => network_node::Mode::Handler {
-                    ace_deployment_api: args.ace_deployment_api.clone(),
-                    ace_deployment_apikey: args.ace_deployment_apikey.clone(),
-                    ace_deployment_addr: require_str(
-                        "ace-deployment-addr",
-                        &args.ace_deployment_addr,
-                    ),
-                    account_addr: require_str("account-addr", &args.account_addr),
-                    vss_store_url: require_str("vss-store-url", &args.vss_store_url),
-                    pke_dk: require_str("pke-dk", &args.pke_dk),
-                    port: require("port", args.port),
-                    chain_rpc: build_chain_rpc(&args),
-                    max_concurrent: args.max_concurrent,
-                },
-            };
+            let config = build_run_config(&args);
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
             tokio::spawn(async move {
@@ -296,7 +254,7 @@ async fn main() {
                 let _ = shutdown_tx.send(());
             });
 
-            if let Err(e) = network_node::run(mode, shutdown_rx).await {
+            if let Err(e) = network_node::run(config, shutdown_rx).await {
                 network_node::wlog!("network-node: fatal: {:#}", e);
                 std::process::exit(1);
             }

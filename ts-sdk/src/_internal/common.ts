@@ -14,6 +14,10 @@ import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
+import {
+    buildWorkerNodeRequestBody,
+    readWorkerNodeResponseCiphertext,
+} from "./node-request";
 import { postWithTimeout } from "./post-with-timeout";
 import { settleUntilThreshold } from "./settle-until-threshold";
 import {
@@ -858,10 +862,10 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
             const taskResults = await settleUntilThreshold(
                 nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
                     const nodeAddr = networkState.curNodes[i].toStringLong();
-                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+                    const requestBody = await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes});
                     let resp: Response;
                     try {
-                        resp = await postWithTimeout(endpoint, encReqHex, signal);
+                        resp = await postWithTimeout(endpoint, requestBody, signal);
                     } catch (e) {
                         if (!signal.aborted) {
                             console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
@@ -873,11 +877,12 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
                         throw new Error(`worker returned HTTP ${resp.status}`);
                     }
-                    const hexText = (await resp.text()).trim();
-                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                    if (respCt === null) {
+                    let respCt: pke.Ciphertext;
+                    try {
+                        respCt = await readWorkerNodeResponseCiphertext(resp);
+                    } catch (e) {
                         console.log(`  [decrypt] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
-                        throw new Error('response ciphertext parse failed');
+                        throw e;
                     }
                     const shareBytes = (await pke.decrypt({decryptionKey: ephemeralDecryptionKey, ciphertext: respCt})).okValue ?? null;
                     if (shareBytes === null) {
@@ -970,10 +975,10 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
             const taskResults = await settleUntilThreshold(
                 nodeInfos.map(({endpoint, nodeEncKey}, i) => async (signal) => {
                     const nodeAddr = networkState.curNodes[i].toStringLong();
-                    const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+                    const requestBody = await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes});
                     let resp: Response;
                     try {
-                        resp = await postWithTimeout(endpoint, encReqHex, signal);
+                        resp = await postWithTimeout(endpoint, requestBody, signal);
                     } catch (e) {
                         if (!signal.aborted) {
                             console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
@@ -985,11 +990,12 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
                         throw new Error(`worker returned HTTP ${resp.status}`);
                     }
-                    const hexText = (await resp.text()).trim();
-                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                    if (respCt === null) {
+                    let respCt: pke.Ciphertext;
+                    try {
+                        respCt = await readWorkerNodeResponseCiphertext(resp);
+                    } catch (e) {
                         console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
-                        throw new Error('response ciphertext parse failed');
+                        throw e;
                     }
                     const shareBytes = (await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt})).okValue ?? null;
                     if (shareBytes === null) {
@@ -1048,8 +1054,8 @@ export async function decryptCoreCustom(args: {
 
 /**
  * Build the per-node request body for ONE worker, without contacting the
- * other committee members. Returns the hex string a client would POST to
- * `targetEndpoint`. The caller does the POST itself.
+ * other committee members. Returns the hex string of the BCS `NodeRequest`
+ * body a client would POST to `targetEndpoint`. The caller does the POST itself.
  *
  * Looks up the target node's `(endpoint, pke_enc_key)` from `worker_config`
  * by walking `networkState.curNodes` and matching `endpoint`. Errors if no
@@ -1080,7 +1086,7 @@ export async function buildPerNodeRequestCore({
             const { nodeEncKey } = nodeInfos[sdkIdx];
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
-            const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
+            const encReqHex = bytesToHex(await buildWorkerNodeRequestBody({nodeEncKey, plaintext: reqBytes}));
             return { encReqHex, epoch: Number(networkState.epoch), sdkIdx };
         },
         recordsExecutionTimeMs: true,

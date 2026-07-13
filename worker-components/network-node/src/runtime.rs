@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{anyhow, Result};
+use node_msg_gateway::{ensure_node_msg_gateway, GatewayContext};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,6 +68,7 @@ struct NetworkSupervisorConfig {
     rpc: AptosRpc,
     ace: String,
     account_addr: String,
+    node_listen: String,
     store: Arc<dyn VssStore>,
     capabilities: RuntimeCapabilities,
     protocol: Option<ProtocolRuntimeConfig>,
@@ -121,10 +123,21 @@ async fn run_supervisor(
         None
     };
 
+    let chain_id = config
+        .rpc
+        .get_chain_id()
+        .await
+        .map_err(|e| anyhow!("get chain_id for node gateway: {e:#}"))?;
+    let gateway = ensure_node_msg_gateway(
+        &config.node_listen,
+        GatewayContext::new(chain_id, &config.ace, &config.account_addr),
+    )
+    .await?;
+
     if let Some(user_server) = config.user_server.take() {
         let local = local
             .as_ref()
-            .ok_or_else(|| anyhow!("user server requires serving capability"))?;
+            .ok_or_else(|| anyhow!("worker handler requires serving capability"))?;
         let state = http_server::AppState {
             provider: Arc::new(SecretsProvider::Local(local.clone())),
             chain_rpc: Arc::new(user_server.chain_rpc),
@@ -133,7 +146,11 @@ async fn run_supervisor(
             ))),
             pke_dk_bytes: user_server.pke_dk_bytes,
         };
-        tokio::spawn(http_server::run_user_server(user_server.port, state));
+        gateway.register_worker_handler(Arc::new(state)).await;
+        wlog!(
+            "network-node: registered worker request handler on {}",
+            user_server.port
+        );
     }
 
     let mut tasks = RuntimeTasks::default();
@@ -420,10 +437,14 @@ async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<(
     require_config_field("account_addr", &config.account_addr)?;
     require_config_field("pke_dk", &config.pke_dk)?;
     require_config_field("vss_store_url", &config.vss_store_url)?;
+    let port = config
+        .port
+        .ok_or_else(|| anyhow!("network-node requires --port"))?;
+    let node_listen = format!("0.0.0.0:{port}");
 
     let drive_protocol = matches!(config.mode, RuntimeMode::Monolith | RuntimeMode::Maintainer);
     let serve_requests = match config.mode {
-        RuntimeMode::Monolith => config.port.is_some(),
+        RuntimeMode::Monolith => true,
         RuntimeMode::Maintainer => false,
         RuntimeMode::Handler => true,
     };
@@ -436,14 +457,11 @@ async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<(
     if drive_protocol {
         require_config_field("account_sk_hex", &config.account_sk_hex)?;
         require_config_field("sig_sk_hex", &config.sig_sk_hex)?;
-        require_config_field("node_msg_listen", &config.node_msg_listen)?;
     }
 
     let user_server = if serve_requests {
         Some(UserServerConfig {
-            port: config
-                .port
-                .ok_or_else(|| anyhow!("handler mode requires port"))?,
+            port,
             chain_rpc: config
                 .chain_rpc
                 .take()
@@ -471,8 +489,7 @@ async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<(
     let account_addr = normalize_account_addr(&config.account_addr);
     let store = connect_vss_store(&config.vss_store_url)?;
     let mode_label = match config.mode {
-        RuntimeMode::Monolith if serve_requests => "monolith",
-        RuntimeMode::Monolith => "monolith-no-handler",
+        RuntimeMode::Monolith => "monolith",
         RuntimeMode::Maintainer => "maintainer-only",
         RuntimeMode::Handler => "handler-only",
     };
@@ -485,7 +502,7 @@ async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<(
             pke_dk_hex: config.pke_dk,
             sig_sk_hex: config.sig_sk_hex,
             vss_store_url: config.vss_store_url,
-            node_msg_listen: config.node_msg_listen,
+            node_msg_listen: node_listen.clone(),
         })
     } else {
         None
@@ -497,6 +514,7 @@ async fn run_with_config(mut config: RunConfig, shutdown_rx: oneshot::Receiver<(
             rpc,
             ace,
             account_addr,
+            node_listen,
             store,
             capabilities,
             protocol,

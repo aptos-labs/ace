@@ -117,7 +117,6 @@ pub struct RunConfig {
     pub pke_dk: String,
     pub sig_sk_hex: String,
     pub vss_store_url: String,
-    pub node_msg_listen: String,
     pub port: Option<u16>,
     pub chain_rpc: Option<ChainRpcConfig>,
     pub max_concurrent: Option<usize>,

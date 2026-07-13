@@ -33,7 +33,7 @@ enum Ciphertext {
 
 HPKE encryption keys are `01 || 20 || 32B pk`. HPKE ciphertexts are `01 || 20 || 32B enc || ULEB(L) || L bytes aead_ct`.
 
-## Node-Message Signatures
+## Node Request Envelope
 
 Defined in `contracts/sig`, `worker-components/vss-common/src/sig.rs`, and
 `ts-sdk/src/sig`.
@@ -59,22 +59,22 @@ struct Ed25519Signature {
 The current Ed25519 public key bytes are `00 || 20 || 32B pk`. The current
 signature bytes are `00 || 40 || 64B sig`.
 
-The node-message gateway accepts JSON at `POST /node-msg`:
+The node HTTP server accepts BCS bytes at `POST /`:
 
 ```rust
-struct SignedNodeMessage {
-    sender: String,
-    recipient: String,
-    protocol: String,
-    route: String,
-    request_id: String,
-    body_bcs_hex: String,
-    signature_bcs_hex: String,
+enum NodeRequest {
+    VssShareRequest(VssShareRequest), // tag 0
+    WorkerRequest(pke::Ciphertext),   // tag 1
+}
+
+enum NodeResponse {
+    VssShareResponse(pke::Ciphertext), // tag 0
+    WorkerResponse(pke::Ciphertext),   // tag 1
 }
 ```
 
-`signature_bcs_hex` is the BCS `sig::Signature` over the BCS
-`NodeMessageToSign` described in [`cryptography/sig.md`](./cryptography/sig.md).
+VSS share requests carry their typed payload and signature directly; worker
+requests carry the PKE ciphertext that decrypts to `BCS(WorkerRequest)`.
 Before serving a VSS session, the dealer client loads its holders' keys from
 the holders' `worker_config::SigVerificationKey` resources into the gateway.
 The request path verifies the sender against that in-memory registry without a
@@ -85,26 +85,34 @@ chain read.
 The VSS recipient asks the dealer's node-message gateway for its share with:
 
 ```rust
-struct ShareRequest {
+struct VssShareRequest {
+    payload: VssShareRequestPayload,
+    sig: sig::Signature,
+}
+
+struct VssShareRequestPayload {
+    sender: String,
+    recipient: String,
     session_addr: String,
     holder_index: u64, // zero-based index in vss::Session.share_holders
     response_enc_key: pke::EncryptionKey, // fresh HPKE-X25519 key
 }
 ```
 
-The message route is `(protocol = "vss", route = "share-request")`. The gateway
-checks that the signed sender equals `share_holders[holder_index]`; the dealer
-then returns `BCS(pke::Ciphertext::HpkeX25519ChaCha20Poly1305)`. The encrypted
-plaintext is the BCS bytes of a `pedersen_polynomial_commitment::Opening` for
-evaluation position `holder_index + 1`.
+The gateway checks the payload signature and recipient. The dealer checks that
+`sender == share_holders[holder_index]`, then returns
+`NodeResponse::VssShareResponse(pke::Ciphertext::HpkeX25519ChaCha20Poly1305)`.
+The encrypted plaintext is the BCS bytes of a
+`pedersen_polynomial_commitment::Opening` for evaluation position
+`holder_index + 1`.
 
 The canonical request ID is `vss-share:` followed by the hex-encoded,
-domain-separated SHA-256 hash of `BCS(ShareRequest)`. The dealer rejects an
-envelope whose signed request ID does not match its request body.
+domain-separated SHA-256 hash of the inner share request fields
+`(session_addr, holder_index, response_enc_key)`.
 
 The HPKE AAD is the BCS encoding of the domain
-`ace::vss::share-response::v1` together with the signed message's sender,
-recipient, request ID, and complete `ShareRequest`. This binds the encrypted
+`ace::vss::share-response::v1` together with the signed payload's sender,
+recipient, request ID, and complete inner share request. This binds the encrypted
 opening to the complete share request transcript.
 
 The recipient decrypts with the request's ephemeral key, verifies the returned
@@ -113,7 +121,10 @@ submits the on-chain ACK transaction.
 
 ## Worker Request
 
-The HTTP request body is a hex string of `pke_encrypt(worker_enc_key, BCS(WorkerRequest))`.
+The HTTP request body is `BCS(NodeRequest::WorkerRequest(ct))`, where `ct` is
+`pke_encrypt(worker_enc_key, BCS(WorkerRequest))`. The HTTP response is
+`BCS(NodeResponse::WorkerResponse(ct))`, where `ct` is encrypted to the
+client-supplied response key.
 
 ```rust
 enum WorkerRequest {

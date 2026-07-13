@@ -5,9 +5,9 @@
 //! `main.rs` is a thin CLI wrapper over [`run`].
 
 use anyhow::{anyhow, Result};
-use node_msg_gateway::{send_signed_node_message, sign_node_message, GatewayContext};
+use node_msg_gateway::{send_vss_share_request, sign_vss_share_request, GatewayContext};
 use tokio::sync::oneshot;
-use vss_common::offchain::{decrypt_share_response, ShareRequest};
+use vss_common::offchain::{decrypt_share_response_ciphertext, ShareRequest};
 use vss_common::session::{
     STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
     STATE_VERIFY_DEALER_OPENING,
@@ -222,18 +222,9 @@ async fn ensure_verified_offchain_share(
     let context = GatewayContext::new(chain_id, ace, &session.dealer);
     let (request, response_dk) = ShareRequest::new(session_addr, my_idx as u64);
     let request_id = request.request_id()?;
-    let body = bcs::to_bytes(&request).map_err(|e| anyhow!("encode VSS share request: {}", e))?;
-    let message = sign_node_message(
-        &context,
-        sig_sk,
-        account_addr,
-        "vss",
-        "share-request",
-        &request_id,
-        body,
-    )?;
-    let encrypted_response = send_signed_node_message(endpoint, &message).await?;
-    let plaintext = decrypt_share_response(
+    let message = sign_vss_share_request(&context, sig_sk, account_addr, request.clone())?;
+    let encrypted_response = send_vss_share_request(endpoint, &message).await?;
+    let plaintext = decrypt_share_response_ciphertext(
         &request,
         &response_dk,
         account_addr,

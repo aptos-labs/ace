@@ -72,14 +72,8 @@ struct RunArgs {
     /// Persistent VSS store URL used by embedded VSS clients.
     #[arg(long, default_value = "")]
     vss_store_url: String,
-    /// Local listen address for embedded node-to-node VSS share gateway.
-    #[arg(long, default_value = "")]
-    node_msg_listen: String,
-
     // ── HTTP-server port ─────────────────────────────────────────────────────
-    /// TCP port. In monolith and handler modes serves `POST /` (user requests);
-    /// Optional in monolith mode (omitting it runs chain-touching only, useful
-    /// for DKG-only test setups).
+    /// TCP port for this process's single node HTTP server.
     #[arg(long)]
     port: Option<u16>,
     /// Maximum concurrent in-flight HTTP requests.
@@ -112,7 +106,6 @@ struct EnvConfig {
     pke_dk: Option<String>,
     sig_sk: Option<String>,
     vss_store_url: Option<String>,
-    node_msg_listen: Option<String>,
     deployment_api_key: Option<String>,
     deployment_gas_key: Option<String>,
     aptos_mainnet_api_key: Option<String>,
@@ -172,11 +165,6 @@ impl RunArgs {
             self.vss_store_url,
             "ACE_VSS_STORE_URL",
             cfg.vss_store_url.clone(),
-        );
-        self.node_msg_listen = string_or_env_or_config(
-            self.node_msg_listen,
-            "ACE_NODE_MSG_LISTEN",
-            cfg.node_msg_listen.clone(),
         );
         self.aptos_mainnet_apikey = option_or_env_or_config(
             self.aptos_mainnet_apikey,
@@ -242,7 +230,6 @@ fn build_run_config(args: &RunArgs) -> network_node::RunConfig {
         pke_dk: args.pke_dk.clone(),
         sig_sk_hex: args.sig_sk.clone(),
         vss_store_url: args.vss_store_url.clone(),
-        node_msg_listen: args.node_msg_listen.clone(),
         port: args.port,
         chain_rpc: if matches!(args.mode, CliMode::Maintainer) {
             None

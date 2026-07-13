@@ -68,8 +68,8 @@ onto the chain. After DC0, the chain runs the touch-driven degree check before
 recipients may ACK.
 
 A holder requests its opening over the node-message gateway. The request is a
-signed node message whose sender must match the requested holder index and
-includes a fresh HPKE-X25519 response key. The dealer encrypts the BCS
+typed signed VSS share request whose sender must match the requested holder
+index and includes a fresh HPKE-X25519 response key. The dealer encrypts the BCS
 opening \((i,p(i),r(i))\) under that key with AAD binding the response to the
 signed request transcript. The holder decrypts and verifies:
 
@@ -149,7 +149,7 @@ confidentiality of off-chain share delivery/storage.
 
 **Binding / commitment soundness.** A successful VSS session fixes one degree-\((t-1)\) pair of polynomials \((p,r)\) over the committed domain, except with the degree-check soundness error and DLog binding assumptions for Pedersen. Non-ACKed shares are checked on chain. ACKed shares are checked by the holder before it submits its on-chain ACK.
 
-**Secrecy.** Against fewer than \(t\) corrupted holders, the scalar \(p(0)\) is hidden by Shamir secrecy given their opened shares and by Pedersen hiding for the commitment vector. VSS share delivery is authenticated by node-message signatures but not itself an encryption layer; deployments that need passive-network confidentiality must provide it operationally (for example private networking or TLS).
+**Secrecy.** Against fewer than \(t\) corrupted holders, the scalar \(p(0)\) is hidden by Shamir secrecy given their opened shares and by Pedersen hiding for the commitment vector. VSS share requests are authenticated by node-message signatures, and share responses are encrypted to a request-scoped HPKE key; deployments still need endpoint protections for availability and metadata exposure.
 
 **Resharing soundness.** In DKR, the DC0 consistency proof forces \(p(0)\) to be the old share scalar inside the previous Pedersen share commitment. A malicious old dealer can refuse to participate, but cannot successfully reshare a different scalar without breaking the sigma proof or Pedersen binding.
 

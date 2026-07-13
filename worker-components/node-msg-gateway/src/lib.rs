@@ -11,22 +11,26 @@ use std::{
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::{
+    body::Bytes,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
-    Json, Router,
+    routing::{get, post},
+    Router,
 };
 use ed25519_dalek::SigningKey;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tower_http::cors::CorsLayer;
 
 use vss_common::{
+    node_wire::{
+        sign_vss_share_request as sign_vss_share_request_wire, verify_vss_share_request,
+        NodeRequest, NodeResponse, VssShareRequest, VssShareRequestPayload,
+    },
     normalize_account_addr,
-    sig::{self, sign_ed25519},
+    offchain::ShareRequest,
+    pke, sig,
 };
-
-const NODE_MSG_DOMAIN: &[u8] = b"ace::node-msg-gateway::v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayContext {
@@ -44,24 +48,6 @@ impl GatewayContext {
         }
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct NodeMsgRoute {
-    pub protocol: String,
-    pub route: String,
-}
-
-impl NodeMsgRoute {
-    pub fn new(protocol: impl Into<String>, route: impl Into<String>) -> Self {
-        Self {
-            protocol: protocol.into(),
-            route: route.into(),
-        }
-    }
-}
-
-pub type HandlerMap = HashMap<NodeMsgRoute, Arc<dyn NodeMessageHandler>>;
-type SharedHandlerMap = Arc<RwLock<HandlerMap>>;
 
 #[derive(Clone, Default)]
 pub struct SigKeyRegistry {
@@ -137,8 +123,9 @@ pub struct GatewayHandle {
     listen: String,
     local_addr: SocketAddr,
     context: GatewayContext,
-    handlers: SharedHandlerMap,
     sig_keys: SigKeyRegistry,
+    vss_share_handler: SharedVssShareHandler,
+    worker_handler: SharedWorkerHandler,
 }
 
 impl GatewayHandle {
@@ -154,12 +141,20 @@ impl GatewayHandle {
         &self.context
     }
 
-    pub async fn register_handler(
-        &self,
-        route: NodeMsgRoute,
-        handler: Arc<dyn NodeMessageHandler>,
-    ) {
-        self.handlers.write().await.insert(route, handler);
+    pub async fn register_vss_share_handler(&self, handler: Arc<dyn VssShareRequestHandler>) {
+        *self.vss_share_handler.write().await = Some(handler);
+    }
+
+    pub async fn unregister_vss_share_handler(&self) {
+        *self.vss_share_handler.write().await = None;
+    }
+
+    pub async fn register_worker_handler(&self, handler: Arc<dyn WorkerRequestHandler>) {
+        *self.worker_handler.write().await = Some(handler);
+    }
+
+    pub async fn unregister_worker_handler(&self) {
+        *self.worker_handler.write().await = None;
     }
 
     pub async fn preload_sig_verification_key<F, Fut>(
@@ -175,75 +170,99 @@ impl GatewayHandle {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignedNodeMessage {
-    pub sender: String,
-    pub recipient: String,
-    pub protocol: String,
-    pub route: String,
+#[derive(Clone, Debug)]
+pub struct VerifiedVssShareRequest {
+    pub payload: VssShareRequestPayload,
     pub request_id: String,
-    pub body_bcs_hex: String,
-    pub signature_bcs_hex: String,
 }
 
 #[derive(Clone, Debug)]
-pub struct VerifiedNodeMessage {
-    pub sender: String,
-    pub recipient: String,
-    pub protocol: String,
-    pub route: String,
-    pub request_id: String,
-    pub body_bcs: Vec<u8>,
+pub struct NodeHandlerError {
+    pub status: StatusCode,
+    pub detail: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NodeMessageResponse {
-    pub body_bcs_hex: String,
-}
+impl NodeHandlerError {
+    pub fn new(status: StatusCode, detail: impl Into<String>) -> Self {
+        Self {
+            status,
+            detail: detail.into(),
+        }
+    }
 
-#[async_trait]
-pub trait NodeMessageHandler: Send + Sync {
-    async fn handle(&self, message: VerifiedNodeMessage) -> Result<Vec<u8>>;
-}
+    pub fn bad_request(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, detail)
+    }
 
-#[derive(Clone, Default)]
-pub struct EchoHandler;
-
-#[async_trait]
-impl NodeMessageHandler for EchoHandler {
-    async fn handle(&self, message: VerifiedNodeMessage) -> Result<Vec<u8>> {
-        Ok(message.body_bcs)
+    pub fn internal(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, detail)
     }
 }
+
+impl From<anyhow::Error> for NodeHandlerError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::internal(format!("{value:#}"))
+    }
+}
+
+#[async_trait]
+pub trait VssShareRequestHandler: Send + Sync {
+    async fn handle(
+        &self,
+        request: VerifiedVssShareRequest,
+    ) -> std::result::Result<pke::Ciphertext, NodeHandlerError>;
+}
+
+#[async_trait]
+pub trait WorkerRequestHandler: Send + Sync {
+    async fn handle(
+        &self,
+        request: pke::Ciphertext,
+    ) -> std::result::Result<pke::Ciphertext, NodeHandlerError>;
+}
+
+type SharedVssShareHandler = Arc<RwLock<Option<Arc<dyn VssShareRequestHandler>>>>;
+type SharedWorkerHandler = Arc<RwLock<Option<Arc<dyn WorkerRequestHandler>>>>;
 
 #[derive(Clone)]
 struct GatewayState {
     context: GatewayContext,
     sig_keys: SigKeyRegistry,
-    handlers: SharedHandlerMap,
+    vss_share_handler: SharedVssShareHandler,
+    worker_handler: SharedWorkerHandler,
 }
 
 pub fn build_node_msg_router(
     context: GatewayContext,
     sig_keys: SigKeyRegistry,
-    handlers: HandlerMap,
+    vss_share_handler: Option<Arc<dyn VssShareRequestHandler>>,
+    worker_handler: Option<Arc<dyn WorkerRequestHandler>>,
 ) -> Router {
-    build_node_msg_router_with_handlers(context, sig_keys, Arc::new(RwLock::new(handlers)))
+    build_node_msg_router_with_handlers(
+        context,
+        sig_keys,
+        Arc::new(RwLock::new(vss_share_handler)),
+        Arc::new(RwLock::new(worker_handler)),
+    )
 }
 
 fn build_node_msg_router_with_handlers(
     context: GatewayContext,
     sig_keys: SigKeyRegistry,
-    handlers: SharedHandlerMap,
+    vss_share_handler: SharedVssShareHandler,
+    worker_handler: SharedWorkerHandler,
 ) -> Router {
     let state = GatewayState {
         context,
         sig_keys,
-        handlers,
+        vss_share_handler,
+        worker_handler,
     };
     Router::new()
-        .route("/node-msg", post(handle_node_msg))
+        .route("/", post(handle_node_request))
+        .route("/healthz", get(handle_healthz))
         .with_state(state)
+        .layer(CorsLayer::permissive())
 }
 
 static NODE_MSG_GATEWAYS: OnceLock<Mutex<HashMap<String, GatewayHandle>>> = OnceLock::new();
@@ -259,7 +278,7 @@ pub async fn ensure_node_msg_gateway(
     if let Some(existing) = gateways.get(&listen) {
         if existing.context != context {
             return Err(anyhow!(
-                "node-msg gateway {} already exists for context {:?}, requested {:?}",
+                "node gateway {} already exists for context {:?}, requested {:?}",
                 listen,
                 existing.context,
                 context
@@ -270,30 +289,33 @@ pub async fn ensure_node_msg_gateway(
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
-        .map_err(|e| anyhow!("bind node-msg listener {listen}: {e}"))?;
+        .map_err(|e| anyhow!("bind node listener {listen}: {e}"))?;
     let local_addr = listener
         .local_addr()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    let handlers = Arc::new(RwLock::new(HashMap::new()));
     let sig_keys = SigKeyRegistry::default();
+    let vss_share_handler = Arc::new(RwLock::new(None));
+    let worker_handler = Arc::new(RwLock::new(None));
     let handle = GatewayHandle {
         listen: listen.clone(),
         local_addr,
         context: context.clone(),
-        handlers: handlers.clone(),
         sig_keys: sig_keys.clone(),
+        vss_share_handler: vss_share_handler.clone(),
+        worker_handler: worker_handler.clone(),
     };
     tokio::spawn(async move {
         if let Err(e) = serve_node_msg_gateway_with_handlers(
             listener,
             context,
             sig_keys,
-            handlers,
+            vss_share_handler,
+            worker_handler,
             std::future::pending::<()>(),
         )
         .await
         {
-            eprintln!("node-msg gateway task error: {e:#}");
+            eprintln!("node gateway task error: {e:#}");
         }
     });
 
@@ -305,14 +327,16 @@ pub async fn serve_node_msg_gateway(
     listener: tokio::net::TcpListener,
     context: GatewayContext,
     sig_keys: SigKeyRegistry,
-    handlers: HandlerMap,
+    vss_share_handler: Option<Arc<dyn VssShareRequestHandler>>,
+    worker_handler: Option<Arc<dyn WorkerRequestHandler>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     serve_node_msg_gateway_with_handlers(
         listener,
         context,
         sig_keys,
-        Arc::new(RwLock::new(handlers)),
+        Arc::new(RwLock::new(vss_share_handler)),
+        Arc::new(RwLock::new(worker_handler)),
         shutdown,
     )
     .await
@@ -322,193 +346,179 @@ async fn serve_node_msg_gateway_with_handlers(
     listener: tokio::net::TcpListener,
     context: GatewayContext,
     sig_keys: SigKeyRegistry,
-    handlers: SharedHandlerMap,
+    vss_share_handler: SharedVssShareHandler,
+    worker_handler: SharedWorkerHandler,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let local = listener
         .local_addr()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    println!("node-msg gateway: listening on http://{local}");
+    println!("node gateway: listening on http://{local}");
     axum::serve(
         listener,
-        build_node_msg_router_with_handlers(context, sig_keys, handlers),
+        build_node_msg_router_with_handlers(context, sig_keys, vss_share_handler, worker_handler),
     )
     .with_graceful_shutdown(shutdown)
     .await
-    .map_err(|e| anyhow!("serve node-msg gateway: {}", e))
+    .map_err(|e| anyhow!("serve node gateway: {}", e))
 }
 
-async fn handle_node_msg(
-    State(state): State<GatewayState>,
-    Json(message): Json<SignedNodeMessage>,
-) -> Response {
-    let route = NodeMsgRoute::new(message.protocol.clone(), message.route.clone());
-    let handler = { state.handlers.read().await.get(&route).cloned() };
-    let Some(handler) = handler else {
-        return (StatusCode::NOT_FOUND, "node-msg route not registered").into_response();
+async fn handle_healthz() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn handle_node_request(State(state): State<GatewayState>, body: Bytes) -> Response {
+    let request: NodeRequest = match bcs::from_bytes(&body) {
+        Ok(request) => request,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("BCS decode NodeRequest failed: {e}"),
+            )
+                .into_response()
+        }
     };
 
-    match verify_signed_node_message(&state.context, &state.sig_keys, message).await {
-        Ok(verified) => match handler.handle(verified).await {
-            Ok(body) => Json(NodeMessageResponse {
-                body_bcs_hex: encode_hex(&body),
-            })
-            .into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    let response = match request {
+        NodeRequest::VssShareRequest(request) => handle_vss_share_request(&state, request).await,
+        NodeRequest::WorkerRequest(ciphertext) => handle_worker_request(&state, ciphertext).await,
+    };
+
+    match response {
+        Ok(response) => match bcs::to_bytes(&response) {
+            Ok(bytes) => (StatusCode::OK, bytes).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("BCS encode NodeResponse failed: {e}"),
+            )
+                .into_response(),
         },
-        Err(e) => (StatusCode::UNAUTHORIZED, format!("{e:#}")).into_response(),
+        Err(e) => (e.status, e.detail).into_response(),
     }
 }
 
-pub fn sign_node_message(
+async fn handle_vss_share_request(
+    state: &GatewayState,
+    request: VssShareRequest,
+) -> std::result::Result<NodeResponse, NodeHandlerError> {
+    let handler = { state.vss_share_handler.read().await.clone() };
+    let Some(handler) = handler else {
+        return Err(NodeHandlerError::new(
+            StatusCode::NOT_FOUND,
+            "VSS share request handler is not registered",
+        ));
+    };
+
+    let payload = request.payload.clone();
+    if payload.recipient != state.context.recipient_addr {
+        return Err(NodeHandlerError::new(
+            StatusCode::UNAUTHORIZED,
+            format!(
+                "VSS share request recipient {} does not match this node {}",
+                payload.recipient, state.context.recipient_addr
+            ),
+        ));
+    }
+
+    let public_key = state.sig_keys.resolve(&payload.sender).await.map_err(|e| {
+        NodeHandlerError::new(
+            StatusCode::UNAUTHORIZED,
+            format!("resolve sender sig key: {e:#}"),
+        )
+    })?;
+    let signature_ok = verify_vss_share_request(
+        state.context.chain_id,
+        &state.context.ace_addr,
+        &public_key,
+        &request,
+    )
+    .map_err(|e| NodeHandlerError::bad_request(format!("verify VSS share request: {e:#}")))?;
+    if !signature_ok {
+        return Err(NodeHandlerError::new(
+            StatusCode::UNAUTHORIZED,
+            format!(
+                "invalid VSS share request signature from {}",
+                payload.sender
+            ),
+        ));
+    }
+
+    let request_id = payload.request_id().map_err(|e| {
+        NodeHandlerError::bad_request(format!("compute VSS share request ID: {e:#}"))
+    })?;
+    let ciphertext = handler
+        .handle(VerifiedVssShareRequest {
+            payload,
+            request_id,
+        })
+        .await?;
+    Ok(NodeResponse::VssShareResponse(ciphertext))
+}
+
+async fn handle_worker_request(
+    state: &GatewayState,
+    request: pke::Ciphertext,
+) -> std::result::Result<NodeResponse, NodeHandlerError> {
+    let handler = { state.worker_handler.read().await.clone() };
+    let Some(handler) = handler else {
+        return Err(NodeHandlerError::new(
+            StatusCode::NOT_FOUND,
+            "worker request handler is not registered",
+        ));
+    };
+    let ciphertext = handler.handle(request).await?;
+    Ok(NodeResponse::WorkerResponse(ciphertext))
+}
+
+pub fn sign_vss_share_request(
     context: &GatewayContext,
     signing_key: &SigningKey,
     sender_addr: impl AsRef<str>,
-    protocol: impl Into<String>,
-    route: impl Into<String>,
-    request_id: impl Into<String>,
-    body_bcs: Vec<u8>,
-) -> Result<SignedNodeMessage> {
-    let sender = normalize_account_addr(sender_addr.as_ref());
-    let message = UnsignedNodeMessage {
-        sender,
-        recipient: context.recipient_addr.clone(),
-        protocol: protocol.into(),
-        route: route.into(),
-        request_id: request_id.into(),
-        body_bcs,
-    };
-    let signing_bytes = node_msg_signing_bytes(context, &message)?;
-    let signature = sign_ed25519(signing_key, &signing_bytes);
-    Ok(SignedNodeMessage {
-        sender: message.sender,
-        recipient: message.recipient,
-        protocol: message.protocol,
-        route: message.route,
-        request_id: message.request_id,
-        body_bcs_hex: encode_hex(&message.body_bcs),
-        signature_bcs_hex: encode_hex(&signature.to_bytes()),
-    })
+    share_request: ShareRequest,
+) -> Result<VssShareRequest> {
+    let payload = VssShareRequestPayload::new(
+        sender_addr,
+        &context.recipient_addr,
+        share_request.session_addr,
+        share_request.holder_index,
+        share_request.response_enc_key,
+    );
+    sign_vss_share_request_wire(context.chain_id, &context.ace_addr, signing_key, payload)
 }
 
-pub async fn send_signed_node_message(
+pub async fn send_node_request(
     endpoint: impl AsRef<str>,
-    message: &SignedNodeMessage,
-) -> Result<Vec<u8>> {
-    let url = format!("{}/node-msg", endpoint.as_ref().trim_end_matches('/'));
+    request: &NodeRequest,
+) -> Result<NodeResponse> {
+    let url = endpoint.as_ref().trim_end_matches('/').to_string();
+    let request_bytes =
+        bcs::to_bytes(request).map_err(|e| anyhow!("BCS encode NodeRequest: {e}"))?;
     let response = reqwest::Client::new()
         .post(url)
-        .json(message)
+        .body(request_bytes)
         .send()
         .await?;
     let status = response.status();
+    let body = response.bytes().await?;
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("node-msg request failed with {status}: {body}"));
-    }
-    let body: NodeMessageResponse = response.json().await?;
-    decode_hex(&body.body_bcs_hex, "response body_bcs_hex")
-}
-
-async fn verify_signed_node_message(
-    context: &GatewayContext,
-    sig_keys: &SigKeyRegistry,
-    message: SignedNodeMessage,
-) -> Result<VerifiedNodeMessage> {
-    let unsigned = UnsignedNodeMessage {
-        sender: normalize_account_addr(&message.sender),
-        recipient: normalize_account_addr(&message.recipient),
-        protocol: message.protocol,
-        route: message.route,
-        request_id: message.request_id,
-        body_bcs: decode_hex(&message.body_bcs_hex, "body_bcs_hex")?,
-    };
-
-    if unsigned.recipient != context.recipient_addr {
         return Err(anyhow!(
-            "node-msg recipient {} does not match this node {}",
-            unsigned.recipient,
-            context.recipient_addr
+            "node request failed with {status}: {}",
+            String::from_utf8_lossy(&body)
         ));
     }
+    bcs::from_bytes(&body).map_err(|e| anyhow!("BCS decode NodeResponse: {e}"))
+}
 
-    let signature = sig::Signature::from_bytes(&decode_hex(
-        &message.signature_bcs_hex,
-        "signature_bcs_hex",
-    )?)?;
-    let signing_bytes = node_msg_signing_bytes(context, &unsigned)?;
-    let public_key = sig_keys.resolve(&unsigned.sender).await?;
-    if !public_key.verify(&signing_bytes, &signature)? {
-        return Err(anyhow!(
-            "invalid node-msg signature from {}",
-            unsigned.sender
-        ));
+pub async fn send_vss_share_request(
+    endpoint: impl AsRef<str>,
+    request: &VssShareRequest,
+) -> Result<pke::Ciphertext> {
+    match send_node_request(endpoint, &NodeRequest::VssShareRequest(request.clone())).await? {
+        NodeResponse::VssShareResponse(ciphertext) => Ok(ciphertext),
+        NodeResponse::WorkerResponse(_) => {
+            Err(anyhow!("node returned WorkerResponse to VSS request"))
+        }
     }
-
-    Ok(VerifiedNodeMessage {
-        sender: unsigned.sender,
-        recipient: unsigned.recipient,
-        protocol: unsigned.protocol,
-        route: unsigned.route,
-        request_id: unsigned.request_id,
-        body_bcs: unsigned.body_bcs,
-    })
-}
-
-#[derive(Clone, Debug)]
-struct UnsignedNodeMessage {
-    sender: String,
-    recipient: String,
-    protocol: String,
-    route: String,
-    request_id: String,
-    body_bcs: Vec<u8>,
-}
-
-#[derive(Serialize)]
-struct NodeMessageToSign {
-    domain: Vec<u8>,
-    chain_id: u8,
-    ace_addr: Vec<u8>,
-    sender: Vec<u8>,
-    recipient: Vec<u8>,
-    protocol: String,
-    route: String,
-    request_id: String,
-    body_bcs: Vec<u8>,
-}
-
-fn node_msg_signing_bytes(
-    context: &GatewayContext,
-    message: &UnsignedNodeMessage,
-) -> Result<Vec<u8>> {
-    let to_sign = NodeMessageToSign {
-        domain: NODE_MSG_DOMAIN.to_vec(),
-        chain_id: context.chain_id,
-        ace_addr: address_bytes(&context.ace_addr)?.to_vec(),
-        sender: address_bytes(&message.sender)?.to_vec(),
-        recipient: address_bytes(&message.recipient)?.to_vec(),
-        protocol: message.protocol.clone(),
-        route: message.route.clone(),
-        request_id: message.request_id.clone(),
-        body_bcs: message.body_bcs.clone(),
-    };
-    bcs::to_bytes(&to_sign).map_err(|e| anyhow!("BCS encode node-msg signing payload: {}", e))
-}
-
-fn address_bytes(addr: &str) -> Result<[u8; 32]> {
-    let normalized = normalize_account_addr(addr);
-    let raw = hex::decode(normalized.trim_start_matches("0x"))?;
-    raw.try_into()
-        .map_err(|v: Vec<u8>| anyhow!("address must be 32 bytes, got {}", v.len()))
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
-}
-
-fn decode_hex(input: &str, label: &str) -> Result<Vec<u8>> {
-    hex::decode(input.trim_start_matches("0x")).map_err(|e| anyhow!("decode {label}: {}", e))
 }
 
 #[cfg(test)]
@@ -517,51 +527,61 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::{sleep, Duration};
 
+    #[derive(Clone, Default)]
+    struct EchoWorkerHandler;
+
+    #[async_trait]
+    impl WorkerRequestHandler for EchoWorkerHandler {
+        async fn handle(
+            &self,
+            request: pke::Ciphertext,
+        ) -> std::result::Result<pke::Ciphertext, NodeHandlerError> {
+            Ok(request)
+        }
+    }
+
     fn context() -> GatewayContext {
         GatewayContext::new(4, "0xace", "0x2222")
     }
 
+    fn dummy_ciphertext() -> pke::Ciphertext {
+        pke::Ciphertext::HpkeX25519ChaCha20Poly1305(
+            vss_common::pke_hpke_x25519_chacha20poly1305::Ciphertext {
+                enc: vec![1u8; 32],
+                aead_ct: b"hello".to_vec(),
+            },
+        )
+    }
+
     #[tokio::test]
-    async fn signed_message_round_trips_through_gateway() {
-        let sk = SigningKey::from_bytes(&[9u8; 32]);
-        let sender = normalize_account_addr("0x1111");
-        let sig_keys = SigKeyRegistry::default();
-        sig_keys
-            .register(
-                &sender,
-                sig::PublicKey::from_ed25519_verifying_key(&sk.verifying_key()),
-            )
-            .await
-            .unwrap();
-
-        let mut handlers: HandlerMap = HashMap::new();
-        handlers.insert(NodeMsgRoute::new("system", "ping"), Arc::new(EchoHandler));
-
+    async fn worker_message_round_trips_through_gateway() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(serve_node_msg_gateway(
             listener,
             context(),
-            sig_keys,
-            handlers,
+            SigKeyRegistry::default(),
+            None,
+            Some(Arc::new(EchoWorkerHandler)),
             async move {
                 let _ = shutdown_rx.await;
             },
         ));
 
-        let msg = sign_node_message(
-            &context(),
-            &sk,
-            sender,
-            "system",
-            "ping",
-            "req-1",
-            b"hello".to_vec(),
-        )
-        .unwrap();
-        let response = send_signed_node_message(endpoint, &msg).await.unwrap();
-        assert_eq!(response, b"hello");
+        let ciphertext = dummy_ciphertext();
+        let response = send_node_request(endpoint, &NodeRequest::WorkerRequest(ciphertext.clone()))
+            .await
+            .unwrap();
+        match response {
+            NodeResponse::WorkerResponse(returned) => {
+                assert_eq!(
+                    bcs::to_bytes(&returned).unwrap(),
+                    bcs::to_bytes(&ciphertext).unwrap()
+                );
+            }
+            NodeResponse::VssShareResponse(_) => panic!("unexpected VSS response"),
+        }
 
         let _ = shutdown_tx.send(());
         server.await.unwrap().unwrap();
@@ -579,7 +599,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_wrong_signature() {
+    async fn rejects_wrong_vss_signature() {
+        #[derive(Clone, Default)]
+        struct UnusedVssHandler;
+
+        #[async_trait]
+        impl VssShareRequestHandler for UnusedVssHandler {
+            async fn handle(
+                &self,
+                _request: VerifiedVssShareRequest,
+            ) -> std::result::Result<pke::Ciphertext, NodeHandlerError> {
+                Ok(dummy_ciphertext())
+            }
+        }
+
         let good_sk = SigningKey::from_bytes(&[7u8; 32]);
         let bad_sk = SigningKey::from_bytes(&[8u8; 32]);
         let sender = normalize_account_addr("0x1111");
@@ -591,21 +624,38 @@ mod tests {
             )
             .await
             .unwrap();
-        let msg = sign_node_message(
-            &context(),
-            &bad_sk,
-            sender,
-            "system",
-            "ping",
-            "req-1",
-            b"hello".to_vec(),
-        )
-        .unwrap();
+        let share_request = ShareRequest {
+            session_addr: normalize_account_addr("0x3333"),
+            holder_index: 0,
+            response_enc_key: vss_common::pke::EncryptionKey::HpkeX25519ChaCha20Poly1305(
+                vss_common::pke_hpke_x25519_chacha20poly1305::keygen().0,
+            ),
+        };
+        let request = sign_vss_share_request(&context(), &bad_sk, &sender, share_request).unwrap();
 
-        let err = verify_signed_node_message(&context(), &sig_keys, msg)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_node_msg_gateway(
+            listener,
+            context(),
+            sig_keys,
+            Some(Arc::new(UnusedVssHandler)),
+            None,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ));
+
+        let err = send_node_request(endpoint, &NodeRequest::VssShareRequest(request))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("invalid node-msg signature"));
+        assert!(err
+            .to_string()
+            .contains("invalid VSS share request signature"));
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -639,26 +689,5 @@ mod tests {
         }
         assert_eq!(load_count.load(Ordering::SeqCst), 1);
         assert_eq!(sig_keys.len().await, 1);
-    }
-
-    #[tokio::test]
-    async fn verification_fails_fast_when_key_is_not_preloaded() {
-        let sk = SigningKey::from_bytes(&[12u8; 32]);
-        let sender = normalize_account_addr("0x1111");
-        let msg = sign_node_message(
-            &context(),
-            &sk,
-            sender,
-            "system",
-            "ping",
-            "req-1",
-            b"hello".to_vec(),
-        )
-        .unwrap();
-
-        let err = verify_signed_node_message(&context(), &SigKeyRegistry::default(), msg)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("is not preloaded"));
     }
 }

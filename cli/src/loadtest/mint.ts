@@ -80,13 +80,20 @@ export async function buildOnce(cfg: MintConfig): Promise<Pool> {
 
     const postUrl = cfg.postUrl ?? cfg.targetEndpoint;
     // Smoke test: POST once, confirm the response parses as a PKE ciphertext.
-    const resp = await fetch(postUrl, { method: 'POST', body: built.encReqHex });
+    const resp = await fetch(postUrl, {
+        method: 'POST',
+        body: Buffer.from(built.encReqHex, 'hex'),
+    });
     if (!resp.ok) {
         const body = await resp.text().catch(() => '');
         throw new Error(`loadtest mint: smoke test POST ${postUrl} returned HTTP ${resp.status} — ${body.trim().slice(0, 200)}`);
     }
-    const hexText = (await resp.text()).trim();
-    ACE.pke.Ciphertext.fromHex(hexText).unwrapOrThrow('loadtest mint: smoke test response is not a valid PKE ciphertext');
+    const responseBytes = new Uint8Array(await resp.arrayBuffer());
+    if (responseBytes[0] !== 1) {
+        throw new Error(`loadtest mint: expected WorkerResponse, got NodeResponse variant ${responseBytes[0]}`);
+    }
+    ACE.pke.Ciphertext.fromBytes(responseBytes.slice(1))
+        .unwrapOrThrow('loadtest mint: smoke test response is not a valid PKE ciphertext');
 
     return {
         endpoint: postUrl,

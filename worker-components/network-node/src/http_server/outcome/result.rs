@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Reason;
+use vss_common::pke;
 
 pub(crate) enum Outcome {
     Ok {
-        share_hex: String,
+        ciphertext: pke::Ciphertext,
     },
     Rejected {
         reason: Reason,

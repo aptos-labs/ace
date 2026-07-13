@@ -393,6 +393,7 @@ export function gcpDeployCmdMicroservices(
         `--ace-deployment-api=${rpcUrl}`,
         `--ace-deployment-addr=${aceAddr}`,
         `--account-addr=${node.accountAddr}`,
+        `--port=8080`,
     ];
     const handlerArgs = [
         'run',
@@ -463,14 +464,12 @@ export function dockerRunCmd(
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
-    const nodeMsgPort = listenPort(node.nodeMsgListen);
     const hostVssDir = path.join(homedir(), '.ace', 'vss', containerName);
     return [
         `mkdir -p ${shellQuote(hostVssDir)} &&`,
         `docker run -d --platform linux/amd64 --restart unless-stopped`,
         `  --name ${containerName}`,
         `  -p ${port}:${port}`,
-        `  -p ${nodeMsgPort}:${nodeMsgPort}`,
         `  -v ${shellQuote(hostVssDir)}:/ace-vss`,
         `  ${image}`,
         `  run`,
@@ -483,7 +482,6 @@ export function dockerRunCmd(
         `  --pke-dk=${node.pkeDk}`,
         `  --sig-sk=${node.sigSk}`,
         `  --vss-store-url=${node.vssStoreUrl}`,
-        `  --node-msg-listen=${node.nodeMsgListen}`,
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc),
     ].join(' \\\n');
@@ -510,7 +508,6 @@ export function localRunCmd(
         `  --pke-dk=${node.pkeDk}`,
         `  --sig-sk=${node.sigSk}`,
         `  --vss-store-url=${node.vssStoreUrl}`,
-        `  --node-msg-listen=${node.nodeMsgListen}`,
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc).map(a => `  ${a}`),
     ].join(' \\\n');
@@ -533,7 +530,6 @@ export function localRunArgs(
         `--pke-dk=${node.pkeDk}`,
         `--sig-sk=${node.sigSk}`,
         `--vss-store-url=${node.vssStoreUrl}`,
-        `--node-msg-listen=${node.nodeMsgListen}`,
         `--port=${port}`,
         ...chainRpcArgs(chainRpc),
     ];
@@ -566,7 +562,6 @@ function nodeRunArgs(
             `--pke-dk=${node.pkeDk}`,
             `--sig-sk=${node.sigSk}`,
             `--vss-store-url=${node.vssStoreUrl}`,
-            `--node-msg-listen=${node.nodeMsgListen}`,
         ] : []),
         '--port=8080',
         ...chainRpcArgs(chainRpc, { includeSecrets }),

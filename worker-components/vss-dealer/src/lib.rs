@@ -18,8 +18,8 @@ use ark_bls12_381::Fr;
 use ark_ff::{PrimeField, UniformRand};
 use async_trait::async_trait;
 use node_msg_gateway::{
-    ensure_node_msg_gateway, GatewayContext, GatewayHandle, NodeMessageHandler, NodeMsgRoute,
-    VerifiedNodeMessage,
+    ensure_node_msg_gateway, GatewayContext, GatewayHandle, NodeHandlerError,
+    VerifiedVssShareRequest, VssShareRequestHandler,
 };
 use rand::rngs::OsRng;
 use tokio::sync::oneshot;
@@ -28,7 +28,8 @@ use vss_common::crypto::{
     pedersen_commit_compressed, poly_eval,
 };
 use vss_common::group::BcsElement;
-use vss_common::offchain::{encrypt_share_response, ShareRequest};
+use vss_common::offchain::encrypt_share_response_ciphertext;
+use vss_common::pke;
 use vss_common::session::{
     BcsPcsCommitment, BcsPcsOpening, BcsPcsPublicParams, BcsSigmaDlogLinearProof,
     ACK_WINDOW_MICROS, STATE_DEALER_DEAL, STATE_FAILED, STATE_RECIPIENT_ACK, STATE_SUCCESS,
@@ -98,7 +99,7 @@ struct RegisteredVssDealerSession {
 }
 
 #[derive(Clone, Default)]
-struct VssShareRequestHandler;
+struct DealerVssShareRequestHandler;
 
 struct Dc0Submission {
     tx_hash: String,
@@ -106,60 +107,64 @@ struct Dc0Submission {
 }
 
 #[async_trait]
-impl NodeMessageHandler for VssShareRequestHandler {
-    async fn handle(&self, message: VerifiedNodeMessage) -> Result<Vec<u8>> {
-        let request: ShareRequest = bcs::from_bytes(&message.body_bcs)
-            .map_err(|e| anyhow!("decode VSS share request: {}", e))?;
-        let expected_request_id = request.request_id()?;
-        if message.request_id != expected_request_id {
-            return Err(anyhow!(
-                "share request ID does not match request body: expected {}",
-                expected_request_id
-            ));
+impl VssShareRequestHandler for DealerVssShareRequestHandler {
+    async fn handle(
+        &self,
+        request: VerifiedVssShareRequest,
+    ) -> std::result::Result<pke::Ciphertext, NodeHandlerError> {
+        let share_request = request.payload.share_request();
+        let expected_request_id = share_request.request_id().map_err(NodeHandlerError::from)?;
+        if request.request_id != expected_request_id {
+            return Err(NodeHandlerError::bad_request(format!(
+                "share request ID does not match request body: expected {expected_request_id}"
+            )));
         }
-        let requested_session = normalize_account_addr(&request.session_addr);
-        let entry = get_registered_vss_dealer_session(&requested_session)?;
+        let requested_session = normalize_account_addr(&share_request.session_addr);
+        let entry = get_registered_vss_dealer_session(&requested_session)
+            .map_err(NodeHandlerError::from)?;
 
-        if entry.dealer_addr != message.recipient {
-            return Err(anyhow!(
+        if entry.dealer_addr != request.payload.recipient {
+            return Err(NodeHandlerError::bad_request(format!(
                 "share request recipient {} does not match dealer {}",
-                message.recipient,
-                entry.dealer_addr
-            ));
+                request.payload.recipient, entry.dealer_addr
+            )));
         }
-        let holder_index = request.holder_index as usize;
-        let expected_sender = entry
-            .share_holders
-            .get(holder_index)
-            .ok_or_else(|| anyhow!("holder index {} out of range", request.holder_index))?;
-        if expected_sender != &message.sender {
-            return Err(anyhow!(
+        let holder_index = share_request.holder_index as usize;
+        let expected_sender = entry.share_holders.get(holder_index).ok_or_else(|| {
+            NodeHandlerError::bad_request(format!(
+                "holder index {} out of range",
+                share_request.holder_index
+            ))
+        })?;
+        if expected_sender != &request.payload.sender {
+            return Err(NodeHandlerError::bad_request(format!(
                 "share request sender {} does not match holder {} at index {}",
-                message.sender,
-                expected_sender,
-                request.holder_index
-            ));
+                request.payload.sender, expected_sender, share_request.holder_index
+            )));
         }
 
-        let eval_position = request.holder_index + 1;
+        let eval_position = share_request.holder_index + 1;
         let x = Fr::from(eval_position);
         let y_bytes = fr_to_le_bytes(poly_eval(&entry.coefs_p, x));
         let r_bytes = fr_to_le_bytes(poly_eval(&entry.coefs_r, x));
         let plaintext =
-            private_share_message_bytes(entry.scheme, eval_position, &y_bytes, &r_bytes)?;
+            private_share_message_bytes(entry.scheme, eval_position, &y_bytes, &r_bytes)
+                .map_err(NodeHandlerError::from)?;
         vss_common::vss_types::pedersen_verify_private_share(
             &plaintext,
             &entry.pcs_context,
             &entry.pcs_commitment,
             eval_position,
-        )?;
-        encrypt_share_response(
-            &request,
-            &message.sender,
-            &message.recipient,
-            &message.request_id,
+        )
+        .map_err(NodeHandlerError::from)?;
+        encrypt_share_response_ciphertext(
+            &share_request,
+            &request.payload.sender,
+            &request.payload.recipient,
+            &request.request_id,
             &plaintext,
         )
+        .map_err(NodeHandlerError::from)
     }
 }
 
@@ -295,10 +300,7 @@ pub async fn ensure_vss_share_gateway(
     )
     .await?;
     gateway
-        .register_handler(
-            NodeMsgRoute::new("vss", "share-request"),
-            Arc::new(VssShareRequestHandler),
-        )
+        .register_vss_share_handler(Arc::new(DealerVssShareRequestHandler))
         .await;
     Ok(gateway)
 }

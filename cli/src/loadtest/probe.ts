@@ -70,13 +70,14 @@ async function fireOne(
     const t0 = performance.now();
     try {
         const resp = await fetch(endpoint, {
-            method: 'POST', body,
+            method: 'POST',
+            body: Buffer.from(body, 'hex'),
             signal: AbortSignal.timeout(timeoutMs),
         });
-        const text = await resp.text();
-        const key = `${resp.status}${text.length === 0 ? ':empty' : ''}`;
+        const responseBytes = new Uint8Array(await resp.arrayBuffer());
+        const key = `${resp.status}${responseBytes.length === 0 ? ':empty' : ''}`;
         statusCounts.set(key, (statusCounts.get(key) ?? 0) + 1);
-        if (!resp.ok || text.length === 0) return ERROR_LATENCY_MS;
+        if (!resp.ok || responseBytes.length === 0) return ERROR_LATENCY_MS;
         return performance.now() - t0;
     } catch (e: any) {
         const key = `exc:${e?.name ?? 'unknown'}`;

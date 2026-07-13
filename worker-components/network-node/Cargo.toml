@@ -21,7 +21,9 @@ vss-store = { path = "../vss-store" }
 epoch-change-cur = { path = "../epoch-change-cur" }
 epoch-change-nxt = { path = "../epoch-change-nxt" }
 aptos-keyless-common = { path = "../aptos-keyless-common" }
+node-msg-gateway = { path = "../node-msg-gateway" }
 anyhow = "1"
+async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 bcs = "0.1"

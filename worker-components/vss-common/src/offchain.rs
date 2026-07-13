@@ -91,6 +91,18 @@ pub fn encrypt_share_response(
     request_id: &str,
     share_bcs: &[u8],
 ) -> Result<Vec<u8>> {
+    let ciphertext =
+        encrypt_share_response_ciphertext(request, sender, recipient, request_id, share_bcs)?;
+    bcs::to_bytes(&ciphertext).map_err(|e| anyhow!("encode encrypted VSS share response: {}", e))
+}
+
+pub fn encrypt_share_response_ciphertext(
+    request: &ShareRequest,
+    sender: &str,
+    recipient: &str,
+    request_id: &str,
+    share_bcs: &[u8],
+) -> Result<pke::Ciphertext> {
     let ek = match &request.response_enc_key {
         EncryptionKey::HpkeX25519ChaCha20Poly1305(ek) => ek,
         EncryptionKey::ElGamalOtpRistretto255(_) => {
@@ -101,8 +113,7 @@ pub fn encrypt_share_response(
     };
     let aad = response_aad(request, sender, recipient, request_id)?;
     let ciphertext = hpke::encrypt(ek, share_bcs, &aad)?;
-    bcs::to_bytes(&pke::Ciphertext::HpkeX25519ChaCha20Poly1305(ciphertext))
-        .map_err(|e| anyhow!("encode encrypted VSS share response: {}", e))
+    Ok(pke::Ciphertext::HpkeX25519ChaCha20Poly1305(ciphertext))
 }
 
 pub fn decrypt_share_response(
@@ -112,6 +123,26 @@ pub fn decrypt_share_response(
     recipient: &str,
     request_id: &str,
     response_bytes: &[u8],
+) -> Result<Vec<u8>> {
+    let ciphertext: pke::Ciphertext = bcs::from_bytes(response_bytes)
+        .map_err(|e| anyhow!("decode encrypted VSS share response: {}", e))?;
+    decrypt_share_response_ciphertext(
+        request,
+        response_dk,
+        sender,
+        recipient,
+        request_id,
+        &ciphertext,
+    )
+}
+
+pub fn decrypt_share_response_ciphertext(
+    request: &ShareRequest,
+    response_dk: &ShareResponseDecryptionKey,
+    sender: &str,
+    recipient: &str,
+    request_id: &str,
+    response_ciphertext: &pke::Ciphertext,
 ) -> Result<Vec<u8>> {
     let request_ek = match &request.response_enc_key {
         EncryptionKey::HpkeX25519ChaCha20Poly1305(ek) => ek,
@@ -128,9 +159,7 @@ pub fn decrypt_share_response(
         ));
     }
 
-    let ciphertext: pke::Ciphertext = bcs::from_bytes(response_bytes)
-        .map_err(|e| anyhow!("decode encrypted VSS share response: {}", e))?;
-    let ciphertext = match ciphertext {
+    let ciphertext = match response_ciphertext {
         pke::Ciphertext::HpkeX25519ChaCha20Poly1305(ciphertext) => ciphertext,
         pke::Ciphertext::ElGamalOtpRistretto255(_) => {
             return Err(anyhow!("VSS share response ciphertext is not HPKE-X25519"));

@@ -300,7 +300,6 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     addSecretRow(add, 'pke-dk', node.pkeDk, running.pkeDk, running, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     addSecretRow(add, 'sig-sk', node.sigSk, running.sigSk, running, gcpSecretPrefix, GCP_SECRET_ENV.sigSk);
     addSecretRow(add, 'vss-store-url', node.vssStoreUrl, running.vssStoreUrl, running, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
-    addSecretRow(add, 'node-msg-listen', node.nodeMsgListen, running.nodeMsgListen, running, gcpSecretPrefix, GCP_SECRET_ENV.nodeMsgListen);
     if (node.image     || running.image)         add('image',     node.image,         running.image);
 
     addChainRpcRows(add, node.chainRpc ?? {}, running, gcpSecretPrefix);
@@ -341,7 +340,6 @@ function computeDiffMicroservices(
     addSecretRow(addM, 'pke-dk', node.pkeDk, maintainer.pkeDk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     addSecretRow(addM, 'sig-sk', node.sigSk, maintainer.sigSk, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.sigSk);
     addSecretRow(addM, 'vss-store-url', node.vssStoreUrl, maintainer.vssStoreUrl, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
-    addSecretRow(addM, 'node-msg-listen', node.nodeMsgListen, maintainer.nodeMsgListen, maintainer, gcpSecretPrefix, GCP_SECRET_ENV.nodeMsgListen);
     if (node.image     || maintainer.image)         addM('image',     node.image,         maintainer.image);
 
     addSecretRow(addH, 'pke-dk', node.pkeDk, handler.pkeDk, handler, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);

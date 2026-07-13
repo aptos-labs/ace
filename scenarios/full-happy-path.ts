@@ -72,6 +72,7 @@ import {
 import {
     buildRustWorkspace,
     killStaleNetworkNodes,
+    shouldSpawnSplitNetworkNode,
     spawnNetworkNodeMaybeSplit,
 } from './common/network-clients';
 import { buildAptosWalletFullMessage } from './common/aptos-wallet-message';
@@ -189,6 +190,9 @@ async function main() {
         const nodeMsgEndpoints = makeNodeMsgEndpoints(TOTAL_WORKERS);
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const endpoint = `http://localhost:${WORKER_BASE_PORT + i}`;
+            const nodeMsgEndpoint = shouldSpawnSplitNetworkNode(i, TOTAL_WORKERS)
+                ? nodeMsgEndpoints.registeredUrls[i]
+                : endpoint;
             console.log(`  Registering worker ${i}: ${endpoint}`);
             assertTxnSuccess(
                 await submitTxn({
@@ -218,7 +222,7 @@ async function main() {
                 await submitTxn({
                     signer: workerAccounts[i],
                     entryFunction: `${adminAddr}::worker_config::register_node_msg_endpoint`,
-                    args: [nodeMsgEndpoints.registeredUrls[i]],
+                    args: [nodeMsgEndpoint],
                 }),
                 `register_node_msg_endpoint worker ${i}`,
             );

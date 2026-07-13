@@ -1753,6 +1753,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-serialize",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "bcs",
@@ -1763,6 +1764,7 @@ dependencies = [
  "futures",
  "hex",
  "k256",
+ "node-msg-gateway",
  "p256",
  "rand 0.8.6",
  "reqwest",
@@ -1791,6 +1793,7 @@ dependencies = [
  "reqwest",
  "serde",
  "tokio",
+ "tower-http",
  "vss-common",
 ]
 

@@ -22,6 +22,10 @@ import {
 } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
+import {
+    assertWorkerFullMessageLimit,
+    assertWorkerModuleNameLimit,
+} from "./worker-request-limits";
 
 export class ContractID {
     chainId: number;
@@ -29,6 +33,7 @@ export class ContractID {
     moduleName: string;
 
     constructor(chainId: number, moduleAddr: AccountAddress, moduleName: string) {
+        assertWorkerModuleNameLimit("ContractID.moduleName", moduleName);
         this.chainId = chainId;
         this.moduleAddr = moduleAddr;
         this.moduleName = moduleName;
@@ -175,6 +180,7 @@ export class ProofOfPermission {
     fullMessage: string;
 
     constructor({userAddr, publicKey, signature, fullMessage}: {userAddr: AccountAddress, publicKey: PublicKey, signature: Signature, fullMessage: string}) {
+        assertWorkerFullMessageLimit("ProofOfPermission.fullMessage", fullMessage);
         this.userAddr = userAddr;
         this.publicKey = publicKey as AccountPublicKey;
         this.signature = signature;

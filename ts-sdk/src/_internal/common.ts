@@ -16,6 +16,11 @@ export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { postWithTimeout } from "./post-with-timeout";
 import { settleUntilThreshold } from "./settle-until-threshold";
+import {
+    assertWorkerCustomPayloadLimit,
+    assertWorkerLabelLimit,
+    assertWorkerRequestPlaintextLimit,
+} from "./worker-request-limits";
 
 export type WorkerNodeInfo = {
     nodeAddr: string;
@@ -117,6 +122,7 @@ export class FullDecryptionDomain {
     label: Uint8Array;
 
     constructor({keypairId, contractId, label}: {keypairId: AccountAddress, contractId: ContractID, label: Uint8Array}) {
+        assertWorkerLabelLimit("FullDecryptionDomain.label", label);
         this.keypairId = keypairId;
         this.contractId = contractId;
         this.label = label;
@@ -250,6 +256,7 @@ export class DecryptionRequestPayload {
     ephemeralEncKey: pke.EncryptionKey;
 
     constructor({keypairId, epoch, contractId, domain, ephemeralEncKey}: {keypairId: AccountAddress, epoch: number, contractId: ContractID, domain: Uint8Array, ephemeralEncKey: pke.EncryptionKey}) {
+        assertWorkerLabelLimit("DecryptionRequestPayload.domain", domain);
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
@@ -343,6 +350,7 @@ export class CustomFlowProof {
     private constructor(scheme: number) { this.scheme = scheme; }
 
     static createAptos(payload: Uint8Array): CustomFlowProof {
+        assertWorkerCustomPayloadLimit("CustomFlowProof.aptosPayload", payload);
         const p = new CustomFlowProof(CustomFlowProof.SCHEME_APTOS);
         p._aptosPayload = payload;
         return p;
@@ -389,6 +397,7 @@ export class CustomFlowRequest {
         encPk: pke.EncryptionKey,
         proof: CustomFlowProof,
     }) {
+        assertWorkerLabelLimit("CustomFlowRequest.label", label);
         this.keypairId = keypairId;
         this.epoch = epoch;
         this.contractId = contractId;
@@ -432,6 +441,7 @@ export class DecryptionCustomFlowRequest {
         proof: CustomFlowProof,
         tibeScheme: number,
     }) {
+        assertWorkerLabelLimit("DecryptionCustomFlowRequest.label", args.label);
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
         this.contractId = args.contractId;
@@ -564,7 +574,9 @@ export class WorkerRequest {
     toBytes(): Uint8Array {
         const serializer = new Serializer();
         this.serialize(serializer);
-        return serializer.toUint8Array();
+        const bytes = serializer.toUint8Array();
+        assertWorkerRequestPlaintextLimit("WorkerRequest plaintext", bytes);
+        return bytes;
     }
 
     toHex(): string {

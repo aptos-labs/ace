@@ -28,6 +28,7 @@ import {
     fetchIdentityKeySharesCore,
     buildPerNodeRequestCore,
 } from "../_internal/common";
+import { assertWorkerWebAuthnLimits } from "../_internal/worker-request-limits";
 
 export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
@@ -236,6 +237,11 @@ export class BasicDecryptionSession {
     }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
         const tibeScheme = this.getTibeScheme();
         if (!tibeScheme.isOk) return Result.Err({error: tibeScheme.errValue, extra: tibeScheme.extra});
+        try {
+            assertWorkerWebAuthnLimits({ authenticatorData, clientDataJSON });
+        } catch (error) {
+            return Result.Err({ error });
+        }
         const proofResult = this.buildWebAuthnProof({
             userAddr, publicKey, authenticatorData, clientDataJSON, signature,
         });

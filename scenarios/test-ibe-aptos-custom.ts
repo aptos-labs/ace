@@ -63,21 +63,16 @@ async function main(): Promise<void> {
             moduleName: 'check_acl_demo',
         };
 
-        let rejected = false;
-        try {
-            await ACE.IBE_Aptos.decryptCustomFlow({
-                ...baseArgs,
-                payload: new TextEncoder().encode('wrong-code'),
-            });
-        } catch {
-            rejected = true;
-        }
-        assert(rejected, 'custom IBE must reject an invalid proof payload');
+        const rejected = await ACE.IBE_Aptos.decryptCustomFlow({
+            ...baseArgs,
+            payload: new TextEncoder().encode('wrong-code'),
+        });
+        assert(!rejected.isOk, 'custom IBE must reject an invalid proof payload');
 
-        const plaintext = await ACE.IBE_Aptos.decryptCustomFlow({
+        const plaintext = (await ACE.IBE_Aptos.decryptCustomFlow({
             ...baseArgs,
             payload: accessCode,
-        });
+        })).unwrapOrThrow('custom IBE decrypt');
         assert(
             new TextDecoder().decode(plaintext) === 'HELLO CUSTOM FLOW',
             'custom IBE plaintext mismatch',

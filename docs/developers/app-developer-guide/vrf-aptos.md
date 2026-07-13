@@ -24,7 +24,6 @@ A minimal origin-gated hook looks like this:
 ```move
 module admin::vrf_access {
     use std::error;
-    use std::signer;
     use std::string::String;
 
     const E_NOT_ADMIN: u64 = 1;
@@ -35,23 +34,23 @@ module admin::vrf_access {
     }
 
     public entry fun init(admin: &signer) {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         if (!exists<AppConfig>(@admin)) {
             move_to(admin, AppConfig { client_origin: vector[] });
         };
     }
 
-    public entry fun set_client_origin(admin: &signer, origin: vector<u8>) acquires AppConfig {
-        assert!(signer::address_of(admin) == @admin, error::permission_denied(E_NOT_ADMIN));
+    public entry fun set_client_origin(admin: &signer, origin: vector<u8>) {
+        assert!(admin.address_of() == @admin, error::permission_denied(E_NOT_ADMIN));
         assert!(exists<AppConfig>(@admin), error::not_found(E_NOT_INITIALIZED));
-        let config = borrow_global_mut<AppConfig>(@admin);
+        let config = &mut AppConfig[@admin];
         config.client_origin = origin;
     }
 
     #[view]
-    public fun on_ace_vrf_request(_label: vector<u8>, _account: address, origin: String): bool acquires AppConfig {
+    public fun on_ace_vrf_request(_label: vector<u8>, _account: address, origin: String): bool {
         if (!exists<AppConfig>(@admin)) return false;
-        let config = borrow_global<AppConfig>(@admin);
+        let config = &AppConfig[@admin];
         origin.bytes() == &config.client_origin
     }
 }
@@ -107,25 +106,31 @@ const session = await ACE.VRF_Aptos.DerivationSession.create({
 });
 
 const message = await session.getRequestToSign();
+// AIP-62 signMessage does not return the account public key. Obtain and
+// normalize it from the wallet's connected account as an Aptos `PublicKey`.
+const connectedAccountPublicKey = getConnectedAccountPublicKey();
 const signed = await wallet.signMessage({
   message,
   nonce: crypto.randomUUID(),
+  address: true,
   application: true,
-  chainId,
-  address: ownerAddress,
+  chainId: true,
 });
 
-const vrfBytes = await session.deriveWithSignature({
-  pubKey: signed.publicKey,
+// This assumes the adapter returns an Aptos SDK `Signature` object. If it
+// returns serialized bytes or hex instead, normalize it at the adapter boundary.
+
+const vrfBytes = (await session.deriveWithSignature({
+  pubKey: connectedAccountPublicKey,
   signature: signed.signature,
   fullMessage: signed.fullMessage,
-});
+})).unwrapOrThrow("ACE VRF derive failed");
 ```
 
 For CLIs or server-side jobs that sign directly with an Aptos account, build the same wallet-style `fullMessage` before signing:
 
 ```typescript
-const vrfBytes = await ACE.VRF_Aptos.derive({
+const vrfBytes = (await ACE.VRF_Aptos.derive({
   aceDeployment,
   keypairId,
   chainId,
@@ -147,7 +152,31 @@ const vrfBytes = await ACE.VRF_Aptos.derive({
       fullMessage,
     };
   },
-});
+})).unwrapOrThrow("ACE VRF derive failed");
+```
+
+The `address`, `application`, and `chainId` AIP-62 inputs are boolean inclusion flags. ACE requires `fullMessage` to contain the exact SDK-generated hexadecimal BCS request, verifies the signature and account key, and passes the signed `application` value to `on_ace_vrf_request` as `origin`.
+
+For a passkey account, request the WebAuthn challenge and submit the browser assertion through the dedicated API:
+
+```typescript
+const challenge = await session.getRequestToSignForWebAuthn();
+const credential = await navigator.credentials.get({
+  publicKey: {
+    challenge,
+    rpId: window.location.hostname,
+    allowCredentials,
+    userVerification: "required",
+  },
+}) as PublicKeyCredential;
+const response = credential.response as AuthenticatorAssertionResponse;
+
+const vrfBytes = (await session.deriveWithWebAuthnAssertion({
+  pubKey: connectedPasskeyPublicKey,
+  authenticatorData: new Uint8Array(response.authenticatorData),
+  clientDataJSON: new Uint8Array(response.clientDataJSON),
+  signature: new Uint8Array(response.signature),
+})).unwrapOrThrow("ACE passkey VRF derive failed");
 ```
 
 The SDK encrypts each worker request to that worker's registered PKE key, decrypts the encrypted VRF shares returned by workers, verifies the share proofs, combines at least threshold many valid shares, and returns 32 bytes.

@@ -1,0 +1,35 @@
+{
+  "name": "bearer-capability-aptos",
+  "version": "0.1.0",
+  "description": "Step-by-step demo of bearer signing capabilities with ACE on Aptos.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "1-setup": "tsx scripts/1-setup.ts",
+    "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
+    "3-create-capability": "tsx scripts/3-create-capability.ts",
+    "4-decrypt": "tsx scripts/4-decrypt.ts",
+    "5-rotate": "tsx scripts/5-rotate.ts",
+    "6-decrypt-after-rotate": "tsx scripts/6-decrypt-after-rotate.ts",
+    "1-setup:localnet": "ACE_NETWORK=localnet tsx scripts/1-setup.ts",
+    "2-deploy-contract:localnet": "ACE_NETWORK=localnet tsx scripts/2-deploy-contract.ts",
+    "3-create-capability:localnet": "ACE_NETWORK=localnet tsx scripts/3-create-capability.ts",
+    "4-decrypt:localnet": "ACE_NETWORK=localnet tsx scripts/4-decrypt.ts",
+    "5-rotate:localnet": "ACE_NETWORK=localnet tsx scripts/5-rotate.ts",
+    "6-decrypt-after-rotate:localnet": "ACE_NETWORK=localnet tsx scripts/6-decrypt-after-rotate.ts"
+  },
+  "dependencies": {
+    "@aptos-labs/ts-sdk": "^5.2.0",
+    "@aptos-labs/ace-sdk": "workspace:*",
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  },
+  "author": "",
+  "license": "Apache-2.0"
+}

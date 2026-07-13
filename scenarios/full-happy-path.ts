@@ -122,11 +122,11 @@ async function deriveVrfBytes(args: {
         message: msgToSign,
         nonce: args.nonce,
     });
-    const derived = await session.deriveWithSignature({
+    const derived = (await session.deriveWithSignature({
         pubKey: args.account.publicKey,
         signature: args.account.sign(fullMessage),
         fullMessage,
-    });
+    })).unwrapOrThrow('VRF derive failed');
     assert(derived.length === 32, `VRF output should be 32 bytes, got ${derived.length}`);
     return derived;
 }

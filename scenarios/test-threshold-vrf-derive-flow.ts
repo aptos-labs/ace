@@ -21,11 +21,11 @@
  *   });
  *   const msg = await session.getRequestToSign();
  *   const fullMessage = wallet.signMessage({ application: true, message: msg, ... }).fullMessage;
- *   const derivedBytes = await session.deriveWithSignature({
+ *   const derivedBytes = (await session.deriveWithSignature({
  *       pubKey: account.publicKey,
  *       signature: account.sign(fullMessage),
  *       fullMessage,
- *   });
+ *   })).unwrapOrThrow('tVRF derive failed');
  */
 
 import * as ACE from '@aptos-labs/ace-sdk';
@@ -133,11 +133,11 @@ async function main() {
         });
 
         step(3, 'Derive tVRF random bytes');
-        const derived = await session.deriveWithSignature({
+        const derived = (await session.deriveWithSignature({
             pubKey: owner.publicKey,
             signature: owner.sign(fullMessage),
             fullMessage,
-        });
+        })).unwrapOrThrow('tVRF derive failed');
         assert(derived.length === 32, `tVRF output should be 32 bytes, got ${derived.length}`);
         console.log(`  randomBytes: 0x${Buffer.from(derived).toString('hex')}`);
 
@@ -186,11 +186,11 @@ async function main() {
             message: repeatMsg,
             nonce: 'threshold-vrf-derive-2',
         });
-        const repeat = await repeatSession.deriveWithSignature({
+        const repeat = (await repeatSession.deriveWithSignature({
             pubKey: owner.publicKey,
             signature: owner.sign(repeatFullMessage),
             fullMessage: repeatFullMessage,
-        });
+        })).unwrapOrThrow('repeat tVRF derive failed');
         assert(Buffer.from(repeat).equals(Buffer.from(derived)), 'same tVRF input should derive the same random bytes');
         log('tVRF shares verified, reconstructed, and deterministically hashed to random bytes.');
     } catch (err) {

@@ -5,8 +5,8 @@ ACE exposes Aptos-authorized threshold IBE decryption and threshold VRF derivati
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
 | [`ibe-aptos-basic.md`](./ibe-aptos-basic.md) | An Aptos account signs a decryption request and your hook authorizes that account | allowlists, paid content, timelocks |
-| [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) | Your app supplies its own proof bytes and verification hook | presigned grants, ZK authorization, capability systems |
-| [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract and label | per-object keys, deterministic grants, app-scoped randomness |
+| [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) | Your app supplies its own proof bytes and verification hook | bearer capabilities, ZK authorization, attestations |
+| [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract and label | per-object keys, deterministic app values, app-scoped randomness |
 
 ## Vocabulary
 
@@ -17,11 +17,19 @@ ACE exposes Aptos-authorized threshold IBE decryption and threshold VRF derivati
 - `account`: the Aptos account that signs the request and is passed to the policy hook for authorization. It is not part of the VRF input unless the app encodes it into `label`.
 - `origin`: the Aptos wallet/WebAuthn application origin extracted by ACE from the signed message.
 
-## Common Build Order
+## Request and response limits
 
-1. Design your derivation policy data model.
-2. Implement the `on_ace_vrf_request(label, account, origin)` Move hook.
-3. Deploy the contract and initialize policy state.
-4. Derive with the SDK using the same contract id and label your policy expects.
-5. Map the 32-byte VRF output into your app's key, token, nonce, or randomness format.
-6. Deploy the web app or CLI wrapper, get the stable application origin, then configure the contract to accept only that origin.
+The TypeScript SDK enforces the worker wire limits before sending a request. Plan proof formats—especially ZK proofs—with these limits in mind.
+
+| Field | Maximum encoded size |
+| --- | ---: |
+| `label` | 1 KiB |
+| custom-flow `payload` | 16 KiB |
+| Aptos wallet `fullMessage` | 16 KiB |
+| WebAuthn `clientDataJSON` | 16 KiB |
+| WebAuthn `authenticatorData` | 4 KiB |
+| Aptos module name | 256 bytes |
+| complete plaintext worker request | 64 KiB |
+| aggregate worker response headers | 16 KiB |
+
+The SDK also stops reading and cancels any worker response body larger than 64 KiB. High-level encrypt, decrypt, and VRF APIs return `Result`; `unwrapOrThrow("context")` throws an `Error` whose `cause` retains the underlying HTTP, parsing, or cryptographic failure.

@@ -55,6 +55,8 @@ interface ParsedArgs {
     vpcEgress?: string;
     /** Cloud Run only. `spec.template.spec.containerConcurrency`. */
     containerConcurrency?: number;
+    /** Cloud Run only. True when Cloud Run forwards h2c to the container. */
+    cloudRunHttp2?: boolean;
     /** Cloud Run only. Env var name -> Secret Manager secret ref, e.g. `secret-name:latest`. */
     secretEnv: Record<string, string>;
 }
@@ -161,6 +163,8 @@ async function fetchGcpDeployment(serviceName: string, project: string, region: 
     parsed.vpcEgress = ann['run.googleapis.com/vpc-access-egress'];
     const cc = svc?.spec?.template?.spec?.containerConcurrency;
     if (typeof cc === 'number') parsed.containerConcurrency = cc;
+    parsed.cloudRunHttp2 = ((container.ports ?? []) as any[])
+        .some(port => port?.name === 'h2c');
     return parsed;
 }
 
@@ -284,6 +288,9 @@ function addVpcRows(
     const cc = running.containerConcurrency;
     if (typeof cc === 'number' && cc !== DEFAULT_CONTAINER_CONCURRENCY) {
         add('concurrency', String(DEFAULT_CONTAINER_CONCURRENCY), String(cc));
+    }
+    if (running.cloudRunHttp2 !== true) {
+        add('http2', 'h2c', running.cloudRunHttp2 ? 'h2c' : 'http1');
     }
 }
 

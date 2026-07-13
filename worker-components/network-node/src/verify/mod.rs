@@ -11,6 +11,7 @@
 //!
 mod ibe_aptos_basic_flow;
 mod ibe_aptos_custom_flow;
+mod limits;
 mod shared;
 mod vrf_aptos;
 
@@ -24,11 +25,19 @@ pub use self::shared::aptos::{
     AptosContractId, AptosProofOfPermission, AptosPublicKeyMaterial, AptosSignatureMaterial,
 };
 
+pub(crate) use limits::MAX_WORKER_REQUEST_PLAINTEXT_BYTES;
+
 #[derive(Serialize, Deserialize)]
 pub enum WorkerRequest {
     DecryptionBasicFlow(DecryptionBasicFlowRequest),
     DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(ThresholdVrfRequest),
+}
+
+impl WorkerRequest {
+    pub(crate) fn validate_size_limits(&self) -> Result<()> {
+        limits::validate_worker_request(self)
+    }
 }
 
 #[derive(Serialize, Deserialize)]

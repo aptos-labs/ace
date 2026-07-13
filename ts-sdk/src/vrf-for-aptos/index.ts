@@ -37,6 +37,11 @@ import {
 import { postWithTimeout } from "../_internal/post-with-timeout";
 import { settleUntilThreshold } from "../_internal/settle-until-threshold";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
+import {
+    assertWorkerFullMessageLimit,
+    assertWorkerLabelLimit,
+    assertWorkerWebAuthnLimits,
+} from "../_internal/worker-request-limits";
 import { PcsPublicParams, PublicPoint } from "../vss";
 import { FR_MODULUS, frInv, frMod, frMul } from "../group/bls12381fr";
 
@@ -68,6 +73,7 @@ export class ThresholdVrfRequestPayload {
         accountAddress: AccountAddress,
         responseEncKey: pke.EncryptionKey,
     }) {
+        assertWorkerLabelLimit("ThresholdVrfRequestPayload.label", args.label);
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
         this.contractId = args.contractId;
@@ -147,6 +153,7 @@ export class AptosAccountSignatureProof {
         signature: Signature,
         fullMessage: string,
     }) {
+        assertWorkerFullMessageLimit("AptosAccountSignatureProof.fullMessage", args.fullMessage);
         this.userAddr = args.userAddr;
         this.publicKey = args.publicKey as AccountPublicKey;
         this.signature = args.signature;
@@ -675,6 +682,10 @@ export class DerivationSession {
         if (this.payload === undefined || this.message === undefined) {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithWebAuthnAssertion: call getRequestToSignForWebAuthn() first");
         }
+        assertWorkerWebAuthnLimits({
+            authenticatorData: args.authenticatorData,
+            clientDataJSON: args.clientDataJSON,
+        });
 
         const sigRs = derEcdsaToRawLowS(args.signature);
         const cdjHash = sha256(args.clientDataJSON);

@@ -3,8 +3,6 @@
 
 /// Shared constants for ACE worker / protocol packages (epoch status, crypto formats).
 module ace::worker_config {
-    use std::bcs;
-    use std::string;
     use std::string::String;
     use ace::pke;
     use ace::sig;
@@ -59,38 +57,12 @@ module ace::worker_config {
         exists<NodeMsgEndpoint>(worker)
     }
 
-    #[view]
-    /// Return the worker's registered client-facing endpoint string.
-    public fun get_client_endpoint(worker: address): String {
-        ClientEndpoint[worker].endpoint
-    }
-
-    #[view]
-    /// Return the worker's registered node-to-node message endpoint string.
-    public fun get_node_msg_endpoint(worker: address): String {
-        NodeMsgEndpoint[worker].endpoint
-    }
-
-    #[view]
-    /// Return BCS encoding of the worker's PKE encryption key.
-    /// Output: [u8 variant=0x00][u8 ULEB128(32)][32B enc_base][u8 ULEB128(32)][32B public_point] = 67 bytes.
-    /// Compatible with ts-sdk `pke.EncryptionKey.fromBytes()` and `vss-common` `pke::EncryptionKey::from_bytes()`.
-    public fun get_pke_enc_key_bcs(worker: address): vector<u8> {
-        bcs::to_bytes(&PkeEncryptionKey[worker].ek)
-    }
-
-    #[view]
-    /// Return BCS encoding of the worker's node-to-node signature public key.
-    public fun get_sig_verification_key_bcs(worker: address): vector<u8> {
-        bcs::to_bytes(&SigVerificationKey[worker].pk)
-    }
-
     #[test(worker = @0x123)]
     fun register_client_endpoint_round_trip(worker: signer) {
-        let endpoint = string::utf8(b"http://127.0.0.1:8000");
+        let endpoint = std::string::utf8(b"http://127.0.0.1:8000");
         register_client_endpoint(&worker, endpoint);
         assert!(has_client_endpoint(@0x123), 1);
-        assert!(get_client_endpoint(@0x123) == endpoint, 2);
+        assert!(ClientEndpoint[@0x123].endpoint == endpoint, 2);
     }
 
     #[test(worker = @0x123)]
@@ -98,14 +70,21 @@ module ace::worker_config {
         let pk_bytes = x"0020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
         register_sig_verification_key(&worker, pk_bytes);
         assert!(has_sig_verification_key(@0x123), 1);
-        assert!(get_sig_verification_key_bcs(@0x123) == pk_bytes, 2);
+        let pk = SigVerificationKey[@0x123].pk;
+        assert!(sig::public_key_scheme(&pk) == sig::scheme_ed25519(), 2);
+        let inner = sig::public_key_as_ed25519(pk);
+        assert!(
+            ace::sig_ed25519::public_key_bytes(&inner) ==
+                x"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            3,
+        );
     }
 
     #[test(worker = @0x123)]
     fun register_node_msg_endpoint_round_trip(worker: signer) {
-        let endpoint = string::utf8(b"http://127.0.0.1:9000");
+        let endpoint = std::string::utf8(b"http://127.0.0.1:9000");
         register_node_msg_endpoint(&worker, endpoint);
         assert!(has_node_msg_endpoint(@0x123), 1);
-        assert!(get_node_msg_endpoint(@0x123) == endpoint, 2);
+        assert!(NodeMsgEndpoint[@0x123].endpoint == endpoint, 2);
     }
 }

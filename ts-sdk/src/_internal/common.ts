@@ -9,12 +9,19 @@ import * as pke from "../pke";
 import * as tibe from "../t-ibe";
 import * as dkg from "../dkg";
 import * as dkr from "../dkr";
+import * as workerConfig from "../worker-config";
 import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { postWithTimeout } from "./post-with-timeout";
 import { settleUntilThreshold } from "./settle-until-threshold";
+
+export type WorkerNodeInfo = {
+    nodeAddr: string;
+    endpoint: string;
+    nodeEncKey: pke.EncryptionKey;
+};
 
 export class AceDeployment {
     apiEndpoint: string;
@@ -742,6 +749,52 @@ export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, netwo
     }
 }
 
+export async function fetchWorkerClientEndpoint(aptos: Aptos, aceContractAddr: string, workerAddr: string): Promise<string> {
+    return workerConfig.fetchWorkerClientEndpoint(aptos, aceContractAddr, workerAddr);
+}
+
+export async function fetchWorkerPkeEncryptionKey(aptos: Aptos, aceContractAddr: string, workerAddr: string, context: string): Promise<pke.EncryptionKey> {
+    return workerConfig.fetchWorkerPkeEncryptionKey(aptos, aceContractAddr, workerAddr, context);
+}
+
+export async function fetchWorkerNodeInfo({
+    aptos,
+    aceContractAddr,
+    nodeAddr,
+    pkeParseContext,
+}: {
+    aptos: Aptos,
+    aceContractAddr: string,
+    nodeAddr: AccountAddress,
+    pkeParseContext: string,
+}): Promise<WorkerNodeInfo> {
+    const addrStr = nodeAddr.toStringLong();
+    const [endpoint, nodeEncKey] = await Promise.all([
+        fetchWorkerClientEndpoint(aptos, aceContractAddr, addrStr),
+        fetchWorkerPkeEncryptionKey(aptos, aceContractAddr, addrStr, `${pkeParseContext} for ${addrStr}`),
+    ]);
+    return { nodeAddr: addrStr, endpoint, nodeEncKey };
+}
+
+export async function fetchCurrentWorkerNodeInfos({
+    aceDeployment,
+    networkState,
+    pkeParseContext,
+}: {
+    aceDeployment: AceDeployment,
+    networkState: NetworkState,
+    pkeParseContext: string,
+}): Promise<WorkerNodeInfo[]> {
+    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+    return Promise.all(networkState.curNodes.map((nodeAddr) => fetchWorkerNodeInfo({
+        aptos,
+        aceContractAddr,
+        nodeAddr,
+        pkeParseContext,
+    })));
+}
+
 export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
     ciphertext: Uint8Array,
     identityKeyShares: tibe.IdentityDecryptionKeyShare[],
@@ -768,9 +821,6 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-
             const fdd = new FullDecryptionDomain({
                 keypairId: request.keypairId,
                 contractId: request.contractId,
@@ -779,28 +829,11 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
             const fddBytes = fdd.toBytes();
 
             const [nodeInfos, currentSessionPks] = await Promise.all([
-                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-                    const addrStr = nodeAddr.toStringLong();
-                    const [[endpoint], [ekHex]] = await Promise.all([
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                    ]);
-                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCore: parse pke enc key for ${addrStr}`);
-                    return { endpoint: endpoint as string, nodeEncKey };
-                })),
+                fetchCurrentWorkerNodeInfos({
+                    aceDeployment,
+                    networkState,
+                    pkeParseContext: 'ACE.fetchIdentityKeySharesCore',
+                }),
                 fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
             ]);
 
@@ -900,9 +933,6 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-
             const fdd = new FullDecryptionDomain({
                 keypairId: customRequest.keypairId,
                 contractId: customRequest.contractId,
@@ -911,28 +941,11 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
             const fddBytes = fdd.toBytes();
 
             const [nodeInfos, currentSessionPks] = await Promise.all([
-                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-                    const addrStr = nodeAddr.toStringLong();
-                    const [[endpoint], [ekHex]] = await Promise.all([
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                    ]);
-                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCoreCustom: parse pke enc key for ${addrStr}`);
-                    return { endpoint: endpoint as string, nodeEncKey };
-                })),
+                fetchCurrentWorkerNodeInfos({
+                    aceDeployment,
+                    networkState,
+                    pkeParseContext: 'ACE.fetchIdentityKeySharesCoreCustom',
+                }),
                 fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
             ]);
 
@@ -1042,31 +1055,11 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-
-            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
-                const addrStr = nodeAddr.toStringLong();
-                const [[endpoint], [ekHex]] = await Promise.all([
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_client_endpoint` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                ]);
-                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                    .unwrapOrThrow(`ACE.buildPerNodeRequest: parse pke enc key for ${addrStr}`);
-                return { endpoint: endpoint as string, nodeEncKey };
-            }));
+            const nodeInfos = await fetchCurrentWorkerNodeInfos({
+                aceDeployment,
+                networkState,
+                pkeParseContext: 'ACE.buildPerNodeRequest',
+            });
 
             const sdkIdx = nodeInfos.findIndex(n => n.endpoint === targetEndpoint);
             if (sdkIdx < 0) {

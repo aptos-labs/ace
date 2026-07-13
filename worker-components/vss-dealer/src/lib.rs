@@ -319,8 +319,7 @@ async fn preload_share_holder_sig_keys(
         loads.spawn(async move {
             gateway
                 .preload_sig_verification_key(&holder, move || async move {
-                    rpc.get_sig_verification_key_bcs(&ace, &holder_for_load)
-                        .await
+                    rpc.get_sig_verification_key(&ace, &holder_for_load).await
                 })
                 .await
                 .map_err(|e| anyhow!("preload signature verification key for {holder}: {e:#}"))

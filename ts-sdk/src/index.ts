@@ -26,6 +26,9 @@ export * as pke from "./pke";
 // Node-to-node messaging signatures
 export * as sig from "./sig";
 
+// Worker on-chain configuration resources
+export * as workerConfig from "./worker-config";
+
 // Threshold identity-based encryption primitives.
 export * as tibe from "./t-ibe";
 

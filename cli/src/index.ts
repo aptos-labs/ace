@@ -82,7 +82,7 @@ deploymentCmd
 
 deploymentCmd
     .command('update-contracts')
-    .description('Republish all 11 Move packages to the deployment (admin profile required)')
+    .description('Republish all ACE Move packages to the deployment (admin profile required)')
     .option('-p, --profile <alias>', 'Deployment profile alias to use')
     .option('-a, --account <addr>', 'Admin account address of the profile to use')
     .option('--version <X.Y.Z>', 'Version override (default: read from repo-root NEXT_RELEASE)')
@@ -117,8 +117,8 @@ const nodeCmd = program.command('node').description('Manage and operate ACE work
 nodeCmd
     .command('new')
     .description('Set up a new ACE node')
-    .option('--non-interactive', 'Run without prompts (currently supports GCP only)')
-    .option('-y, --yes', 'Skip deploy confirmation and apply the generated Cloud Run deploy script')
+    .option('--non-interactive', 'Run without prompts (supports GCP Cloud Run/VM)')
+    .option('-y, --yes', 'Skip deploy confirmation and apply the generated deploy script')
     .option('--json', 'Print final machine-readable node metadata as JSON')
     .option('--set-default', 'Set the new node as the default node profile')
     .option('-d, --deployment <alias>', 'Deployment profile alias to use (defaults to default/single deployment in non-interactive mode)')
@@ -127,19 +127,31 @@ nodeCmd
     .option('--ace-addr <addr>', 'ACE contract address')
     .option('--rpc-api-key <key>', 'Deployment RPC API key')
     .option('--gas-station-key <key>', 'Gas station API key')
-    .option('--platform <platform>', 'Deployment platform (non-interactive currently supports gcp)')
-    .option('--mode <mode>', 'Mode: microservices or metadata-management-only (Cloud Run monolith is unavailable with offchain VSS)')
+    .option('--platform <platform>', 'Deployment platform: gcp (Cloud Run), gcp-vm, or metadata-management-only via --mode')
+    .option('--mode <mode>', 'Mode: microservices, monolith, or metadata-management-only')
     .option('--alias <alias>', 'Node profile alias')
     .option('--image <image>', 'Worker image, e.g. aptoslabs/ace-node:3.1.0')
     .option('--project <id>', 'GCP project ID')
     .option('--region <region>', 'Cloud Run region')
-    .option('--service-name <name>', 'Cloud Run service name for monolith mode')
+    .option('--service-name <name>', 'Cloud Run service name for legacy Cloud Run monolith mode')
     .option('--maintainer-service-name <name>', 'Cloud Run Maintainer service name for microservices mode')
     .option('--handler-service-name <name>', 'Cloud Run Handler service name for microservices mode')
     .option('--handler-max-instances <n>', 'Cloud Run Handler max instances for microservices mode')
+    .option('--zone <zone>', 'GCP VM zone for monolith mode, e.g. us-central1-a')
+    .option('--instance-name <name>', 'GCP VM instance name for monolith mode')
+    .option('--machine-type <type>', 'GCP VM machine type for monolith mode')
+    .option('--disk-size-gb <n>', 'GCP VM persistent VSS disk size in GB for monolith mode')
+    .option('--port <port>', 'Node TCP port for GCP VM monolith mode')
+    .option('--container-name <name>', 'Docker container name for GCP VM monolith mode')
+    .option('--network <name>', 'GCP VPC network name for VM monolith or Cloud Run/Cloud SQL microservices')
+    .option('--subnet <name>', 'GCP VPC subnet name for Cloud Run Direct VPC egress')
+    .option('--cloud-sql-instance-name <name>', 'Cloud SQL Postgres instance name for Cloud Run microservices VSS store')
+    .option('--cloud-sql-database <name>', 'Cloud SQL database name for Cloud Run microservices VSS store')
+    .option('--cloud-sql-user <name>', 'Cloud SQL user for Cloud Run microservices VSS store')
+    .option('--cloud-sql-private-range-name <name>', 'VPC peering address range name for Cloud SQL private IP')
     .option('--endpoint <url>', 'Node endpoint to register (required if not applying deploy with --yes)')
     .option('--node-msg-endpoint <url>', 'Node-to-node message endpoint to register (required if not applying deploy with --yes)')
-    .option('--vss-store-url <url>', 'Persistent VSS store URL, e.g. sqlite:///path/to/node.db or postgres://...')
+    .option('--vss-store-url <url>', 'Persistent VSS store URL override; Cloud Run microservices auto-creates Cloud SQL when omitted')
     .option('--node-msg-listen <addr>', 'Node-message bind metadata for endpoint defaults; network-node itself listens on --port')
     .option('--chain-rpc-json <json>', 'JSON object of chain RPC overrides, e.g. {"aptosTestnetApi":"http://10.0.0.1:8080/v1"}')
     .action(async (opts: NodeNewOptions & { json?: boolean; setDefault?: boolean }) => {
@@ -147,7 +159,7 @@ nodeCmd
             const config = loadConfig();
             const nonInteractive = isNonInteractiveNodeNew(opts);
             if (opts.json && !nonInteractive) {
-                throw new Error('--json requires non-interactive node new flags (for example --non-interactive --platform gcp).');
+                throw new Error('--json requires non-interactive node new flags (for example --non-interactive --platform gcp-vm).');
             }
             const run = () => runOnboarding(opts);
             const { nodeKey, node } = opts.json
@@ -181,6 +193,7 @@ nodeCmd
                     mode:        node.mode,
                     image:       node.image,
                     gcp:         node.gcp,
+                    gce:         node.gce,
                 }, null, 2));
             } else {
                 console.log(`\n✓ New node profile saved.\n`);

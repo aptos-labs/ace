@@ -75,7 +75,7 @@ export async function updateContractsCommand(opts: {
 
     if (deployment.sharedNodeApiKey) {
         // Threaded through to `aptos move publish` so RPC calls authenticate via Bearer token
-        // and avoid testnet/mainnet rate limits during the 11-package republish.
+        // and avoid testnet/mainnet rate limits during the republish.
         process.env.NODE_API_KEY = deployment.sharedNodeApiKey;
     }
 

@@ -6,6 +6,7 @@ import { loadConfig, saveConfig, deriveRpcLabel } from '../config.js';
 import { CLI } from '../cli-name.js';
 import { isLocalNodeAlive, killLocalNode } from '../local-process.js';
 import { deployLabel } from '../render-state.js';
+import { gceResourceNames } from '../onboarding.js';
 
 const D = '\x1b[2m', R = '\x1b[0m', B = '\x1b[1m', G = '\x1b[32m', E = '\x1b[31m';
 
@@ -79,9 +80,24 @@ export async function profileDeleteCommand(aliasOrKey: string): Promise<void> {
             if (node.gcp.maintainerServiceName) {
                 console.log(`  gcloud run services delete ${node.gcp.maintainerServiceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
             }
+            if (node.gcp.cloudSql?.instanceName) {
+                console.log(`\n  Don't forget to delete the Cloud SQL VSS DB if this profile owns it:\n`);
+                console.log(`  gcloud sql instances delete ${node.gcp.cloudSql.instanceName} --project ${node.gcp.project}`);
+            }
         } else {
             console.log(`  gcloud run services delete ${node.gcp.serviceName} --project ${node.gcp.project} --region ${node.gcp.region}`);
         }
+    } else if (node.platform === 'gcp-vm' && node.gce) {
+        const names = {
+            ...gceResourceNames(node.gce.instanceName),
+            ...node.gce,
+        };
+        const region = node.gce.zone.replace(/-[a-z]$/, '');
+        console.log(`\n  Don't forget to delete the VM resources:\n`);
+        console.log(`  gcloud compute instances delete ${node.gce.instanceName} --project ${node.gce.project} --zone ${node.gce.zone}`);
+        console.log(`  gcloud compute disks delete ${names.diskName} --project ${node.gce.project} --zone ${node.gce.zone}`);
+        console.log(`  gcloud compute addresses delete ${names.staticIpName} --project ${node.gce.project} --region ${region}`);
+        console.log(`  gcloud compute firewall-rules delete ${names.firewallRuleName} --project ${node.gce.project}`);
     } else if (node.platform === 'local' && node.local?.pid) {
         if (isLocalNodeAlive(node.local.pid)) {
             killLocalNode(node.local.pid);

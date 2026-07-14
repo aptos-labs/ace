@@ -6,17 +6,18 @@
  * and `ace node edit`.
  *
  * A "scheme" is the (platform, mode) tuple that drives both the wizard's
- * inline scheme picker and the text-form template the user edits. Five are
+ * inline scheme picker and the text-form template the user edits. Six are
  * supported today:
  *
- *   * `gcp-cloudrun-monolith`         — platform=gcp,    mode=monolith
+ *   * `gcp-vm-monolith`               — platform=gcp-vm, mode=monolith
+ *   * `gcp-cloudrun-monolith`         — platform=gcp,    mode=monolith (legacy)
  *   * `gcp-cloudrun-microservices`    — platform=gcp,    mode=microservices
  *   * `docker-monolith`               — platform=docker, mode=monolith
  *   * `local-build-monolith`          — platform=local,  mode=monolith
  *   * `metadata-management-only`       — platform unset, mode=metadata-management-only
  *
- * The two GCP options are unavailable when the ACE deployment is on
- * localnet (Cloud Run can't reach a localhost chain endpoint).
+ * The GCP options are unavailable when the ACE deployment is on localnet
+ * (managed GCP runtimes can't reach a localhost chain endpoint).
  *
  * The template generators in this module produce the TOML text shown to the
  * user; the parser validates the saved file back into a structured form that
@@ -28,9 +29,10 @@ import { homedir } from 'os';
 import * as path from 'path';
 import { escSelect } from './esc-select.js';
 import { CLI } from './cli-name.js';
-import type { Mode, Platform, GcpConfig, DockerConfig, LocalConfig, ChainRpcOverrides, TrackedNode } from './config.js';
+import type { Mode, Platform, GcpConfig, GceConfig, DockerConfig, LocalConfig, ChainRpcOverrides, TrackedNode } from './config.js';
 
 export type Scheme =
+    | 'gcp-vm-monolith'
     | 'gcp-cloudrun-monolith'
     | 'gcp-cloudrun-microservices'
     | 'docker-monolith'
@@ -41,6 +43,7 @@ export function schemeOf(node: Pick<TrackedNode, 'platform' | 'mode'>): Scheme {
     const platform = node.platform ?? 'docker';
     const mode = node.mode ?? 'monolith';
     if (mode === 'metadata-management-only')            return 'metadata-management-only';
+    if (platform === 'gcp-vm')                           return 'gcp-vm-monolith';
     if (platform === 'gcp' && mode === 'microservices') return 'gcp-cloudrun-microservices';
     if (platform === 'gcp')                              return 'gcp-cloudrun-monolith';
     if (platform === 'docker')                           return 'docker-monolith';
@@ -49,6 +52,7 @@ export function schemeOf(node: Pick<TrackedNode, 'platform' | 'mode'>): Scheme {
 
 export function platformOf(scheme: Scheme): Platform | undefined {
     if (scheme === 'metadata-management-only') return undefined;
+    if (scheme === 'gcp-vm-monolith') return 'gcp-vm';
     if (scheme.startsWith('gcp-'))    return 'gcp';
     if (scheme.startsWith('docker-')) return 'docker';
     return 'local';
@@ -64,14 +68,12 @@ export function modeOf(scheme: Scheme): Mode {
 export async function pickScheme(opts: { isLocalnet: boolean }): Promise<Scheme | null> {
     const choices: { name: string; value: Scheme; disabled?: string }[] = [
         {
-            name: 'GCP Cloud Run, monolith         — single Cloud Run service does everything',
-            value: 'gcp-cloudrun-monolith',
-            disabled: opts.isLocalnet
-                ? '(unavailable: deployment is localnet)'
-                : '(unavailable with offchain VSS: Cloud Run exposes one ingress port; use microservices)',
+            name: 'GCP VM, monolith                — single VM + Docker + persistent sqlite DB',
+            value: 'gcp-vm-monolith',
+            disabled: opts.isLocalnet ? '(unavailable: deployment is localnet)' : undefined,
         },
         {
-            name: 'GCP Cloud Run, microservices    — Maintainer + Handler pair, Handler scales',
+            name: 'GCP Cloud Run, microservices    — Maintainer singleton + scaling Handler + Cloud SQL VSS DB',
             value: 'gcp-cloudrun-microservices',
             disabled: opts.isLocalnet ? '(unavailable: deployment is localnet)' : undefined,
         },
@@ -97,7 +99,7 @@ export async function pickScheme(opts: { isLocalnet: boolean }): Promise<Scheme 
 
 // ── Phase 2: form generation ─────────────────────────────────────────────────
 
-/** Inputs shared by all four template generators. */
+/** Inputs shared by all template generators. */
 export interface TemplateInputs {
     /** This node's identity (auto-generated). Shown read-only in the form. */
     identity: {
@@ -128,6 +130,17 @@ export interface SchemeDefaults {
     maintainerServiceName?:  string;
     handlerServiceName?:     string;
     handlerMaxInstances?:    number;
+    vpcNetwork?:             string;
+    vpcSubnet?:              string;
+    cloudSqlInstanceName?:   string;
+    cloudSqlDatabase?:       string;
+    cloudSqlUser?:           string;
+    cloudSqlPrivateRangeName?: string;
+    zone?:                   string;
+    instanceName?:           string;
+    machineType?:            string;
+    diskSizeGb?:             number;
+    network?:                string;
     port?:                   string;
     containerName?:          string;
     repoPath?:               string;
@@ -149,6 +162,17 @@ export interface ExistingValues {
     maintainerServiceName?:  string;
     handlerServiceName?:     string;
     handlerMaxInstances?:    number;
+    vpcNetwork?:             string;
+    vpcSubnet?:              string;
+    cloudSqlInstanceName?:   string;
+    cloudSqlDatabase?:       string;
+    cloudSqlUser?:           string;
+    cloudSqlPrivateRangeName?: string;
+    zone?:                   string;
+    instanceName?:           string;
+    machineType?:            string;
+    diskSizeGb?:             number;
+    network?:                string;
     port?:                   string;
     containerName?:          string;
     repoPath?:               string;
@@ -309,16 +333,84 @@ function runtimeLines(t: TemplateInputs, nodeMsgComment: string): string {
     ].join('\n');
 }
 
+function cloudRunMicroservicesRuntimeLines(t: TemplateInputs): string {
+    const e = t.existing ?? {};
+    const d = t.defaults;
+    return [
+        nullableLine(
+            'vssStoreUrl',
+            e.vssStoreUrl,
+            'postgres://ace:<generated-password>@<cloud-sql-private-ip>:5432/ace_vss',
+            [
+                'Optional override for the shared VSS DB.',
+                'Leave commented to let the CLI create/reuse Cloud SQL Postgres and fill this automatically.',
+            ],
+        ),
+        `nodeMsgListen    = "${e.nodeMsgListen ?? d.nodeMsgListen ?? ''}"      # endpoint-default metadata; network-node listens on --port. Maintainer service listener for node-to-node VSS messages. Default Cloud Run ingress port is 8080.`,
+    ].join('\n');
+}
+
 // ── Per-scheme templates ─────────────────────────────────────────────────────
 
 export function generateTemplate(scheme: Scheme, t: TemplateInputs): string {
     switch (scheme) {
+        case 'gcp-vm-monolith':        return generateGcpVmMonolith(t);
         case 'gcp-cloudrun-monolith':      return generateGcpMonolith(t);
         case 'gcp-cloudrun-microservices': return generateGcpMicroservices(t);
         case 'docker-monolith':            return generateDockerMonolith(t);
         case 'local-build-monolith':       return generateLocalBuildMonolith(t);
         case 'metadata-management-only':    return generateMetadataManagementOnly(t);
     }
+}
+
+function generateGcpVmMonolith(t: TemplateInputs): string {
+    const e = t.existing ?? {};
+    const d = t.defaults;
+    return `# ${CLI} node — scheme: gcp-vm-monolith
+#
+# Runs one ACE worker as a Docker container on a GCP Compute Engine VM.
+# The VM keeps VSS state in sqlite on a persistent disk mounted at /ace-vss.
+# Saving emits a gcloud compute provisioning script.
+#
+# Edit the values below, then save and quit your editor.
+${HEADER_READONLY_NOTE}
+#
+${readonlyIdentityBlock(t)}
+#
+# ── Editable fields ───────────────────────────────────────────────────────────
+
+${aliasLine(e.alias)}
+${stringLine('image', e.image ?? d.image ?? 'aptoslabs/ace-node:latest', `Docker image. List options with \`${CLI} image ls\`.`)}
+${stringLine('project', e.project ?? d.project ?? '', [
+    'GCP project ID.',
+    'Default comes from `gcloud config get-value project`.',
+    'List projects with `gcloud projects list`.',
+])}
+${stringLine('zone', e.zone ?? d.zone ?? 'us-central1-a', `Compute Engine zone. List zones with \`gcloud compute zones list\`.`)}
+${stringLine('instanceName', e.instanceName ?? d.instanceName ?? '', [
+    'Compute Engine VM name.',
+    'Use lowercase letters, digits, and hyphens.',
+    'Must start with a letter and be under 64 characters.',
+])}
+${stringLine('machineType', e.machineType ?? d.machineType ?? 'e2-standard-2', [
+    'Compute Engine machine type.',
+    'Use a small always-on shape for monolith; increase for heavier traffic.',
+])}
+${numberLine('diskSizeGb', e.diskSizeGb ?? d.diskSizeGb ?? 50, [
+    'Persistent disk size for /ace-vss in GB.',
+    'The generated script creates/reuses a non-auto-delete disk.',
+])}
+${stringLine('network', e.network ?? d.network ?? 'default', 'VPC network name for the VM and firewall rule.')}
+${stringLine('port', e.port ?? d.port ?? '19000', 'TCP port exposed by the VM and Docker container.')}
+${stringLine('containerName', e.containerName ?? d.containerName ?? 'ace-node', [
+    '`docker run --name` value on the VM.',
+    'Usually only needs to be unique on that VM.',
+])}
+${keyLines(t)}
+${runtimeLines(t, 'VM monolith uses this same public port for worker and node-message requests.')}
+
+${renderChainRpcBlock(e.chainRpc)}
+`;
 }
 
 function generateGcpMonolith(t: TemplateInputs): string {
@@ -359,11 +451,10 @@ function generateGcpMicroservices(t: TemplateInputs): string {
     const d = t.defaults;
     return `# ${CLI} node — scheme: gcp-cloudrun-microservices
 #
-# Deploys a Maintainer + Handler pair. The Maintainer is internal-only and
-# pinned at min=max=1 (it owns the on-chain DKG/DKR coordination, which has
-# to be a singleton). The Handler is public and scales 1..handlerMaxInstances.
-# The Handler reaches the Maintainer over the project's VPC; no IAM tokens
-# are involved. Saving emits two \`gcloud run deploy\` commands.
+# Deploys a Maintainer + Handler pair. The Maintainer is pinned at min=max=1
+# (it owns the on-chain DKG/DKR coordination and node-message endpoint, which
+# has to be a singleton). The Handler is public and scales 1..handlerMaxInstances.
+# Saving emits a provisioning script for Cloud SQL + Cloud Run.
 #
 # Edit the values below, then save and quit your editor.
 ${HEADER_READONLY_NOTE}
@@ -381,7 +472,7 @@ ${stringLine('project', e.project ?? d.project ?? '', [
 ])}
 ${stringLine('region', e.region ?? d.region ?? 'us-central1', `Cloud Run region. List regions with \`gcloud run regions list\`.`)}
 ${stringLine('maintainerServiceName', e.maintainerServiceName ?? d.maintainerServiceName ?? '', [
-    'Internal-only Cloud Run service, pinned at min=max=1.',
+    'Cloud Run service pinned at min=max=1; this is the registered node-message endpoint.',
     'Use lowercase letters, digits, and hyphens.',
     'Must start with a letter and be under 64 characters.',
 ])}
@@ -394,8 +485,26 @@ ${numberLine('handlerMaxInstances', e.handlerMaxInstances ?? d.handlerMaxInstanc
     'Higher means more throughput and more cost.',
     'Set to 1 to effectively disable scaling.',
 ])}
+${stringLine('vpcNetwork', e.vpcNetwork ?? d.vpcNetwork ?? 'default', [
+    'VPC network for Cloud Run Direct VPC egress and Cloud SQL private IP.',
+    'The generated script creates/reuses private service access on this network.',
+])}
+${stringLine('vpcSubnet', e.vpcSubnet ?? d.vpcSubnet ?? 'default', [
+    'VPC subnet for Cloud Run Direct VPC egress.',
+    'Must belong to vpcNetwork in the selected region.',
+])}
+${stringLine('cloudSqlInstanceName', e.cloudSqlInstanceName ?? d.cloudSqlInstanceName ?? '', [
+    'Cloud SQL Postgres instance for the shared VSS DB.',
+    'The generated script creates it if missing and reuses it otherwise.',
+])}
+${stringLine('cloudSqlDatabase', e.cloudSqlDatabase ?? d.cloudSqlDatabase ?? 'ace_vss', 'Postgres database name for VSS state.')}
+${stringLine('cloudSqlUser', e.cloudSqlUser ?? d.cloudSqlUser ?? 'ace', 'Postgres user for the ACE worker services.')}
+${stringLine('cloudSqlPrivateRangeName', e.cloudSqlPrivateRangeName ?? d.cloudSqlPrivateRangeName ?? '', [
+    'Reserved VPC peering range used for Cloud SQL private IP.',
+    'Only created if no private service access connection already exists.',
+])}
 ${keyLines(t)}
-${runtimeLines(t, 'Maintainer service listener for node-to-node VSS messages. Default Cloud Run ingress port is 8080.')}
+${cloudRunMicroservicesRuntimeLines(t)}
 
 ${renderChainRpcBlock(e.chainRpc, 'Applies to the Handler (the Maintainer doesn\'t make per-request chain calls).')}
 `;
@@ -497,6 +606,17 @@ export interface ParsedNodeForm {
     maintainerServiceName?:  string;
     handlerServiceName?:     string;
     handlerMaxInstances?:    number;
+    vpcNetwork?:             string;
+    vpcSubnet?:              string;
+    cloudSqlInstanceName?:   string;
+    cloudSqlDatabase?:       string;
+    cloudSqlUser?:           string;
+    cloudSqlPrivateRangeName?: string;
+    zone?:                   string;
+    instanceName?:           string;
+    machineType?:            string;
+    diskSizeGb?:             number;
+    network?:                string;
     port?:                   string;
     containerName?:          string;
     repoPath?:               string;
@@ -508,7 +628,7 @@ export interface ParsedNodeForm {
 
 const FORBIDDEN_TOP = new Set([
     'accountAddr', 'pkeEk', 'pkeDk', 'sigPk', 'sigSk', 'accountSk', 'aceAddr', 'rpcUrl', 'nodeRpcUrl',
-    'platform', 'mode', 'gcp', 'docker', 'local',
+    'platform', 'mode', 'gcp', 'gce', 'docker', 'local',
 ]);
 
 interface SchemaField {
@@ -517,6 +637,22 @@ interface SchemaField {
 }
 
 const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
+    'gcp-vm-monolith': {
+        alias:         { required: false, type: 'string' },
+        image:         { required: true,  type: 'string' },
+        project:       { required: true,  type: 'string' },
+        zone:          { required: true,  type: 'string' },
+        instanceName:  { required: true,  type: 'string' },
+        machineType:   { required: true,  type: 'string' },
+        diskSizeGb:    { required: true,  type: 'number' },
+        network:       { required: true,  type: 'string' },
+        port:          { required: true,  type: 'string' },
+        containerName: { required: true,  type: 'string' },
+        rpcApiKey:     { required: false, type: 'string' },
+        gasStationKey: { required: false, type: 'string' },
+        vssStoreUrl:   { required: true,  type: 'string' },
+        nodeMsgListen: { required: true,  type: 'string' },
+    },
     'gcp-cloudrun-monolith': {
         alias:         { required: false, type: 'string' },
         image:         { required: true,  type: 'string' },
@@ -536,9 +672,15 @@ const SCHEMA: Record<Scheme, Record<string, SchemaField>> = {
         maintainerServiceName: { required: true,  type: 'string' },
         handlerServiceName:    { required: true,  type: 'string' },
         handlerMaxInstances:   { required: true,  type: 'number' },
+        vpcNetwork:            { required: true,  type: 'string' },
+        vpcSubnet:             { required: true,  type: 'string' },
+        cloudSqlInstanceName:  { required: true,  type: 'string' },
+        cloudSqlDatabase:      { required: true,  type: 'string' },
+        cloudSqlUser:          { required: true,  type: 'string' },
+        cloudSqlPrivateRangeName: { required: true, type: 'string' },
         rpcApiKey:             { required: false, type: 'string' },
         gasStationKey:         { required: false, type: 'string' },
-        vssStoreUrl:           { required: true,  type: 'string' },
+        vssStoreUrl:           { required: false, type: 'string' },
         nodeMsgListen:         { required: true,  type: 'string' },
     },
     'docker-monolith': {
@@ -676,6 +818,20 @@ export function defaultsFor(
                 vssStoreUrl: '',
                 nodeMsgListen: '0.0.0.0:8081',
             };
+        case 'gcp-vm-monolith':
+            return {
+                image: fallbackImage,
+                project: extras.defaultGcpProject,
+                zone: 'us-central1-a',
+                instanceName: `${prefix}-${SUFFIX_MONOLITH}`,
+                machineType: 'e2-standard-2',
+                diskSizeGb: 50,
+                network: 'default',
+                port: extras.defaultPort ?? '19000',
+                containerName: `${prefix}-${SUFFIX_MONOLITH}`,
+                vssStoreUrl: 'sqlite:///ace-vss/vss.db',
+                nodeMsgListen: `0.0.0.0:${Number(extras.defaultPort ?? '19000')}`,
+            };
         case 'gcp-cloudrun-microservices':
             return {
                 image: fallbackImage,
@@ -684,7 +840,12 @@ export function defaultsFor(
                 maintainerServiceName: `${prefix}-${SUFFIX_MAINTAINER}`,
                 handlerServiceName:    `${prefix}-${SUFFIX_HANDLER}`,
                 handlerMaxInstances:   10,
-                vssStoreUrl: '',
+                vpcNetwork:            'default',
+                vpcSubnet:             'default',
+                cloudSqlInstanceName:  `${prefix}-vss`,
+                cloudSqlDatabase:      'ace_vss',
+                cloudSqlUser:          'ace',
+                cloudSqlPrivateRangeName: `${prefix}-sql-range`,
                 nodeMsgListen: '0.0.0.0:8080',
             };
         case 'docker-monolith':
@@ -717,4 +878,4 @@ export function cloudRunUrl(serviceName: string, projectNumber: string, region: 
 }
 
 // Re-exports for downstream consumers.
-export type { GcpConfig, DockerConfig, LocalConfig, ChainRpcOverrides };
+export type { GcpConfig, GceConfig, DockerConfig, LocalConfig, ChainRpcOverrides };

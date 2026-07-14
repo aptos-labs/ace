@@ -36,6 +36,7 @@ export const ADMIN_PLACEHOLDER_FOR_MOVE_TOML = '0xcafe';
 /** Canonical dep order. `vss → dkg → dkr → epoch-change → network` must be preserved. */
 export const ACE_CONTRACT_PACKAGES: readonly string[] = [
     'pke',
+    'sig',
     'worker_config',
     'group',
     'secret-usage',

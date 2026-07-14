@@ -6,7 +6,7 @@
  *
  * Scenario:
  *   Committee: [A, B, C]  threshold=2  resharing_interval_secs=120 (2 min)
- *   Secrets: 1 (threshold VRF/G2)
+ *   Secrets: 1 (BFIBE short-signature AEAD + threshold VRF/G2)
  *
  * Flow:
  *   1. Start localnet.
@@ -17,7 +17,7 @@
  *   6. Spawn one network-node per worker; each writes to its own tmp log file.
  *      Log paths are printed so you can `tail -f` them.
  *   7. Admin calls start_initial_epoch([A,B,C], threshold=2, resharing_interval_secs=120).
- *   8. Admin proposes new_secret(0); A,B approve.
+ *   8. Admin proposes one new_secret usage mask for IBE + VRF; A,B approve.
  *   9. Wait for epoch to advance to 1 (DKG complete).
  *  10. Print heartbeat (epoch / secrets / epoch_change) every 30 s — run until Ctrl+C.
  *
@@ -44,7 +44,7 @@ import {
     getNetworkState,
     ed25519PrivateKeyHex,
     proposeAndApprove,
-    serializeNewSecretProposal,
+    serializeNewSecretUsageProposal,
 } from './common/helpers';
 import { buildRustWorkspace } from './common/network-clients';
 
@@ -149,10 +149,18 @@ async function main() {
     })).unwrapOrThrow('start_initial_epoch failed').asSuccessOrThrow();
 
     // ── Propose new_secret ───────────────────────────────────────────────────
-    log('Admin: propose new_secret(primitive=1); A,B approve...');
+    const ibeAndVrfUsage =
+        ace.network.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD |
+        ace.network.USAGE_BLS12381_THRESHOLD_VRF;
+    log('Admin: propose new_secret(primitives=[1,2]); A,B approve...');
     {
         const approvers = workerAccounts.slice(0, threshold);
-        await proposeAndApprove(approvers[0]!, approvers, aceContract, serializeNewSecretProposal(1));
+        await proposeAndApprove(
+            approvers[0]!,
+            approvers,
+            aceContract,
+            serializeNewSecretUsageProposal(ibeAndVrfUsage, 'BFIBE shortsig + VRF'),
+        );
     }
 
     // ── Wait for DKG epoch change to complete ────────────────────────────────
@@ -171,13 +179,15 @@ async function main() {
         throw 'DKG did not complete within 5 minutes.';
     }
     const keypairId = networkState.secrets[0]!.keypairId;
-    log(`DKG complete. keypairId=${keypairId.toStringLong()}`);
+    log(`DKG complete. IBE/VRF keypairId=${keypairId.toStringLong()}`);
 
     // ── Write config for example scripts ────────────────────────────────────
     const CONFIG_PATH = '/tmp/ace-localnet-config.json';
     writeFileSync(CONFIG_PATH, JSON.stringify({
         apiEndpoint: LOCALNET_URL,
         contractAddr: aceContract,
+        ibeKeypairId: keypairId.toStringLong(),
+        vrfKeypairId: keypairId.toStringLong(),
         keypairId: keypairId.toStringLong(),
     }, null, 2));
 
@@ -186,9 +196,9 @@ async function main() {
     log('  ACE local network is READY');
     log(`  Config: ${CONFIG_PATH}`);
     log('');
-    log('  Try the VRF scenario from another shell:');
-    log('    cd scenarios');
-    log('    pnpm test-threshold-vrf-derive-flow');
+    log('  Try an example from another shell, e.g.:');
+    log('    cd examples/bearer-capability-aptos');
+    log('    pnpm 1-setup:localnet');
     log('══════════════════════════════════════════════');
     log('');
 

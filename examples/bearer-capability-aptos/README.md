@@ -1,21 +1,21 @@
 # Bearer Capability Access — Aptos
 
 A step-by-step demo of a **bearer signing capability** on top of ACE. The data owner uploads an
-encrypted blob, directly generates a per-blob BLS keypair, and hands the
+encrypted blob, derives a per-blob BLS keypair through ACE threshold VRF, and hands the
 *private* half to a reader out-of-band. Anyone holding that private half can
 decrypt; no on-chain identity is required from the reader.
 
 You will:
 
 1. Deploy a small Move contract (`capability_access`) that stores one BLS12-381
-   pubkey per blob and exposes the ACE custom-flow hook.
-2. Encrypt a blob, securely generate `(accessPrivateKey, accessPublicKey)`,
-   and register `accessPublicKey` on-chain.
+   pubkey per blob and exposes both the ACE VRF hook and custom-flow hook.
+2. Encrypt a blob, derive `(accessPrivateKey, accessPublicKey)` via ACE
+   threshold VRF, and register `accessPublicKey` on-chain.
 3. Hand the resulting capability file to a reader and watch them
    decrypt with no Aptos account of their own.
 4. Rotate the on-chain pubkey and watch the old capability stop working.
 
-The demo runs against Aptos testnet by default. Set `ACE_CONTRACT` and `IBE_KEYPAIR_ID` for the ACE deployment; optionally override `ACE_API_ENDPOINT`.
+The demo runs against Aptos testnet by default using the SDK's `knownDeployments.preview20260714` deployment. To target a different ACE deployment, set `ACE_CONTRACT`, `IBE_KEYPAIR_ID`, and `VRF_KEYPAIR_ID`; optionally override `ACE_API_ENDPOINT`.
 
 ## How it works
 
@@ -23,7 +23,8 @@ The owner-side flow:
 
 ```text
 encrypt(plaintext, ibeKeypairId) ──→ ciphertext        (ACE custom flow t-IBE)
-secure RNG ──→ (accessPrivateKey, accessPublicKey)      (BLS12-381)
+VRF(contract_id, blob_id, vrfKeypairId) ──→ accessPrivateKey
+accessPrivateKey * G1 ──→ accessPublicKey               (BLS12-381)
 register(blob_suffix, accessPublicKey)   (on-chain)
 capability.json = { blobIdHex, ciphertextHex, accessPrivateKeyHex }  (bearer capability)
 ```
@@ -41,9 +42,10 @@ CustomDecryptionSession.decrypt({ ciphertext, payload })
    └─→ plaintext
 ```
 
-Three properties:
+Four properties:
 
-- **Direct key generation.** The access keypair comes from a secure RNG and is stored or distributed like any other bearer credential.
+- **Owner-only derivation.** The VRF request is signed by Alice's Aptos account, and `on_ace_vrf_request` only approves labels in Alice's `@<alice>/...` namespace.
+- **Deterministic bearer key material.** The access keypair is derived from the ACE VRF keypair, the app contract id, and the blob label, then stored or distributed like any other bearer credential.
 - **Bearer semantics.** The reader needs no on-chain identity. Whoever
   holds the key can sign and decrypt.
 - **Revocation by overwrite.** Re-registering a new `accessPublicKey` under
@@ -51,7 +53,7 @@ Three properties:
 
 ## Cast
 
-- **Alice** — data owner. Deploys the contract, encrypts the blob, generates the
+- **Alice** — data owner. Deploys the contract, encrypts the blob, derives the
   access keypair, registers the public half, and emits the capability.
 - **Bob** — reader. Has no on-chain identity. Reads `data/capability.json` and runs
   one script to decrypt.
@@ -65,7 +67,7 @@ Three properties:
 
 - **Node.js ≥ 18** and **pnpm**
 - **Aptos CLI** — `cargo install aptos` or download from [aptos.dev](https://aptos.dev/tools/aptos-cli/)
-- **For testnet:** no ACE localnet is needed. Set `IBE_KEYPAIR_ID`; to target a different ACE deployment, also set `ACE_CONTRACT` and optionally `ACE_API_ENDPOINT`.
+- **For testnet:** no ACE localnet is needed. The default target is `knownDeployments.preview20260714`. To target a different ACE deployment, set `ACE_CONTRACT`, `IBE_KEYPAIR_ID`, and `VRF_KEYPAIR_ID`; optionally set `ACE_API_ENDPOINT` and `ACE_API_KEY`.
 
 - **For localnet:** set `ACE_NETWORK=localnet` or use the `*:localnet` scripts.
   From the repo root:
@@ -76,8 +78,8 @@ Three properties:
   ```
 
   Wait until the terminal prints `ACE local network is READY`. Leave it running
-  in another terminal. The script writes `/tmp/ace-localnet-config.json`, which
-  the demo steps below read.
+  in another terminal. The script writes `/tmp/ace-localnet-config.json` with
+  both `ibeKeypairId` and `vrfKeypairId`, which the demo steps below read.
 
 In a separate terminal:
 
@@ -118,7 +120,10 @@ Three things happen:
 
 1. **Encrypt** `"Lyrics for song 1: hello sunshine!"` under ACE custom flow
    with `label = "@<alice_canonical>/song-1.mp3"`.
-2. **Generate** `(accessPrivateKey, accessPublicKey)` directly from a cryptographically secure RNG.
+2. **Derive** `(accessPrivateKey, accessPublicKey)` through ACE threshold VRF
+   using the app contract id and that same label. Alice signs the request, and
+   `capability_access::on_ace_vrf_request` rejects requests outside Alice's
+   `@<alice>/...` namespace.
 3. **Register** the public half on-chain at
    `<alice>::capability_access::register("song-1.mp3", accessPublicKey)`.
 4. **Emit** `data/capability.json` — `{ blobSuffix, blobIdHex, ciphertextHex,
@@ -155,9 +160,10 @@ Bob has no Aptos account, no on-chain identity, no balance — possession of
 pnpm 5-rotate
 ```
 
-Alice picks a fresh scalar and submits
-`register("song-1.mp3", newAccessPublicKey)`. The contract overwrites the
-old entry. The `accessPrivateKey` Bob holds is now stale.
+Alice derives a replacement key from VRF label
+`@<alice_canonical>/song-1.mp3#rotation-1` and submits
+`register("song-1.mp3", newAccessPublicKey)`. The contract overwrites the old
+entry. The `accessPrivateKey` Bob holds is now stale.
 
 ### Step 6 — Bob's old capability no longer works
 
@@ -192,7 +198,7 @@ examples/bearer-capability-aptos/
 ├── contract/
 │   ├── Move.toml                    # admin = "0xcafe" placeholder
 │   └── sources/
-│       └── capability_access.move    # Registry + register + custom-flow hook
+│       └── capability_access.move    # Registry + register + VRF/custom hooks
 ├── package.json                     # pnpm 1-setup, 2-deploy-contract, …
 ├── tsconfig.json
 └── scripts/
@@ -213,14 +219,16 @@ State flows via JSON files under `data/` (created on first run, gitignored):
 
 ## Where to look next
 
-- **Move contract**: `contract/sources/capability_access.move`. Six unit tests
-  pin the BLS sig binding, DST domain separation, BCS-encoded `SignableRequest`
-  layout, origin check, and rotation behavior. Run them with
+- **Move contract**: `contract/sources/capability_access.move`. Unit tests
+  pin the VRF owner-label policy, BLS sig binding, DST domain separation,
+  BCS-encoded `SignableRequest` layout, origin check, and rotation behavior.
+  Run them with
   `cd contract && aptos move test --skip-fetch-latest-git-deps`.
 - **Bearer-capability crypto**: `scripts/common.ts`. Mirrors the Move
   side byte-for-byte: `SignableRequest`/`ReaderProof` classes with
   `serialize` + `toBytes`, the BLS hash-to-curve DST
-  (`BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`) and secure BLS key generation.
+  (`BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`) and VRF-output-to-BLS-key
+  derivation.
 - **Custom-flow integration**: `capability_access::on_ace_decryption_request_custom_flow`
   is the Move hook ACE workers call before releasing a share. It mirrors what
   the basic flow's `on_ace_decryption_request` does, but with a different

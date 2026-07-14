@@ -11,7 +11,7 @@ minimal pay-to-download marketplace. You will:
 5. Confirm the buyer **still cannot** decrypt the unpaid item — domain-binding
    isolates each ciphertext to its specific item name.
 
-Point the tutorial at an ACE testnet deployment with `ACE_CONTRACT` and `IBE_KEYPAIR_ID`; preview addresses are deliberately not hard-coded as permanent configuration. You only need to visit the faucet once: a single click funds **Alice** with ~10 APT, and she will send Bob a small allowance on-chain when he shows up in step 4.
+By default, the tutorial uses the SDK's `knownDeployments.preview20260714` testnet deployment. You only need to visit the faucet once: a single click funds **Alice** with ~10 APT, and she will send Bob a small allowance on-chain when he shows up in step 4.
 
 ## Cast
 
@@ -34,9 +34,16 @@ Install dependencies from the repo root:
 
 ```bash
 pnpm install
+cd examples/tutorial-aptos
+```
+
+Optional overrides:
+
+```bash
 export ACE_CONTRACT=0x<ace-contract-address>
 export IBE_KEYPAIR_ID=0x<ace-t-ibe-keypair-id>
-cd examples/tutorial-aptos
+export ACE_API_ENDPOINT=https://api.testnet.aptoslabs.com/v1
+export ACE_API_KEY=aptoslabs_...
 ```
 
 ## Walkthrough

@@ -8,11 +8,13 @@ import { join } from 'path';
 const CONFIG_DIR  = join(homedir(), '.ace');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
-export type Platform = 'gcp' | 'docker' | 'local';
+export type Platform = 'gcp' | 'gcp-vm' | 'docker' | 'local';
 
 /**
  * Deployment mode:
- *   * `monolith`      — one Cloud Run service does everything.
+ *   * `monolith`      — one process does everything. On GCP this is best run
+ *                       on a VM with a persistent disk; Cloud Run monolith is
+ *                       retained only for backwards compatibility.
  *   * `microservices` — Maintainer (internal, min=max=1) + Handler (public,
  *                       scales) pair, talking to each other via the Handler's
  *                       service account + Maintainer's `/secrets`.
@@ -47,6 +49,34 @@ export interface GcpConfig {
     handlerServiceName?: string;
     /** Microservices mode — Cloud Run autoscaling cap on the Handler. */
     handlerMaxInstances?: number;
+    /** Direct VPC egress network used by Cloud Run microservices. */
+    vpcNetwork?: string;
+    /** Direct VPC egress subnet used by Cloud Run microservices. */
+    vpcSubnet?: string;
+    /** Cloud SQL resources provisioned for the shared offchain VSS store. */
+    cloudSql?: GcpCloudSqlConfig;
+}
+
+export interface GcpCloudSqlConfig {
+    instanceName: string;
+    databaseName: string;
+    user: string;
+    privateRangeName: string;
+}
+
+export interface GceConfig {
+    project: string;
+    zone: string;
+    instanceName: string;
+    machineType: string;
+    diskSizeGb: number;
+    port: string;
+    containerName: string;
+    network?: string;
+    staticIpName?: string;
+    firewallRuleName?: string;
+    diskName?: string;
+    networkTag?: string;
 }
 
 export interface DockerConfig {
@@ -112,6 +142,7 @@ export interface TrackedNode {
     /** Deployment mode. Missing = `monolith` for backwards compat with older configs. */
     mode?:          Mode;
     gcp?:           GcpConfig;
+    gce?:           GceConfig;
     docker?:        DockerConfig;
     local?:         LocalConfig;
     gasStationKey?: string;
@@ -225,6 +256,7 @@ export function loadConfig(): Config {
                     image:        n.image,
                     platform:     n.platform,
                     gcp:          n.gcp,
+                    gce:          n.gce,
                     docker:       n.docker,
                     gasStationKey: n.gasStationKey,
                 };

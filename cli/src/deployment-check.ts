@@ -18,6 +18,10 @@ import {
 
 const execAsync = promisify(exec);
 
+function shellQuote(v: string): string {
+    return `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
 export interface DiffRow {
     field: string;
     profile: string;
@@ -59,6 +63,19 @@ interface ParsedArgs {
     cloudRunHttp2?: boolean;
     /** Cloud Run only. Env var name -> Secret Manager secret ref, e.g. `secret-name:latest`. */
     secretEnv: Record<string, string>;
+}
+
+interface RuntimeConfigJson {
+    accountSk?: string;
+    pkeDk?: string;
+    sigSk?: string;
+    vssStoreUrl?: string;
+    deploymentApiKey?: string;
+    deploymentGasKey?: string;
+    aptosMainnetApiKey?: string;
+    aptosTestnetApiKey?: string;
+    aptosLocalnetApiKey?: string;
+    aptosShelbyPrivateBetaApiKey?: string;
 }
 
 // CLI flag → TrackedNode.chainRpc key. Matches `chainRpcArgs()` in onboarding.ts
@@ -110,12 +127,35 @@ function parseNodeArgs(args: string[]): ParsedArgs {
     return p;
 }
 
-async function fetchDockerDeployment(containerName: string): Promise<ParsedArgs> {
-    let argsOut: string, imgOut: string;
+function applyRuntimeEnv(parsed: ParsedArgs, envs: string[]): void {
+    const configRaw = envs.find(e => e.startsWith(`${GCP_CONFIG_ENV}=`))?.slice(GCP_CONFIG_ENV.length + 1);
+    if (!configRaw) return;
+    let cfg: RuntimeConfigJson;
     try {
-        ([{ stdout: argsOut }, { stdout: imgOut }] = await Promise.all([
+        cfg = JSON.parse(configRaw) as RuntimeConfigJson;
+    } catch {
+        return;
+    }
+    parsed.accountSk = parsed.accountSk ?? cfg.accountSk;
+    parsed.pkeDk = parsed.pkeDk ?? cfg.pkeDk;
+    parsed.sigSk = parsed.sigSk ?? cfg.sigSk;
+    parsed.vssStoreUrl = parsed.vssStoreUrl ?? cfg.vssStoreUrl;
+    parsed.apikey = parsed.apikey ?? cfg.deploymentApiKey;
+    parsed.gaskey = parsed.gaskey ?? cfg.deploymentGasKey;
+    parsed.chainRpc.aptosMainnetApikey = parsed.chainRpc.aptosMainnetApikey ?? cfg.aptosMainnetApiKey;
+    parsed.chainRpc.aptosTestnetApikey = parsed.chainRpc.aptosTestnetApikey ?? cfg.aptosTestnetApiKey;
+    parsed.chainRpc.aptosLocalnetApikey = parsed.chainRpc.aptosLocalnetApikey ?? cfg.aptosLocalnetApiKey;
+    parsed.chainRpc.aptosShelbyPrivateBetaApikey =
+        parsed.chainRpc.aptosShelbyPrivateBetaApikey ?? cfg.aptosShelbyPrivateBetaApiKey;
+}
+
+async function fetchDockerDeployment(containerName: string): Promise<ParsedArgs> {
+    let argsOut: string, imgOut: string, envOut: string;
+    try {
+        ([{ stdout: argsOut }, { stdout: imgOut }, { stdout: envOut }] = await Promise.all([
             execAsync(`docker inspect ${containerName} --format '{{json .Args}}'`),
             execAsync(`docker inspect ${containerName} --format '{{.Config.Image}}'`),
+            execAsync(`docker inspect ${containerName} --format '{{json .Config.Env}}'`),
         ]));
     } catch (e) {
         if (String(e).toLowerCase().includes('no such object')) {
@@ -124,6 +164,35 @@ async function fetchDockerDeployment(containerName: string): Promise<ParsedArgs>
         throw e;
     }
     const parsed = parseNodeArgs(JSON.parse(argsOut.trim()) as string[]);
+    applyRuntimeEnv(parsed, JSON.parse(envOut.trim()) as string[]);
+    parsed.image = imgOut.trim().replace(/^docker\.io\//, '');
+    return parsed;
+}
+
+async function fetchGceDeployment(node: TrackedNode): Promise<ParsedArgs> {
+    const gce = node.gce!;
+    const remote = (cmd: string) => execAsync([
+        `gcloud compute ssh ${shellQuote(gce.instanceName)}`,
+        `--project ${shellQuote(gce.project)}`,
+        `--zone ${shellQuote(gce.zone)}`,
+        `--quiet`,
+        `--command ${shellQuote(cmd)}`,
+    ].join(' '));
+    let argsOut: string, imgOut: string, envOut: string;
+    try {
+        ([{ stdout: argsOut }, { stdout: imgOut }, { stdout: envOut }] = await Promise.all([
+            remote(`docker inspect ${shellQuote(gce.containerName)} --format '{{json .Args}}'`),
+            remote(`docker inspect ${shellQuote(gce.containerName)} --format '{{.Config.Image}}'`),
+            remote(`docker inspect ${shellQuote(gce.containerName)} --format '{{json .Config.Env}}'`),
+        ]));
+    } catch (e) {
+        if (String(e).toLowerCase().includes('no such object')) {
+            throw new Error(`Container "${gce.containerName}" not running on VM "${gce.instanceName}"`);
+        }
+        throw e;
+    }
+    const parsed = parseNodeArgs(JSON.parse(argsOut.trim()) as string[]);
+    applyRuntimeEnv(parsed, JSON.parse(envOut.trim()) as string[]);
     parsed.image = imgOut.trim().replace(/^docker\.io\//, '');
     return parsed;
 }
@@ -188,6 +257,10 @@ export async function fetchDeployment(node: TrackedNode): Promise<FetchedDeploym
                 return { kind: 'microservices', maintainer, handler };
             }
             return new Error('No Cloud Run service name on this profile');
+        }
+        if (node.platform === 'gcp-vm' && node.gce) {
+            const args = await fetchGceDeployment(node);
+            return { kind: 'mono', args };
         }
         if (node.platform === 'local')
             return null; // local processes aren't introspectable; skip diff
@@ -307,6 +380,8 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     addSecretRow(add, 'pke-dk', node.pkeDk, running.pkeDk, running, gcpSecretPrefix, GCP_SECRET_ENV.pkeDk);
     addSecretRow(add, 'sig-sk', node.sigSk, running.sigSk, running, gcpSecretPrefix, GCP_SECRET_ENV.sigSk);
     addSecretRow(add, 'vss-store-url', node.vssStoreUrl, running.vssStoreUrl, running, gcpSecretPrefix, GCP_SECRET_ENV.vssStoreUrl);
+    const expectedPort = node.gce?.port ?? node.docker?.port ?? node.local?.port;
+    if (expectedPort || running.port) add('port', expectedPort, running.port);
     if (node.image     || running.image)         add('image',     node.image,         running.image);
 
     addChainRpcRows(add, node.chainRpc ?? {}, running, gcpSecretPrefix);
@@ -314,8 +389,8 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
     if (node.platform === 'gcp') {
         const expectedVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
         addVpcRows(add, running, {
-            network: expectedVpc ? DEFAULT_VPC_NETWORK : undefined,
-            subnet:  expectedVpc ? DEFAULT_VPC_SUBNET  : undefined,
+            network: expectedVpc ? node.gcp?.vpcNetwork ?? DEFAULT_VPC_NETWORK : undefined,
+            subnet:  expectedVpc ? node.gcp?.vpcSubnet  ?? DEFAULT_VPC_SUBNET  : undefined,
             egress:  expectedVpc ? DEFAULT_VPC_EGRESS  : undefined,
         });
     }
@@ -327,8 +402,8 @@ function computeDiffMono(node: TrackedNode, running: ParsedArgs): DiffRow[] {
  *   - Maintainer carries the chain/admin secrets and node-message/VSS runtime config.
  *   - Handler carries pke-dk and the same VSS store config so requests can read shares directly.
  *   - Both share the image; we diff both copies so drift on either side surfaces.
- *   - VPC: maintainer follows the same chainRpc rule as monolith; handler is hard-wired
- *     to network=default, subnet=default, egress=all-traffic (see gcpDeployCmdMicroservices).
+ *   - VPC: maintainer needs VPC for private chain RPCs or CLI-managed Cloud SQL;
+ *     handler uses VPC for the shared Cloud SQL private IP path.
  */
 function computeDiffMicroservices(
     node: TrackedNode, maintainer: ParsedArgs, handler: ParsedArgs,
@@ -354,15 +429,17 @@ function computeDiffMicroservices(
     if (node.image || handler.image)                addH('image',     node.image,         handler.image);
     addChainRpcRows(addH, node.chainRpc ?? {}, handler, gcpSecretPrefix);
 
-    const expectedMaintVpc = rpcUrlsNeedVpcEgress(node.chainRpc);
+    const vpcNetwork = node.gcp?.vpcNetwork ?? DEFAULT_VPC_NETWORK;
+    const vpcSubnet = node.gcp?.vpcSubnet ?? DEFAULT_VPC_SUBNET;
+    const expectedMaintVpc = !!node.gcp?.cloudSql || rpcUrlsNeedVpcEgress(node.chainRpc);
     addVpcRows(addM, maintainer, {
-        network: expectedMaintVpc ? DEFAULT_VPC_NETWORK : undefined,
-        subnet:  expectedMaintVpc ? DEFAULT_VPC_SUBNET  : undefined,
+        network: expectedMaintVpc ? vpcNetwork : undefined,
+        subnet:  expectedMaintVpc ? vpcSubnet  : undefined,
         egress:  expectedMaintVpc ? DEFAULT_VPC_EGRESS  : undefined,
     });
     addVpcRows(addH, handler, {
-        network: DEFAULT_VPC_NETWORK,
-        subnet:  DEFAULT_VPC_SUBNET,
+        network: vpcNetwork,
+        subnet:  vpcSubnet,
         egress:  'all-traffic',
     });
     return rows;

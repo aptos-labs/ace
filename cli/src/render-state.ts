@@ -42,6 +42,11 @@ export function deployLabel(node: TrackedNode): string {
         }
         return `GCP Cloud Run (${node.gcp?.serviceName ?? '?'})`;
     }
+    if (node.platform === 'gcp-vm') {
+        const vm = node.gce?.instanceName ?? '?';
+        const zone = node.gce?.zone ?? '?';
+        return `GCP VM monolith (${vm}, ${zone})`;
+    }
     if (node.platform === 'docker') return `Docker (${node.docker?.containerName ?? '?'})`;
     return 'local build';
 }
@@ -244,6 +249,9 @@ export function renderNodeStatus(
     lines.push(row('contract',      node.aceAddr));
     lines.push(row('RPC URL',       node.rpcUrl));
     lines.push(row('VSS store',     node.vssStoreUrl ?? `${D}(not set)${R}`));
+    if (node.gcp?.cloudSql) {
+        lines.push(row('Cloud SQL', `${node.gcp.cloudSql.instanceName}/${node.gcp.cloudSql.databaseName}`));
+    }
     lines.push(row('node-msg bind', node.nodeMsgListen ?? `${D}(not set)${R}`));
     lines.push(row('API key',       secret(node.rpcApiKey)));
     lines.push(row('gas key',       secret(node.gasStationKey)));

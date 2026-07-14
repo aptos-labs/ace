@@ -17,8 +17,9 @@ import { loadConfig, saveConfig, nodeMode, type TrackedNode } from '../config.js
 import { buildFromEditor } from '../editor.js';
 import { resolveProfile } from '../resolve-profile.js';
 import {
-    gcpDeployCmd, gcpDeployCmdMicroservices, dockerRunCmd, localRunArgs,
+    gcpDeployCmd, gcpDeployCmdMicroservices, gceDeployCmd, dockerRunCmd, localRunArgs,
     writeLogrotateConf, runLogrotate, rpcUrlsNeedVpcEgress,
+    gceResourceNames,
 } from '../onboarding.js';
 import { spawnLocalNode, killLocalNode, isLocalNodeAlive } from '../local-process.js';
 import { fetchDeployment, computeDiff } from '../deployment-check.js';
@@ -58,8 +59,19 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             maintainerServiceName:  node.gcp?.maintainerServiceName,
             handlerServiceName:     node.gcp?.handlerServiceName,
             handlerMaxInstances:    node.gcp?.handlerMaxInstances,
-            port:                   node.docker?.port ?? node.local?.port,
-            containerName:          node.docker?.containerName,
+            vpcNetwork:             node.gcp?.vpcNetwork,
+            vpcSubnet:              node.gcp?.vpcSubnet,
+            cloudSqlInstanceName:   node.gcp?.cloudSql?.instanceName,
+            cloudSqlDatabase:       node.gcp?.cloudSql?.databaseName,
+            cloudSqlUser:           node.gcp?.cloudSql?.user,
+            cloudSqlPrivateRangeName: node.gcp?.cloudSql?.privateRangeName,
+            zone:                   node.gce?.zone,
+            instanceName:           node.gce?.instanceName,
+            machineType:            node.gce?.machineType,
+            diskSizeGb:             node.gce?.diskSizeGb,
+            network:                node.gce?.network,
+            port:                   node.gce?.port ?? node.docker?.port ?? node.local?.port,
+            containerName:          node.gce?.containerName ?? node.docker?.containerName,
             repoPath:               node.local?.repoPath,
             logMaxMb:               node.local?.logMaxMb,
             endpoint:               node.endpoint,
@@ -89,6 +101,29 @@ function applyEdits(node: TrackedNode, edit: ParsedNodeForm): TrackedNode {
             maintainerServiceName:  edit.maintainerServiceName,
             handlerServiceName:     edit.handlerServiceName,
             handlerMaxInstances:    edit.handlerMaxInstances,
+            vpcNetwork:             edit.vpcNetwork ?? node.gcp.vpcNetwork,
+            vpcSubnet:              edit.vpcSubnet ?? node.gcp.vpcSubnet,
+            cloudSql: edit.cloudSqlInstanceName || node.gcp.cloudSql ? {
+                instanceName:      edit.cloudSqlInstanceName ?? node.gcp.cloudSql?.instanceName ?? '',
+                databaseName:      edit.cloudSqlDatabase ?? node.gcp.cloudSql?.databaseName ?? 'ace_vss',
+                user:              edit.cloudSqlUser ?? node.gcp.cloudSql?.user ?? 'ace',
+                privateRangeName:  edit.cloudSqlPrivateRangeName ?? node.gcp.cloudSql?.privateRangeName ?? '',
+            } : undefined,
+        };
+    }
+    if (node.gce) {
+        const instanceName = edit.instanceName ?? node.gce.instanceName;
+        merged.gce = {
+            ...node.gce,
+            project:       edit.project     ?? node.gce.project,
+            zone:          edit.zone        ?? node.gce.zone,
+            instanceName,
+            machineType:   edit.machineType ?? node.gce.machineType,
+            diskSizeGb:    edit.diskSizeGb  ?? node.gce.diskSizeGb,
+            network:       edit.network     ?? node.gce.network,
+            port:          edit.port        ?? node.gce.port,
+            containerName: edit.containerName ?? node.gce.containerName,
+            ...gceResourceNames(instanceName),
         };
     }
     if (node.docker) {
@@ -124,6 +159,9 @@ function diffSummary(before: TrackedNode, after: TrackedNode): string[] {
     const aGcp = JSON.stringify(before.gcp ?? {});
     const bGcp = JSON.stringify(after.gcp  ?? {});
     if (aGcp !== bGcp) lines.push(`    gcp                  changed`);
+    const aGce = JSON.stringify(before.gce ?? {});
+    const bGce = JSON.stringify(after.gce  ?? {});
+    if (aGce !== bGce) lines.push(`    gce                  changed`);
     const aDocker = JSON.stringify(before.docker ?? {});
     const bDocker = JSON.stringify(after.docker  ?? {});
     if (aDocker !== bDocker) lines.push(`    docker               changed`);
@@ -188,7 +226,22 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
         return;
     }
 
-    if (node.platform === 'gcp' && updatedNode.gcp) {
+    if (node.platform === 'gcp-vm' && updatedNode.gce) {
+        const cmd = gceDeployCmd(
+            updatedNode.gce,
+            image!,
+            nodeArgs,
+            node.rpcUrl,
+            node.aceAddr,
+            rpcApiKey,
+            gasStationKey,
+            chainRpc,
+        );
+        console.log('Re-deploy script:\n');
+        console.log(cmd.display);
+        console.log();
+        await maybeAutoRun(cmd.run, gcloudReady(), 'Apply this now?', cmd.env);
+    } else if (node.platform === 'gcp' && updatedNode.gcp) {
         if (rpcUrlsNeedVpcEgress(chainRpc)) {
             console.log(`${D}A private RPC URL was detected; the command below adds --network/--subnet/--vpc-egress so Cloud Run can reach it via VPC.${R}`);
         }
@@ -200,6 +253,9 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
                     maintainerServiceName:  updatedNode.gcp.maintainerServiceName!,
                     handlerServiceName:     updatedNode.gcp.handlerServiceName!,
                     handlerMaxInstances:    updatedNode.gcp.handlerMaxInstances!,
+                    vpcNetwork:             updatedNode.gcp.vpcNetwork,
+                    vpcSubnet:              updatedNode.gcp.vpcSubnet,
+                    forceMaintainerVpc:     !!updatedNode.gcp.cloudSql,
                 },
                 image!, nodeArgs, node.rpcUrl, node.aceAddr, rpcApiKey, gasStationKey, chainRpc,
             )

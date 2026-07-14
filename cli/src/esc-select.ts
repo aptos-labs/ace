@@ -15,6 +15,7 @@ process.on('SIGWINCH', () => {
 export interface EscSelectChoice {
     name: string;
     value: string;
+    disabled?: string;
 }
 
 interface Config {
@@ -110,24 +111,41 @@ export async function escInput(config: InputConfig): Promise<string | undefined>
 export const escSelect: (config: Config) => Promise<string | null> =
     createPrompt<string | null, Config>((config, done) => {
         useResizeClear();
-        const [cursor, setCursor] = useState(0);
         const choices = config.choices;
+        const isDisabled = (idx: number) => !!choices[idx]?.disabled;
+        const firstEnabled = choices.findIndex(c => !c.disabled);
+        const [cursor, setCursor] = useState(firstEnabled >= 0 ? firstEnabled : 0);
+        const move = (delta: 1 | -1) => {
+            if (choices.length === 0) return cursor;
+            let next = cursor;
+            for (let i = 0; i < choices.length; i++) {
+                next = Math.max(0, Math.min(choices.length - 1, next + delta));
+                if (!isDisabled(next)) return next;
+                if (next === 0 || next === choices.length - 1) return cursor;
+            }
+            return cursor;
+        };
 
         useKeypress(key => {
             if (isEscapeKey(key)) {
                 done(null);
             } else if (isUpKey(key)) {
-                setCursor(Math.max(0, cursor - 1));
+                setCursor(move(-1));
             } else if (isDownKey(key)) {
-                setCursor(Math.min(choices.length - 1, cursor + 1));
+                setCursor(move(1));
             } else if (isEnterKey(key)) {
-                done(choices[cursor]!.value);
+                if (!isDisabled(cursor)) done(choices[cursor]!.value);
             }
         });
 
         const header = `\x1b[32m?\x1b[0m \x1b[1m${config.message}\x1b[22m`;
+        const DIM = '\x1b[2m', R = '\x1b[0m';
         const items = choices
-            .map((c, i) => i === cursor ? `\x1b[36m❯ ${c.name}\x1b[0m` : `  ${c.name}`)
+            .map((c, i) => {
+                const suffix = c.disabled ? ` ${c.disabled}` : '';
+                if (c.disabled) return `${DIM}  ${c.name}${suffix}${R}`;
+                return i === cursor ? `\x1b[36m❯ ${c.name}\x1b[0m` : `  ${c.name}`;
+            })
             .join('\n');
 
         return `${header}\n${items}`;

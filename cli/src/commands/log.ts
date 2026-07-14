@@ -6,10 +6,15 @@ import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { resolveProfile } from '../resolve-profile.js';
 import { parseTime } from '../parse-time.js';
+import type { GceConfig } from '../config.js';
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
 function toIso(d: Date): string { return d.toISOString(); }
+
+function shellQuote(v: string): string {
+    return `'${v.replace(/'/g, `'\\''`)}'`;
+}
 
 // ── Log line timestamp parser ─────────────────────────────────────────────────
 // Local log lines are prefixed: [2024-01-15T10:30:45.123Z] <message>
@@ -86,6 +91,24 @@ async function logGcp(
             '--format=value(timestamp,textPayload)',
         ]);
     }
+}
+
+async function logGce(
+    gce: GceConfig,
+    sinceDate?: Date, untilDate?: Date, watch = false,
+): Promise<void> {
+    const remote = ['docker logs --timestamps'];
+    if (sinceDate) remote.push(`--since ${shellQuote(toIso(sinceDate))}`);
+    if (!watch && untilDate) remote.push(`--until ${shellQuote(toIso(untilDate))}`);
+    if (watch) remote.push('-f');
+    remote.push(shellQuote(gce.containerName));
+    await pipeChildToStdout('gcloud', [
+        'compute', 'ssh', gce.instanceName,
+        `--project=${gce.project}`,
+        `--zone=${gce.zone}`,
+        '--quiet',
+        '--command', remote.join(' '),
+    ], watch ? untilDate : undefined);
 }
 
 async function readFileFiltered(file: string, sinceDate?: Date, untilDate?: Date): Promise<void> {
@@ -179,10 +202,12 @@ export async function logCommand(opts: {
             process.exit(1);
         }
         await logGcp(svc, node.gcp.project, node.gcp.region, sinceDate, untilDate, opts.watch);
+    } else if (node.platform === 'gcp-vm' && node.gce) {
+        await logGce(node.gce, sinceDate, untilDate, opts.watch);
     } else if (node.platform === 'local' && node.local?.logFile) {
         await logLocal(node.local.logFile, sinceDate, untilDate, opts.watch);
     } else {
-        console.error('No supported deployment platform found for this profile (need docker, gcp, or local with a log file).');
+        console.error('No supported deployment platform found for this profile (need docker, gcp, gcp-vm, or local with a log file).');
         process.exit(1);
     }
 }

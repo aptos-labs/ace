@@ -3,6 +3,7 @@
 
 import { input } from '@inquirer/prompts';
 import { execSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import { writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import * as path from 'path';
@@ -11,7 +12,8 @@ import { registerOnChain } from './register.js';
 import { fetchTagsRaw } from './docker-hub.js';
 import {
     loadConfig, makeNodeKey,
-    type TrackedNode, type ChainRpcOverrides, type LocalConfig, type Mode,
+    type TrackedNode, type ChainRpcOverrides, type LocalConfig, type Mode, type GceConfig,
+    type GcpCloudSqlConfig,
 } from './config.js';
 import { resolveDeployment } from './resolve-profile.js';
 import { logFilePath, spawnLocalNode } from './local-process.js';
@@ -86,6 +88,18 @@ export interface NodeNewOptions {
     maintainerServiceName?: string;
     handlerServiceName?: string;
     handlerMaxInstances?: string;
+    zone?: string;
+    instanceName?: string;
+    machineType?: string;
+    diskSizeGb?: string;
+    port?: string;
+    containerName?: string;
+    network?: string;
+    subnet?: string;
+    cloudSqlInstanceName?: string;
+    cloudSqlDatabase?: string;
+    cloudSqlUser?: string;
+    cloudSqlPrivateRangeName?: string;
     endpoint?: string;
     nodeMsgEndpoint?: string;
     vssStoreUrl?: string;
@@ -110,6 +124,18 @@ export function isNonInteractiveNodeNew(opts: NodeNewOptions): boolean {
         opts.maintainerServiceName ||
         opts.handlerServiceName ||
         opts.handlerMaxInstances ||
+        opts.zone ||
+        opts.instanceName ||
+        opts.machineType ||
+        opts.diskSizeGb ||
+        opts.port ||
+        opts.containerName ||
+        opts.network ||
+        opts.subnet ||
+        opts.cloudSqlInstanceName ||
+        opts.cloudSqlDatabase ||
+        opts.cloudSqlUser ||
+        opts.cloudSqlPrivateRangeName ||
         opts.endpoint ||
         opts.nodeMsgEndpoint ||
         opts.vssStoreUrl ||
@@ -191,6 +217,7 @@ export const GCP_SECRET_ENV = {
 } as const;
 
 export const GCP_CONFIG_ENV = 'ACE_CONFIG_JSON';
+export const GCP_CLOUD_SQL_PASSWORD_ENV = 'ACE_CLOUD_SQL_PASSWORD';
 
 export interface GcpDeployScript {
     /** Script printed to the terminal. It references secret env vars but never contains secret values. */
@@ -297,6 +324,102 @@ function secretEnv(bindings: SecretBinding[]): Record<string, string> {
     return Object.fromEntries(bindings.map(b => [b.envName, b.value]));
 }
 
+interface CloudSqlDeployConfig extends GcpCloudSqlConfig {
+    project: string;
+    region: string;
+    network: string;
+    subnet: string;
+    password: string;
+}
+
+function generatedCloudSqlPassword(): string {
+    return randomBytes(24).toString('base64url');
+}
+
+export function cloudSqlVssStoreUrl(
+    cfg: Pick<CloudSqlDeployConfig, 'databaseName' | 'user'>,
+    privateIp: string,
+    password: string,
+): string {
+    return `postgres://${encodeURIComponent(cfg.user)}:${encodeURIComponent(password)}@${privateIp}:5432/${encodeURIComponent(cfg.databaseName)}`;
+}
+
+export function captureCloudSqlPrivateIp(instanceName: string, project: string): string | undefined {
+    try {
+        const out = execSync(
+            `gcloud sql instances describe ${shellQuote(instanceName)} --project ${shellQuote(project)} --format='value(ipAddresses[0].ipAddress)'`,
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        ).trim();
+        return out || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function cloudSqlSetupLines(cfg: CloudSqlDeployConfig): string[] {
+    return [
+        `# Provision/reuse Cloud SQL Postgres for the shared VSS store.`,
+        `PROJECT=${shellQuote(cfg.project)}`,
+        `SQL_REGION=${shellQuote(cfg.region)}`,
+        `SQL_INSTANCE=${shellQuote(cfg.instanceName)}`,
+        `SQL_DATABASE=${shellQuote(cfg.databaseName)}`,
+        `SQL_USER=${shellQuote(cfg.user)}`,
+        `SQL_NETWORK=${shellQuote(cfg.network)}`,
+        `SQL_PRIVATE_RANGE=${shellQuote(cfg.privateRangeName)}`,
+        `if [ -z "\${${GCP_CLOUD_SQL_PASSWORD_ENV}:-}" ]; then`,
+        `  echo "Missing ${GCP_CLOUD_SQL_PASSWORD_ENV}; export it before running this script." >&2`,
+        `  exit 1`,
+        `fi`,
+        `if [ -z "\${${GCP_CONFIG_ENV}:-}" ]; then`,
+        `  echo "Missing ${GCP_CONFIG_ENV}; export it before running this script." >&2`,
+        `  exit 1`,
+        `fi`,
+        `gcloud services enable run.googleapis.com secretmanager.googleapis.com sqladmin.googleapis.com servicenetworking.googleapis.com --project "$PROJECT"`,
+        `if ! gcloud services vpc-peerings list --network="$SQL_NETWORK" --service=servicenetworking.googleapis.com --project "$PROJECT" --format='value(network)' | grep -q .; then`,
+        `  gcloud compute addresses describe "$SQL_PRIVATE_RANGE" --global --project "$PROJECT" >/dev/null 2>&1 || \\`,
+        `    gcloud compute addresses create "$SQL_PRIVATE_RANGE" --global --purpose=VPC_PEERING --prefix-length=16 --network="$SQL_NETWORK" --project "$PROJECT"`,
+        `  gcloud services vpc-peerings connect --network="$SQL_NETWORK" --ranges="$SQL_PRIVATE_RANGE" --service=servicenetworking.googleapis.com --project "$PROJECT" --quiet`,
+        `fi`,
+        `if ! gcloud sql instances describe "$SQL_INSTANCE" --project "$PROJECT" >/dev/null 2>&1; then`,
+        `  gcloud sql instances create "$SQL_INSTANCE" \\`,
+        `    --project "$PROJECT" \\`,
+        `    --region "$SQL_REGION" \\`,
+        `    --database-version=POSTGRES_16 \\`,
+        `    --edition=enterprise \\`,
+        `    --cpu=1 \\`,
+        `    --memory=4GiB \\`,
+        `    --storage-size=10 \\`,
+        `    --availability-type=zonal \\`,
+        `    --network="projects/$PROJECT/global/networks/$SQL_NETWORK" \\`,
+        `    --no-assign-ip \\`,
+        `    --no-deletion-protection \\`,
+        `    --root-password="$${GCP_CLOUD_SQL_PASSWORD_ENV}" \\`,
+        `    --quiet`,
+        `fi`,
+        `gcloud sql databases describe "$SQL_DATABASE" --instance "$SQL_INSTANCE" --project "$PROJECT" >/dev/null 2>&1 || \\`,
+        `  gcloud sql databases create "$SQL_DATABASE" --instance "$SQL_INSTANCE" --project "$PROJECT"`,
+        `if gcloud sql users describe "$SQL_USER" --instance "$SQL_INSTANCE" --project "$PROJECT" >/dev/null 2>&1; then`,
+        `  gcloud sql users set-password "$SQL_USER" --instance "$SQL_INSTANCE" --project "$PROJECT" --password="$${GCP_CLOUD_SQL_PASSWORD_ENV}"`,
+        `else`,
+        `  gcloud sql users create "$SQL_USER" --instance "$SQL_INSTANCE" --project "$PROJECT" --password="$${GCP_CLOUD_SQL_PASSWORD_ENV}"`,
+        `fi`,
+        `SQL_PRIVATE_IP=$(gcloud sql instances describe "$SQL_INSTANCE" --project "$PROJECT" --format='value(ipAddresses[0].ipAddress)')`,
+        `if [ -z "$SQL_PRIVATE_IP" ]; then`,
+        `  echo "Cloud SQL instance $SQL_INSTANCE has no private IP." >&2`,
+        `  exit 1`,
+        `fi`,
+        `VSS_STORE_URL="postgres://$SQL_USER:$${GCP_CLOUD_SQL_PASSWORD_ENV}@$SQL_PRIVATE_IP:5432/$SQL_DATABASE"`,
+        `${GCP_CONFIG_ENV}="$(${GCP_SECRET_ENV.vssStoreUrl}="$VSS_STORE_URL" node <<'ACE_CONFIG_JSON_NODE'`,
+        `const cfg = JSON.parse(process.env.${GCP_CONFIG_ENV} || '{}');`,
+        `cfg.vssStoreUrl = process.env.${GCP_SECRET_ENV.vssStoreUrl};`,
+        `process.stdout.write(JSON.stringify(cfg));`,
+        `ACE_CONFIG_JSON_NODE`,
+        `)"`,
+        `export ${GCP_CONFIG_ENV}`,
+        ``,
+    ];
+}
+
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
@@ -348,9 +471,10 @@ export function gcpDeployCmd(
  * reachable at its registered node-message URL.
  *
  * Step order:
- *   1. Deploy the Maintainer/node-message endpoint (min=max=1, no auth required).
- *   2. Capture the Maintainer URL.
- *   3. Deploy the Handler.
+ *   1. Optionally provision the Cloud SQL VSS store.
+ *   2. Deploy the public Maintainer/node-message endpoint (min=max=1).
+ *   3. Capture the Maintainer URL.
+ *   4. Deploy the Handler.
  */
 export function gcpDeployCmdMicroservices(
     cfg: {
@@ -359,23 +483,29 @@ export function gcpDeployCmdMicroservices(
         maintainerServiceName: string;
         handlerServiceName: string;
         handlerMaxInstances: number;
+        vpcNetwork?: string;
+        vpcSubnet?: string;
+        forceMaintainerVpc?: boolean;
+        cloudSql?: Omit<CloudSqlDeployConfig, 'project' | 'region' | 'network' | 'subnet'>;
     },
     image: string,
     node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): GcpDeployScript {
-    // Maintainer's VPC needs follow the chain-RPC rule (it only talks to the
-    // chain). Handler ALWAYS needs VPC egress so it can reach the Maintainer's
-    // internal-only *.run.app URL.
-    const maintainerVpcLines = rpcUrlsNeedVpcEgress(chainRpc) ? [
-        `  --network=${DEFAULT_VPC_NETWORK}`,
-        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+    const vpcNetwork = cfg.vpcNetwork ?? DEFAULT_VPC_NETWORK;
+    const vpcSubnet = cfg.vpcSubnet ?? DEFAULT_VPC_SUBNET;
+    // Maintainer needs VPC egress when it talks to private chain RPCs or to
+    // the auto-provisioned Cloud SQL private IP. Handler needs VPC egress for
+    // the same private Cloud SQL store when the CLI provisions it.
+    const maintainerVpcLines = (cfg.forceMaintainerVpc || cfg.cloudSql || rpcUrlsNeedVpcEgress(chainRpc)) ? [
+        `  --network=${vpcNetwork}`,
+        `  --subnet=${vpcSubnet}`,
         `  --vpc-egress=${DEFAULT_VPC_EGRESS}`,
     ] : [];
     const handlerVpcLines = [
-        `  --network=${DEFAULT_VPC_NETWORK}`,
-        `  --subnet=${DEFAULT_VPC_SUBNET}`,
+        `  --network=${vpcNetwork}`,
+        `  --subnet=${vpcSubnet}`,
         `  --vpc-egress=all-traffic`,
     ];
 
@@ -411,7 +541,7 @@ export function gcpDeployCmdMicroservices(
         `  --image docker.io/${image}`,
         `  --project ${cfg.project}`,
         `  --region ${cfg.region}`,
-        `  --ingress=internal`,
+        `  --ingress=all`,
         `  --allow-unauthenticated`,
         `  --min-instances 1`,
         `  --max-instances 1`,
@@ -442,23 +572,193 @@ export function gcpDeployCmdMicroservices(
     const script = [
         `set -e`,
         ``,
+        ...(cfg.cloudSql ? cloudSqlSetupLines({
+            ...cfg.cloudSql,
+            project: cfg.project,
+            region: cfg.region,
+            network: vpcNetwork,
+            subnet: vpcSubnet,
+        }) : []),
         ...cloudRunSecretSetup(cfg.project, secretBindings),
-        `# 1. Deploy the Maintainer (internal-only, pinned at min=max=1).`,
-        `#    Reachable only via VPC; unauthenticated within the VPC.`,
+        `# Deploy the Maintainer/node-message endpoint (public, pinned at min=max=1).`,
         maintainerDeploy,
         ``,
-        `# 2. Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
+        `# Capture the Maintainer's auto-assigned URL (Cloud Run picks the format,`,
         `#    we can't derive it ahead of time).`,
         `MAINT_URL=$(gcloud run services describe ${cfg.maintainerServiceName} \\`,
         `  --project=${cfg.project} --region=${cfg.region} --format='value(status.url)')`,
         `echo "Maintainer URL: $MAINT_URL"`,
         ``,
-        `# 3. Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances}).`,
-        `#    Direct VPC egress (all-traffic) is required so the Handler's outbound`,
-        `#    to the Maintainer is recognized as same-project internal traffic.`,
+        `# Deploy the Handler (public, scales 1..${cfg.handlerMaxInstances}).`,
+        `#    Direct VPC egress is required for Cloud SQL private IP access.`,
         handlerDeploy,
     ].join('\n');
-    return { display: script, run: script, env: secretEnv(secretBindings) };
+    return {
+        display: script,
+        run: script,
+        env: {
+            ...secretEnv(secretBindings),
+            ...(cfg.cloudSql ? { [GCP_CLOUD_SQL_PASSWORD_ENV]: cfg.cloudSql.password } : {}),
+        },
+    };
+}
+
+export function gceResourceNames(instanceName: string): Required<Pick<
+    GceConfig,
+    'staticIpName' | 'firewallRuleName' | 'diskName' | 'networkTag'
+>> {
+    return {
+        staticIpName:     `${instanceName}-ip`,
+        firewallRuleName: `${instanceName}-allow-ace`,
+        diskName:         `${instanceName}-vss`,
+        networkTag:       `${instanceName}-ace`,
+    };
+}
+
+function normalizeGceConfig(cfg: GceConfig): GceConfig {
+    return {
+        ...cfg,
+        network: cfg.network ?? 'default',
+        ...gceResourceNames(cfg.instanceName),
+    };
+}
+
+export function captureGceExternalIp(
+    instanceName: string, project: string, zone: string,
+): string | undefined {
+    try {
+        const out = execSync(
+            `gcloud compute instances describe ${shellQuote(instanceName)} --project ${shellQuote(project)} --zone ${shellQuote(zone)} --format='value(networkInterfaces[0].accessConfigs[0].natIP)'`,
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        ).trim();
+        return out || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+export function gceDeployCmd(
+    rawCfg: GceConfig,
+    image: string,
+    node: { accountAddr: string; accountSk: string; pkeDk: string; sigSk: string; vssStoreUrl: string; nodeMsgListen: string },
+    rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
+    chainRpc?: ChainRpcOverrides,
+): GcpDeployScript {
+    const cfg = normalizeGceConfig(rawCfg);
+    const runtimeConfig = runtimeConfigJson(node, rpcApiKey, gasStationKey, chainRpc);
+    const publicArgs = [
+        'run',
+        `--ace-deployment-api=${rpcUrl}`,
+        `--ace-deployment-addr=${aceAddr}`,
+        `--account-addr=${node.accountAddr}`,
+        `--port=${cfg.port}`,
+        ...chainRpcArgs(chainRpc, { includeSecrets: false }),
+    ];
+    const dockerArgs = publicArgs.map(shellQuote).join(' \\\n  ');
+    const imageRef = `docker.io/${image}`;
+    const startupHead = [
+        `cat > "$STARTUP_SCRIPT" <<'ACE_VM_STARTUP_HEAD'`,
+        `#!/usr/bin/env bash`,
+        `set -euo pipefail`,
+        `export DEBIAN_FRONTEND=noninteractive`,
+        ``,
+        `mkdir -p /etc/ace /ace-vss`,
+        `DEVICE="/dev/disk/by-id/google-ace-vss"`,
+        `if [ -e "$DEVICE" ]; then`,
+        `  if ! blkid "$DEVICE" >/dev/null 2>&1; then`,
+        `    mkfs.ext4 -F "$DEVICE"`,
+        `  fi`,
+        `  if ! grep -q ' /ace-vss ' /etc/fstab; then`,
+        `    echo "$DEVICE /ace-vss ext4 defaults,nofail 0 2" >> /etc/fstab`,
+        `  fi`,
+        `  mount /ace-vss || mount -a || true`,
+        `fi`,
+        ``,
+        `if ! command -v docker >/dev/null 2>&1; then`,
+        `  apt-get update`,
+        `  apt-get install -y docker.io`,
+        `fi`,
+        `systemctl enable --now docker`,
+        ``,
+        `cat >/etc/ace/config.json <<'ACE_CONFIG_EOF'`,
+        `ACE_VM_STARTUP_HEAD`,
+        `printf '%s\\n' "$ACE_CONFIG_JSON" >> "$STARTUP_SCRIPT"`,
+    ];
+    const startupTail = [
+        `cat >> "$STARTUP_SCRIPT" <<'ACE_VM_STARTUP_TAIL'`,
+        `ACE_CONFIG_EOF`,
+        ``,
+        `docker rm -f ${shellQuote(cfg.containerName)} >/dev/null 2>&1 || true`,
+        `docker pull ${shellQuote(imageRef)}`,
+        `docker run -d --platform linux/amd64 --restart unless-stopped \\`,
+        `  --name ${shellQuote(cfg.containerName)} \\`,
+        `  -p ${shellQuote(`${cfg.port}:${cfg.port}`)} \\`,
+        `  -v /ace-vss:/ace-vss \\`,
+        `  -e ACE_CONFIG_JSON="$(cat /etc/ace/config.json)" \\`,
+        `  ${shellQuote(imageRef)} \\`,
+        `  ${dockerArgs}`,
+        `ACE_VM_STARTUP_TAIL`,
+    ];
+    const script = [
+        `set -e`,
+        ``,
+        `PROJECT=${shellQuote(cfg.project)}`,
+        `ZONE=${shellQuote(cfg.zone)}`,
+        `REGION="\${ZONE%-*}"`,
+        `INSTANCE=${shellQuote(cfg.instanceName)}`,
+        `MACHINE_TYPE=${shellQuote(cfg.machineType)}`,
+        `DISK_SIZE_GB=${shellQuote(String(cfg.diskSizeGb))}`,
+        `PORT=${shellQuote(cfg.port)}`,
+        `NETWORK=${shellQuote(cfg.network ?? 'default')}`,
+        `STATIC_IP_NAME=${shellQuote(cfg.staticIpName!)}`,
+        `FIREWALL_RULE=${shellQuote(cfg.firewallRuleName!)}`,
+        `DISK_NAME=${shellQuote(cfg.diskName!)}`,
+        `NETWORK_TAG=${shellQuote(cfg.networkTag!)}`,
+        ``,
+        `if [ -z "\${ACE_CONFIG_JSON:-}" ]; then`,
+        `  echo "Missing ACE_CONFIG_JSON; export it before running this script." >&2`,
+        `  exit 1`,
+        `fi`,
+        ``,
+        `STARTUP_SCRIPT="$(mktemp)"`,
+        `trap 'rm -f "$STARTUP_SCRIPT"' EXIT`,
+        ...startupHead,
+        ...startupTail,
+        ``,
+        `gcloud compute addresses describe "$STATIC_IP_NAME" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1 || \\`,
+        `  gcloud compute addresses create "$STATIC_IP_NAME" --project "$PROJECT" --region "$REGION" >/dev/null`,
+        `STATIC_IP="$(gcloud compute addresses describe "$STATIC_IP_NAME" --project "$PROJECT" --region "$REGION" --format='value(address)')"`,
+        ``,
+        `if gcloud compute firewall-rules describe "$FIREWALL_RULE" --project "$PROJECT" >/dev/null 2>&1; then`,
+        `  gcloud compute firewall-rules update "$FIREWALL_RULE" --project "$PROJECT" \\`,
+        `    --allow "tcp:$PORT" --target-tags "$NETWORK_TAG" --source-ranges 0.0.0.0/0 >/dev/null`,
+        `else`,
+        `  gcloud compute firewall-rules create "$FIREWALL_RULE" --project "$PROJECT" \\`,
+        `    --network "$NETWORK" --allow "tcp:$PORT" --target-tags "$NETWORK_TAG" --source-ranges 0.0.0.0/0 >/dev/null`,
+        `fi`,
+        ``,
+        `if gcloud compute disks describe "$DISK_NAME" --project "$PROJECT" --zone "$ZONE" >/dev/null 2>&1; then`,
+        `  DISK_FLAG=("--disk=name=$DISK_NAME,device-name=ace-vss,mode=rw,boot=no,auto-delete=no")`,
+        `else`,
+        `  DISK_FLAG=("--create-disk=name=$DISK_NAME,device-name=ace-vss,mode=rw,boot=no,auto-delete=no,size=${'${DISK_SIZE_GB}'}GB,type=pd-balanced")`,
+        `fi`,
+        ``,
+        `if gcloud compute instances describe "$INSTANCE" --project "$PROJECT" --zone "$ZONE" >/dev/null 2>&1; then`,
+        `  gcloud compute instances add-metadata "$INSTANCE" --project "$PROJECT" --zone "$ZONE" --metadata-from-file=startup-script="$STARTUP_SCRIPT" >/dev/null`,
+        `  gcloud compute instances reset "$INSTANCE" --project "$PROJECT" --zone "$ZONE" --quiet >/dev/null`,
+        `else`,
+        `  gcloud compute instances create "$INSTANCE" \\`,
+        `    --project "$PROJECT" --zone "$ZONE" --machine-type "$MACHINE_TYPE" \\`,
+        `    --network "$NETWORK" --tags "$NETWORK_TAG" --address "$STATIC_IP" \\`,
+        `    --image-family debian-12 --image-project debian-cloud \\`,
+        `    --metadata-from-file=startup-script="$STARTUP_SCRIPT" \\`,
+        `    "\${DISK_FLAG[@]}" >/dev/null`,
+        `fi`,
+        ``,
+        `echo "VM external IP: $STATIC_IP"`,
+        `echo "Node URL: http://$STATIC_IP:$PORT"`,
+    ].join('\n');
+    return { display: script, run: script, env: { ACE_CONFIG_JSON: runtimeConfig } };
 }
 
 export function dockerRunCmd(
@@ -722,17 +1022,20 @@ function schemeFromOptions(opts: NodeNewOptions, isLocalnet: boolean): Scheme {
     }
 
     const platform = opts.platform ?? 'gcp';
-    if (platform !== 'gcp') {
-        throw new Error('Non-interactive node new currently supports only --platform gcp or --mode metadata-management-only.');
-    }
     if (isLocalnet) {
-        throw new Error('GCP Cloud Run is unavailable for localnet deployments.');
+        throw new Error('GCP runtimes are unavailable for localnet deployments.');
+    }
+    if (platform === 'gcp-vm' || platform === 'gce') {
+        const mode = opts.mode ?? 'monolith';
+        if (mode === 'monolith') return 'gcp-vm-monolith';
+        throw new Error('--platform gcp-vm supports only --mode monolith.');
+    }
+    if (platform !== 'gcp') {
+        throw new Error('Non-interactive node new currently supports --platform gcp, --platform gcp-vm, or --mode metadata-management-only.');
     }
     const mode = opts.mode ?? 'microservices';
     if (mode === 'microservices') return 'gcp-cloudrun-microservices';
-    if (mode === 'monolith') {
-        throw new Error('GCP Cloud Run monolith is unavailable with offchain VSS because it needs a node-message listener. Use --mode microservices.');
-    }
+    if (mode === 'monolith') return 'gcp-vm-monolith';
     throw new Error('--mode must be "microservices", "monolith", or "metadata-management-only".');
 }
 
@@ -758,6 +1061,19 @@ function parsedFormFromOptions(
         vssStoreUrl: nonEmpty(opts.vssStoreUrl) ?? defaults.vssStoreUrl,
         nodeMsgListen: nonEmpty(opts.nodeMsgListen) ?? defaults.nodeMsgListen,
     };
+    if (scheme === 'gcp-vm-monolith') {
+        return {
+            ...common,
+            project:       nonEmpty(opts.project) ?? defaults.project,
+            zone:          nonEmpty(opts.zone) ?? defaults.zone,
+            instanceName:  nonEmpty(opts.instanceName) ?? defaults.instanceName,
+            machineType:   nonEmpty(opts.machineType) ?? defaults.machineType,
+            diskSizeGb:    parsePositiveInt(opts.diskSizeGb, '--disk-size-gb', defaults.diskSizeGb ?? 50),
+            network:       nonEmpty(opts.network) ?? defaults.network,
+            port:          nonEmpty(opts.port) ?? defaults.port,
+            containerName: nonEmpty(opts.containerName) ?? defaults.containerName,
+        };
+    }
     if (scheme === 'gcp-cloudrun-monolith') {
         return {
             ...common,
@@ -772,6 +1088,12 @@ function parsedFormFromOptions(
         region:                 nonEmpty(opts.region) ?? defaults.region,
         maintainerServiceName:  nonEmpty(opts.maintainerServiceName) ?? defaults.maintainerServiceName,
         handlerServiceName:     nonEmpty(opts.handlerServiceName) ?? defaults.handlerServiceName,
+        vpcNetwork:             nonEmpty(opts.network) ?? defaults.vpcNetwork,
+        vpcSubnet:              nonEmpty(opts.subnet) ?? defaults.vpcSubnet,
+        cloudSqlInstanceName:   nonEmpty(opts.cloudSqlInstanceName) ?? defaults.cloudSqlInstanceName,
+        cloudSqlDatabase:       nonEmpty(opts.cloudSqlDatabase) ?? defaults.cloudSqlDatabase,
+        cloudSqlUser:           nonEmpty(opts.cloudSqlUser) ?? defaults.cloudSqlUser,
+        cloudSqlPrivateRangeName: nonEmpty(opts.cloudSqlPrivateRangeName) ?? defaults.cloudSqlPrivateRangeName,
         handlerMaxInstances:    parsePositiveInt(
             opts.handlerMaxInstances,
             '--handler-max-instances',
@@ -810,15 +1132,22 @@ async function endpointFromOptions(
     opts: NodeNewOptions,
     label: string,
     capturedEndpoint?: string,
+    waitMs = 0,
 ): Promise<string> {
     const endpoint = nonEmpty(opts.endpoint) ?? capturedEndpoint;
     if (!endpoint) {
         throw new Error(`Could not determine ${label} endpoint. Pass --endpoint or run with --yes so the CLI can deploy and discover it.`);
     }
-    process.stderr.write(`  Checking ${label} endpoint reachability...`);
-    if (await probeEndpoint(endpoint)) {
-        process.stderr.write(' ✓\n');
-        return endpoint;
+    const deadline = Date.now() + waitMs;
+    while (true) {
+        process.stderr.write(`  Checking ${label} endpoint reachability...`);
+        if (await probeEndpoint(endpoint)) {
+            process.stderr.write(' ✓\n');
+            return endpoint;
+        }
+        if (Date.now() >= deadline) break;
+        process.stderr.write(' not ready; retrying\n');
+        await new Promise(r => setTimeout(r, 5000));
     }
     process.stderr.write(' ✗\n');
     throw new Error(`${label} endpoint is not reachable: ${endpoint}`);
@@ -886,6 +1215,7 @@ async function latestImageTag(): Promise<string> {
 function suggestPort(existing: Record<string, TrackedNode>): string {
     const used = new Set<string>();
     for (const n of Object.values(existing)) {
+        if (n.gce?.port)    used.add(n.gce.port);
         if (n.docker?.port) used.add(n.docker.port);
         if (n.local?.port)  used.add(n.local.port);
     }
@@ -954,9 +1284,12 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     const image          = parsed.image;
     const rpcApiKey      = parsed.rpcApiKey ?? net.rpcApiKey;
     const gasStationKey  = parsed.gasStationKey ?? net.gasStationKey;
-    const vssStoreUrl = scheme === 'metadata-management-only'
+    let vssStoreUrl = scheme === 'metadata-management-only'
         ? undefined
-        : requireParsedString(parsed.vssStoreUrl, 'VSS store URL');
+        : parsed.vssStoreUrl;
+    if (scheme !== 'metadata-management-only' && scheme !== 'gcp-cloudrun-microservices') {
+        vssStoreUrl = requireParsedString(parsed.vssStoreUrl, 'VSS store URL');
+    }
     const nodeMsgListen = scheme === 'metadata-management-only'
         ? undefined
         : requireParsedString(parsed.nodeMsgListen, 'node message listen address');
@@ -975,6 +1308,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     let endpoint:  string;
     let nodeMsgEndpoint: string;
     let gcpCfg:    TrackedNode['gcp'];
+    let gceCfg:    TrackedNode['gce'];
     let dockerCfg: TrackedNode['docker'];
     let localCfg:  LocalConfig | undefined;
 
@@ -987,6 +1321,42 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         nodeMsgEndpoint = nonInteractive
             ? nodeMsgEndpointValueFromOptions(options, 'externally managed node-message endpoint')
             : await promptEndpointValue('Your externally managed node-message public URL', nonEmpty(options.nodeMsgEndpoint));
+    } else if (scheme === 'gcp-vm-monolith') {
+        const project = requireParsedString(parsed.project, 'GCP project');
+        const zone = requireParsedString(parsed.zone, 'Compute Engine zone');
+        const instanceName = requireParsedString(parsed.instanceName, 'Compute Engine instance name');
+        const machineType = requireParsedString(parsed.machineType, 'Compute Engine machine type');
+        const diskSizeGb = parsed.diskSizeGb ?? 50;
+        const networkName = requireParsedString(parsed.network, 'Compute Engine network');
+        const port = requireParsedString(parsed.port, 'VM port');
+        const containerName = requireParsedString(parsed.containerName, 'Docker container name');
+        gceCfg = normalizeGceConfig({
+            project,
+            zone,
+            instanceName,
+            machineType,
+            diskSizeGb,
+            network: networkName,
+            port,
+            containerName,
+        });
+        const cmd = gceDeployCmd(gceCfg, image!,
+            { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc);
+        console.log('\nDeploy script:\n');
+        console.log(cmd.display);
+        console.log();
+        const ran = nonInteractive
+            ? (options.yes ? runDeployScript(cmd.run, gcloudReady(), cmd.env, deployRunOpts) : false)
+            : await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env, { yes: options.yes });
+        const ip = ran ? captureGceExternalIp(instanceName, project, zone) : undefined;
+        const defaultEndpoint = ip ? `http://${ip}:${port}` : undefined;
+        endpoint = nonInteractive
+            ? await endpointFromOptions(options, 'GCE VM node', defaultEndpoint, ran ? 10 * 60_000 : 0)
+            : await promptEndpoint('GCE VM node URL', defaultEndpoint);
+        nodeMsgEndpoint = nonInteractive
+            ? nodeMsgEndpointValueFromOptions(options, 'GCE VM node-message endpoint', nonEmpty(options.endpoint) ?? defaultEndpoint)
+            : await promptEndpointValue('GCE VM node-message URL', nonEmpty(options.nodeMsgEndpoint) ?? defaultEndpoint);
     } else if (scheme === 'gcp-cloudrun-monolith') {
         const project = requireParsedString(parsed.project, 'GCP project');
         const region = requireParsedString(parsed.region, 'Cloud Run region');
@@ -1016,12 +1386,35 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         const maintainerServiceName = requireParsedString(parsed.maintainerServiceName, 'Maintainer service name');
         const handlerServiceName = requireParsedString(parsed.handlerServiceName, 'Handler service name');
         const handlerMaxInstances = parsed.handlerMaxInstances ?? 10;
+        const vpcNetwork = requireParsedString(parsed.vpcNetwork, 'Cloud Run VPC network');
+        const vpcSubnet = requireParsedString(parsed.vpcSubnet, 'Cloud Run VPC subnet');
+        const cloudSqlInstanceName = requireParsedString(parsed.cloudSqlInstanceName, 'Cloud SQL instance name');
+        const cloudSqlDatabase = requireParsedString(parsed.cloudSqlDatabase, 'Cloud SQL database');
+        const cloudSqlUser = requireParsedString(parsed.cloudSqlUser, 'Cloud SQL user');
+        const cloudSqlPrivateRangeName = requireParsedString(parsed.cloudSqlPrivateRangeName, 'Cloud SQL private range name');
+        const cloudSqlPassword = vssStoreUrl ? undefined : generatedCloudSqlPassword();
+        const cloudSqlProfile: GcpCloudSqlConfig | undefined = vssStoreUrl
+            ? undefined
+            : {
+                instanceName: cloudSqlInstanceName,
+                databaseName: cloudSqlDatabase,
+                user: cloudSqlUser,
+                privateRangeName: cloudSqlPrivateRangeName,
+            };
+        const scriptVssStoreUrl = vssStoreUrl ?? cloudSqlVssStoreUrl(
+            { databaseName: cloudSqlDatabase, user: cloudSqlUser },
+            '<cloud-sql-private-ip>',
+            cloudSqlPassword!,
+        );
         gcpCfg = {
             project,
             region,
             maintainerServiceName,
             handlerServiceName,
             handlerMaxInstances,
+            vpcNetwork,
+            vpcSubnet,
+            cloudSql: cloudSqlProfile,
         };
         const cmd = gcpDeployCmdMicroservices(
             {
@@ -1030,8 +1423,17 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
                 maintainerServiceName,
                 handlerServiceName,
                 handlerMaxInstances,
+                vpcNetwork,
+                vpcSubnet,
+                cloudSql: cloudSqlPassword ? {
+                    instanceName: cloudSqlInstanceName,
+                    databaseName: cloudSqlDatabase,
+                    user: cloudSqlUser,
+                    privateRangeName: cloudSqlPrivateRangeName,
+                    password: cloudSqlPassword,
+                } : undefined,
             },
-            image!, { ...profile, vssStoreUrl: vssStoreUrl!, nodeMsgListen: nodeMsgListen! },
+            image!, { ...profile, vssStoreUrl: scriptVssStoreUrl, nodeMsgListen: nodeMsgListen! },
             net.rpcUrl, net.aceAddr, rpcApiKey, gasStationKey, chainRpc,
         );
         console.log('\nDeploy script:\n');
@@ -1040,6 +1442,12 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         const ran = nonInteractive
             ? (options.yes ? runDeployScript(cmd.run, gcloudReady(), cmd.env, deployRunOpts) : false)
             : await maybeAutoRun(cmd.run, gcloudReady(), 'Run this script now?', cmd.env, { yes: options.yes });
+        if (!vssStoreUrl && !ran) {
+            throw new Error(
+                'The generated deploy script did not complete. CLI-managed Cloud SQL needs the script to finish so the DB password and private IP can be captured. ' +
+                'Fix the gcloud error above and re-run node new, or set vssStoreUrl to an existing Postgres store.',
+            );
+        }
         const defaultEndpoint = ran ? captureCloudRunUrl(handlerServiceName, project, region) : undefined;
         const defaultNodeMsgEndpoint = ran ? captureCloudRunUrl(maintainerServiceName, project, region) : undefined;
         endpoint = nonInteractive
@@ -1048,6 +1456,14 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         nodeMsgEndpoint = nonInteractive
             ? nodeMsgEndpointValueFromOptions(options, 'Maintainer node-message service', defaultNodeMsgEndpoint)
             : await promptEndpointValue('Maintainer node-message service URL', nonEmpty(options.nodeMsgEndpoint) ?? defaultNodeMsgEndpoint);
+        if (!vssStoreUrl) {
+            const privateIp = captureCloudSqlPrivateIp(cloudSqlInstanceName, project);
+            vssStoreUrl = cloudSqlVssStoreUrl(
+                { databaseName: cloudSqlDatabase, user: cloudSqlUser },
+                privateIp ?? '<cloud-sql-private-ip>',
+                cloudSqlPassword!,
+            );
+        }
     } else if (scheme === 'docker-monolith') {
         dockerCfg = { containerName: parsed.containerName!, port: parsed.port! };
         const cmd = dockerRunCmd(parsed.containerName!, image!, parsed.port!,
@@ -1121,6 +1537,7 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
         platform,
         mode,
         gcp:          gcpCfg,
+        gce:          gceCfg,
         docker:       dockerCfg,
         local:        localCfg,
         gasStationKey,

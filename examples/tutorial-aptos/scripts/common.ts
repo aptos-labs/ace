@@ -9,23 +9,29 @@ import { AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 // ── ACE deployment targeted by this tutorial ──────────────────────────────────
-// Point the example at an explicit ACE deployment. Preview addresses are not
-// treated as permanent configuration.
-const aceContract = process.env.ACE_CONTRACT;
-if (!aceContract) throw new Error('Set ACE_CONTRACT to the target ACE contract address.');
+//
+// By default, the tutorial targets the SDK's pinned preview deployment. Env
+// overrides are still supported for testing another deployment.
+const knownDeployment = ACE.knownDeployments.preview20260714.withApiKey(
+    process.env.ACE_API_KEY ?? process.env.NODE_API_KEY,
+);
+
 export const TUTORIAL_ACE_DEPLOYMENT = new ACE.AceDeployment({
-    apiEndpoint: process.env.ACE_API_ENDPOINT ?? 'https://api.testnet.aptoslabs.com/v1',
-    contractAddr: AccountAddress.fromString(aceContract),
+    apiEndpoint: process.env.ACE_API_ENDPOINT ?? knownDeployment.aceDeployment.apiEndpoint,
+    contractAddr: process.env.ACE_CONTRACT
+        ? AccountAddress.fromString(process.env.ACE_CONTRACT)
+        : knownDeployment.aceDeployment.contractAddr,
+    apiKey: process.env.ACE_API_KEY ?? process.env.NODE_API_KEY,
 });
-export const TUTORIAL_CHAIN_ID = Number(process.env.ACE_CHAIN_ID ?? '2');
+export const TUTORIAL_CHAIN_ID = Number(process.env.ACE_CHAIN_ID ?? knownDeployment.chainId);
 export const TUTORIAL_APP_ORIGIN     = 'https://tutorial.ace.aptos.dev';
 
 export function tutorialIbeKeypairId(): AccountAddress {
     const value = process.env.IBE_KEYPAIR_ID;
-    if (!value) {
-        throw new Error('Set IBE_KEYPAIR_ID to the t-IBE keypair for the target ACE deployment.');
+    if (process.env.ACE_CONTRACT && !value) {
+        throw new Error('Set IBE_KEYPAIR_ID when overriding ACE_CONTRACT.');
     }
-    return AccountAddress.fromString(value);
+    return value ? AccountAddress.fromString(value) : knownDeployment.ibeKeypairId;
 }
 //
 // ──────────────────────────────────────────────────────────────────────────────

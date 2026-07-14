@@ -9,15 +9,19 @@
  * under the new `accessPublicKey`. This is the demo's "revoke" knob.
  *
  * The contract only checks that `accessPublicKey` is a well-formed G1 point.
- * Here Alice generates a fresh keypair directly from a secure RNG.
+ * Here Alice derives a replacement keypair from ACE threshold VRF under a
+ * versioned label, so rotation is deterministic for Alice but not derivable
+ * without her Aptos signature.
  */
 
-import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
+import * as ACE from '@aptos-labs/ace-sdk';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile,
-    aptosFromConfig, generateAccessKeypair, log, readAceConfig, readJson,
+    APP_ORIGIN, aceDeploymentFromConfig, aptosFromConfig, log, readAceConfig, readJson,
+    vrfOutputToAccessKeypair,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -29,8 +33,41 @@ async function main() {
     const alice = Account.fromPrivateKey({ privateKey: new Ed25519PrivateKey(aliceFile.privateKeyHex) });
 
     const aptos = aptosFromConfig(cfg);
+    const aceDeployment = aceDeploymentFromConfig(cfg);
+    const vrfKeypairId = AccountAddress.fromString(cfg.vrfKeypairId);
+    const moduleAddr = AccountAddress.fromString(conf.appContractAddr);
+    const moduleName = 'capability_access';
+    const chainId = await aptos.getChainId();
 
-    const { accessPublicKey: accessPublicKeyPrime } = generateAccessKeypair();
+    const blobId = `@${alice.accountAddress.toStringLong().slice(2)}/${BLOB_SUFFIX}`;
+    const rotationLabel = `${blobId}#rotation-1`;
+    const rotationLabelBytes = new TextEncoder().encode(rotationLabel);
+
+    log(`Deriving replacement access key via ACE threshold VRF label "${rotationLabel}"...`);
+    const vrfBytes = (await ACE.VRF_Aptos.derive({
+        aceDeployment,
+        keypairId: vrfKeypairId,
+        chainId,
+        moduleAddr,
+        moduleName,
+        label: rotationLabelBytes,
+        accountAddress: alice.accountAddress,
+        sign: async message => {
+            const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
+                accountAddress: alice.accountAddress,
+                application: APP_ORIGIN,
+                chainId,
+                message,
+                nonce: `bearer-capability-rotate-${BLOB_SUFFIX}`,
+            });
+            return {
+                pubKey: alice.publicKey,
+                signature: alice.sign(fullMessage),
+                fullMessage,
+            };
+        },
+    })).unwrapOrThrow('threshold VRF derive failed');
+    const { accessPublicKey: accessPublicKeyPrime } = vrfOutputToAccessKeypair(vrfBytes);
     log(`Rotating accessPublicKey -> 0x${bytesToHex(accessPublicKeyPrime)}`);
 
     const txn = await aptos.transaction.build.simple({

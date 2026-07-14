@@ -22,8 +22,10 @@ export type AceNetwork = 'localnet' | 'testnet';
 export interface AceConfig {
     network: AceNetwork;
     apiEndpoint: string;
+    apiKey?: string;
     contractAddr: string;
     ibeKeypairId: string;
+    vrfKeypairId: string;
 }
 
 function targetNetwork(): AceNetwork {
@@ -32,14 +34,17 @@ function targetNetwork(): AceNetwork {
     throw new Error(`Unsupported ACE_NETWORK="${raw}" (expected localnet or testnet).`);
 }
 
-function ibeIdFromEnv(): string | undefined {
+function idsFromEnv(): { ibeKeypairId: string; vrfKeypairId: string } | undefined {
     const splitIds = process.env.KEYPAIR_IDS?.split(',').map(s => s.trim()).filter(Boolean);
-    return process.env.IBE_KEYPAIR_ID ?? process.env.KEYPAIR_ID ?? splitIds?.[0];
+    const ibeKeypairId = process.env.IBE_KEYPAIR_ID ?? process.env.KEYPAIR_ID ?? splitIds?.[0];
+    const vrfKeypairId = process.env.VRF_KEYPAIR_ID ?? splitIds?.[1];
+    if (!ibeKeypairId || !vrfKeypairId) return undefined;
+    return { ibeKeypairId, vrfKeypairId };
 }
 
-/** Different localnet harnesses write slightly different schemas:
- *  singular `keypairId`, explicit `ibeKeypairId`, or plural
- *  `keypairIds`. Accept all of them. */
+/** Different localnet harnesses write slightly different schemas. Accept the
+ *  old singular `keypairId` for IBE, but require an explicit VRF id so stale
+ *  IBE-only configs fail before making worker requests. */
 function readLocalnetConfig(): AceConfig {
     let raw: any;
     try {
@@ -53,27 +58,45 @@ function readLocalnetConfig(): AceConfig {
     }
     const splitIds = Array.isArray(raw.keypairIds) ? raw.keypairIds : undefined;
     const ibeKeypairId = raw.ibeKeypairId ?? raw.keypairId ?? splitIds?.[0];
-    if (!raw.apiEndpoint || !raw.contractAddr || !ibeKeypairId) {
+    const vrfKeypairId = raw.vrfKeypairId ?? splitIds?.[1];
+    if (!raw.apiEndpoint || !raw.contractAddr || !ibeKeypairId || !vrfKeypairId) {
         throw new Error(
             `Malformed ${LOCALNET_CONFIG_PATH}: need {apiEndpoint, contractAddr, ` +
-            `ibeKeypairId|keypairId|keypairIds[]}`,
+            `ibeKeypairId, vrfKeypairId} or {apiEndpoint, contractAddr, keypairIds[]}. ` +
+            `Restart \`pnpm --filter ace-scenarios run-local-network-forever\` if this file is stale.`,
         );
     }
-    return { network: 'localnet', apiEndpoint: raw.apiEndpoint, contractAddr: raw.contractAddr, ibeKeypairId };
+    return { network: 'localnet', apiEndpoint: raw.apiEndpoint, contractAddr: raw.contractAddr, ibeKeypairId, vrfKeypairId };
 }
 
 export function readAceConfig(): AceConfig {
     const network = targetNetwork();
-    const ibeKeypairId = ibeIdFromEnv();
-    if (network === 'testnet') {
-        if (!process.env.ACE_CONTRACT || !ibeKeypairId) {
-            throw new Error('Set ACE_CONTRACT and IBE_KEYPAIR_ID for the target ACE testnet deployment.');
+    const envIds = idsFromEnv();
+    if (process.env.ACE_CONTRACT) {
+        if (!envIds) {
+            throw new Error('Set IBE_KEYPAIR_ID and VRF_KEYPAIR_ID when overriding ACE_CONTRACT.');
         }
         return {
             network,
-            apiEndpoint: process.env.ACE_API_ENDPOINT ?? 'https://api.testnet.aptoslabs.com/v1',
+            apiEndpoint: process.env.ACE_API_ENDPOINT ??
+                (network === 'testnet' ? 'https://api.testnet.aptoslabs.com/v1' : 'http://localhost:8080/v1'),
+            apiKey: process.env.ACE_API_KEY ?? process.env.NODE_API_KEY,
             contractAddr: process.env.ACE_CONTRACT,
-            ibeKeypairId,
+            ...envIds,
+        };
+    }
+
+    if (network === 'testnet') {
+        const knownDeployment = ACE.knownDeployments.preview20260714.withApiKey(
+            process.env.ACE_API_KEY ?? process.env.NODE_API_KEY,
+        );
+        return {
+            network,
+            apiEndpoint: process.env.ACE_API_ENDPOINT ?? knownDeployment.aceDeployment.apiEndpoint,
+            apiKey: knownDeployment.aceDeployment.apiKey,
+            contractAddr: knownDeployment.aceDeployment.contractAddr.toStringLong(),
+            ibeKeypairId: envIds?.ibeKeypairId ?? knownDeployment.ibeKeypairId.toStringLong(),
+            vrfKeypairId: envIds?.vrfKeypairId ?? knownDeployment.vrfKeypairId.toStringLong(),
         };
     }
 
@@ -159,12 +182,17 @@ export async function fundViaLocalnetFaucet(addr: AccountAddress, octas: number)
 
 // ── Bearer-token crypto (mirrors capability_access.move) ──────────────────────
 
-/** Generate a BLS12-381 access keypair directly from a secure RNG. */
-export function generateAccessKeypair(): {
+/** Derive the BLS12-381 access keypair from 32 bytes of tVRF output.
+ *  Reduces to an Fr scalar (`accessPrivateKey`) and computes
+ *  `accessPublicKey = accessPrivateKey * G1`. The bias from 256-bit-mod-r
+ *  reduction is ~2^-255, negligible for this use case. */
+export function vrfOutputToAccessKeypair(vrfBytes: Uint8Array): {
     accessPrivateKey: bigint;
     accessPublicKey: Uint8Array;
 } {
-    const accessPrivateKey = BigInt(`0x${bytesToHex(bls12_381.utils.randomPrivateKey())}`);
+    if (vrfBytes.length !== 32) throw new Error(`vrfBytes: expected 32, got ${vrfBytes.length}`);
+    const accessPrivateKey = BigInt(`0x${bytesToHex(vrfBytes)}`) % bls12_381.fields.Fr.ORDER;
+    if (accessPrivateKey === 0n) throw new Error('vrfBytes reduced to the zero BLS scalar');
     const accessPublicKey = bls12_381.G1.ProjectivePoint.BASE.multiply(accessPrivateKey).toRawBytes(true);
     return { accessPrivateKey, accessPublicKey };
 }
@@ -256,6 +284,7 @@ export function signWithAccessPrivateKey(accessPrivateKey: bigint, msg: Uint8Arr
 export function aceDeploymentFromConfig(cfg: AceConfig): ACE.AceDeployment {
     return new ACE.AceDeployment({
         apiEndpoint: cfg.apiEndpoint,
+        apiKey: cfg.apiKey,
         contractAddr: AccountAddress.fromString(cfg.contractAddr),
     });
 }

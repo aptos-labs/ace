@@ -6,9 +6,10 @@
  *
  * Three things happen here:
  *   - Encrypt the plaintext under ACE custom flow with `domain = blob_id`.
- *   - Generate a fresh BLS keypair `(accessPrivateKey, accessPublicKey)` directly
- *     from a secure RNG. `accessPrivateKey` is the bearer capability Alice hands
- *     to Bob.
+ *   - Derive a fresh BLS keypair `(accessPrivateKey, accessPublicKey)` from ACE
+ *     threshold VRF using `(contract_id, blob_id)`. Alice must sign the VRF
+ *     request, and the contract hook only permits owner-namespaced labels.
+ *     `accessPrivateKey` is the bearer capability Alice hands to Bob.
  *   - Register `accessPublicKey` on-chain. Bob (= whoever) decrypts in step 4 by
  *     signing requests under `accessPrivateKey`.
  *
@@ -24,8 +25,8 @@ import { bytesToHex } from '@noble/hashes/utils';
 
 import {
     ALICE_FILE, AccountFile, CONFIG_FILE, ConfigFile, CAPABILITY_FILE, CapabilityFile,
-    accessPrivateKeyToHex, aceDeploymentFromConfig, aptosFromConfig,
-    ensureDataDir, generateAccessKeypair, log, readAceConfig, readJson, writeJson,
+    APP_ORIGIN, accessPrivateKeyToHex, aceDeploymentFromConfig, aptosFromConfig,
+    ensureDataDir, log, readAceConfig, readJson, vrfOutputToAccessKeypair, writeJson,
 } from './common.js';
 
 const BLOB_SUFFIX = 'song-1.mp3';
@@ -40,6 +41,7 @@ async function main() {
 
     const aceDeployment = aceDeploymentFromConfig(cfg);
     const ibeKeypairId = AccountAddress.fromString(cfg.ibeKeypairId);
+    const vrfKeypairId = AccountAddress.fromString(cfg.vrfKeypairId);
     const moduleAddr = AccountAddress.fromString(conf.appContractAddr);
     const moduleName = 'capability_access';
 
@@ -65,8 +67,31 @@ async function main() {
     })).unwrapOrThrow('encrypt failed');
     log(`Ciphertext (${ciphertext.length} B) ready`);
 
-    log('Generating (accessPrivateKey, accessPublicKey) directly...');
-    const { accessPrivateKey, accessPublicKey } = generateAccessKeypair();
+    log('Deriving (accessPrivateKey, accessPublicKey) via ACE threshold VRF...');
+    const vrfBytes = (await ACE.VRF_Aptos.derive({
+        aceDeployment,
+        keypairId: vrfKeypairId,
+        chainId,
+        moduleAddr,
+        moduleName,
+        label: labelBytes,
+        accountAddress: alice.accountAddress,
+        sign: async message => {
+            const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
+                accountAddress: alice.accountAddress,
+                application: APP_ORIGIN,
+                chainId,
+                message,
+                nonce: `bearer-capability-derive-${BLOB_SUFFIX}`,
+            });
+            return {
+                pubKey: alice.publicKey,
+                signature: alice.sign(fullMessage),
+                fullMessage,
+            };
+        },
+    })).unwrapOrThrow('threshold VRF derive failed');
+    const { accessPrivateKey, accessPublicKey } = vrfOutputToAccessKeypair(vrfBytes);
     log(`  accessPublicKey = 0x${bytesToHex(accessPublicKey)}`);
 
     log('Registering accessPublicKey on-chain...');

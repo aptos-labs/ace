@@ -12,7 +12,7 @@ To use it, you will:
 
 ## Example: bearer signing capabilities
 
-In this example, we show how to build bearer signing capabilities with ACE. The high-level idea is to use an object ID as the lookup key, register an access public key for that object on-chain, and let a reader prove possession of the matching private key when decrypting.
+In this example, we show how to build bearer signing capabilities with ACE. The high-level idea is to use an object ID as the lookup key, let the owner derive an access keypair through ACE threshold VRF, register the access public key for that object on-chain, and let a reader prove possession of the matching private key when decrypting.
 
 The reader does not need an Aptos account in this pattern. The capability is possession of `accessPrivateKey`. When the reader wants to decrypt, they create a custom decryption session. The session generates a one-time public encryption key, `enc_pk`, and retains the matching secret key internally. ACE encrypts the data it returns to `enc_pk`, so the reader signs a small statement that names the object, the deployed app origin, and that `enc_pk`.
 
@@ -25,7 +25,7 @@ Concretely, the signed statement has these fields:
 | `origin` | The deployed app origin that should be allowed. |
 | `sig` | `Sign(accessPrivateKey, BCS(dst, label, enc_pk, origin))`. |
 
-The client sends `origin` and `sig` to ACE, encoded as `BCS(origin, sig)`. The hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`.
+The client sends `origin` and `sig` to ACE, encoded as `BCS(origin, sig)`. The custom-flow hook loads `accessPublicKey` from `access_public_keys[label]`, checks that `origin` is the deployed app origin, and verifies that `sig` was made over the same `label`, `enc_pk`, and `origin`. A separate threshold-VRF hook authorizes the owner to derive the access key material in the first place.
 
 Each signed field has a job. Including `label` prevents a capability for one object from authorizing another object. Including `enc_pk` prevents someone who captures a valid `origin` and `sig` pair from replaying it with a different `enc_pk`. Including `origin` scopes the proof to the deployed app: the access key authorizes the reader, while the independently signed origin protects users from a malicious dapp replaying or soliciting a proof for a different application context.
 
@@ -33,7 +33,7 @@ Each signed field has a job. Including `label` prevents a capability for one obj
 
 In this example, the Move module is named `capability_access`. After you publish it, the SDK's `moduleAddr` is the publisher address and `moduleName` is `"capability_access"`.
 
-In the contract, we define the statement the capability key signs, store the registered public key for each object label, store app-level origin config, and expose `on_ace_decryption_request_custom_flow` to verify the decryption request.
+In the contract, we define the statement the capability key signs, store the registered public key for each object label, store app-level origin config, expose `on_ace_vrf_request` to authorize owner-side key derivation, and expose `on_ace_decryption_request_custom_flow` to verify reader decrypt requests.
 
 ACE calls the contract through a view function with this fixed name and shape:
 
@@ -46,6 +46,18 @@ public fun on_ace_decryption_request_custom_flow(
 ```
 
 The third hook argument, `payload`, is the app-defined bytes for this flow. In this example, it contains `origin` and `sig`. ACE does not interpret those bytes or require a normal Aptos wallet identity proof. During decryption, ACE passes the encrypted object's `label`, the reader's one-time public encryption key `enc_pk`, and `payload` to the hook; the contract decides whether decryption should be allowed for this object.
+
+Because this bearer example derives the access key through ACE threshold VRF, the same module also exposes the fixed VRF hook:
+
+```move
+public fun on_ace_vrf_request(
+    label: vector<u8>,
+    account: address,
+    origin: String,
+): bool
+```
+
+Workers call this before serving the VRF request. In this example, labels are shaped as `@<owner>/<object-path>`, so the hook approves only when `origin` matches the deployed app origin and `label` is in the signed `account`'s namespace. That is what makes the bearer key owner-derivable rather than globally derivable by anyone who knows the label.
 
 Before writing the hook, define exactly what the reader signs. In this app, the signature should mean: the holder of `accessPrivateKey` approves decrypting this `label`, for this `enc_pk`, from this deployed app origin.
 
@@ -145,9 +157,11 @@ module admin::capability_access {
     use aptos_std::bcs;
     use aptos_std::bcs_stream;
     use aptos_std::bls12381;
+    use aptos_std::string_utils;
     use aptos_std::table;
     use aptos_std::table::Table;
     use std::error;
+    use std::string::{Self, String};
 
     const E_NOT_ADMIN: u64 = 1;
     const E_NOT_INITIALIZED: u64 = 2;
@@ -239,16 +253,74 @@ module admin::capability_access {
         });
         bls12381::verify_normal_signature(&sig, &pk, msg)
     }
+
+    #[view]
+    public fun on_ace_vrf_request(label: vector<u8>, account: address, origin: String): bool {
+        if (!exists<AppConfig>(@admin)) return false;
+        let config = &AppConfig[@admin];
+        if (origin.bytes() != &config.client_origin) return false;
+        let owner_prefix = create_full_blob_name(account, string::utf8(b""));
+        bytes_strictly_starts_with(&label, owner_prefix.bytes())
+    }
+
+    public fun create_full_blob_name(owner_address: address, blob_name_suffix: String): String {
+        let full_blob_name = string_utils::to_string_with_canonical_addresses(&owner_address);
+        full_blob_name.append_utf8(b"/");
+        full_blob_name.append(blob_name_suffix);
+        full_blob_name
+    }
+
+    fun bytes_strictly_starts_with(bytes: &vector<u8>, prefix: &vector<u8>): bool {
+        let prefix_len = prefix.length();
+        let bytes_len = bytes.length();
+        if (bytes_len <= prefix_len) return false;
+
+        let i = 0;
+        while (i < prefix_len) {
+            if (*bytes.borrow(i) != *prefix.borrow(i)) return false;
+            i = i + 1;
+        };
+        true
+    }
 }
 ```
 
-The hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode the third argument as `BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key.
+The custom-flow hook name and signature are fixed, but the internals are app-defined. In this example, we store one access public key per `label`, decode the third argument as `BCS(origin) || BCS(sig)`, check that `origin` matches app-level config, and verify that `sig` covers `BCS(SignableRequest { dst, label, enc_pk, origin })` under the registered public key. The VRF hook uses the same origin config and rejects requests signed by any account other than the owner namespace in the label.
 
-Before readers decrypt, generate a BLS access keypair directly with a cryptographically secure random source. Do not reinterpret unrelated 32-byte output as a BLS scalar. Register only `accessPublicKey` on-chain; keep `accessPrivateKey` off-chain and give it only to readers or capability-issuing systems that should be able to sign access statements.
+Before readers decrypt, the owner derives a BLS access keypair from ACE threshold VRF. The VRF input is bound to the ACE VRF keypair, the app contract id, and the object label; the Aptos signature authorizes the request, and `on_ace_vrf_request` enforces that the signed account owns the label namespace. Register only `accessPublicKey` on-chain; keep `accessPrivateKey` off-chain and give it only to readers or capability-issuing systems that should be able to sign access statements. Using the client handles shown below, derivation looks like this:
 
 ```typescript
-const accessPrivateKey = bls12_381.utils.randomPrivateKey();
-const accessPublicKey = bls12_381.getPublicKey(accessPrivateKey);
+const owner = getOwnerAccount(); // controls the @<owner>/... namespace
+const vrfBytes = (await ACE.VRF_Aptos.derive({
+  aceDeployment,
+  keypairId: vrfKeypairId,
+  chainId,
+  moduleAddr,
+  moduleName,
+  label,
+  accountAddress: owner.accountAddress,
+  sign: async (message) => {
+    const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
+      accountAddress: owner.accountAddress,
+      application: appOrigin,
+      chainId,
+      message,
+      nonce: crypto.randomUUID(),
+    });
+    return {
+      pubKey: owner.publicKey,
+      signature: owner.sign(fullMessage),
+      fullMessage,
+    };
+  },
+})).unwrapOrThrow("ACE VRF derive failed");
+
+const accessPrivateKey = BigInt(`0x${bytesToHex(vrfBytes)}`) % bls12_381.fields.Fr.ORDER;
+if (accessPrivateKey === 0n) throw new Error("VRF output reduced to zero");
+const accessPublicKey = bls12_381.G1.ProjectivePoint.BASE
+  .multiply(accessPrivateKey)
+  .toRawBytes(true);
+
 // Submit accessPublicKey to capability_access::register and distribute
 // accessPrivateKey only through your secure capability-delivery channel.
 ```
@@ -256,7 +328,7 @@ const accessPublicKey = bls12_381.getPublicKey(accessPrivateKey);
 Deploy the Move package, initialize verifier state, and register the access public keys you want to accept. After deploying the client, call `set_client_origin` once with the client's stable origin. The origin is app-level configuration, separate from per-label public keys. Record:
 
 - `chainId`, `moduleAddr`, and `moduleName` for the module with the hook.
-- `aceDeployment` and `keypairId` from the ACE deployment you target, such as a preview value provided by the ACE team or a localnet/example config.
+- `aceDeployment`, `ibeKeypairId`, and `vrfKeypairId` from the ACE deployment you target, such as SDK `knownDeployments` values or a localnet/example config.
 - The version and encoding for your proof data.
 
 ### Client changes
@@ -267,28 +339,30 @@ Before the SDK calls, fill in the ACE deployment values and the app module ident
 import * as ACE from "@aptos-labs/ace-sdk";
 import { AccountAddress, Serializer } from "@aptos-labs/ts-sdk";
 import { bls12_381 } from "@noble/curves/bls12-381";
-import { bytesToNumberBE } from "@noble/curves/utils";
+import { bytesToHex } from "@noble/hashes/utils";
 
 const aceDeployment = new ACE.AceDeployment({
   apiEndpoint: "https://api.testnet.aptoslabs.com/v1",
   contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
 });
-const keypairId = AccountAddress.fromString("0x<ace-keypair-id>");
+const ibeKeypairId = AccountAddress.fromString("0x<ace-ibe-keypair-id>");
+const vrfKeypairId = AccountAddress.fromString("0x<ace-vrf-keypair-id>");
 const chainId = 2; // Aptos testnet
+const appOrigin = "https://<your-deployed-app-origin>";
 
 const moduleAddr = AccountAddress.fromString("0x<app-module-address>");
 const moduleName = "capability_access"; // matches module <publisher>::capability_access
 ```
 
-In the client, encrypt under the module that contains the custom hook. The SDK calls the object ID bytes `label`; this example uses `objectId` as that label.
+In the client, encrypt under the module that contains the custom hook. The SDK calls the object ID bytes `label`; this example uses a canonical `@<owner>/<object-path>` blob id as that label.
 
 ```typescript
-const objectId = new TextEncoder().encode("0x<owner-address>/album/song-001");
+const objectId = new TextEncoder().encode("@<owner-canonical-address>/album/song-001");
 const label = objectId;
 
 const ciphertext = (await ACE.IBE_Aptos.encrypt({
   aceDeployment,
-  keypairId,
+  keypairId: ibeKeypairId,
   chainId,
   moduleAddr,
   moduleName,
@@ -302,12 +376,12 @@ If you encrypt many objects with the same ACE keypair and t-IBE scheme, fetch th
 ```typescript
 const pk = (await ACE.IBE_Aptos.fetchPk({
   aceDeployment,
-  keypairId,
+  keypairId: ibeKeypairId,
 })).unwrapOrThrow("ACE public key fetch failed");
 
 const ciphertext = (await ACE.IBE_Aptos.encrypt({
   aceDeployment,
-  keypairId,
+  keypairId: ibeKeypairId,
   chainId,
   moduleAddr,
   moduleName,
@@ -322,7 +396,7 @@ For decryption, create a session that owns the fresh one-time encryption keypair
 ```typescript
 const session = await ACE.IBE_Aptos.CustomDecryptionSession.create({
   aceDeployment,
-  keypairId,
+  keypairId: ibeKeypairId,
   chainId,
   moduleAddr,
   moduleName,
@@ -340,7 +414,7 @@ signable.serializeBytes(label);
 signable.serializeBytes(encPk);
 signable.serializeBytes(origin);
 const sig = bls12_381.G2.hashToCurve(signable.toUint8Array(), { DST: blsDst })
-  .multiply(bytesToNumberBE(accessPrivateKey))
+  .multiply(accessPrivateKey)
   .toRawBytes(true);
 
 const payloadSerializer = new Serializer();

@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use node_msg_gateway::{ensure_node_msg_gateway, GatewayContext};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Semaphore};
@@ -15,8 +15,8 @@ use vss_store::{connect_vss_store, VssStore};
 use crate::config::{resolve_max_concurrent, ChainRpcConfig, RunConfig, RuntimeMode};
 use crate::http_server;
 use crate::onchain::{
-    addr_bytes_to_string, fetch_dkg_session_bcs, fetch_dkr_session_bcs, fetch_state_view_v0,
-    BcsSecretInfo, BcsStateViewV0,
+    addr_bytes_to_string, fetch_live_vss_sessions, fetch_state_view_v0, BcsSecretInfo,
+    BcsStateViewV0,
 };
 use crate::reconstruction::reconstruct_share_from_store;
 use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry, ShareMap};
@@ -225,7 +225,7 @@ async fn run_supervisor(
         }
 
         if state.epoch_change_info.is_none() && last_pruned_stable_epoch != Some(state.epoch) {
-            match prune_vss_store_to_live_sessions(&config, &state).await {
+            match prune_vss_store_to_live_sessions(&config).await {
                 Ok(deleted) => {
                     last_pruned_stable_epoch = Some(state.epoch);
                     if deleted > 0 {
@@ -345,60 +345,9 @@ async fn reconcile_serving_cache(
     Ok(())
 }
 
-async fn prune_vss_store_to_live_sessions(
-    config: &NetworkSupervisorConfig,
-    state: &BcsStateViewV0,
-) -> Result<usize> {
-    let keep_sessions = live_vss_sessions(&config.rpc, &config.ace, state).await?;
+async fn prune_vss_store_to_live_sessions(config: &NetworkSupervisorConfig) -> Result<usize> {
+    let keep_sessions = fetch_live_vss_sessions(&config.rpc, &config.ace).await?;
     config.store.prune_except_sessions(&keep_sessions)
-}
-
-async fn live_vss_sessions(
-    rpc: &AptosRpc,
-    ace: &str,
-    state: &BcsStateViewV0,
-) -> Result<Vec<String>> {
-    let mut keep = HashSet::new();
-    for secret in &state.secrets {
-        collect_vss_sessions_for_secret(rpc, ace, secret, &mut keep).await?;
-    }
-    if let Some(previous) = &state.previous_epoch_info {
-        for secret in &previous.secrets {
-            collect_vss_sessions_for_secret(rpc, ace, secret, &mut keep).await?;
-        }
-    }
-    let mut sessions = keep.into_iter().collect::<Vec<_>>();
-    sessions.sort();
-    Ok(sessions)
-}
-
-async fn collect_vss_sessions_for_secret(
-    rpc: &AptosRpc,
-    ace: &str,
-    secret: &BcsSecretInfo,
-    keep: &mut HashSet<String>,
-) -> Result<()> {
-    let session_addr = addr_bytes_to_string(&secret.current_session);
-    match fetch_dkr_session_bcs(rpc, ace, &session_addr).await {
-        Ok(dkr_session) => {
-            keep.extend(dkr_session.vss_sessions.iter().map(addr_bytes_to_string));
-            Ok(())
-        }
-        Err(dkr_err) => {
-            let dkg_session = fetch_dkg_session_bcs(rpc, ace, &session_addr)
-                .await
-                .map_err(|dkg_err| {
-                    anyhow!(
-                        "collect live VSS sessions for {}: DKR fetch failed: {}; DKG fetch failed: {}",
-                        session_addr,
-                        dkr_err,
-                        dkg_err
-                    )
-                })?;
-            keep.extend(dkg_session.vss_sessions.iter().map(addr_bytes_to_string));
-            Ok(())
-        }
-    }
 }
 
 fn reconcile_epoch_change_clients(

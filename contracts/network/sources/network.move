@@ -149,6 +149,41 @@ module ace::network {
         }
     }
 
+    fun append_live_vss_sessions_for_secret(live_vss_sessions: &mut vector<address>, secret_session: address) {
+        let (vss_sessions, contribution_flags) = if (dkg::is_session(secret_session)) {
+            dkg::vss_sessions_and_done_flags(secret_session)
+        } else {
+            dkr::vss_sessions_and_contribution_flags(secret_session)
+        };
+        let i = 0;
+        while (i < vss_sessions.length()) {
+            if (contribution_flags[i]) {
+                live_vss_sessions.push_back(vss_sessions[i]);
+            };
+            i += 1;
+        };
+    }
+
+    fun append_live_vss_sessions_for_secrets(live_vss_sessions: &mut vector<address>, secrets: &vector<address>) {
+        let i = 0;
+        while (i < secrets.length()) {
+            append_live_vss_sessions_for_secret(live_vss_sessions, secrets[i]);
+            i += 1;
+        };
+    }
+
+    #[view]
+    public fun live_vss_sessions_bcs(): vector<u8> {
+        let state = &State[@ace];
+        let live_vss_sessions = vector[];
+        append_live_vss_sessions_for_secrets(&mut live_vss_sessions, &state.secrets);
+        if (state.previous_epoch_info.is_some()) {
+            let previous_epoch_info = *state.previous_epoch_info.borrow();
+            append_live_vss_sessions_for_secrets(&mut live_vss_sessions, &previous_epoch_info.secrets);
+        };
+        bcs::to_bytes(&live_vss_sessions)
+    }
+
     // Single BCS-encoded snapshot covering network::State plus all sub-protocol data nodes
     // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
     #[view]

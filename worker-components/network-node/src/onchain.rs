@@ -140,6 +140,21 @@ pub(crate) async fn fetch_state_view_v0(rpc: &AptosRpc, ace: &str) -> Result<Bcs
     bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode StateViewV0: {}", e))
 }
 
+pub(crate) async fn fetch_live_vss_sessions(rpc: &AptosRpc, ace: &str) -> Result<Vec<String>> {
+    let result = rpc
+        .call_view(&format!("{}::network::live_vss_sessions_bcs", ace), &[])
+        .await?;
+    let hex = result
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("expected string in live_vss_sessions_bcs result"))?;
+    let bytes = hex::decode(hex.trim_start_matches("0x"))?;
+    let mut sessions: Vec<[u8; 32]> =
+        bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode live VSS sessions: {}", e))?;
+    sessions.sort();
+    Ok(sessions.iter().map(addr_bytes_to_string).collect())
+}
+
 pub(crate) async fn fetch_dkg_session_bcs(
     rpc: &AptosRpc,
     ace: &str,

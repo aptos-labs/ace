@@ -14,7 +14,7 @@ pub struct ChainRpcConfig {
     pub aptos_mainnet: AptosRpc,                     // chain_id=1
     pub aptos_testnet: AptosRpc,                     // chain_id=2
     pub aptos_localnet: AptosRpc,                    // chain_id=4
-    pub aptos_shelby_private_beta: Option<AptosRpc>, // chain_id=139
+    pub aptos_shelby_private_beta: Option<AptosRpc>, // chain_id=125
 }
 
 impl ChainRpcConfig {
@@ -23,14 +23,48 @@ impl ChainRpcConfig {
             1 => Ok(&self.aptos_mainnet),
             2 => Ok(&self.aptos_testnet),
             4 => Ok(&self.aptos_localnet),
-            139 => self.aptos_shelby_private_beta.as_ref().ok_or_else(|| {
+            125 => self.aptos_shelby_private_beta.as_ref().ok_or_else(|| {
                 anyhow!(
-                    "no Aptos RPC configured for chain_id 139 (shelby-private-beta); \
+                    "no Aptos RPC configured for chain_id 125 (shelby-private-beta); \
                      set --aptos-shelby-private-beta-api"
                 )
             }),
             _ => Err(anyhow!("no Aptos RPC configured for chain_id {}", chain_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rpc(name: &str) -> AptosRpc {
+        AptosRpc::new(format!("http://{name}.invalid/v1"))
+    }
+
+    fn config_with_shelby(shelby: Option<AptosRpc>) -> ChainRpcConfig {
+        ChainRpcConfig {
+            aptos_mainnet: rpc("mainnet"),
+            aptos_testnet: rpc("testnet"),
+            aptos_localnet: rpc("localnet"),
+            aptos_shelby_private_beta: shelby,
+        }
+    }
+
+    #[test]
+    fn shelby_private_beta_uses_chain_id_125() {
+        let config = config_with_shelby(Some(rpc("shelby-private-beta")));
+        let shelby_rpc = config.aptos_rpc_for_chain_id(125).unwrap();
+        assert_eq!(shelby_rpc.base_url, "http://shelby-private-beta.invalid/v1");
+
+        let missing_shelby = config_with_shelby(None);
+        let error = missing_shelby
+            .aptos_rpc_for_chain_id(125)
+            .err()
+            .expect("missing Shelby RPC should error");
+        assert!(error
+            .to_string()
+            .contains("no Aptos RPC configured for chain_id 125"));
     }
 }
 

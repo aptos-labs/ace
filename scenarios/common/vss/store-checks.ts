@@ -27,6 +27,19 @@ export function assertVSSHolderShareRows(opts: {
     }
 }
 
+export function assertVSSStoresHaveNoEpochColumns(opts: {
+    storeUrls: string[];
+}): void {
+    for (const storeUrl of opts.storeUrls) {
+        for (const table of ['vss_dealer_states', 'vss_holder_shares']) {
+            const count = countEpochColumnsInStore(storeUrl, table);
+            if (count !== 0) {
+                throw `expected no epoch column in ${table} for ${storeUrl}, got ${count}`;
+            }
+        }
+    }
+}
+
 export async function assertVSSSecretReconstruction(opts: {
     storeUrls: string[];
     sessionAddr: AccountAddress;
@@ -165,6 +178,17 @@ function countVSSHolderSharesInStore(opts: {
     return count;
 }
 
+function countEpochColumnsInStore(storeUrl: string, table: string): number {
+    const out = storeUrl.startsWith('postgres://')
+        ? queryPostgresEpochColumnCount(storeUrl, table)
+        : querySqliteEpochColumnCount(sqlitePathFromUrl(storeUrl), table);
+    const count = Number(out);
+    if (!Number.isSafeInteger(count)) {
+        throw new Error(`Invalid epoch column count ${JSON.stringify(out)} from ${storeUrl}`);
+    }
+    return count;
+}
+
 function querySqliteHolderShare(dbPath: string, session: string, holderIndex: number): string {
     return execFileSync('sqlite3', [
         dbPath,
@@ -184,6 +208,13 @@ function querySqliteDealerState(dbPath: string, session: string): string {
         dbPath,
         `select hex(state_bytes) from vss_dealer_states where session_addr = '${session}';`,
     ], { encoding: 'utf8' }).trim().toLowerCase();
+}
+
+function querySqliteEpochColumnCount(dbPath: string, table: string): string {
+    return execFileSync('sqlite3', [
+        dbPath,
+        `select count(*) from pragma_table_info('${table}') where name = 'epoch';`,
+    ], { encoding: 'utf8' }).trim();
 }
 
 function queryPostgresHolderShare(storeUrl: string, session: string, holderIndex: number): string {
@@ -211,6 +242,15 @@ function queryPostgresDealerState(storeUrl: string, session: string): string {
         '-c',
         `select encode(state_bytes, 'hex') from vss_dealer_states where session_addr = '${session}';`,
     ], { encoding: 'utf8' }).trim().toLowerCase();
+}
+
+function queryPostgresEpochColumnCount(storeUrl: string, table: string): string {
+    return execFileSync(path.join(findPostgresBinDir(), 'psql'), [
+        storeUrl,
+        '-At',
+        '-c',
+        `select count(*) from information_schema.columns where table_schema = 'public' and table_name = '${table}' and column_name = 'epoch';`,
+    ], { encoding: 'utf8' }).trim();
 }
 
 function decodeDealerStatePolyS(bytes: Uint8Array): Uint8Array[] {

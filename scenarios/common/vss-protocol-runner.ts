@@ -29,6 +29,7 @@ import {
     assertVSSHolderShareRows,
     assertVSSPublicKeys,
     assertVSSSecretReconstruction,
+    assertVSSStoresHaveNoEpochColumns,
 } from './vss/store-checks';
 
 export type { VSSProtocolScenarioOptions } from './vss-protocol-fixtures';
@@ -100,6 +101,7 @@ export async function runVSSProtocolScenario(opts: VSSProtocolScenarioOptions): 
             sessionAddr,
             expectedRows: numWorkers,
         });
+        assertVSSStoresHaveNoEpochColumns({ storeUrls: stores.storeUrls });
 
         log('Assert on-chain VSS result/share public keys against DB openings.');
         assertVSSPublicKeys({

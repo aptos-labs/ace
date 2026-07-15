@@ -239,7 +239,6 @@ async fn ensure_verified_offchain_share(
         (my_idx + 1) as u64,
     )?;
     store.put_holder_share(HolderShareRecord {
-        epoch: 0,
         session_addr: session_addr.to_string(),
         holder_index: my_idx as u64,
         share_bcs: plaintext.clone(),

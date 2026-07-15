@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -47,6 +47,9 @@ pub trait VssStore: Send + Sync {
 
     /// Called at epoch `x` start. Deletes epoch `x - 2` and older data.
     fn prune_at_epoch_start(&self, current_epoch: u64) -> Result<()>;
+
+    /// Deletes rows for VSS sessions outside the supplied live session set.
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize>;
 }
 
 /// Resolve and verify the holder opening for one completed VSS session.
@@ -371,6 +374,36 @@ impl VssStore for SqliteVssStore {
         }
         Ok(())
     }
+
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize> {
+        let keep = normalized_session_set(keep_session_addrs);
+        let conn = self.conn()?;
+        let mut deleted = 0usize;
+        for table in ["vss_dealer_states", "vss_holder_shares"] {
+            let sessions = {
+                let mut stmt = conn
+                    .prepare(&format!("select distinct session_addr from {table}"))
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("read sessions in {table}: {}", e))?;
+                rows
+            };
+            for session in sessions {
+                if !keep.contains(&normalize_session_addr(&session)) {
+                    deleted += conn
+                        .execute(
+                            &format!("delete from {table} where session_addr = ?1"),
+                            params![session],
+                        )
+                        .map_err(|e| anyhow!("prune stale sessions from {table}: {}", e))?;
+                }
+            }
+        }
+        Ok(deleted)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +562,31 @@ impl VssStore for PostgresVssStore {
             Ok(())
         })
     }
+
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize> {
+        let keep = normalized_session_set(keep_session_addrs);
+        self.with_client(|client| {
+            let mut deleted = 0usize;
+            for table in ["vss_dealer_states", "vss_holder_shares"] {
+                let rows = client
+                    .query(&format!("select distinct session_addr from {table}"), &[])
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?;
+                for row in rows {
+                    let session: String = row.get(0);
+                    if !keep.contains(&normalize_session_addr(&session)) {
+                        deleted += client
+                            .execute(
+                                &format!("delete from {table} where session_addr = $1"),
+                                &[&session],
+                            )
+                            .map_err(|e| anyhow!("prune stale sessions from {table}: {}", e))?
+                            as usize;
+                    }
+                }
+            }
+            Ok(deleted)
+        })
+    }
 }
 
 fn run_sync_postgres<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -541,6 +599,13 @@ fn run_sync_postgres<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
 
 fn normalize_session_addr(session_addr: &str) -> String {
     normalize_account_addr(session_addr)
+}
+
+fn normalized_session_set(session_addrs: &[String]) -> HashSet<String> {
+    session_addrs
+        .iter()
+        .map(|addr| normalize_session_addr(addr))
+        .collect()
 }
 
 fn to_i64(value: u64) -> Result<i64> {
@@ -624,5 +689,39 @@ mod tests {
         assert!(store.get_dealer_state("0x2").unwrap().is_none());
         assert!(store.get_dealer_state("0x3").unwrap().is_some());
         assert!(store.get_dealer_state("0x4").unwrap().is_some());
+    }
+
+    #[test]
+    fn prune_except_sessions_keeps_only_reachable_vss_sessions() {
+        let (_dir, store) = test_store();
+        let live = normalize_account_addr("0x1");
+        let stale = normalize_account_addr("0x2");
+
+        for (epoch, session) in [(0, live.as_str()), (99, stale.as_str())] {
+            store
+                .put_dealer_state(DealerStateRecord {
+                    epoch,
+                    session_addr: session.to_string(),
+                    state_bytes: vec![epoch as u8],
+                })
+                .unwrap();
+            store
+                .put_holder_share(HolderShareRecord {
+                    epoch,
+                    session_addr: session.to_string(),
+                    holder_index: 0,
+                    share_bcs: vec![epoch as u8],
+                })
+                .unwrap();
+        }
+
+        let deleted = store
+            .prune_except_sessions(std::slice::from_ref(&live))
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert!(store.get_dealer_state(&live).unwrap().is_some());
+        assert!(store.get_holder_share(&live, 0).unwrap().is_some());
+        assert!(store.get_dealer_state(&stale).unwrap().is_none());
+        assert!(store.get_holder_share(&stale, 0).unwrap().is_none());
     }
 }

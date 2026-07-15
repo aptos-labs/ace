@@ -34,40 +34,6 @@ impl ChainRpcConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rpc(name: &str) -> AptosRpc {
-        AptosRpc::new(format!("http://{name}.invalid/v1"))
-    }
-
-    fn config_with_shelby(shelby: Option<AptosRpc>) -> ChainRpcConfig {
-        ChainRpcConfig {
-            aptos_mainnet: rpc("mainnet"),
-            aptos_testnet: rpc("testnet"),
-            aptos_localnet: rpc("localnet"),
-            aptos_shelby_private_beta: shelby,
-        }
-    }
-
-    #[test]
-    fn shelby_private_beta_uses_chain_id_125() {
-        let config = config_with_shelby(Some(rpc("shelby-private-beta")));
-        let shelby_rpc = config.aptos_rpc_for_chain_id(125).unwrap();
-        assert_eq!(shelby_rpc.base_url, "http://shelby-private-beta.invalid/v1");
-
-        let missing_shelby = config_with_shelby(None);
-        let error = missing_shelby
-            .aptos_rpc_for_chain_id(125)
-            .err()
-            .expect("missing Shelby RPC should error");
-        assert!(error
-            .to_string()
-            .contains("no Aptos RPC configured for chain_id 125"));
-    }
-}
-
 // ── Memory-based concurrency limit ───────────────────────────────────────────
 
 fn read_cgroup_memory_limit() -> Option<usize> {

@@ -163,8 +163,10 @@ fn resolve_max_concurrent(explicit: Option<usize>) -> usize {
     })
 }
 
+const ADMIN_STATUS_PORT_OFFSET: u16 = 1000;
+
 fn admin_status_port(public_port: u16) -> Option<u16> {
-    public_port.checked_add(1)
+    public_port.checked_add(ADMIN_STATUS_PORT_OFFSET)
 }
 
 // ── Top-level run configuration ───────────────────────────────────────────────
@@ -761,5 +763,11 @@ mod tests {
             "https://shelby.example/v1"
         );
         assert!(cfg.aptos_rpc_for_chain_id(139).is_err());
+    }
+
+    #[test]
+    fn admin_status_port_uses_reserved_offset() {
+        assert_eq!(admin_status_port(8080), Some(9080));
+        assert_eq!(admin_status_port(u16::MAX), None);
     }
 }

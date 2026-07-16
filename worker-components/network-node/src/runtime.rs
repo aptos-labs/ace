@@ -35,8 +35,6 @@ pub async fn run(config: RunConfig, shutdown_rx: oneshot::Receiver<()>) -> Resul
 
 // ── Runtime supervisor ────────────────────────────────────────────────────────
 
-const PREVIOUS_EPOCH_GRACE_MICROS: u64 = 30_000_000;
-
 #[derive(Clone, Copy)]
 struct RuntimeCapabilities {
     can_serve: bool,
@@ -362,7 +360,7 @@ fn desired_serving_epochs(
         let in_grace = now_micros
             < state
                 .epoch_start_time_micros
-                .saturating_add(PREVIOUS_EPOCH_GRACE_MICROS);
+                .saturating_add(state.previous_epoch_grace_micros);
         if in_grace && state.epoch > 0 {
             if let Some(idx) = committee_index(&previous.nodes, account_addr) {
                 epochs.push(ServingEpoch {
@@ -680,6 +678,7 @@ mod tests {
             epoch_change_info: None,
             feature_configs: BcsNetworkFeatureConfigs::default(),
             live_vss_sessions: vec![],
+            previous_epoch_grace_micros: 30_000_000,
         }
     }
 
@@ -706,7 +705,7 @@ mod tests {
         let in_grace = desired_serving_epochs(
             &state,
             &addr_bytes_to_string(&me),
-            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS - 1,
+            state.epoch_start_time_micros + state.previous_epoch_grace_micros - 1,
         );
         assert_eq!(in_grace.len(), 1);
         assert_eq!(in_grace[0].epoch, 6);
@@ -716,7 +715,7 @@ mod tests {
         let after_grace = desired_serving_epochs(
             &state,
             &addr_bytes_to_string(&me),
-            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS,
+            state.epoch_start_time_micros + state.previous_epoch_grace_micros,
         );
         assert!(after_grace.is_empty());
     }

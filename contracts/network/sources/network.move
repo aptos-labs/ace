@@ -16,6 +16,7 @@ module ace::network {
 
     const MIN_RESHARING_INTERVAL_SECS: u64 = 30;
     const MAX_DESCRIPTION_BYTES: u64 = 1024;
+    const DEFAULT_PREVIOUS_EPOCH_GRACE_MICROS: u64 = 30_000_000;
 
     const E_ONLY_ADMIN_CAN_DO_THIS: u64 = 1;
     const E_INVALID_NODE: u64 = 2;
@@ -63,6 +64,10 @@ module ace::network {
 
     struct SignerStore has key {
         extend_ref: ExtendRef,
+    }
+
+    struct ServingConfig has copy, drop, store, key {
+        previous_epoch_grace_micros: u64,
     }
 
     struct ProposedEpochConfig has store, drop, copy {
@@ -153,6 +158,7 @@ module ace::network {
         epoch_change_info: Option<EpochChangeView>,
         feature_configs: FeatureConfigs,
         live_vss_sessions: vector<address>,
+        previous_epoch_grace_micros: u64,
     }
 
     fun secret_info(addr: address): SecretInfo {
@@ -284,6 +290,7 @@ module ace::network {
     #[view]
     public fun state_view_v1_bcs(): vector<u8> {
         let state = &State[@ace];
+        let serving_config = serving_config_or_default(@ace);
         bcs::to_bytes(&StateViewV1 {
             epoch: state.epoch,
             epoch_start_time_micros: state.epoch_start_time_micros,
@@ -296,7 +303,22 @@ module ace::network {
             epoch_change_info: epoch_change_view(state),
             feature_configs: feature_configs_or_empty(@ace),
             live_vss_sessions: live_vss_sessions(state),
+            previous_epoch_grace_micros: serving_config.previous_epoch_grace_micros,
         })
+    }
+
+    entry fun initialize_serving_config(admin: &signer) {
+        assert!(@ace == admin.address_of(), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        if (!exists<ServingConfig>(@ace)) {
+            move_to(admin, default_serving_config());
+        };
+    }
+
+    entry fun update_previous_epoch_grace_micros(admin: &signer, previous_epoch_grace_micros: u64) {
+        assert!(@ace == admin.address_of(), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        initialize_serving_config(admin);
+        let serving_config = &mut ServingConfig[@ace];
+        serving_config.previous_epoch_grace_micros = previous_epoch_grace_micros;
     }
 
     entry fun update_reachability_based_vss_store_management_flag(admin: &signer, enabling: bool) {
@@ -516,6 +538,11 @@ module ace::network {
         bcs::to_bytes(&feature_configs_or_empty(@ace))
     }
 
+    #[view]
+    public fun serving_config_bcs(): vector<u8> {
+        bcs::to_bytes(&serving_config_or_default(@ace))
+    }
+
     fun ensure_feature_slot(admin: &signer, idx: u64) {
         if (!exists<FeatureConfigs>(@ace)) {
             move_to(admin, FeatureConfigs { items: vector[] });
@@ -549,6 +576,18 @@ module ace::network {
             *&FeatureConfigs[addr]
         } else {
             FeatureConfigs { items: vector[] }
+        }
+    }
+
+    fun default_serving_config(): ServingConfig {
+        ServingConfig { previous_epoch_grace_micros: DEFAULT_PREVIOUS_EPOCH_GRACE_MICROS }
+    }
+
+    fun serving_config_or_default(addr: address): ServingConfig {
+        if (exists<ServingConfig>(addr)) {
+            *&ServingConfig[addr]
+        } else {
+            default_serving_config()
         }
     }
 }

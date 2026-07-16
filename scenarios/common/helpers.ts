@@ -215,6 +215,9 @@ export async function deployContracts(
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
+        if (packageFolders.includes('network')) {
+            await initializeServingConfig(adminAccount, rpcUrl);
+        }
         if (
             packageFolders.includes('network')
             && options.enableReachabilityBasedVssStoreManagement !== false
@@ -466,6 +469,22 @@ export async function enableReachabilityBasedVssStoreManagementFlag(
             rpcUrl,
         }),
         'network::update_reachability_based_vss_store_management_flag',
+    );
+}
+
+export async function initializeServingConfig(
+    adminAccount: Account,
+    rpcUrl = LOCALNET_URL,
+): Promise<void> {
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${adminAddr}::network::initialize_serving_config`,
+            args: [],
+            rpcUrl,
+        }),
+        'network::initialize_serving_config',
     );
 }
 

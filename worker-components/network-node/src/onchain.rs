@@ -99,6 +99,7 @@ pub(crate) struct BcsStateView {
     pub(crate) epoch_change_info: Option<BcsEpochChangeView>,
     pub(crate) feature_configs: BcsNetworkFeatureConfigs,
     pub(crate) live_vss_sessions: Vec<[u8; 32]>,
+    pub(crate) previous_epoch_grace_micros: u64,
 }
 
 #[allow(dead_code)]

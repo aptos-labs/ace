@@ -160,6 +160,24 @@ export async function enableReachabilityBasedVssStoreManagementFlag(
     await spawnExitZero('aptos', args, 'aptos move run');
 }
 
+export async function initializeServingConfig(
+    adminAccount: Account,
+    rpcUrl: string,
+): Promise<void> {
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
+    const args = [
+        'move', 'run',
+        '--function-id', `${adminAddr}::network::initialize_serving_config`,
+        '--private-key', `0x${adminKeyHex}`,
+        '--url', rpcUrl,
+        '--assume-yes',
+    ];
+    const redactedArgs = args.map((a, i) => (args[i - 1] === '--private-key' ? '<REDACTED>' : a));
+    console.log(`  $ aptos ${redactedArgs.join(' ')}`);
+    await spawnExitZero('aptos', args, 'aptos move run');
+}
+
 /** Hex (no `0x`) for an Ed25519-backed `Account`. */
 export function ed25519PrivateKeyHex(account: Account): string {
     if (!('privateKey' in account)) {
@@ -193,6 +211,7 @@ export async function deployContracts(
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
         if (packageFolders.includes('network')) {
+            await initializeServingConfig(adminAccount, rpcUrl);
             await enableReachabilityBasedVssStoreManagementFlag(adminAccount, rpcUrl);
         }
     } finally {

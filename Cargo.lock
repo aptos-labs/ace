@@ -2040,6 +2040,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgres-native-tls"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fef4de47bb81477e0c3deaf153a1b10ae176484713ff1640969f4cb96b653ebc"
+dependencies = [
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "postgres-protocol"
 version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3048,7 +3060,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcs",
+ "native-tls",
  "postgres",
+ "postgres-native-tls",
  "rusqlite",
  "tempfile",
  "tokio",

@@ -239,6 +239,7 @@ fn fee_payer_signing_input(fee_payer_txn_bcs: &[u8]) -> Vec<u8> {
 pub struct AptosRpc {
     pub base_url: String,
     client: reqwest::Client,
+    api_key_configured: bool,
     gas_key: Option<String>,
     gas_station_url: Option<String>,
 }
@@ -290,7 +291,21 @@ impl AptosRpc {
             }
         });
 
-        Self { base_url, client, gas_key, gas_station_url }
+        Self {
+            base_url,
+            client,
+            api_key_configured: api_key.is_some(),
+            gas_key,
+            gas_station_url,
+        }
+    }
+
+    pub fn api_key_configured(&self) -> bool {
+        self.api_key_configured
+    }
+
+    pub fn gas_station_configured(&self) -> bool {
+        self.gas_key.is_some()
     }
 
     pub async fn get_chain_id(&self) -> Result<u8> {

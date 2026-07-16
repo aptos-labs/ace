@@ -369,22 +369,44 @@ async fn run_with_maintainer(
         Arc::new(Mutex::new(Vec::new()));
 
     let local = LocalSecrets { shares: shares.clone() };
+    let deployment_dependency =
+        http_server::DependencyTarget::aptos("ace_deployment_api", rpc.clone(), None);
 
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
         let max_concurrent = resolve_max_concurrent(h.max_concurrent);
+        let mut dependencies = vec![deployment_dependency.clone()];
+        dependencies.extend(http_server::chain_rpc_dependency_targets(&h.chain_rpc));
+        let mut public_config = http_server::PublicNodeConfig::new("monolith");
+        public_config.account_addr = Some(account_addr.clone());
+        public_config.ace_deployment_addr = Some(ace.clone());
+        public_config.user_server = Some(http_server::PublicServerConfig { port: h.port });
+        public_config.max_concurrent_requests = Some(max_concurrent);
+        let status = Arc::new(http_server::NodeStatus::new(public_config, dependencies));
         let state = http_server::AppState {
             provider: Arc::new(SecretsProvider::Local(local.clone())),
             chain_rpc: Arc::new(h.chain_rpc),
             concurrency: Arc::new(Semaphore::new(max_concurrent)),
             pke_dk_bytes: pke_dk_bytes.clone(),
+            status,
         };
         tokio::spawn(http_server::run_user_server(h.port, state));
     }
 
     // Optional secrets server (maintainer mode).
     if let Some(port) = secrets_server_port {
-        let state = http_server::SecretsServerState { local: local.clone() };
+        let mut public_config = http_server::PublicNodeConfig::new("maintainer");
+        public_config.account_addr = Some(account_addr.clone());
+        public_config.ace_deployment_addr = Some(ace.clone());
+        public_config.secrets_server = Some(http_server::PublicServerConfig { port });
+        let status = Arc::new(http_server::NodeStatus::new(
+            public_config,
+            vec![deployment_dependency.clone()],
+        ));
+        let state = http_server::SecretsServerState {
+            local: local.clone(),
+            status,
+        };
         tokio::spawn(http_server::run_secrets_server(port, state));
     }
 
@@ -672,12 +694,24 @@ async fn run_handler(
         let raw = pke_dk.trim().trim_start_matches("0x");
         Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
     };
-    let remote = Arc::new(RemoteSecrets::new(maintainer_url));
+    let remote = Arc::new(RemoteSecrets::new(maintainer_url.clone()));
+    let max_concurrent_requests = resolve_max_concurrent(max_concurrent);
+    let mut dependencies = vec![http_server::DependencyTarget::http_json(
+        "maintainer_secrets_api",
+        maintainer_url.clone(),
+    )];
+    dependencies.extend(http_server::chain_rpc_dependency_targets(&chain_rpc));
+    let mut public_config = http_server::PublicNodeConfig::new("handler");
+    public_config.user_server = Some(http_server::PublicServerConfig { port });
+    public_config.max_concurrent_requests = Some(max_concurrent_requests);
+    public_config.maintainer_url = Some(maintainer_url);
+    let status = Arc::new(http_server::NodeStatus::new(public_config, dependencies));
     let state = http_server::AppState {
         provider: Arc::new(SecretsProvider::Remote(remote)),
         chain_rpc: Arc::new(chain_rpc),
-        concurrency: Arc::new(Semaphore::new(resolve_max_concurrent(max_concurrent))),
+        concurrency: Arc::new(Semaphore::new(max_concurrent_requests)),
         pke_dk_bytes,
+        status,
     };
     tokio::spawn(http_server::run_user_server(port, state));
     let _ = shutdown_rx.await;

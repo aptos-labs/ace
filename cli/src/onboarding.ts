@@ -341,7 +341,7 @@ export function cloudSqlVssStoreUrl(
     privateIp: string,
     password: string,
 ): string {
-    return `postgres://${encodeURIComponent(cfg.user)}:${encodeURIComponent(password)}@${privateIp}:5432/${encodeURIComponent(cfg.databaseName)}`;
+    return `postgres://${encodeURIComponent(cfg.user)}:${encodeURIComponent(password)}@${privateIp}:5432/${encodeURIComponent(cfg.databaseName)}?sslmode=require`;
 }
 
 export function captureCloudSqlPrivateIp(instanceName: string, project: string): string | undefined {
@@ -408,7 +408,7 @@ function cloudSqlSetupLines(cfg: CloudSqlDeployConfig): string[] {
         `  echo "Cloud SQL instance $SQL_INSTANCE has no private IP." >&2`,
         `  exit 1`,
         `fi`,
-        `VSS_STORE_URL="postgres://$SQL_USER:$${GCP_CLOUD_SQL_PASSWORD_ENV}@$SQL_PRIVATE_IP:5432/$SQL_DATABASE"`,
+        `VSS_STORE_URL="postgres://$SQL_USER:$${GCP_CLOUD_SQL_PASSWORD_ENV}@$SQL_PRIVATE_IP:5432/$SQL_DATABASE?sslmode=require"`,
         `${GCP_CONFIG_ENV}="$(${GCP_SECRET_ENV.vssStoreUrl}="$VSS_STORE_URL" node <<'ACE_CONFIG_JSON_NODE'`,
         `const cfg = JSON.parse(process.env.${GCP_CONFIG_ENV} || '{}');`,
         `cfg.vssStoreUrl = process.env.${GCP_SECRET_ENV.vssStoreUrl};`,

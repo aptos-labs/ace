@@ -9,7 +9,9 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use postgres::{Client, NoTls};
+use native_tls::TlsConnector;
+use postgres::{config::SslMode, Client, Config as PostgresConfig, NoTls};
+use postgres_native_tls::MakeTlsConnector;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use vss_common::session::{BcsPcsOpening, BcsSession, STATE_SUCCESS};
@@ -499,8 +501,7 @@ impl PostgresVssStore {
 
     fn with_client<T>(&self, f: impl FnOnce(&mut Client) -> Result<T>) -> Result<T> {
         run_sync_postgres(|| {
-            let mut client = Client::connect(&self.url, NoTls)
-                .map_err(|e| anyhow!("open postgres VSS store: {}", e))?;
+            let mut client = connect_postgres_client(&self.url)?;
             f(&mut client)
         })
     }
@@ -589,6 +590,33 @@ impl PostgresVssStore {
             Ok(())
         })
     }
+}
+
+fn connect_postgres_client(url: &str) -> Result<Client> {
+    let config = url
+        .parse::<PostgresConfig>()
+        .map_err(|e| anyhow!("parse postgres VSS store URL: {}", e))?;
+    if postgres_config_requires_tls(&config) {
+        // `sslmode=require` is libpq-compatible encrypt-only behavior. Cloud SQL
+        // private-IP URLs use IP addresses and Google-managed internal CAs, so
+        // certificate/hostname verification needs a separate rollout.
+        let tls = TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|e| anyhow!("build postgres TLS connector: {}", e))?;
+        config
+            .connect(MakeTlsConnector::new(tls))
+            .map_err(|e| anyhow!("open postgres VSS store with TLS: {}", e))
+    } else {
+        config
+            .connect(NoTls)
+            .map_err(|e| anyhow!("open postgres VSS store: {}", e))
+    }
+}
+
+fn postgres_config_requires_tls(config: &PostgresConfig) -> bool {
+    config.get_ssl_mode() == SslMode::Require
 }
 
 impl VssStore for PostgresVssStore {
@@ -954,6 +982,24 @@ mod tests {
         let first = connect_vss_store(&url).unwrap();
         let second = connect_vss_store(&url).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn postgres_tls_mode_follows_sslmode_require() {
+        let default_config = "postgres://ace:secret@10.0.0.1:5432/ace_vss"
+            .parse::<PostgresConfig>()
+            .unwrap();
+        assert!(!postgres_config_requires_tls(&default_config));
+
+        let disabled_config = "postgres://ace:secret@10.0.0.1:5432/ace_vss?sslmode=disable"
+            .parse::<PostgresConfig>()
+            .unwrap();
+        assert!(!postgres_config_requires_tls(&disabled_config));
+
+        let tls_config = "postgres://ace:secret@10.0.0.1:5432/ace_vss?sslmode=require"
+            .parse::<PostgresConfig>()
+            .unwrap();
+        assert!(postgres_config_requires_tls(&tls_config));
     }
 
     #[test]

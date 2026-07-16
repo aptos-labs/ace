@@ -163,6 +163,10 @@ fn resolve_max_concurrent(explicit: Option<usize>) -> usize {
     })
 }
 
+fn admin_status_port(public_port: u16) -> Option<u16> {
+    public_port.checked_add(1)
+}
+
 // ── Top-level run configuration ───────────────────────────────────────────────
 
 /// Deployment mode. See module-level docs.
@@ -390,6 +394,9 @@ async fn run_with_maintainer(
             pke_dk_bytes: pke_dk_bytes.clone(),
             status,
         };
+        if let Some(admin_port) = admin_status_port(h.port) {
+            tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));
+        }
         tokio::spawn(http_server::run_user_server(h.port, state));
     }
 
@@ -407,6 +414,9 @@ async fn run_with_maintainer(
             local: local.clone(),
             status,
         };
+        if let Some(admin_port) = admin_status_port(port) {
+            tokio::spawn(http_server::run_secrets_admin_server(admin_port, state.clone()));
+        }
         tokio::spawn(http_server::run_secrets_server(port, state));
     }
 
@@ -713,6 +723,9 @@ async fn run_handler(
         pke_dk_bytes,
         status,
     };
+    if let Some(admin_port) = admin_status_port(port) {
+        tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));
+    }
     tokio::spawn(http_server::run_user_server(port, state));
     let _ = shutdown_rx.await;
     wlog!("network-node: handler shutdown signal received.");

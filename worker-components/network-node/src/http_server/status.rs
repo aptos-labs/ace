@@ -78,7 +78,12 @@ enum DependencyProbe {
 }
 
 #[derive(Serialize)]
-pub struct StatusResponse {
+pub struct PublicStatusResponse {
+    pub version: String,
+}
+
+#[derive(Serialize)]
+pub struct DebugStatusResponse {
     pub schema: &'static str,
     pub generated_at: String,
     pub version: VersionInfo,
@@ -128,9 +133,15 @@ impl NodeStatus {
         }
     }
 
-    pub async fn response(&self) -> StatusResponse {
+    pub fn public_response(&self) -> PublicStatusResponse {
+        PublicStatusResponse {
+            version: VersionInfo::public_version(),
+        }
+    }
+
+    pub async fn debug_response(&self) -> DebugStatusResponse {
         let dependencies = join_all(self.dependencies.iter().map(DependencyTarget::probe)).await;
-        StatusResponse {
+        DebugStatusResponse {
             schema: STATUS_SCHEMA,
             generated_at: now_utc_iso(),
             version: VersionInfo::current(),
@@ -141,6 +152,12 @@ impl NodeStatus {
 }
 
 impl VersionInfo {
+    fn public_version() -> String {
+        first_env(&["ACE_VERSION", "ACE_RELEASE_VERSION"])
+        .filter(|v| v != "unknown")
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    }
+
     fn current() -> Self {
         Self {
             crate_name: env!("CARGO_PKG_NAME"),
@@ -481,5 +498,17 @@ mod tests {
             status.public_config.dependencies[0].name,
             "maintainer_secrets_api"
         );
+    }
+
+    #[test]
+    fn public_status_exposes_only_version() {
+        let status = NodeStatus::new(PublicNodeConfig::new("handler"), Vec::new());
+        let json = serde_json::to_value(status.public_response()).unwrap();
+        assert_eq!(
+            json.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["version"]
+        );
+        assert!(!json.get("dependencies").is_some());
+        assert!(!json.get("public_config").is_some());
     }
 }

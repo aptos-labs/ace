@@ -25,7 +25,9 @@ mod tests;
 #[cfg(test)]
 mod tests_support;
 
-pub use self::serve::{run_secrets_server, run_user_server};
+pub use self::serve::{
+    run_secrets_admin_server, run_secrets_server, run_user_admin_server, run_user_server,
+};
 pub use self::status::{
     chain_rpc_dependency_targets, DependencyTarget, NodeStatus, PublicNodeConfig,
     PublicServerConfig,

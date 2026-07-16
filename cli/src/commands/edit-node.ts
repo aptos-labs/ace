@@ -53,7 +53,7 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             rpcApiKey:              node.rpcApiKey,
             gasStationKey:          node.gasStationKey,
             chainRpc:               node.chainRpc,
-            project:                node.gcp?.project,
+            project:                node.gcp?.project ?? node.gce?.project,
             region:                 node.gcp?.region,
             serviceName:            node.gcp?.serviceName,
             maintainerServiceName:  node.gcp?.maintainerServiceName,
@@ -187,21 +187,21 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     const edit = await buildFromEditor(
         generateTemplate(scheme, inputs),
         c => parseTemplate(scheme, c),
-        { fileTag: 'node-edit', preWarning: warning },
+        { fileTag: 'node-edit', preWarning: warning, acceptUnmodified: true },
     );
     if (!edit) return;
 
     const updatedNode = applyEdits(node, edit);
     const changes = diffSummary(node, updatedNode);
-    if (changes.length === 0) {
-        console.log('No effective changes — nothing to save.');
-        return;
+    const hasProfileChanges = changes.length > 0;
+    if (hasProfileChanges) {
+        const config = loadConfig();
+        config.nodes[nodeKey] = updatedNode;
+        saveConfig(config);
+        console.log(`\n✓ Profile "${label}" saved:\n${changes.join('\n')}\n`);
+    } else {
+        console.log('\nNo profile changes — re-applying the current profile.\n');
     }
-
-    const config = loadConfig();
-    config.nodes[nodeKey] = updatedNode;
-    saveConfig(config);
-    console.log(`\n✓ Profile "${label}" saved:\n${changes.join('\n')}\n`);
 
     // Emit the deploy command (or restart, for local).
     const nodeArgs = {
@@ -217,7 +217,7 @@ export async function editNodeCommand(opts: { profile?: string; account?: string
     const mode = nodeMode(updatedNode);
 
     if (mode === 'metadata-management-only') {
-        console.log('Metadata-management-only profile saved.');
+        console.log(hasProfileChanges ? 'Metadata-management-only profile saved.' : 'Metadata-management-only profile unchanged.');
         console.log('This CLI only saved local profile metadata; it did not update a running service.');
         if (node.endpoint !== updatedNode.endpoint) {
             console.log('Not automatic: node edit does not update endpoint registration on-chain.');

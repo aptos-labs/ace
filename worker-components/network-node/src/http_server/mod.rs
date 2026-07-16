@@ -10,15 +10,16 @@
 //! or a BCS `ThresholdVrfShare` for tVRF.
 //!
 //! Every request emits one JSON-formatted log line tagged with
-//! `kind=ACE_REQUEST_HANDLING_SUMMARY`.
+//! `message=ACE_REQUEST_HANDLING_SUMMARY` and
+//! `event_name=ACE_REQUEST_HANDLING_SUMMARY`.
 
 mod flows;
 mod outcome;
 mod request;
 mod serve;
 mod shares;
-mod status;
 mod state;
+mod status;
 
 #[cfg(test)]
 mod tests;
@@ -28,8 +29,8 @@ mod tests_support;
 pub use self::serve::{
     run_secrets_admin_server, run_secrets_server, run_user_admin_server, run_user_server,
 };
+pub use self::state::{AppState, SecretsServerState};
 pub use self::status::{
     chain_rpc_dependency_targets, DependencyTarget, NodeStatus, PublicNodeConfig,
     PublicServerConfig,
 };
-pub use self::state::{AppState, SecretsServerState};

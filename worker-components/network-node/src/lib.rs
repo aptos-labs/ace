@@ -72,7 +72,7 @@ pub struct ChainRpcConfig {
     pub aptos_mainnet: AptosRpc,                     // chain_id=1
     pub aptos_testnet: AptosRpc,                     // chain_id=2
     pub aptos_localnet: AptosRpc,                    // chain_id=4
-    pub aptos_shelby_private_beta: Option<AptosRpc>, // chain_id=139
+    pub aptos_shelby_private_beta: Option<AptosRpc>, // chain_id=125
     pub solana_mainnet_beta: String,
     pub solana_testnet: String,
     pub solana_devnet: String,
@@ -85,9 +85,9 @@ impl ChainRpcConfig {
             1 => Ok(&self.aptos_mainnet),
             2 => Ok(&self.aptos_testnet),
             4 => Ok(&self.aptos_localnet),
-            139 => self.aptos_shelby_private_beta.as_ref().ok_or_else(|| {
+            125 => self.aptos_shelby_private_beta.as_ref().ok_or_else(|| {
                 anyhow!(
-                    "no Aptos RPC configured for chain_id 139 (shelby-private-beta); \
+                    "no Aptos RPC configured for chain_id 125 (shelby-private-beta); \
                      set --aptos-shelby-private-beta-api"
                 )
             }),
@@ -683,4 +683,36 @@ async fn run_handler(
     let _ = shutdown_rx.await;
     wlog!("network-node: handler shutdown signal received.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rpc(label: &str) -> AptosRpc {
+        AptosRpc::new(format!("https://{}.example/v1", label))
+    }
+
+    fn chain_rpc_config() -> ChainRpcConfig {
+        ChainRpcConfig {
+            aptos_mainnet: rpc("mainnet"),
+            aptos_testnet: rpc("testnet"),
+            aptos_localnet: rpc("localnet"),
+            aptos_shelby_private_beta: Some(rpc("shelby")),
+            solana_mainnet_beta: "https://solana-mainnet.example".to_string(),
+            solana_testnet: "https://solana-testnet.example".to_string(),
+            solana_devnet: "https://solana-devnet.example".to_string(),
+            solana_client: reqwest::Client::new(),
+        }
+    }
+
+    #[test]
+    fn shelby_private_beta_uses_chain_id_125() {
+        let cfg = chain_rpc_config();
+        assert_eq!(
+            cfg.aptos_rpc_for_chain_id(125).unwrap().base_url,
+            "https://shelby.example/v1"
+        );
+        assert!(cfg.aptos_rpc_for_chain_id(139).is_err());
+    }
 }

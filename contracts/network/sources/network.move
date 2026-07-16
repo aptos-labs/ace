@@ -175,6 +175,12 @@ module ace::network {
         }
     }
 
+    fun push_live_vss_session(live_vss_sessions: &mut vector<address>, vss_session: address) {
+        if (!live_vss_sessions.contains(&vss_session)) {
+            live_vss_sessions.push_back(vss_session);
+        };
+    }
+
     fun append_live_vss_sessions_for_secret(live_vss_sessions: &mut vector<address>, secret_session: address) {
         let (vss_sessions, contribution_flags) = if (dkg::is_session(secret_session)) {
             dkg::vss_sessions_and_done_flags(secret_session)
@@ -184,7 +190,7 @@ module ace::network {
         let i = 0;
         while (i < vss_sessions.length()) {
             if (contribution_flags[i]) {
-                live_vss_sessions.push_back(vss_sessions[i]);
+                push_live_vss_session(live_vss_sessions, vss_sessions[i]);
             };
             i += 1;
         };

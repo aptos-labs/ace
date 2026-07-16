@@ -264,6 +264,14 @@ module ace::dkr {
         )
     }
 
+    /// Returns (vss_sessions, contribution_flags) for the DKR session.
+    /// Used by network views to identify the VSS store rows that back live secrets.
+    public fun vss_sessions_and_contribution_flags(session_addr: address): (vector<address>, vector<bool>) {
+        let session = &Session[session_addr];
+        assert!(session.state_code == STATE__DONE, error::invalid_argument(E_SECRET_SRC_NOT_COMPLETED));
+        (session.vss_sessions, session.vss_contribution_flags)
+    }
+
     public fun commitment_points(session_addr: address): vector<group::Element> {
         let session = &Session[session_addr];
         assert!(session.state_code == STATE__DONE, error::invalid_argument(E_SECRET_SRC_NOT_COMPLETED));

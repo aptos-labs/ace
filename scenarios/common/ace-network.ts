@@ -38,7 +38,7 @@ import {
     shouldSpawnSplitNetworkNode,
     spawnNetworkNodeMaybeSplit,
 } from './network-clients';
-import { makeNodeMsgEndpoints } from './vss-protocol-setup';
+import { makeNodeMsgEndpoints, type NodeMsgEndpoints } from './vss-protocol-setup';
 
 /** The ACE Move packages, in dependency order. Used by
  *  [`deployAndBringUpAceNetwork`] and any scenario that wants to deploy the
@@ -77,6 +77,8 @@ export interface AceNetworkState {
     aceDeployment: ACE.AceDeployment;
     adminAccountAddress: AccountAddress;
     vssStoreTmpRoot: string;
+    storeUrls: string[];
+    nodeMsgEndpoints: NodeMsgEndpoints;
 }
 
 /**
@@ -220,6 +222,8 @@ export async function setupAceNetworkAndWorkers(
         aceDeployment,
         adminAccountAddress,
         vssStoreTmpRoot,
+        storeUrls,
+        nodeMsgEndpoints,
     };
 }
 

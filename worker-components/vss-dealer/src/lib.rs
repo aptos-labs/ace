@@ -885,7 +885,6 @@ fn load_or_create_dealing_data(
     )?;
     let state_bytes = encode_dealer_state(&dealing.coefs_p, &dealing.coefs_r);
     store.put_dealer_state(DealerStateRecord {
-        epoch: 0,
         session_addr: session_addr.to_string(),
         state_bytes: state_bytes.clone(),
     })?;

@@ -114,7 +114,9 @@ jobs:
           - test-ibe-aptos-custom
           - test-network-protocol
           - full-happy-path
+          - test-fault-tolerance
           - test-auto-epoch-change
+          - test-epoch-buffer
           - large-committee
       fail-fast: false
     runs-on: ubuntu-latest

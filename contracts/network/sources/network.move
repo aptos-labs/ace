@@ -16,6 +16,7 @@ module ace::network {
 
     const MIN_RESHARING_INTERVAL_SECS: u64 = 30;
     const MAX_DESCRIPTION_BYTES: u64 = 1024;
+    const DEFAULT_PREVIOUS_EPOCH_GRACE_MICROS: u64 = 30_000_000;
 
     const E_ONLY_ADMIN_CAN_DO_THIS: u64 = 1;
     const E_INVALID_NODE: u64 = 2;
@@ -35,6 +36,8 @@ module ace::network {
     const E_PROPOSAL_IS_NOT_CURRENT: u64 = 18;
     const E_YOU_ALREADY_PROPOSED_IN_THIS_EPOCH: u64 = 19;
     const E_DESCRIPTION_TOO_LONG: u64 = 20;
+
+    const FEATURE__REACHABILITY_BASED_VSS_STORE_MANAGEMENT: u64 = 0;
 
     struct ProposalState has store, drop {
         proposal: ProposedEpochConfig,
@@ -61,6 +64,10 @@ module ace::network {
 
     struct SignerStore has key {
         extend_ref: ExtendRef,
+    }
+
+    struct ServingConfig has copy, drop, store, key {
+        previous_epoch_grace_micros: u64,
     }
 
     struct ProposedEpochConfig has store, drop, copy {
@@ -129,6 +136,31 @@ module ace::network {
         epoch_change_info: Option<EpochChangeView>,
     }
 
+    enum FeatureConfig has copy, drop, store {
+        /// Enables VSS store management based on VSS sessions reachable from network state.
+        ReachabilityBasedVssStoreManagementFlag,
+    }
+
+    struct FeatureConfigs has copy, drop, store, key {
+        items: vector<Option<FeatureConfig>>,
+    }
+
+    struct StateViewV1 has drop {
+        epoch: u64,
+        epoch_start_time_micros: u64,
+        epoch_duration_micros: u64,
+        cur_nodes: vector<address>,
+        cur_threshold: u64,
+        secrets: vector<SecretInfo>,
+        previous_epoch_info: Option<EpochSnapshotView>,
+        /// Length == cur_nodes.length() + 1; index i is node i's proposal, last index is admin's.
+        proposals: vector<Option<ProposalView>>,
+        epoch_change_info: Option<EpochChangeView>,
+        feature_configs: FeatureConfigs,
+        live_vss_sessions: vector<address>,
+        previous_epoch_grace_micros: u64,
+    }
+
     fun secret_info(addr: address): SecretInfo {
         let (keypair_id, scheme, expected_usage, note) = if (dkg::is_session(addr)) {
             dkg::keypair_id_scheme_usage_and_note(addr)
@@ -149,12 +181,46 @@ module ace::network {
         }
     }
 
-    // Single BCS-encoded snapshot covering network::State plus all sub-protocol data nodes
-    // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
-    #[view]
-    public fun state_view_v0_bcs(): vector<u8> {
-        let state = &State[@ace];
+    fun push_live_vss_session(live_vss_sessions: &mut vector<address>, vss_session: address) {
+        if (!live_vss_sessions.contains(&vss_session)) {
+            live_vss_sessions.push_back(vss_session);
+        };
+    }
 
+    fun append_live_vss_sessions_for_secret(live_vss_sessions: &mut vector<address>, secret_session: address) {
+        let (vss_sessions, contribution_flags) = if (dkg::is_session(secret_session)) {
+            dkg::vss_sessions_and_done_flags(secret_session)
+        } else {
+            dkr::vss_sessions_and_contribution_flags(secret_session)
+        };
+        let i = 0;
+        while (i < vss_sessions.length()) {
+            if (contribution_flags[i]) {
+                push_live_vss_session(live_vss_sessions, vss_sessions[i]);
+            };
+            i += 1;
+        };
+    }
+
+    fun append_live_vss_sessions_for_secrets(live_vss_sessions: &mut vector<address>, secrets: &vector<address>) {
+        let i = 0;
+        while (i < secrets.length()) {
+            append_live_vss_sessions_for_secret(live_vss_sessions, secrets[i]);
+            i += 1;
+        };
+    }
+
+    fun live_vss_sessions(state: &State): vector<address> {
+        let live_vss_sessions = vector[];
+        append_live_vss_sessions_for_secrets(&mut live_vss_sessions, &state.secrets);
+        if (state.previous_epoch_info.is_some()) {
+            let previous_epoch_info = *state.previous_epoch_info.borrow();
+            append_live_vss_sessions_for_secrets(&mut live_vss_sessions, &previous_epoch_info.secrets);
+        };
+        live_vss_sessions
+    }
+
+    fun proposal_views(state: &State): vector<Option<ProposalView>> {
         let proposals = vector[];
         let i = 0;
         while (i < state.proposals.length()) {
@@ -179,26 +245,35 @@ module ace::network {
             };
             i += 1;
         };
+        proposals
+    }
 
-        let epoch_change_info = if (state.epoch_change_info.is_some()) {
+    fun epoch_change_view(state: &State): Option<EpochChangeView> {
+        if (state.epoch_change_info.is_some()) {
             let info = state.epoch_change_info.borrow();
             let (nxt_nodes, nxt_threshold) = epoch_change::nxt_nodes_and_threshold(info.session_addr);
-            option::some(EpochChangeView {
+            return option::some(EpochChangeView {
                 triggering_proposal_idx: info.triggering_proposal_idx,
                 session_addr: info.session_addr,
                 nxt_nodes,
                 nxt_threshold,
             })
-        } else {
-            option::none()
         };
+        option::none()
+    }
 
-        let previous_epoch_info = if (state.previous_epoch_info.is_some()) {
-            option::some(epoch_snapshot_view(*state.previous_epoch_info.borrow()))
-        } else {
-            option::none()
+    fun previous_epoch_info_view(state: &State): Option<EpochSnapshotView> {
+        if (state.previous_epoch_info.is_some()) {
+            return option::some(epoch_snapshot_view(*state.previous_epoch_info.borrow()))
         };
+        option::none()
+    }
 
+    // Single BCS-encoded snapshot covering network::State plus all sub-protocol data nodes
+    // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
+    #[view]
+    public fun state_view_v0_bcs(): vector<u8> {
+        let state = &State[@ace];
         bcs::to_bytes(&StateViewV0 {
             epoch: state.epoch,
             epoch_start_time_micros: state.epoch_start_time_micros,
@@ -206,10 +281,57 @@ module ace::network {
             cur_nodes: state.cur_nodes,
             cur_threshold: state.cur_threshold,
             secrets: secret_infos(state.secrets),
-            previous_epoch_info,
-            proposals,
-            epoch_change_info,
+            previous_epoch_info: previous_epoch_info_view(state),
+            proposals: proposal_views(state),
+            epoch_change_info: epoch_change_view(state),
         })
+    }
+
+    #[view]
+    public fun state_view_v1_bcs(): vector<u8> {
+        let state = &State[@ace];
+        let serving_config = serving_config_or_default(@ace);
+        bcs::to_bytes(&StateViewV1 {
+            epoch: state.epoch,
+            epoch_start_time_micros: state.epoch_start_time_micros,
+            epoch_duration_micros: state.epoch_duration_micros,
+            cur_nodes: state.cur_nodes,
+            cur_threshold: state.cur_threshold,
+            secrets: secret_infos(state.secrets),
+            previous_epoch_info: previous_epoch_info_view(state),
+            proposals: proposal_views(state),
+            epoch_change_info: epoch_change_view(state),
+            feature_configs: feature_configs_or_empty(@ace),
+            live_vss_sessions: live_vss_sessions(state),
+            previous_epoch_grace_micros: serving_config.previous_epoch_grace_micros,
+        })
+    }
+
+    entry fun initialize_serving_config(admin: &signer) {
+        assert!(@ace == admin.address_of(), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        if (!exists<ServingConfig>(@ace)) {
+            move_to(admin, default_serving_config());
+        };
+    }
+
+    entry fun update_previous_epoch_grace_micros(admin: &signer, previous_epoch_grace_micros: u64) {
+        assert!(@ace == admin.address_of(), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        initialize_serving_config(admin);
+        let serving_config = &mut ServingConfig[@ace];
+        serving_config.previous_epoch_grace_micros = previous_epoch_grace_micros;
+    }
+
+    entry fun update_reachability_based_vss_store_management_flag(admin: &signer, enabling: bool) {
+        assert!(@ace == admin.address_of(), error::permission_denied(E_ONLY_ADMIN_CAN_DO_THIS));
+        ensure_feature_slot(admin, FEATURE__REACHABILITY_BASED_VSS_STORE_MANAGEMENT);
+        let feature_configs = &mut FeatureConfigs[@ace];
+        if (enabling) {
+            feature_configs.items[FEATURE__REACHABILITY_BASED_VSS_STORE_MANAGEMENT] =
+                option::some(FeatureConfig::ReachabilityBasedVssStoreManagementFlag);
+        } else {
+            feature_configs.items[FEATURE__REACHABILITY_BASED_VSS_STORE_MANAGEMENT] = option::none();
+        };
+        canonicalize_feature_configs();
     }
 
     entry fun start_initial_epoch(ace: &signer, nodes: vector<address>, threshold: u64, resharing_interval_secs: u64) {
@@ -409,5 +531,63 @@ module ace::network {
         proposal.secrets_to_retain.for_each_ref(|secret_addr| {
             assert!(state.secrets.contains(secret_addr), error::invalid_argument(E_CAN_ONLY_RETAIN_ACTIVE_SECRET));
         });
+    }
+
+    #[view]
+    public fun feature_configs_bcs(): vector<u8> {
+        bcs::to_bytes(&feature_configs_or_empty(@ace))
+    }
+
+    #[view]
+    public fun serving_config_bcs(): vector<u8> {
+        bcs::to_bytes(&serving_config_or_default(@ace))
+    }
+
+    fun ensure_feature_slot(admin: &signer, idx: u64) {
+        if (!exists<FeatureConfigs>(@ace)) {
+            move_to(admin, FeatureConfigs { items: vector[] });
+        };
+        let configs = &mut FeatureConfigs[@ace];
+        while (configs.items.length() <= idx) {
+            configs.items.push_back(option::none());
+        };
+    }
+
+    fun canonicalize_feature_configs() {
+        let is_empty = {
+            let configs = &mut FeatureConfigs[@ace];
+            while (configs.items.length() > 0) {
+                let last_idx = configs.items.length() - 1;
+                if (configs.items[last_idx].is_none()) {
+                    configs.items.pop_back();
+                } else {
+                    break;
+                };
+            };
+            configs.items.length() == 0
+        };
+        if (is_empty) {
+            move_from<FeatureConfigs>(@ace);
+        }
+    }
+
+    fun feature_configs_or_empty(addr: address): FeatureConfigs {
+        if (exists<FeatureConfigs>(addr)) {
+            *&FeatureConfigs[addr]
+        } else {
+            FeatureConfigs { items: vector[] }
+        }
+    }
+
+    fun default_serving_config(): ServingConfig {
+        ServingConfig { previous_epoch_grace_micros: DEFAULT_PREVIOUS_EPOCH_GRACE_MICROS }
+    }
+
+    fun serving_config_or_default(addr: address): ServingConfig {
+        if (exists<ServingConfig>(addr)) {
+            *&ServingConfig[addr]
+        } else {
+            default_serving_config()
+        }
     }
 }

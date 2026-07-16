@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Result};
@@ -18,7 +19,6 @@ use vss_common::{normalize_account_addr, AptosRpc};
 /// Dealer-side persistent state for one VSS session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DealerStateRecord {
-    pub epoch: u64,
     pub session_addr: String,
     pub state_bytes: Vec<u8>,
 }
@@ -28,13 +28,15 @@ pub struct DealerStateRecord {
 /// `holder_index` is the zero-based index into the on-chain holder vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HolderShareRecord {
-    pub epoch: u64,
     pub session_addr: String,
     pub holder_index: u64,
     pub share_bcs: Vec<u8>,
 }
 
 pub trait VssStore: Send + Sync {
+    fn use_legacy_epoch_schema(&self) -> Result<()>;
+    fn use_reachability_based_schema(&self) -> Result<()>;
+
     fn put_dealer_state(&self, record: DealerStateRecord) -> Result<()>;
     fn get_dealer_state(&self, session_addr: &str) -> Result<Option<DealerStateRecord>>;
 
@@ -45,8 +47,8 @@ pub trait VssStore: Send + Sync {
         holder_index: u64,
     ) -> Result<Option<HolderShareRecord>>;
 
-    /// Called at epoch `x` start. Deletes epoch `x - 2` and older data.
-    fn prune_at_epoch_start(&self, current_epoch: u64) -> Result<()>;
+    /// Deletes rows for VSS sessions outside the supplied live session set.
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize>;
 }
 
 /// Resolve and verify the holder opening for one completed VSS session.
@@ -228,9 +230,17 @@ fn parse_store_url(store_url: &str) -> Result<ParsedStoreUrl> {
     ))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VssStoreSchemaMode {
+    Uninitialized,
+    LegacyEpoch,
+    ReachabilityBased,
+}
+
 #[derive(Clone, Debug)]
 pub struct SqliteVssStore {
     path: PathBuf,
+    schema_mode: Arc<Mutex<VssStoreSchemaMode>>,
 }
 
 impl SqliteVssStore {
@@ -241,28 +251,63 @@ impl SqliteVssStore {
                     .map_err(|e| anyhow!("create sqlite parent {}: {}", parent.display(), e))?;
             }
         }
-        let store = Self { path };
-        store.init()?;
-        Ok(store)
+        Ok(Self {
+            path,
+            schema_mode: Arc::new(Mutex::new(VssStoreSchemaMode::Uninitialized)),
+        })
     }
 
     fn conn(&self) -> Result<Connection> {
-        Connection::open(&self.path)
-            .map_err(|e| anyhow!("open sqlite store {}: {}", self.path.display(), e))
+        let conn = Connection::open(&self.path)
+            .map_err(|e| anyhow!("open sqlite store {}: {}", self.path.display(), e))?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(|e| anyhow!("set sqlite busy timeout for {}: {}", self.path.display(), e))?;
+        Ok(conn)
     }
 
-    fn init(&self) -> Result<()> {
+    fn schema_mode_guard(&self) -> Result<MutexGuard<'_, VssStoreSchemaMode>> {
+        self.schema_mode
+            .lock()
+            .map_err(|_| anyhow!("sqlite VSS schema mode lock is poisoned"))
+    }
+
+    fn configure_schema(&self, desired: VssStoreSchemaMode) -> Result<()> {
+        let mut mode = self.schema_mode_guard()?;
+        if *mode == desired {
+            return Ok(());
+        }
+        match desired {
+            VssStoreSchemaMode::LegacyEpoch => self.init_legacy_epoch_schema()?,
+            VssStoreSchemaMode::ReachabilityBased => self.init_reachability_based_schema()?,
+            VssStoreSchemaMode::Uninitialized => {
+                unreachable!("cannot configure uninitialized schema")
+            }
+        }
+        *mode = desired;
+        Ok(())
+    }
+
+    fn ensure_schema_mode(&self) -> Result<VssStoreSchemaMode> {
+        let mut mode = self.schema_mode_guard()?;
+        if *mode == VssStoreSchemaMode::Uninitialized {
+            self.init_reachability_based_schema()?;
+            *mode = VssStoreSchemaMode::ReachabilityBased;
+        }
+        Ok(*mode)
+    }
+
+    fn init_legacy_epoch_schema(&self) -> Result<()> {
         let conn = self.conn()?;
         conn.execute_batch(
             r#"
             create table if not exists vss_dealer_states (
-              epoch integer not null,
+              epoch integer not null default 0,
               session_addr text primary key,
               state_bytes blob not null
             );
 
             create table if not exists vss_holder_shares (
-              epoch integer not null,
+              epoch integer not null default 0,
               session_addr text not null,
               holder_index integer not null,
               share_bcs blob not null,
@@ -271,41 +316,82 @@ impl SqliteVssStore {
 
             "#,
         )
-        .map_err(|e| anyhow!("initialize sqlite VSS schema: {}", e))
+        .map_err(|e| anyhow!("initialize sqlite legacy VSS schema: {}", e))?;
+        add_sqlite_epoch_column_if_missing(&conn, "vss_dealer_states")?;
+        add_sqlite_epoch_column_if_missing(&conn, "vss_holder_shares")
+    }
+
+    fn init_reachability_based_schema(&self) -> Result<()> {
+        let mut conn = self.conn()?;
+        conn.execute_batch(
+            r#"
+            create table if not exists vss_dealer_states (
+              session_addr text primary key,
+              state_bytes blob not null
+            );
+
+            create table if not exists vss_holder_shares (
+              session_addr text not null,
+              holder_index integer not null,
+              share_bcs blob not null,
+              primary key (session_addr, holder_index)
+            );
+
+            "#,
+        )
+        .map_err(|e| anyhow!("initialize sqlite VSS schema: {}", e))?;
+        migrate_sqlite_schema(&mut conn)
     }
 }
 
 impl VssStore for SqliteVssStore {
+    fn use_legacy_epoch_schema(&self) -> Result<()> {
+        self.configure_schema(VssStoreSchemaMode::LegacyEpoch)
+    }
+
+    fn use_reachability_based_schema(&self) -> Result<()> {
+        self.configure_schema(VssStoreSchemaMode::ReachabilityBased)
+    }
+
     fn put_dealer_state(&self, record: DealerStateRecord) -> Result<()> {
+        let mode = self.ensure_schema_mode()?;
         let conn = self.conn()?;
-        conn.execute(
-            r#"
-            insert or replace into vss_dealer_states(epoch, session_addr, state_bytes)
-            values (?1, ?2, ?3)
-            "#,
-            params![
-                to_i64(record.epoch)?,
-                normalize_session_addr(&record.session_addr),
-                record.state_bytes
-            ],
-        )
-        .map_err(|e| anyhow!("put dealer state: {}", e))?;
+        let session_addr = normalize_session_addr(&record.session_addr);
+        if mode == VssStoreSchemaMode::LegacyEpoch {
+            conn.execute(
+                r#"
+                insert or replace into vss_dealer_states(epoch, session_addr, state_bytes)
+                values (0, ?1, ?2)
+                "#,
+                params![session_addr, record.state_bytes],
+            )
+            .map_err(|e| anyhow!("put dealer state: {}", e))?;
+        } else {
+            conn.execute(
+                r#"
+                insert or replace into vss_dealer_states(session_addr, state_bytes)
+                values (?1, ?2)
+                "#,
+                params![session_addr, record.state_bytes],
+            )
+            .map_err(|e| anyhow!("put dealer state: {}", e))?;
+        }
         Ok(())
     }
 
     fn get_dealer_state(&self, session_addr: &str) -> Result<Option<DealerStateRecord>> {
+        self.ensure_schema_mode()?;
         let conn = self.conn()?;
         conn.query_row(
             r#"
-            select epoch, session_addr, state_bytes
+            select session_addr, state_bytes
             from vss_dealer_states where session_addr = ?1
             "#,
             params![normalize_session_addr(session_addr)],
             |row| {
                 Ok(DealerStateRecord {
-                    epoch: from_i64(row.get(0)?),
-                    session_addr: row.get(1)?,
-                    state_bytes: row.get(2)?,
+                    session_addr: row.get(0)?,
+                    state_bytes: row.get(1)?,
                 })
             },
         )
@@ -314,20 +400,29 @@ impl VssStore for SqliteVssStore {
     }
 
     fn put_holder_share(&self, record: HolderShareRecord) -> Result<()> {
+        let mode = self.ensure_schema_mode()?;
         let conn = self.conn()?;
-        conn.execute(
-            r#"
-            insert or replace into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
-            values (?1, ?2, ?3, ?4)
-            "#,
-            params![
-                to_i64(record.epoch)?,
-                normalize_session_addr(&record.session_addr),
-                to_i64(record.holder_index)?,
-                record.share_bcs
-            ],
-        )
-        .map_err(|e| anyhow!("put holder share: {}", e))?;
+        let session_addr = normalize_session_addr(&record.session_addr);
+        let holder_index = to_i64(record.holder_index)?;
+        if mode == VssStoreSchemaMode::LegacyEpoch {
+            conn.execute(
+                r#"
+                insert or replace into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
+                values (0, ?1, ?2, ?3)
+                "#,
+                params![session_addr, holder_index, record.share_bcs],
+            )
+            .map_err(|e| anyhow!("put holder share: {}", e))?;
+        } else {
+            conn.execute(
+                r#"
+                insert or replace into vss_holder_shares(session_addr, holder_index, share_bcs)
+                values (?1, ?2, ?3)
+                "#,
+                params![session_addr, holder_index, record.share_bcs],
+            )
+            .map_err(|e| anyhow!("put holder share: {}", e))?;
+        }
         Ok(())
     }
 
@@ -336,19 +431,19 @@ impl VssStore for SqliteVssStore {
         session_addr: &str,
         holder_index: u64,
     ) -> Result<Option<HolderShareRecord>> {
+        self.ensure_schema_mode()?;
         let conn = self.conn()?;
         conn.query_row(
             r#"
-            select epoch, session_addr, holder_index, share_bcs
+            select session_addr, holder_index, share_bcs
             from vss_holder_shares where session_addr = ?1 and holder_index = ?2
             "#,
             params![normalize_session_addr(session_addr), to_i64(holder_index)?],
             |row| {
                 Ok(HolderShareRecord {
-                    epoch: from_i64(row.get(0)?),
-                    session_addr: row.get(1)?,
-                    holder_index: from_i64(row.get(2)?),
-                    share_bcs: row.get(3)?,
+                    session_addr: row.get(0)?,
+                    holder_index: from_i64(row.get(1)?),
+                    share_bcs: row.get(2)?,
                 })
             },
         )
@@ -356,33 +451,50 @@ impl VssStore for SqliteVssStore {
         .map_err(|e| anyhow!("get holder share: {}", e))
     }
 
-    fn prune_at_epoch_start(&self, current_epoch: u64) -> Result<()> {
-        if current_epoch < 2 {
-            return Ok(());
-        }
-        let cutoff = to_i64(current_epoch - 2)?;
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize> {
+        self.use_reachability_based_schema()?;
+        let keep = normalized_session_set(keep_session_addrs);
         let conn = self.conn()?;
+        let mut deleted = 0usize;
         for table in ["vss_dealer_states", "vss_holder_shares"] {
-            conn.execute(
-                &format!("delete from {table} where epoch <= ?1"),
-                params![cutoff],
-            )
-            .map_err(|e| anyhow!("prune {table}: {}", e))?;
+            let sessions = {
+                let mut stmt = conn
+                    .prepare(&format!("select distinct session_addr from {table}"))
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("read sessions in {table}: {}", e))?;
+                rows
+            };
+            for session in sessions {
+                if !keep.contains(&normalize_session_addr(&session)) {
+                    deleted += conn
+                        .execute(
+                            &format!("delete from {table} where session_addr = ?1"),
+                            params![session],
+                        )
+                        .map_err(|e| anyhow!("prune stale sessions from {table}: {}", e))?;
+                }
+            }
         }
-        Ok(())
+        Ok(deleted)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct PostgresVssStore {
     url: String,
+    schema_mode: Arc<Mutex<VssStoreSchemaMode>>,
 }
 
 impl PostgresVssStore {
     pub fn open(url: String) -> Result<Self> {
-        let store = Self { url };
-        store.init()?;
-        Ok(store)
+        Ok(Self {
+            url,
+            schema_mode: Arc::new(Mutex::new(VssStoreSchemaMode::Uninitialized)),
+        })
     }
 
     fn with_client<T>(&self, f: impl FnOnce(&mut Client) -> Result<T>) -> Result<T> {
@@ -393,25 +505,84 @@ impl PostgresVssStore {
         })
     }
 
-    fn init(&self) -> Result<()> {
+    fn schema_mode_guard(&self) -> Result<MutexGuard<'_, VssStoreSchemaMode>> {
+        self.schema_mode
+            .lock()
+            .map_err(|_| anyhow!("postgres VSS schema mode lock is poisoned"))
+    }
+
+    fn configure_schema(&self, desired: VssStoreSchemaMode) -> Result<()> {
+        let mut mode = self.schema_mode_guard()?;
+        if *mode == desired {
+            return Ok(());
+        }
+        match desired {
+            VssStoreSchemaMode::LegacyEpoch => self.init_legacy_epoch_schema()?,
+            VssStoreSchemaMode::ReachabilityBased => self.init_reachability_based_schema()?,
+            VssStoreSchemaMode::Uninitialized => {
+                unreachable!("cannot configure uninitialized schema")
+            }
+        }
+        *mode = desired;
+        Ok(())
+    }
+
+    fn ensure_schema_mode(&self) -> Result<VssStoreSchemaMode> {
+        let mut mode = self.schema_mode_guard()?;
+        if *mode == VssStoreSchemaMode::Uninitialized {
+            self.init_reachability_based_schema()?;
+            *mode = VssStoreSchemaMode::ReachabilityBased;
+        }
+        Ok(*mode)
+    }
+
+    fn init_legacy_epoch_schema(&self) -> Result<()> {
         self.with_client(|client| {
             client
                 .batch_execute(
                     r#"
                 create table if not exists vss_dealer_states (
-                  epoch bigint not null,
+                  epoch bigint not null default 0,
                   session_addr text primary key,
                   state_bytes bytea not null
                 );
 
                 create table if not exists vss_holder_shares (
-                  epoch bigint not null,
+                  epoch bigint not null default 0,
                   session_addr text not null,
                   holder_index bigint not null,
                   share_bcs bytea not null,
                   primary key (session_addr, holder_index)
                 );
 
+                alter table vss_dealer_states add column if not exists epoch bigint not null default 0;
+                alter table vss_holder_shares add column if not exists epoch bigint not null default 0;
+                "#,
+                )
+                .map_err(|e| anyhow!("initialize postgres legacy VSS schema: {}", e))?;
+            Ok(())
+        })
+    }
+
+    fn init_reachability_based_schema(&self) -> Result<()> {
+        self.with_client(|client| {
+            client
+                .batch_execute(
+                    r#"
+                create table if not exists vss_dealer_states (
+                  session_addr text primary key,
+                  state_bytes bytea not null
+                );
+
+                create table if not exists vss_holder_shares (
+                  session_addr text not null,
+                  holder_index bigint not null,
+                  share_bcs bytea not null,
+                  primary key (session_addr, holder_index)
+                );
+
+                alter table vss_dealer_states drop column if exists epoch;
+                alter table vss_holder_shares drop column if exists epoch;
                 "#,
                 )
                 .map_err(|e| anyhow!("initialize postgres VSS schema: {}", e))?;
@@ -421,66 +592,96 @@ impl PostgresVssStore {
 }
 
 impl VssStore for PostgresVssStore {
+    fn use_legacy_epoch_schema(&self) -> Result<()> {
+        self.configure_schema(VssStoreSchemaMode::LegacyEpoch)
+    }
+
+    fn use_reachability_based_schema(&self) -> Result<()> {
+        self.configure_schema(VssStoreSchemaMode::ReachabilityBased)
+    }
+
     fn put_dealer_state(&self, record: DealerStateRecord) -> Result<()> {
+        let mode = self.ensure_schema_mode()?;
         self.with_client(|client| {
-            client
-                .execute(
-                    r#"
-                insert into vss_dealer_states(epoch, session_addr, state_bytes)
-                values ($1, $2, $3)
-                on conflict (session_addr) do update
-                set epoch = excluded.epoch,
-                    state_bytes = excluded.state_bytes
-                "#,
-                    &[
-                        &to_i64(record.epoch)?,
-                        &normalize_session_addr(&record.session_addr),
-                        &record.state_bytes,
-                    ],
-                )
-                .map_err(|e| anyhow!("put dealer state: {}", e))?;
+            let session_addr = normalize_session_addr(&record.session_addr);
+            if mode == VssStoreSchemaMode::LegacyEpoch {
+                client
+                    .execute(
+                        r#"
+                    insert into vss_dealer_states(epoch, session_addr, state_bytes)
+                    values (0, $1, $2)
+                    on conflict (session_addr) do update
+                    set epoch = 0, state_bytes = excluded.state_bytes
+                    "#,
+                        &[&session_addr, &record.state_bytes],
+                    )
+                    .map_err(|e| anyhow!("put dealer state: {}", e))?;
+            } else {
+                client
+                    .execute(
+                        r#"
+                    insert into vss_dealer_states(session_addr, state_bytes)
+                    values ($1, $2)
+                    on conflict (session_addr) do update
+                    set state_bytes = excluded.state_bytes
+                    "#,
+                        &[&session_addr, &record.state_bytes],
+                    )
+                    .map_err(|e| anyhow!("put dealer state: {}", e))?;
+            }
             Ok(())
         })
     }
 
     fn get_dealer_state(&self, session_addr: &str) -> Result<Option<DealerStateRecord>> {
+        self.ensure_schema_mode()?;
         self.with_client(|client| {
             let row = client
                 .query_opt(
                     r#"
-                select epoch, session_addr, state_bytes
+                select session_addr, state_bytes
                 from vss_dealer_states where session_addr = $1
                 "#,
                     &[&normalize_session_addr(session_addr)],
                 )
                 .map_err(|e| anyhow!("get dealer state: {}", e))?;
             Ok(row.map(|row| DealerStateRecord {
-                epoch: from_i64(row.get(0)),
-                session_addr: row.get(1),
-                state_bytes: row.get(2),
+                session_addr: row.get(0),
+                state_bytes: row.get(1),
             }))
         })
     }
 
     fn put_holder_share(&self, record: HolderShareRecord) -> Result<()> {
+        let mode = self.ensure_schema_mode()?;
         self.with_client(|client| {
-            client
-                .execute(
-                    r#"
-                insert into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
-                values ($1, $2, $3, $4)
-                on conflict (session_addr, holder_index) do update
-                set epoch = excluded.epoch,
-                    share_bcs = excluded.share_bcs
-                "#,
-                    &[
-                        &to_i64(record.epoch)?,
-                        &normalize_session_addr(&record.session_addr),
-                        &to_i64(record.holder_index)?,
-                        &record.share_bcs,
-                    ],
-                )
-                .map_err(|e| anyhow!("put holder share: {}", e))?;
+            let session_addr = normalize_session_addr(&record.session_addr);
+            let holder_index = to_i64(record.holder_index)?;
+            if mode == VssStoreSchemaMode::LegacyEpoch {
+                client
+                    .execute(
+                        r#"
+                    insert into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
+                    values (0, $1, $2, $3)
+                    on conflict (session_addr, holder_index) do update
+                    set epoch = 0, share_bcs = excluded.share_bcs
+                    "#,
+                        &[&session_addr, &holder_index, &record.share_bcs],
+                    )
+                    .map_err(|e| anyhow!("put holder share: {}", e))?;
+            } else {
+                client
+                    .execute(
+                        r#"
+                    insert into vss_holder_shares(session_addr, holder_index, share_bcs)
+                    values ($1, $2, $3)
+                    on conflict (session_addr, holder_index) do update
+                    set share_bcs = excluded.share_bcs
+                    "#,
+                        &[&session_addr, &holder_index, &record.share_bcs],
+                    )
+                    .map_err(|e| anyhow!("put holder share: {}", e))?;
+            }
             Ok(())
         })
     }
@@ -490,11 +691,12 @@ impl VssStore for PostgresVssStore {
         session_addr: &str,
         holder_index: u64,
     ) -> Result<Option<HolderShareRecord>> {
+        self.ensure_schema_mode()?;
         self.with_client(|client| {
             let row = client
                 .query_opt(
                     r#"
-                select epoch, session_addr, holder_index, share_bcs
+                select session_addr, holder_index, share_bcs
                 from vss_holder_shares where session_addr = $1 and holder_index = $2
                 "#,
                     &[
@@ -504,29 +706,36 @@ impl VssStore for PostgresVssStore {
                 )
                 .map_err(|e| anyhow!("get holder share: {}", e))?;
             Ok(row.map(|row| HolderShareRecord {
-                epoch: from_i64(row.get(0)),
-                session_addr: row.get(1),
-                holder_index: from_i64(row.get(2)),
-                share_bcs: row.get(3),
+                session_addr: row.get(0),
+                holder_index: from_i64(row.get(1)),
+                share_bcs: row.get(2),
             }))
         })
     }
 
-    fn prune_at_epoch_start(&self, current_epoch: u64) -> Result<()> {
-        if current_epoch < 2 {
-            return Ok(());
-        }
-        let cutoff = to_i64(current_epoch - 2)?;
+    fn prune_except_sessions(&self, keep_session_addrs: &[String]) -> Result<usize> {
+        self.use_reachability_based_schema()?;
+        let keep = normalized_session_set(keep_session_addrs);
         self.with_client(|client| {
+            let mut deleted = 0usize;
             for table in ["vss_dealer_states", "vss_holder_shares"] {
-                client
-                    .execute(
-                        &format!("delete from {table} where epoch <= $1"),
-                        &[&cutoff],
-                    )
-                    .map_err(|e| anyhow!("prune {table}: {}", e))?;
+                let rows = client
+                    .query(&format!("select distinct session_addr from {table}"), &[])
+                    .map_err(|e| anyhow!("list sessions in {table}: {}", e))?;
+                for row in rows {
+                    let session: String = row.get(0);
+                    if !keep.contains(&normalize_session_addr(&session)) {
+                        deleted += client
+                            .execute(
+                                &format!("delete from {table} where session_addr = $1"),
+                                &[&session],
+                            )
+                            .map_err(|e| anyhow!("prune stale sessions from {table}: {}", e))?
+                            as usize;
+                    }
+                }
             }
-            Ok(())
+            Ok(deleted)
         })
     }
 }
@@ -541,6 +750,94 @@ fn run_sync_postgres<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
 
 fn normalize_session_addr(session_addr: &str) -> String {
     normalize_account_addr(session_addr)
+}
+
+fn normalized_session_set(session_addrs: &[String]) -> HashSet<String> {
+    session_addrs
+        .iter()
+        .map(|addr| normalize_session_addr(addr))
+        .collect()
+}
+
+fn migrate_sqlite_schema(conn: &mut Connection) -> Result<()> {
+    let dealer_has_epoch = sqlite_column_exists(conn, "vss_dealer_states", "epoch")?;
+    let holder_has_epoch = sqlite_column_exists(conn, "vss_holder_shares", "epoch")?;
+    if !dealer_has_epoch && !holder_has_epoch {
+        return Ok(());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| anyhow!("start sqlite VSS schema migration: {}", e))?;
+    if dealer_has_epoch {
+        tx.execute_batch(
+            r#"
+            create table vss_dealer_states_new (
+              session_addr text primary key,
+              state_bytes blob not null
+            );
+            insert or replace into vss_dealer_states_new(session_addr, state_bytes)
+            select session_addr, state_bytes from vss_dealer_states;
+            drop table vss_dealer_states;
+            alter table vss_dealer_states_new rename to vss_dealer_states;
+            "#,
+        )
+        .map_err(|e| anyhow!("migrate sqlite vss_dealer_states schema: {}", e))?;
+    }
+    if holder_has_epoch {
+        tx.execute_batch(
+            r#"
+            create table vss_holder_shares_new (
+              session_addr text not null,
+              holder_index integer not null,
+              share_bcs blob not null,
+              primary key (session_addr, holder_index)
+            );
+            insert or replace into vss_holder_shares_new(session_addr, holder_index, share_bcs)
+            select session_addr, holder_index, share_bcs from vss_holder_shares;
+            drop table vss_holder_shares;
+            alter table vss_holder_shares_new rename to vss_holder_shares;
+            "#,
+        )
+        .map_err(|e| anyhow!("migrate sqlite vss_holder_shares schema: {}", e))?;
+    }
+    tx.commit()
+        .map_err(|e| anyhow!("commit sqlite VSS schema migration: {}", e))
+}
+
+fn sqlite_column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn
+        .prepare(&format!("pragma table_info({table})"))
+        .map_err(|e| anyhow!("inspect sqlite columns for {table}: {}", e))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| anyhow!("inspect sqlite columns for {table}: {}", e))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| anyhow!("read sqlite columns for {table}: {}", e))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|e| anyhow!("read sqlite column name for {table}: {}", e))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_sqlite_epoch_column_if_missing(conn: &Connection, table: &str) -> Result<()> {
+    if !sqlite_column_exists(conn, table, "epoch")? {
+        match conn.execute(
+            &format!("alter table {table} add column epoch integer not null default 0"),
+            [],
+        ) {
+            Ok(_) => {}
+            Err(_) if sqlite_column_exists(conn, table, "epoch")? => {}
+            Err(e) => return Err(anyhow!("add sqlite epoch column to {table}: {}", e)),
+        }
+    }
+    Ok(())
 }
 
 fn to_i64(value: u64) -> Result<i64> {
@@ -561,13 +858,37 @@ mod tests {
         (dir, store)
     }
 
+    fn sqlite_table_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("select count(*) from {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    fn sqlite_dealer_epoch(conn: &Connection, session: &str) -> i64 {
+        conn.query_row(
+            "select epoch from vss_dealer_states where session_addr = ?1",
+            params![session],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn sqlite_holder_epoch(conn: &Connection, session: &str, holder_index: i64) -> i64 {
+        conn.query_row(
+            "select epoch from vss_holder_shares where session_addr = ?1 and holder_index = ?2",
+            params![session, holder_index],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn sqlite_round_trips_minimal_vss_data() {
-        let (_dir, store) = test_store();
+        let (dir, store) = test_store();
         let session = "0xabc";
 
         let state = DealerStateRecord {
-            epoch: 7,
             session_addr: session.to_string(),
             state_bytes: b"dealer-state".to_vec(),
         };
@@ -581,7 +902,6 @@ mod tests {
         );
 
         let share = HolderShareRecord {
-            epoch: 7,
             session_addr: session.to_string(),
             holder_index: 2,
             share_bcs: b"share".to_vec(),
@@ -594,6 +914,37 @@ mod tests {
                 ..share
             })
         );
+
+        let conn = Connection::open(dir.path().join("vss.db")).unwrap();
+        assert!(!sqlite_column_exists(&conn, "vss_dealer_states", "epoch").unwrap());
+        assert!(!sqlite_column_exists(&conn, "vss_holder_shares", "epoch").unwrap());
+    }
+
+    #[test]
+    fn sqlite_legacy_schema_writes_epoch_zero_rows() {
+        let (dir, store) = test_store();
+        let session = normalize_account_addr("0xabc");
+
+        store.use_legacy_epoch_schema().unwrap();
+        store
+            .put_dealer_state(DealerStateRecord {
+                session_addr: session.clone(),
+                state_bytes: b"legacy-dealer".to_vec(),
+            })
+            .unwrap();
+        store
+            .put_holder_share(HolderShareRecord {
+                session_addr: session.clone(),
+                holder_index: 2,
+                share_bcs: b"legacy-share".to_vec(),
+            })
+            .unwrap();
+
+        let conn = Connection::open(dir.path().join("vss.db")).unwrap();
+        assert!(sqlite_column_exists(&conn, "vss_dealer_states", "epoch").unwrap());
+        assert!(sqlite_column_exists(&conn, "vss_holder_shares", "epoch").unwrap());
+        assert_eq!(sqlite_dealer_epoch(&conn, &session), 0);
+        assert_eq!(sqlite_holder_epoch(&conn, &session, 2), 0);
     }
 
     #[test]
@@ -606,23 +957,119 @@ mod tests {
     }
 
     #[test]
-    fn prune_deletes_epoch_x_minus_two_and_older() {
+    fn prune_except_sessions_keeps_only_reachable_vss_sessions() {
         let (_dir, store) = test_store();
-        for epoch in 0..=4 {
+        let live = normalize_account_addr("0x1");
+        let stale = normalize_account_addr("0x2");
+
+        for (idx, session) in [live.as_str(), stale.as_str()].into_iter().enumerate() {
             store
                 .put_dealer_state(DealerStateRecord {
-                    epoch,
-                    session_addr: format!("0x{epoch:x}"),
-                    state_bytes: vec![epoch as u8],
+                    session_addr: session.to_string(),
+                    state_bytes: vec![idx as u8],
+                })
+                .unwrap();
+            store
+                .put_holder_share(HolderShareRecord {
+                    session_addr: session.to_string(),
+                    holder_index: 0,
+                    share_bcs: vec![idx as u8],
                 })
                 .unwrap();
         }
 
-        store.prune_at_epoch_start(4).unwrap();
-        assert!(store.get_dealer_state("0x0").unwrap().is_none());
-        assert!(store.get_dealer_state("0x1").unwrap().is_none());
-        assert!(store.get_dealer_state("0x2").unwrap().is_none());
-        assert!(store.get_dealer_state("0x3").unwrap().is_some());
-        assert!(store.get_dealer_state("0x4").unwrap().is_some());
+        let deleted = store
+            .prune_except_sessions(std::slice::from_ref(&live))
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert!(store.get_dealer_state(&live).unwrap().is_some());
+        assert!(store.get_holder_share(&live, 0).unwrap().is_some());
+        assert!(store.get_dealer_state(&stale).unwrap().is_none());
+        assert!(store.get_holder_share(&stale, 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn sqlite_migrates_legacy_epoch_schema_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-vss.db");
+        let legacy_session = normalize_account_addr("0xabc");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                create table vss_dealer_states (
+                  epoch integer not null,
+                  session_addr text primary key,
+                  state_bytes blob not null
+                );
+                create table vss_holder_shares (
+                  epoch integer not null,
+                  session_addr text not null,
+                  holder_index integer not null,
+                  share_bcs blob not null,
+                  primary key (session_addr, holder_index)
+                );
+                "#,
+            )
+            .unwrap();
+            conn.execute(
+                "insert into vss_dealer_states(epoch, session_addr, state_bytes) values (?1, ?2, ?3)",
+                params![25i64, &legacy_session, b"legacy-dealer".to_vec()],
+            )
+            .unwrap();
+            conn.execute(
+                "insert into vss_holder_shares(epoch, session_addr, holder_index, share_bcs) values (?1, ?2, ?3, ?4)",
+                params![25i64, &legacy_session, 2i64, b"legacy-share".to_vec()],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteVssStore::open(path.clone()).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            assert!(sqlite_column_exists(&conn, "vss_dealer_states", "epoch").unwrap());
+            assert!(sqlite_column_exists(&conn, "vss_holder_shares", "epoch").unwrap());
+        }
+
+        store.use_reachability_based_schema().unwrap();
+        assert_eq!(
+            store.get_dealer_state(&legacy_session).unwrap(),
+            Some(DealerStateRecord {
+                session_addr: legacy_session.clone(),
+                state_bytes: b"legacy-dealer".to_vec(),
+            })
+        );
+        assert_eq!(
+            store.get_holder_share(&legacy_session, 2).unwrap(),
+            Some(HolderShareRecord {
+                session_addr: legacy_session.clone(),
+                holder_index: 2,
+                share_bcs: b"legacy-share".to_vec(),
+            })
+        );
+
+        store
+            .put_dealer_state(DealerStateRecord {
+                session_addr: "0xdef".to_string(),
+                state_bytes: b"new-dealer".to_vec(),
+            })
+            .unwrap();
+        store
+            .put_holder_share(HolderShareRecord {
+                session_addr: "0xdef".to_string(),
+                holder_index: 1,
+                share_bcs: b"new-share".to_vec(),
+            })
+            .unwrap();
+
+        SqliteVssStore::open(path.clone())
+            .unwrap()
+            .use_reachability_based_schema()
+            .unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert!(!sqlite_column_exists(&conn, "vss_dealer_states", "epoch").unwrap());
+        assert!(!sqlite_column_exists(&conn, "vss_holder_shares", "epoch").unwrap());
+        assert_eq!(sqlite_table_count(&conn, "vss_dealer_states"), 2);
+        assert_eq!(sqlite_table_count(&conn, "vss_holder_shares"), 2);
     }
 }

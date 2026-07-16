@@ -27,6 +27,61 @@ export function assertVSSHolderShareRows(opts: {
     }
 }
 
+export function assertVSSStoresHaveNoEpochColumns(opts: {
+    storeUrls: string[];
+}): void {
+    for (const storeUrl of opts.storeUrls) {
+        for (const table of ['vss_dealer_states', 'vss_holder_shares']) {
+            const count = countEpochColumnsInStore(storeUrl, table);
+            if (count !== 0) {
+                throw `expected no epoch column in ${table} for ${storeUrl}, got ${count}`;
+            }
+        }
+    }
+}
+
+export function assertVSSStoresHaveEpochColumns(opts: {
+    storeUrls: string[];
+}): void {
+    for (const storeUrl of opts.storeUrls) {
+        for (const table of ['vss_dealer_states', 'vss_holder_shares']) {
+            const count = countEpochColumnsInStore(storeUrl, table);
+            if (count !== 1) {
+                throw `expected one epoch column in ${table} for ${storeUrl}, got ${count}`;
+            }
+        }
+    }
+}
+
+export function insertUnreachableLegacyVSSStoreRows(opts: {
+    storeUrls: string[];
+    sessionAddr: AccountAddress | string;
+}): void {
+    const session = sessionAddrToLongString(opts.sessionAddr);
+    for (const storeUrl of opts.storeUrls) {
+        if (storeUrl.startsWith('postgres://')) {
+            insertPostgresLegacyRows(storeUrl, session);
+        } else {
+            insertSqliteLegacyRows(sqlitePathFromUrl(storeUrl), session);
+        }
+    }
+}
+
+export function assertVSSStoreRowsAbsent(opts: {
+    storeUrls: string[];
+    sessionAddr: AccountAddress | string;
+}): void {
+    const session = sessionAddrToLongString(opts.sessionAddr);
+    for (const storeUrl of opts.storeUrls) {
+        const count = storeUrl.startsWith('postgres://')
+            ? queryPostgresRowsForSessionCount(storeUrl, session)
+            : querySqliteRowsForSessionCount(sqlitePathFromUrl(storeUrl), session);
+        if (Number(count) !== 0) {
+            throw `expected no VSS store rows in ${storeUrl} for ${session}, got ${count}`;
+        }
+    }
+}
+
 export async function assertVSSSecretReconstruction(opts: {
     storeUrls: string[];
     sessionAddr: AccountAddress;
@@ -114,9 +169,7 @@ export function readVSSHolderShareFromStore(opts: {
     sessionAddr: AccountAddress | string;
     holderIndex: number;
 }): Uint8Array {
-    const session = typeof opts.sessionAddr === 'string'
-        ? AccountAddress.fromString(opts.sessionAddr).toStringLong()
-        : opts.sessionAddr.toStringLong();
+    const session = sessionAddrToLongString(opts.sessionAddr);
     const hex = opts.vssStoreUrl.startsWith('postgres://')
         ? queryPostgresHolderShare(opts.vssStoreUrl, session, opts.holderIndex)
         : querySqliteHolderShare(sqlitePathFromUrl(opts.vssStoreUrl), session, opts.holderIndex);
@@ -131,9 +184,7 @@ function readVSSDealerSecretFromStore(opts: {
     sessionAddr: AccountAddress | string;
     scheme: number;
 }): ace.vss.PrivateScalar {
-    const session = typeof opts.sessionAddr === 'string'
-        ? AccountAddress.fromString(opts.sessionAddr).toStringLong()
-        : opts.sessionAddr.toStringLong();
+    const session = sessionAddrToLongString(opts.sessionAddr);
     const hex = opts.vssStoreUrl.startsWith('postgres://')
         ? queryPostgresDealerState(opts.vssStoreUrl, session)
         : querySqliteDealerState(sqlitePathFromUrl(opts.vssStoreUrl), session);
@@ -152,15 +203,30 @@ function countVSSHolderSharesInStore(opts: {
     vssStoreUrl: string;
     sessionAddr: AccountAddress | string;
 }): number {
-    const session = typeof opts.sessionAddr === 'string'
-        ? AccountAddress.fromString(opts.sessionAddr).toStringLong()
-        : opts.sessionAddr.toStringLong();
+    const session = sessionAddrToLongString(opts.sessionAddr);
     const out = opts.vssStoreUrl.startsWith('postgres://')
         ? queryPostgresHolderShareCount(opts.vssStoreUrl, session)
         : querySqliteHolderShareCount(sqlitePathFromUrl(opts.vssStoreUrl), session);
     const count = Number(out);
     if (!Number.isSafeInteger(count)) {
         throw new Error(`Invalid holder share count ${JSON.stringify(out)} from ${opts.vssStoreUrl}`);
+    }
+    return count;
+}
+
+function sessionAddrToLongString(sessionAddr: AccountAddress | string): string {
+    return typeof sessionAddr === 'string'
+        ? AccountAddress.fromString(sessionAddr).toStringLong()
+        : sessionAddr.toStringLong();
+}
+
+function countEpochColumnsInStore(storeUrl: string, table: string): number {
+    const out = storeUrl.startsWith('postgres://')
+        ? queryPostgresEpochColumnCount(storeUrl, table)
+        : querySqliteEpochColumnCount(sqlitePathFromUrl(storeUrl), table);
+    const count = Number(out);
+    if (!Number.isSafeInteger(count)) {
+        throw new Error(`Invalid epoch column count ${JSON.stringify(out)} from ${storeUrl}`);
     }
     return count;
 }
@@ -184,6 +250,36 @@ function querySqliteDealerState(dbPath: string, session: string): string {
         dbPath,
         `select hex(state_bytes) from vss_dealer_states where session_addr = '${session}';`,
     ], { encoding: 'utf8' }).trim().toLowerCase();
+}
+
+function querySqliteRowsForSessionCount(dbPath: string, session: string): string {
+    return execFileSync('sqlite3', [
+        dbPath,
+        `select (
+            select count(*) from vss_dealer_states where session_addr = '${session}'
+        ) + (
+            select count(*) from vss_holder_shares where session_addr = '${session}'
+        );`,
+    ], { encoding: 'utf8' }).trim();
+}
+
+function querySqliteEpochColumnCount(dbPath: string, table: string): string {
+    return execFileSync('sqlite3', [
+        dbPath,
+        `select count(*) from pragma_table_info('${table}') where name = 'epoch';`,
+    ], { encoding: 'utf8' }).trim();
+}
+
+function insertSqliteLegacyRows(dbPath: string, session: string): void {
+    execFileSync('sqlite3', [
+        dbPath,
+        `
+        insert or replace into vss_dealer_states(epoch, session_addr, state_bytes)
+        values (0, '${session}', X'00');
+        insert or replace into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
+        values (0, '${session}', 0, X'00');
+        `,
+    ]);
 }
 
 function queryPostgresHolderShare(storeUrl: string, session: string, holderIndex: number): string {
@@ -211,6 +307,44 @@ function queryPostgresDealerState(storeUrl: string, session: string): string {
         '-c',
         `select encode(state_bytes, 'hex') from vss_dealer_states where session_addr = '${session}';`,
     ], { encoding: 'utf8' }).trim().toLowerCase();
+}
+
+function queryPostgresRowsForSessionCount(storeUrl: string, session: string): string {
+    return execFileSync(path.join(findPostgresBinDir(), 'psql'), [
+        storeUrl,
+        '-At',
+        '-c',
+        `select (
+            select count(*) from vss_dealer_states where session_addr = '${session}'
+        ) + (
+            select count(*) from vss_holder_shares where session_addr = '${session}'
+        );`,
+    ], { encoding: 'utf8' }).trim();
+}
+
+function queryPostgresEpochColumnCount(storeUrl: string, table: string): string {
+    return execFileSync(path.join(findPostgresBinDir(), 'psql'), [
+        storeUrl,
+        '-At',
+        '-c',
+        `select count(*) from information_schema.columns where table_schema = 'public' and table_name = '${table}' and column_name = 'epoch';`,
+    ], { encoding: 'utf8' }).trim();
+}
+
+function insertPostgresLegacyRows(storeUrl: string, session: string): void {
+    execFileSync(path.join(findPostgresBinDir(), 'psql'), [
+        storeUrl,
+        '-At',
+        '-c',
+        `
+        insert into vss_dealer_states(epoch, session_addr, state_bytes)
+        values (0, '${session}', decode('00', 'hex'))
+        on conflict (session_addr) do update set epoch = 0, state_bytes = excluded.state_bytes;
+        insert into vss_holder_shares(epoch, session_addr, holder_index, share_bcs)
+        values (0, '${session}', 0, decode('00', 'hex'))
+        on conflict (session_addr, holder_index) do update set epoch = 0, share_bcs = excluded.share_bcs;
+        `,
+    ]);
 }
 
 function decodeDealerStatePolyS(bytes: Uint8Array): Uint8Array[] {

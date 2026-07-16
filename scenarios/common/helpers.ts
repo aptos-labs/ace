@@ -132,6 +132,10 @@ export type ContractsPublishScratch = {
     contractsDir: string;
 };
 
+export type DeployContractsOptions = {
+    enableReachabilityBasedVssStoreManagement?: boolean;
+};
+
 function patchMoveTomlAdminPlaceholders(contractsDir: string, adminAddressStr: string): void {
     const ph = ADMIN_PLACEHOLDER_FOR_MOVE_TOML;
     const walk = (dir: string): void => {
@@ -194,7 +198,12 @@ export function ed25519PrivateKeyHex(account: Account): string {
  * Publish Move packages under `REPO_ROOT/contracts/<folder>` in order (one `aptos move publish` per folder).
  * The `network` package depends on `epoch-change`; publish `epoch-change` before `network`.
  */
-export async function deployContracts(adminAccount: Account, packageFolders: string[], rpcUrl = LOCALNET_URL): Promise<void> {
+export async function deployContracts(
+    adminAccount: Account,
+    packageFolders: string[],
+    rpcUrl = LOCALNET_URL,
+    options: DeployContractsOptions = {},
+): Promise<void> {
     const adminAddr = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
     const scratch = prepareContractsPublishScratch(path.join(REPO_ROOT, 'contracts'), adminAddr);
@@ -205,6 +214,15 @@ export async function deployContracts(adminAccount: Account, packageFolders: str
                 throw new Error(`missing Move package at ${packageDir}`);
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
+        }
+        if (packageFolders.includes('network')) {
+            await initializeServingConfig(adminAccount, rpcUrl);
+        }
+        if (
+            packageFolders.includes('network')
+            && options.enableReachabilityBasedVssStoreManagement !== false
+        ) {
+            await enableReachabilityBasedVssStoreManagementFlag(adminAccount, rpcUrl);
         }
     } finally {
         rmContractsPublishScratch(scratch);
@@ -436,6 +454,38 @@ export function assertTxnSuccess(result: Result<CommittedTxn>, label: string): C
         throw new Error(`${label}: Move abort code=${a.abortCode} vm_status=${a.vmStatus}`);
     }
     return v.asSuccessOrThrow();
+}
+
+export async function enableReachabilityBasedVssStoreManagementFlag(
+    adminAccount: Account,
+    rpcUrl = LOCALNET_URL,
+): Promise<void> {
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${adminAddr}::network::update_reachability_based_vss_store_management_flag`,
+            args: [true],
+            rpcUrl,
+        }),
+        'network::update_reachability_based_vss_store_management_flag',
+    );
+}
+
+export async function initializeServingConfig(
+    adminAccount: Account,
+    rpcUrl = LOCALNET_URL,
+): Promise<void> {
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    assertTxnSuccess(
+        await submitTxn({
+            signer: adminAccount,
+            entryFunction: `${adminAddr}::network::initialize_serving_config`,
+            args: [],
+            rpcUrl,
+        }),
+        'network::initialize_serving_config',
+    );
 }
 
 function urlPort(urlStr: string): number {

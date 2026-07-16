@@ -14,7 +14,7 @@ use vss_store::{connect_vss_store, VssStore};
 
 use crate::config::{resolve_max_concurrent, ChainRpcConfig, RunConfig, RuntimeMode};
 use crate::http_server;
-use crate::onchain::{addr_bytes_to_string, fetch_state_view_v0, BcsSecretInfo, BcsStateViewV0};
+use crate::onchain::{addr_bytes_to_string, fetch_state_view_v1, BcsSecretInfo, BcsStateView};
 use crate::reconstruction::reconstruct_share_from_store;
 use crate::secrets::{LocalSecrets, SecretsProvider, ShareEntry, ShareMap};
 use crate::wlog;
@@ -34,8 +34,6 @@ pub async fn run(config: RunConfig, shutdown_rx: oneshot::Receiver<()>) -> Resul
 }
 
 // ── Runtime supervisor ────────────────────────────────────────────────────────
-
-const PREVIOUS_EPOCH_GRACE_MICROS: u64 = 30_000_000;
 
 #[derive(Clone, Copy)]
 struct RuntimeCapabilities {
@@ -94,6 +92,45 @@ struct ServingEpoch {
     secrets: Vec<BcsSecretInfo>,
 }
 
+async fn initialize_vss_store_management(
+    config: &NetworkSupervisorConfig,
+    shutdown_rx: &mut oneshot::Receiver<()>,
+) -> Result<Option<(BcsStateView, bool)>> {
+    loop {
+        let state = match fetch_state_view_v1(&config.rpc, &config.ace).await {
+            Ok(s) => s,
+            Err(e) => {
+                wlog!("network-node: fetch initial state view error: {:#}", e);
+                if !sleep_or_shutdown(shutdown_rx, Duration::from_secs(5)).await {
+                    return Ok(None);
+                }
+                continue;
+            }
+        };
+        let reachability_vss_management_enabled = state
+            .feature_configs
+            .reachability_based_vss_store_management_enabled();
+        match configure_vss_store_schema(config, reachability_vss_management_enabled) {
+            Ok(()) => return Ok(Some((state, reachability_vss_management_enabled))),
+            Err(e) => {
+                wlog!("network-node: VSS store schema init error: {:#}", e);
+                if !sleep_or_shutdown(shutdown_rx, Duration::from_secs(5)).await {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+async fn sleep_or_shutdown(shutdown_rx: &mut oneshot::Receiver<()>, delay: Duration) -> bool {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    tokio::select! {
+        _ = shutdown_rx => false,
+        _ = &mut sleep => true,
+    }
+}
+
 async fn run_supervisor(
     mut config: NetworkSupervisorConfig,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -122,6 +159,21 @@ async fn run_supervisor(
     } else {
         None
     };
+
+    let Some((startup_state, reachability_vss_management_enabled)) =
+        initialize_vss_store_management(&config, &mut shutdown_rx).await?
+    else {
+        wlog!("network-node: shutdown signal received.");
+        return Ok(());
+    };
+    wlog!(
+        "network-node: VSS store management mode: {}",
+        if reachability_vss_management_enabled {
+            "reachability-based"
+        } else {
+            "legacy epoch-column"
+        }
+    );
 
     let chain_id = config
         .rpc
@@ -155,6 +207,8 @@ async fn run_supervisor(
 
     let mut tasks = RuntimeTasks::default();
     let mut next_delay = Duration::from_secs(0);
+    let mut last_pruned_stable_epoch: Option<u64> = None;
+    let mut next_state = Some(startup_state);
 
     loop {
         let sleep = tokio::time::sleep(next_delay);
@@ -168,12 +222,16 @@ async fn run_supervisor(
             _ = &mut sleep => {}
         }
 
-        let state = match fetch_state_view_v0(&config.rpc, &config.ace).await {
-            Ok(s) => s,
-            Err(e) => {
-                wlog!("network-node: fetch state view error: {:#}", e);
-                next_delay = Duration::from_secs(5);
-                continue;
+        let state = if let Some(state) = next_state.take() {
+            state
+        } else {
+            match fetch_state_view_v1(&config.rpc, &config.ace).await {
+                Ok(s) => s,
+                Err(e) => {
+                    wlog!("network-node: fetch state view error: {:#}", e);
+                    next_delay = Duration::from_secs(5);
+                    continue;
+                }
             }
         };
 
@@ -220,11 +278,41 @@ async fn run_supervisor(
             }
         }
 
+        if reachability_vss_management_enabled
+            && state.epoch_change_info.is_none()
+            && last_pruned_stable_epoch != Some(state.epoch)
+        {
+            match prune_vss_store_to_live_sessions(&config, &state.live_vss_sessions) {
+                Ok(deleted) => {
+                    last_pruned_stable_epoch = Some(state.epoch);
+                    if deleted > 0 {
+                        wlog!(
+                            "network-node: pruned {} stale VSS store row(s) at stable epoch {}",
+                            deleted,
+                            state.epoch
+                        );
+                    }
+                }
+                Err(e) => wlog!("network-node: VSS store prune error: {:#}", e),
+            }
+        }
+
         next_delay = if network_needs_progress {
             Duration::from_secs(1)
         } else {
             Duration::from_secs(5)
         };
+    }
+}
+
+fn configure_vss_store_schema(
+    config: &NetworkSupervisorConfig,
+    reachability_vss_management_enabled: bool,
+) -> Result<()> {
+    if reachability_vss_management_enabled {
+        config.store.use_reachability_based_schema()
+    } else {
+        config.store.use_legacy_epoch_schema()
     }
 }
 
@@ -235,7 +323,7 @@ fn unix_time_micros() -> u64 {
         .as_micros() as u64
 }
 
-fn network_needs_progress(state: &BcsStateViewV0, now_micros: u64) -> bool {
+fn network_needs_progress(state: &BcsStateView, now_micros: u64) -> bool {
     let epoch_timed_out = now_micros
         >= state
             .epoch_start_time_micros
@@ -254,7 +342,7 @@ fn committee_index(nodes: &[[u8; 32]], account_addr: &str) -> Option<usize> {
 }
 
 fn desired_serving_epochs(
-    state: &BcsStateViewV0,
+    state: &BcsStateView,
     account_addr: &str,
     now_micros: u64,
 ) -> Vec<ServingEpoch> {
@@ -272,7 +360,7 @@ fn desired_serving_epochs(
         let in_grace = now_micros
             < state
                 .epoch_start_time_micros
-                .saturating_add(PREVIOUS_EPOCH_GRACE_MICROS);
+                .saturating_add(state.previous_epoch_grace_micros);
         if in_grace && state.epoch > 0 {
             if let Some(idx) = committee_index(&previous.nodes, account_addr) {
                 epochs.push(ServingEpoch {
@@ -325,11 +413,21 @@ async fn reconcile_serving_cache(
     Ok(())
 }
 
+fn prune_vss_store_to_live_sessions(
+    config: &NetworkSupervisorConfig,
+    live_vss_sessions: &[[u8; 32]],
+) -> Result<usize> {
+    let mut keep_sessions: Vec<String> =
+        live_vss_sessions.iter().map(addr_bytes_to_string).collect();
+    keep_sessions.sort();
+    config.store.prune_except_sessions(&keep_sessions)
+}
+
 fn reconcile_epoch_change_clients(
     tasks: &mut RuntimeTasks,
     capabilities: RuntimeCapabilities,
     protocol: Option<&ProtocolRuntimeConfig>,
-    state: &BcsStateViewV0,
+    state: &BcsStateView,
     config: &NetworkSupervisorConfig,
 ) {
     if !capabilities.can_drive_protocol {
@@ -545,7 +643,7 @@ fn decode_pke_dk(pke_dk: &str) -> Result<Arc<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::onchain::BcsEpochSnapshot;
+    use crate::onchain::{BcsEpochSnapshot, BcsNetworkFeatureConfigs};
 
     fn addr(byte: u8) -> [u8; 32] {
         [byte; 32]
@@ -564,8 +662,8 @@ mod tests {
     fn state_with_previous(
         current_nodes: Vec<[u8; 32]>,
         previous_nodes: Vec<[u8; 32]>,
-    ) -> BcsStateViewV0 {
-        BcsStateViewV0 {
+    ) -> BcsStateView {
+        BcsStateView {
             epoch: 7,
             epoch_start_time_micros: 1_000_000,
             epoch_duration_micros: 90_000_000,
@@ -578,6 +676,9 @@ mod tests {
             }),
             proposals: vec![],
             epoch_change_info: None,
+            feature_configs: BcsNetworkFeatureConfigs::default(),
+            live_vss_sessions: vec![],
+            previous_epoch_grace_micros: 30_000_000,
         }
     }
 
@@ -604,7 +705,7 @@ mod tests {
         let in_grace = desired_serving_epochs(
             &state,
             &addr_bytes_to_string(&me),
-            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS - 1,
+            state.epoch_start_time_micros + state.previous_epoch_grace_micros - 1,
         );
         assert_eq!(in_grace.len(), 1);
         assert_eq!(in_grace[0].epoch, 6);
@@ -614,7 +715,7 @@ mod tests {
         let after_grace = desired_serving_epochs(
             &state,
             &addr_bytes_to_string(&me),
-            state.epoch_start_time_micros + PREVIOUS_EPOCH_GRACE_MICROS,
+            state.epoch_start_time_micros + state.previous_epoch_grace_micros,
         );
         assert!(after_grace.is_empty());
     }

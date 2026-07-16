@@ -6,7 +6,7 @@ use vss_common::group::{BcsElement, BcsScalar};
 use vss_common::session::BcsPcsPublicParams;
 use vss_common::AptosRpc;
 
-// ── BCS mirror of ace::network::StateViewV0 ─────────────────────────────────
+// ── BCS mirror of ace::network::StateViewV1 ─────────────────────────────────
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize)]
@@ -63,8 +63,30 @@ pub(crate) struct BcsEpochSnapshot {
     pub(crate) secrets: Vec<BcsSecretInfo>,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, serde::Deserialize)]
+pub(crate) enum BcsNetworkFeatureConfig {
+    ReachabilityBasedVssStoreManagementFlag,
+}
+
+#[derive(Clone, Default, serde::Deserialize)]
+pub(crate) struct BcsNetworkFeatureConfigs {
+    items: Vec<Option<BcsNetworkFeatureConfig>>,
+}
+
+impl BcsNetworkFeatureConfigs {
+    pub(crate) fn reachability_based_vss_store_management_enabled(&self) -> bool {
+        matches!(
+            self.items.first(),
+            Some(Some(
+                BcsNetworkFeatureConfig::ReachabilityBasedVssStoreManagementFlag
+            ))
+        )
+    }
+}
+
 #[derive(serde::Deserialize)]
-pub(crate) struct BcsStateViewV0 {
+pub(crate) struct BcsStateView {
     pub(crate) epoch: u64,
     pub(crate) epoch_start_time_micros: u64,
     pub(crate) epoch_duration_micros: u64,
@@ -75,6 +97,9 @@ pub(crate) struct BcsStateViewV0 {
     pub(crate) previous_epoch_info: Option<BcsEpochSnapshot>,
     pub(crate) proposals: Vec<Option<BcsProposalView>>,
     pub(crate) epoch_change_info: Option<BcsEpochChangeView>,
+    pub(crate) feature_configs: BcsNetworkFeatureConfigs,
+    pub(crate) live_vss_sessions: Vec<[u8; 32]>,
+    pub(crate) previous_epoch_grace_micros: u64,
 }
 
 #[allow(dead_code)]
@@ -128,16 +153,16 @@ pub(crate) fn addr_string_to_bytes(addr: &str) -> Result<[u8; 32]> {
         .map_err(|b: Vec<u8>| anyhow!("address has length {} (want 32)", b.len()))
 }
 
-pub(crate) async fn fetch_state_view_v0(rpc: &AptosRpc, ace: &str) -> Result<BcsStateViewV0> {
+pub(crate) async fn fetch_state_view_v1(rpc: &AptosRpc, ace: &str) -> Result<BcsStateView> {
     let result = rpc
-        .call_view(&format!("{}::network::state_view_v0_bcs", ace), &[])
+        .call_view(&format!("{}::network::state_view_v1_bcs", ace), &[])
         .await?;
     let hex = result
         .first()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("expected string in state_view_v0_bcs result"))?;
+        .ok_or_else(|| anyhow!("expected string in state_view_v1_bcs result"))?;
     let bytes = hex::decode(hex.trim_start_matches("0x"))?;
-    bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode StateViewV0: {}", e))
+    bcs::from_bytes(&bytes).map_err(|e| anyhow!("bcs decode StateViewV1: {}", e))
 }
 
 pub(crate) async fn fetch_dkg_session_bcs(

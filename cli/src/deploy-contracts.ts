@@ -58,6 +58,14 @@ export type ContractsPublishScratch = {
     contractsDir: string;
 };
 
+export type DeployContractsOptions = {
+    /**
+     * New deployments should use reachability-based VSS store management by default.
+     * Tests can opt out to exercise the legacy epoch-column migration path.
+     */
+    enableReachabilityBasedVssStoreManagement?: boolean;
+};
+
 function spawnExitZero(cmd: string, args: string[], label: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const child = spawn(cmd, args, { stdio: 'inherit' });
@@ -141,6 +149,25 @@ export async function publishMovePackage(packageDir: string, privateKeyHex: stri
     await spawnExitZero('aptos', args, 'aptos move publish');
 }
 
+export async function enableReachabilityBasedVssStoreManagementFlag(
+    adminAccount: Account,
+    rpcUrl: string,
+): Promise<void> {
+    const adminAddr = adminAccount.accountAddress.toStringLong();
+    const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
+    const args = [
+        'move', 'run',
+        '--function-id', `${adminAddr}::network::update_reachability_based_vss_store_management_flag`,
+        '--args', 'bool:true',
+        '--private-key', `0x${adminKeyHex}`,
+        '--url', rpcUrl,
+        '--assume-yes',
+    ];
+    const redactedArgs = args.map((a, i) => (args[i - 1] === '--private-key' ? '<REDACTED>' : a));
+    console.log(`  $ aptos ${redactedArgs.join(' ')}`);
+    await spawnExitZero('aptos', args, 'aptos move run');
+}
+
 /** Hex (no `0x`) for an Ed25519-backed `Account`. */
 export function ed25519PrivateKeyHex(account: Account): string {
     if (!('privateKey' in account)) {
@@ -161,6 +188,7 @@ export async function deployContracts(
     rpcUrl: string,
     packageFolders: readonly string[] = ACE_CONTRACT_PACKAGES,
     versionStr?: string,
+    options: DeployContractsOptions = {},
 ): Promise<void> {
     const adminAddr   = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
@@ -172,6 +200,12 @@ export async function deployContracts(
                 throw new Error(`missing Move package at ${packageDir}`);
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
+        }
+        if (
+            packageFolders.includes('network')
+            && options.enableReachabilityBasedVssStoreManagement !== false
+        ) {
+            await enableReachabilityBasedVssStoreManagementFlag(adminAccount, rpcUrl);
         }
     } finally {
         rmContractsPublishScratch(scratch);

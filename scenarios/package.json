@@ -18,6 +18,7 @@
     "test-ibe-aptos-basic": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-ibe-aptos-basic.ts",
     "test-ibe-aptos-custom": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-ibe-aptos-custom.ts",
     "test-network-protocol": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-network-protocol.ts",
+    "test-vss-store-management-compat": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-vss-store-management-compat.ts",
     "full-happy-path": "pnpm --filter @aptos-labs/ace-sdk build && tsx full-happy-path.ts",
     "test-auto-epoch-change": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-auto-epoch-change.ts",
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",

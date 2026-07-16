@@ -53,7 +53,7 @@ function templateInputsFromNode(node: TrackedNode): TemplateInputs {
             rpcApiKey:              node.rpcApiKey,
             gasStationKey:          node.gasStationKey,
             chainRpc:               node.chainRpc,
-            project:                node.gcp?.project,
+            project:                node.gcp?.project ?? node.gce?.project,
             region:                 node.gcp?.region,
             serviceName:            node.gcp?.serviceName,
             maintainerServiceName:  node.gcp?.maintainerServiceName,

@@ -11,6 +11,12 @@ COPY . .
 RUN cargo build --release -p network-node
 
 FROM debian:bookworm-slim
+ARG ACE_VERSION=unknown
+ARG ACE_IMAGE_TAG=unknown
+ARG ACE_GIT_SHA=unknown
+ENV ACE_VERSION=$ACE_VERSION
+ENV ACE_IMAGE_TAG=$ACE_IMAGE_TAG
+ENV ACE_GIT_SHA=$ACE_GIT_SHA
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/network-node /usr/local/bin/network-node
 ENTRYPOINT ["network-node"]

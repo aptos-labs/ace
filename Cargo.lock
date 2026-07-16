@@ -1605,6 +1605,7 @@ dependencies = [
  "sha2",
  "sha3",
  "tokio",
+ "tower",
  "tower-http",
  "uuid",
  "vss-common",

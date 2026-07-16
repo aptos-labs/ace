@@ -58,14 +58,6 @@ export type ContractsPublishScratch = {
     contractsDir: string;
 };
 
-export type DeployContractsOptions = {
-    /**
-     * New deployments should use reachability-based VSS store management by default.
-     * Tests can opt out to exercise the legacy epoch-column migration path.
-     */
-    enableReachabilityBasedVssStoreManagement?: boolean;
-};
-
 function spawnExitZero(cmd: string, args: string[], label: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const child = spawn(cmd, args, { stdio: 'inherit' });
@@ -188,7 +180,6 @@ export async function deployContracts(
     rpcUrl: string,
     packageFolders: readonly string[] = ACE_CONTRACT_PACKAGES,
     versionStr?: string,
-    options: DeployContractsOptions = {},
 ): Promise<void> {
     const adminAddr   = adminAccount.accountAddress.toStringLong();
     const adminKeyHex = ed25519PrivateKeyHex(adminAccount);
@@ -201,10 +192,7 @@ export async function deployContracts(
             }
             await publishMovePackage(packageDir, adminKeyHex, rpcUrl);
         }
-        if (
-            packageFolders.includes('network')
-            && options.enableReachabilityBasedVssStoreManagement !== false
-        ) {
+        if (packageFolders.includes('network')) {
             await enableReachabilityBasedVssStoreManagementFlag(adminAccount, rpcUrl);
         }
     } finally {

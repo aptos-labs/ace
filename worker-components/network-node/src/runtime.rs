@@ -94,6 +94,45 @@ struct ServingEpoch {
     secrets: Vec<BcsSecretInfo>,
 }
 
+async fn initialize_vss_store_management(
+    config: &NetworkSupervisorConfig,
+    shutdown_rx: &mut oneshot::Receiver<()>,
+) -> Result<Option<(BcsStateView, bool)>> {
+    loop {
+        let state = match fetch_state_view_v1(&config.rpc, &config.ace).await {
+            Ok(s) => s,
+            Err(e) => {
+                wlog!("network-node: fetch initial state view error: {:#}", e);
+                if !sleep_or_shutdown(shutdown_rx, Duration::from_secs(5)).await {
+                    return Ok(None);
+                }
+                continue;
+            }
+        };
+        let reachability_vss_management_enabled = state
+            .feature_configs
+            .reachability_based_vss_store_management_enabled();
+        match configure_vss_store_schema(config, reachability_vss_management_enabled) {
+            Ok(()) => return Ok(Some((state, reachability_vss_management_enabled))),
+            Err(e) => {
+                wlog!("network-node: VSS store schema init error: {:#}", e);
+                if !sleep_or_shutdown(shutdown_rx, Duration::from_secs(5)).await {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+async fn sleep_or_shutdown(shutdown_rx: &mut oneshot::Receiver<()>, delay: Duration) -> bool {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    tokio::select! {
+        _ = shutdown_rx => false,
+        _ = &mut sleep => true,
+    }
+}
+
 async fn run_supervisor(
     mut config: NetworkSupervisorConfig,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -122,6 +161,21 @@ async fn run_supervisor(
     } else {
         None
     };
+
+    let Some((startup_state, reachability_vss_management_enabled)) =
+        initialize_vss_store_management(&config, &mut shutdown_rx).await?
+    else {
+        wlog!("network-node: shutdown signal received.");
+        return Ok(());
+    };
+    wlog!(
+        "network-node: VSS store management mode: {}",
+        if reachability_vss_management_enabled {
+            "reachability-based"
+        } else {
+            "legacy epoch-column"
+        }
+    );
 
     let chain_id = config
         .rpc
@@ -156,6 +210,7 @@ async fn run_supervisor(
     let mut tasks = RuntimeTasks::default();
     let mut next_delay = Duration::from_secs(0);
     let mut last_pruned_stable_epoch: Option<u64> = None;
+    let mut next_state = Some(startup_state);
 
     loop {
         let sleep = tokio::time::sleep(next_delay);
@@ -169,23 +224,18 @@ async fn run_supervisor(
             _ = &mut sleep => {}
         }
 
-        let state = match fetch_state_view_v1(&config.rpc, &config.ace).await {
-            Ok(s) => s,
-            Err(e) => {
-                wlog!("network-node: fetch state view error: {:#}", e);
-                next_delay = Duration::from_secs(5);
-                continue;
+        let state = if let Some(state) = next_state.take() {
+            state
+        } else {
+            match fetch_state_view_v1(&config.rpc, &config.ace).await {
+                Ok(s) => s,
+                Err(e) => {
+                    wlog!("network-node: fetch state view error: {:#}", e);
+                    next_delay = Duration::from_secs(5);
+                    continue;
+                }
             }
         };
-
-        let reachability_vss_management_enabled = state
-            .feature_configs
-            .reachability_based_vss_store_management_enabled();
-        if let Err(e) = configure_vss_store_schema(&config, reachability_vss_management_enabled) {
-            wlog!("network-node: VSS store schema init error: {:#}", e);
-            next_delay = Duration::from_secs(5);
-            continue;
-        }
 
         let now_micros = unix_time_micros();
         let cur_node_idx = committee_index(&state.cur_nodes, &config.account_addr);

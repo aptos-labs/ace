@@ -431,6 +431,7 @@ pub fn chain_rpc_dependency_targets(chain_rpc: &ChainRpcConfig) -> Vec<Dependenc
         DependencyTarget::aptos("aptos_mainnet_api", chain_rpc.aptos_mainnet.clone(), Some(1)),
         DependencyTarget::aptos("aptos_testnet_api", chain_rpc.aptos_testnet.clone(), Some(2)),
         DependencyTarget::aptos("aptos_localnet_api", chain_rpc.aptos_localnet.clone(), Some(4)),
+        DependencyTarget::aptos("aptos_shelbynet_api", chain_rpc.aptos_shelbynet.clone(), Some(114)),
     ];
     if let Some(rpc) = &chain_rpc.aptos_shelby_private_beta {
         deps.push(DependencyTarget::aptos(

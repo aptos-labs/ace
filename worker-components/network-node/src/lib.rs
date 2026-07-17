@@ -72,6 +72,7 @@ pub struct ChainRpcConfig {
     pub aptos_mainnet: AptosRpc,                     // chain_id=1
     pub aptos_testnet: AptosRpc,                     // chain_id=2
     pub aptos_localnet: AptosRpc,                    // chain_id=4
+    pub aptos_shelbynet: AptosRpc,                   // chain_id=114
     pub aptos_shelby_private_beta: Option<AptosRpc>, // chain_id=125
     pub solana_mainnet_beta: String,
     pub solana_testnet: String,
@@ -85,6 +86,7 @@ impl ChainRpcConfig {
             1 => Ok(&self.aptos_mainnet),
             2 => Ok(&self.aptos_testnet),
             4 => Ok(&self.aptos_localnet),
+            114 => Ok(&self.aptos_shelbynet),
             125 => self.aptos_shelby_private_beta.as_ref().ok_or_else(|| {
                 anyhow!(
                     "no Aptos RPC configured for chain_id 125 (shelby-private-beta); \
@@ -747,6 +749,7 @@ mod tests {
             aptos_mainnet: rpc("mainnet"),
             aptos_testnet: rpc("testnet"),
             aptos_localnet: rpc("localnet"),
+            aptos_shelbynet: rpc("shelbynet"),
             aptos_shelby_private_beta: Some(rpc("shelby")),
             solana_mainnet_beta: "https://solana-mainnet.example".to_string(),
             solana_testnet: "https://solana-testnet.example".to_string(),
@@ -763,6 +766,15 @@ mod tests {
             "https://shelby.example/v1"
         );
         assert!(cfg.aptos_rpc_for_chain_id(139).is_err());
+    }
+
+    #[test]
+    fn shelbynet_uses_chain_id_114() {
+        let cfg = chain_rpc_config();
+        assert_eq!(
+            cfg.aptos_rpc_for_chain_id(114).unwrap().base_url,
+            "https://shelbynet.example/v1"
+        );
     }
 
     #[test]

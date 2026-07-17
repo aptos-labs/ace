@@ -99,6 +99,10 @@ struct RunArgs {
     aptos_localnet_api: String,
     #[arg(long)]
     aptos_localnet_apikey: Option<String>,
+    #[arg(long, default_value = "https://api.shelbynet.shelby.xyz/v1")]
+    aptos_shelbynet_api: String,
+    #[arg(long)]
+    aptos_shelbynet_apikey: Option<String>,
     #[arg(long)]
     aptos_shelby_private_beta_api: Option<String>,
     #[arg(long)]
@@ -121,6 +125,7 @@ struct EnvConfig {
     aptos_mainnet_api_key: Option<String>,
     aptos_testnet_api_key: Option<String>,
     aptos_localnet_api_key: Option<String>,
+    aptos_shelbynet_api_key: Option<String>,
     aptos_shelby_private_beta_api_key: Option<String>,
 }
 
@@ -185,6 +190,11 @@ impl RunArgs {
             "ACE_APTOS_LOCALNET_APIKEY",
             cfg.aptos_localnet_api_key.clone(),
         );
+        self.aptos_shelbynet_apikey = option_or_env_or_config(
+            self.aptos_shelbynet_apikey,
+            "ACE_APTOS_SHELBYNET_APIKEY",
+            cfg.aptos_shelbynet_api_key.clone(),
+        );
         self.aptos_shelby_private_beta_apikey = option_or_env_or_config(
             self.aptos_shelby_private_beta_apikey,
             "ACE_APTOS_SHELBY_PRIVATE_BETA_APIKEY",
@@ -225,6 +235,10 @@ fn build_chain_rpc(args: &RunArgs) -> network_node::ChainRpcConfig {
         aptos_localnet: AptosRpc::new_with_key(
             args.aptos_localnet_api.clone(),
             args.aptos_localnet_apikey.clone(),
+        ),
+        aptos_shelbynet: AptosRpc::new_with_key(
+            args.aptos_shelbynet_api.clone(),
+            args.aptos_shelbynet_apikey.clone(),
         ),
         aptos_shelby_private_beta: args.aptos_shelby_private_beta_api.as_ref().map(|api| {
             AptosRpc::new_with_key(api.clone(), args.aptos_shelby_private_beta_apikey.clone())

@@ -65,6 +65,8 @@ const CHAIN_RPC_FLAGS: Record<string, keyof ChainRpcOverrides> = {
     'aptos-testnet-apikey':    'aptosTestnetApikey',
     'aptos-localnet-api':      'aptosLocalnetApi',
     'aptos-localnet-apikey':   'aptosLocalnetApikey',
+    'aptos-shelbynet-api':     'aptosShelbynetApi',
+    'aptos-shelbynet-apikey':  'aptosShelbynetApikey',
     'aptos-shelby-private-beta-api':    'aptosShelbyPrivateBetaApi',
     'aptos-shelby-private-beta-apikey': 'aptosShelbyPrivateBetaApikey',
     'solana-mainnet-beta-rpc': 'solanaMainnetBetaRpc',
@@ -76,6 +78,7 @@ const CHAIN_RPC_SECRET: Partial<Record<keyof ChainRpcOverrides, boolean>> = {
     aptosMainnetApikey:  true,
     aptosTestnetApikey:  true,
     aptosLocalnetApikey: true,
+    aptosShelbynetApikey: true,
     aptosShelbyPrivateBetaApikey: true,
 };
 
@@ -83,6 +86,7 @@ const CHAIN_RPC_SECRET_ENVS: Partial<Record<keyof ChainRpcOverrides, string>> = 
     aptosMainnetApikey:  GCP_SECRET_ENV.aptosMainnetApiKey,
     aptosTestnetApikey:  GCP_SECRET_ENV.aptosTestnetApiKey,
     aptosLocalnetApikey: GCP_SECRET_ENV.aptosLocalnetApiKey,
+    aptosShelbynetApikey: GCP_SECRET_ENV.aptosShelbynetApiKey,
     aptosShelbyPrivateBetaApikey: GCP_SECRET_ENV.aptosShelbyPrivateBetaApiKey,
 };
 

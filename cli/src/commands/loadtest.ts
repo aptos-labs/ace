@@ -35,6 +35,7 @@ const DEFAULT_RPC: Record<string, string> = {
     mainnet:  'https://api.mainnet.aptoslabs.com/v1',
     devnet:   'https://api.devnet.aptoslabs.com/v1',
     localnet: 'http://localhost:8080/v1',
+    shelbynet: 'https://api.shelbynet.shelby.xyz/v1',
 };
 
 const MODULE_NAME = 'acl';

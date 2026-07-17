@@ -143,6 +143,7 @@ mod tests {
             aptos_mainnet: rpc("mainnet"),
             aptos_testnet: rpc("testnet"),
             aptos_localnet: rpc("localnet"),
+            aptos_shelbynet: rpc("shelbynet"),
             aptos_shelby_private_beta: Some(rpc("shelby")),
             solana_mainnet_beta: "https://solana-mainnet.example".to_string(),
             solana_testnet: "https://solana-testnet.example".to_string(),

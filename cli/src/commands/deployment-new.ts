@@ -6,7 +6,7 @@
  *
  * Flow:
  *   1. Pre-flight: by default, clean tree + release tag at HEAD (strict).
- *   2. Pick a network (mainnet | testnet | devnet | localnet | custom).
+ *   2. Pick a network (mainnet | testnet | devnet | localnet | shelbynet | custom).
  *   3. Generate (or import) the admin keypair.
  *   4. Fund the admin (manual prompt for testnet/mainnet, faucet for dev/local).
  *   5. Optional Geomi inputs (shared-node API key, gas-station API key).
@@ -49,11 +49,12 @@ import {
 } from '../deploy-contracts.js';
 import { CLI } from '../cli-name.js';
 
-const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'shelby-private-beta' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
+const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'shelbynet' | 'shelby-private-beta' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
     { name: 'mainnet',  rpcUrl: 'https://api.mainnet.aptoslabs.com/v1' },
     { name: 'testnet',  rpcUrl: 'https://api.testnet.aptoslabs.com/v1' },
     { name: 'devnet',   rpcUrl: 'https://api.devnet.aptoslabs.com/v1',  faucet: 'https://faucet.devnet.aptoslabs.com' },
     { name: 'localnet', rpcUrl: 'http://localhost:8080/v1',              faucet: 'http://localhost:8081' },
+    { name: 'shelbynet', rpcUrl: 'https://api.shelbynet.shelby.xyz/v1' },
     { name: 'shelby-private-beta' },
     { name: 'custom' },
 ];

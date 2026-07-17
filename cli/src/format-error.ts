@@ -13,6 +13,12 @@ function extractMessage(e: unknown): string {
         // Aptos AptosApiError: actual text lives in data.message
         if (typeof a.data?.message === 'string' && a.data.message) return a.data.message;
         if (typeof a.data?.vm_error_message === 'string' && a.data.vm_error_message) return a.data.vm_error_message;
+        if (e.message === 'fetch failed' && a.cause) {
+            const code = typeof a.cause.code === 'string' ? a.cause.code : undefined;
+            const host = typeof a.cause.hostname === 'string' ? a.cause.hostname : undefined;
+            const detail = [code, host].filter(Boolean).join(' ');
+            return detail ? `fetch failed (${detail})` : e.message;
+        }
         if (typeof e.message === 'string' && e.message && !e.message.includes('[object')) return e.message;
     }
     // Plain object with a .message field (e.g. Geomi gas-station error: { statusCode, error, message }).

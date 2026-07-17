@@ -32,6 +32,8 @@ export interface ChainRpcOverrides {
     aptosTestnetApikey?:   string;
     aptosLocalnetApi?:     string;
     aptosLocalnetApikey?:  string;
+    aptosShelbynetApi?:    string;
+    aptosShelbynetApikey?: string;
     aptosShelbyPrivateBetaApi?:    string;
     aptosShelbyPrivateBetaApikey?: string;
     solanaMainnetBetaRpc?: string;
@@ -81,7 +83,7 @@ export interface TrackedDeployment {
     sharedNodeApiKey?: string;
     gasStationApiKey?: string;
     alias?:            string;
-    /** One of `mainnet | testnet | devnet | localnet | shelby-private-beta | custom`. Tags the deployment for display. */
+    /** One of `mainnet | testnet | devnet | localnet | shelbynet | shelby-private-beta | custom`. Tags the deployment for display. */
     network?:          string;
     /** Git tag (e.g. `v1.0.0`) at which the contracts were deployed; `deployment new` enforces strict tag+clean. */
     deployedAtTag?:    string;
@@ -159,6 +161,7 @@ export interface Config {
 
 export function deriveRpcLabel(rpcUrl: string): string {
     const url = rpcUrl.toLowerCase();
+    if (url.includes('shelbynet')) return 'shelbynet';
     if (url.includes('shelby-private-beta')) return 'shelby-private-beta';
     if (url.includes('mainnet')) return 'mainnet';
     if (url.includes('testnet')) return 'testnet';

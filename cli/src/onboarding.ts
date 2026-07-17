@@ -52,6 +52,7 @@ const CHAIN_DEFAULTS = {
     aptosMainnet:      'https://api.mainnet.aptoslabs.com/v1',
     aptosTestnet:      'https://api.testnet.aptoslabs.com/v1',
     aptosLocalnet:     'http://127.0.0.1:8080/v1',
+    aptosShelbynet:    'https://api.shelbynet.shelby.xyz/v1',
     aptosShelbyPrivateBeta: '',
     solanaMainnetBeta: 'https://api.mainnet-beta.solana.com',
     solanaTestnet:     'https://api.testnet.solana.com',
@@ -65,6 +66,8 @@ const CHAIN_RPC_KEYS = [
     'aptosTestnetApikey',
     'aptosLocalnetApi',
     'aptosLocalnetApikey',
+    'aptosShelbynetApi',
+    'aptosShelbynetApikey',
     'aptosShelbyPrivateBetaApi',
     'aptosShelbyPrivateBetaApikey',
     'solanaMainnetBetaRpc',
@@ -143,7 +146,7 @@ export function rpcUrlsNeedVpcEgress(chainRpc?: ChainRpcOverrides): boolean {
     if (!chainRpc) return false;
     const urls = [
         chainRpc.aptosMainnetApi, chainRpc.aptosTestnetApi, chainRpc.aptosLocalnetApi,
-        chainRpc.aptosShelbyPrivateBetaApi,
+        chainRpc.aptosShelbynetApi, chainRpc.aptosShelbyPrivateBetaApi,
         chainRpc.solanaMainnetBetaRpc, chainRpc.solanaTestnetRpc, chainRpc.solanaDevnetRpc,
     ].filter((u): u is string => typeof u === 'string' && u.length > 0);
     return urls.some(isPrivateRpcUrl);
@@ -185,6 +188,7 @@ export const GCP_SECRET_ENV = {
     aptosMainnetApiKey:   'ACE_APTOS_MAINNET_APIKEY',
     aptosTestnetApiKey:   'ACE_APTOS_TESTNET_APIKEY',
     aptosLocalnetApiKey:  'ACE_APTOS_LOCALNET_APIKEY',
+    aptosShelbynetApiKey: 'ACE_APTOS_SHELBYNET_APIKEY',
     aptosShelbyPrivateBetaApiKey: 'ACE_APTOS_SHELBY_PRIVATE_BETA_APIKEY',
 } as const;
 
@@ -235,6 +239,7 @@ function runtimeConfigJson(
         ...(chainRpc?.aptosMainnetApikey  ? { aptosMainnetApiKey:  chainRpc.aptosMainnetApikey }  : {}),
         ...(chainRpc?.aptosTestnetApikey  ? { aptosTestnetApiKey:  chainRpc.aptosTestnetApikey }  : {}),
         ...(chainRpc?.aptosLocalnetApikey ? { aptosLocalnetApiKey: chainRpc.aptosLocalnetApikey } : {}),
+        ...(chainRpc?.aptosShelbynetApikey ? { aptosShelbynetApiKey: chainRpc.aptosShelbynetApikey } : {}),
         ...(chainRpc?.aptosShelbyPrivateBetaApikey ? { aptosShelbyPrivateBetaApiKey: chainRpc.aptosShelbyPrivateBetaApikey } : {}),
     };
     return JSON.stringify(cfg);
@@ -561,6 +566,8 @@ function chainRpcArgs(r?: ChainRpcOverrides, opts: { includeSecrets?: boolean } 
         ...(includeSecrets ? f('--aptos-testnet-apikey=',    r.aptosTestnetApikey) : []),
         ...f('--aptos-localnet-api=',      r.aptosLocalnetApi),
         ...(includeSecrets ? f('--aptos-localnet-apikey=',   r.aptosLocalnetApikey) : []),
+        ...f('--aptos-shelbynet-api=',     r.aptosShelbynetApi),
+        ...(includeSecrets ? f('--aptos-shelbynet-apikey=',  r.aptosShelbynetApikey) : []),
         ...f('--aptos-shelby-private-beta-api=',    r.aptosShelbyPrivateBetaApi),
         ...(includeSecrets ? f('--aptos-shelby-private-beta-apikey=', r.aptosShelbyPrivateBetaApikey) : []),
         ...f('--solana-mainnet-beta-rpc=', r.solanaMainnetBetaRpc),
@@ -595,6 +602,8 @@ export async function promptChainRpcOverrides(
         aptosTestnetApikey:   await askKey('Aptos testnet API key',        current?.aptosTestnetApikey),
         aptosLocalnetApi:     await askUrl('Aptos localnet API URL',       CHAIN_DEFAULTS.aptosLocalnet,     current?.aptosLocalnetApi),
         aptosLocalnetApikey:  await askKey('Aptos localnet API key',       current?.aptosLocalnetApikey),
+        aptosShelbynetApi:    await askUrl('Aptos shelbynet API URL',      CHAIN_DEFAULTS.aptosShelbynet,    current?.aptosShelbynetApi),
+        aptosShelbynetApikey: await askKey('Aptos shelbynet API key',      current?.aptosShelbynetApikey),
         aptosShelbyPrivateBetaApi:    await askUrl('Aptos shelby-private-beta API URL', CHAIN_DEFAULTS.aptosShelbyPrivateBeta, current?.aptosShelbyPrivateBetaApi),
         aptosShelbyPrivateBetaApikey: await askKey('Aptos shelby-private-beta API key', current?.aptosShelbyPrivateBetaApikey),
         solanaMainnetBetaRpc: await askUrl('Solana mainnet-beta RPC URL',  CHAIN_DEFAULTS.solanaMainnetBeta, current?.solanaMainnetBetaRpc),
@@ -911,9 +920,9 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
     const deployRunOpts  = { stdout: options.json ? 'stderr' : 'inherit' } as const;
     const network        = detectAptosNetwork(net.rpcUrl);
 
-    if (nonInteractive && !gasStationKey && (network === 'testnet' || network === 'mainnet' || network === 'shelby-private-beta')) {
+    if (nonInteractive && !gasStationKey && (network === 'testnet' || network === 'mainnet' || network === 'shelbynet' || network === 'shelby-private-beta')) {
         throw new Error(
-            'Non-interactive node new requires a gas station key for testnet/mainnet/shelby-private-beta because it generates a fresh account. ' +
+            'Non-interactive node new requires a gas station key for testnet/mainnet/shelbynet/shelby-private-beta because it generates a fresh account. ' +
             'Pass --gas-station-key or use a deployment profile with gasStationApiKey.',
         );
     }
@@ -1054,8 +1063,9 @@ export async function runOnboarding(options: NodeNewOptions = {}): Promise<{ nod
 
 const OCTAS_PER_APT = 100_000_000n;
 
-function detectAptosNetwork(rpcUrl: string): 'localnet' | 'devnet' | 'testnet' | 'mainnet' | 'shelby-private-beta' | 'other' {
+function detectAptosNetwork(rpcUrl: string): 'localnet' | 'devnet' | 'testnet' | 'mainnet' | 'shelbynet' | 'shelby-private-beta' | 'other' {
     if (/localhost|127\.0\.0\.1/.test(rpcUrl)) return 'localnet';
+    if (/shelbynet/.test(rpcUrl)) return 'shelbynet';
     if (/shelby-private-beta/.test(rpcUrl)) return 'shelby-private-beta';
     if (/devnet\.aptoslabs\.com/.test(rpcUrl))  return 'devnet';
     if (/testnet\.aptoslabs\.com/.test(rpcUrl)) return 'testnet';
@@ -1123,7 +1133,7 @@ export async function ensureAccountFunded(
         return;
     }
 
-    if (network !== 'testnet' && network !== 'mainnet' && network !== 'shelby-private-beta') return;
+    if (network !== 'testnet' && network !== 'mainnet' && network !== 'shelbynet' && network !== 'shelby-private-beta') return;
 
     console.log();
     if (network === 'testnet' && faucet) {

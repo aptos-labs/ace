@@ -3,8 +3,118 @@
 
 import { Deserializer, Serializer } from "@aptos-labs/ts-sdk";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_VALUES = new Map([...BASE58_ALPHABET].map((char, index) => [char, index]));
+
+function base58Encode(bytes: Uint8Array): string {
+    let value = 0n;
+    for (const byte of bytes) {
+        value = (value * 256n) + BigInt(byte);
+    }
+
+    let encoded = "";
+    while (value > 0n) {
+        const rem = Number(value % 58n);
+        value /= 58n;
+        encoded = BASE58_ALPHABET[rem] + encoded;
+    }
+
+    let leadingZeroes = 0;
+    for (const byte of bytes) {
+        if (byte !== 0) break;
+        leadingZeroes += 1;
+    }
+
+    return "1".repeat(leadingZeroes) + (encoded || "");
+}
+
+function base58Decode(value: string): Uint8Array {
+    let decoded = 0n;
+    for (const char of value) {
+        const digit = BASE58_VALUES.get(char);
+        if (digit === undefined) {
+            throw `SolanaPublicKey: invalid base58 character '${char}'`;
+        }
+        decoded = (decoded * 58n) + BigInt(digit);
+    }
+
+    const bytes: number[] = [];
+    while (decoded > 0n) {
+        bytes.unshift(Number(decoded % 256n));
+        decoded /= 256n;
+    }
+
+    let leadingZeroes = 0;
+    for (const char of value) {
+        if (char !== "1") break;
+        leadingZeroes += 1;
+    }
+
+    return new Uint8Array([...new Array(leadingZeroes).fill(0), ...bytes]);
+}
+
+export class PublicKey {
+    private readonly bytes: Uint8Array;
+
+    constructor(value: string | Uint8Array) {
+        const bytes = typeof value === "string" ? base58Decode(value) : value;
+        if (bytes.length !== 32) {
+            throw `SolanaPublicKey: expected 32 bytes, got ${bytes.length}`;
+        }
+        this.bytes = new Uint8Array(bytes);
+    }
+
+    toBytes(): Uint8Array {
+        return new Uint8Array(this.bytes);
+    }
+
+    toBase58(): string {
+        return base58Encode(this.bytes);
+    }
+
+    toString(): string {
+        return this.toBase58();
+    }
+
+    toJSON(): string {
+        return this.toBase58();
+    }
+}
+
+function readShortVecLength(bytes: Uint8Array): { length: number, size: number } {
+    let length = 0;
+    let size = 0;
+    let shift = 0;
+
+    while (true) {
+        if (size >= bytes.length) {
+            throw "SolanaProofOfPermission: transaction bytes ended while reading signature count";
+        }
+        const byte = bytes[size];
+        length += (byte & 0x7f) << shift;
+        size += 1;
+        if ((byte & 0x80) === 0) break;
+        shift += 7;
+        if (shift > 28) {
+            throw "SolanaProofOfPermission: signature count shortvec is too large";
+        }
+    }
+
+    return { length, size };
+}
+
+export function inferTransactionScheme(txn: Uint8Array): number {
+    const signatureCount = readShortVecLength(txn);
+    const messageOffset = signatureCount.size + (signatureCount.length * 64);
+    if (messageOffset >= txn.length) {
+        throw "SolanaProofOfPermission: transaction bytes ended before message";
+    }
+    return (txn[messageOffset] & 0x80) !== 0
+        ? ProofOfPermission.SCHEME_VERSIONED
+        : ProofOfPermission.SCHEME_UNVERSIONED;
+}
 
 export class ContractID {
     knownChainName: string; // mainnet-beta/testnet/devnet
@@ -61,18 +171,18 @@ export class ProofOfPermission {
     static readonly SCHEME_VERSIONED = 1;
 
     scheme: number;
-    inner: Transaction | VersionedTransaction;
+    txnBytes: Uint8Array;
 
-    private constructor(scheme: number, inner: Transaction | VersionedTransaction) {
+    private constructor(scheme: number, txnBytes: Uint8Array) {
         this.scheme = scheme;
-        this.inner = inner;
+        this.txnBytes = new Uint8Array(txnBytes);
     }
 
-    static newVersioned(txn: VersionedTransaction): ProofOfPermission {
+    static newVersioned(txn: Uint8Array): ProofOfPermission {
         return new ProofOfPermission(ProofOfPermission.SCHEME_VERSIONED, txn);
     }
 
-    static newUnversioned(txn: Transaction): ProofOfPermission {
+    static newUnversioned(txn: Uint8Array): ProofOfPermission {
         return new ProofOfPermission(ProofOfPermission.SCHEME_UNVERSIONED, txn);
     }
 
@@ -82,11 +192,9 @@ export class ProofOfPermission {
             extra['scheme'] = scheme;
             const bytes = deserializer.deserializeBytes();
             if (scheme == ProofOfPermission.SCHEME_VERSIONED) {
-                const inner = VersionedTransaction.deserialize(bytes);
-                return new ProofOfPermission(ProofOfPermission.SCHEME_VERSIONED, inner);
+                return new ProofOfPermission(ProofOfPermission.SCHEME_VERSIONED, bytes);
             } else if (scheme == ProofOfPermission.SCHEME_UNVERSIONED) {
-                const inner = Transaction.from(Buffer.from(bytes));
-                return new ProofOfPermission(ProofOfPermission.SCHEME_UNVERSIONED, inner);
+                return new ProofOfPermission(ProofOfPermission.SCHEME_UNVERSIONED, bytes);
             } else {
                 throw 'SolanaProofOfPermission.deserialize failed with unknown scheme';
             }
@@ -112,9 +220,9 @@ export class ProofOfPermission {
     serialize(serializer: Serializer): void {
         serializer.serializeU8(this.scheme);
         if (this.scheme == ProofOfPermission.SCHEME_VERSIONED) {
-            serializer.serializeBytes((this.inner as VersionedTransaction).serialize());
+            serializer.serializeBytes(this.txnBytes);
         } else if (this.scheme == ProofOfPermission.SCHEME_UNVERSIONED) {
-            serializer.serializeBytes((this.inner as Transaction).serialize());
+            serializer.serializeBytes(this.txnBytes);
         }
     }
 

@@ -15,6 +15,26 @@
         "types": "./dist/esm/index.d.mts",
         "default": "./dist/esm/index.mjs"
       }
+    },
+    "./aptos": {
+      "require": {
+        "types": "./dist/common/aptos.d.ts",
+        "default": "./dist/common/aptos.js"
+      },
+      "import": {
+        "types": "./dist/esm/aptos.d.mts",
+        "default": "./dist/esm/aptos.mjs"
+      }
+    },
+    "./solana": {
+      "require": {
+        "types": "./dist/common/solana.d.ts",
+        "default": "./dist/common/solana.js"
+      },
+      "import": {
+        "types": "./dist/esm/solana.d.mts",
+        "default": "./dist/esm/solana.mjs"
+      }
     }
   },
   "files": [
@@ -47,6 +67,11 @@
   "peerDependencies": {
     "@aptos-labs/ts-sdk": "^5.2.0",
     "@solana/web3.js": "^1.95.0"
+  },
+  "peerDependenciesMeta": {
+    "@solana/web3.js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@aptos-labs/ts-sdk": "^5.2.0",

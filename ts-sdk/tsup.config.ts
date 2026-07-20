@@ -8,29 +8,40 @@ type MandatoryOptions = Options & {
 
 const DEFAULT_CONFIG: Options = {
   bundle: true,
-  clean: true,
+  clean: false,
   dts: true,
   minify: false,
   skipNodeModulesBundle: true,
   sourcemap: true,
   target: "es2022",
   platform: "node",
+  splitting: false,
 };
 
-// CommonJS config
-const COMMON_CONFIG: MandatoryOptions = {
-  ...DEFAULT_CONFIG,
-  entry: ["src/index.ts"],
-  format: "cjs",
-  outDir: "dist/common",
+const ENTRY_POINTS = {
+  index: "src/index.ts",
+  aptos: "src/aptos.ts",
+  solana: "src/solana.ts",
 };
 
-// ESM config
-const ESM_CONFIG: MandatoryOptions = {
-  ...DEFAULT_CONFIG,
-  entry: ["src/index.ts"],
-  format: "esm",
-  outDir: "dist/esm",
-};
+function makeConfig(
+  entryName: keyof typeof ENTRY_POINTS,
+  format: Format,
+  outDir: string,
+): MandatoryOptions {
+  return {
+    ...DEFAULT_CONFIG,
+    entry: { [entryName]: ENTRY_POINTS[entryName] },
+    format,
+    outDir,
+  };
+}
 
-export default defineConfig([COMMON_CONFIG, ESM_CONFIG]);
+export default defineConfig([
+  makeConfig("index", "cjs", "dist/common"),
+  makeConfig("aptos", "cjs", "dist/common"),
+  makeConfig("solana", "cjs", "dist/common"),
+  makeConfig("index", "esm", "dist/esm"),
+  makeConfig("aptos", "esm", "dist/esm"),
+  makeConfig("solana", "esm", "dist/esm"),
+]);

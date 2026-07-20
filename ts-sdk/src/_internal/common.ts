@@ -4,7 +4,6 @@
 import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
 import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
@@ -14,27 +13,13 @@ import { Element as GroupElement } from "../group";
 import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
-import { ContractID as SolanaContractID, ProofOfPermission as SolanaProofOfPermission } from "./solana";
-
-export class AceDeployment {
-    apiEndpoint: string;
-    contractAddr: AccountAddress;
-    apiKey?: string;
-
-    constructor({apiEndpoint, contractAddr, apiKey}: {apiEndpoint: string, contractAddr: AccountAddress, apiKey?: string}) {
-        this.apiEndpoint = apiEndpoint;
-        this.contractAddr = contractAddr;
-        this.apiKey = apiKey;
-    }
-
-    withApiKey(apiKey?: string): AceDeployment {
-        return new AceDeployment({
-            apiEndpoint: this.apiEndpoint,
-            contractAddr: this.contractAddr,
-            apiKey,
-        });
-    }
-}
+import { AceDeployment } from "./deployment";
+import {
+    ContractID as SolanaContractID,
+    ProofOfPermission as SolanaProofOfPermission,
+    inferTransactionScheme,
+} from "./solana";
+export { AceDeployment };
 
 export class ContractID {
     static readonly SCHEME_APTOS = 0;
@@ -211,14 +196,10 @@ export class ProofOfPermission {
     }
 
     static createSolana({ txn }: { txn: Uint8Array }) {
-        try {
-            const versioned = VersionedTransaction.deserialize(txn);
-            if (versioned.version !== 'legacy') {
-                return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newVersioned(versioned));
-            }
-        } catch {}
-        const legacy = Transaction.from(Buffer.from(txn));
-        return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, SolanaProofOfPermission.newUnversioned(legacy));
+        const proof = inferTransactionScheme(txn) === SolanaProofOfPermission.SCHEME_VERSIONED
+            ? SolanaProofOfPermission.newVersioned(txn)
+            : SolanaProofOfPermission.newUnversioned(txn);
+        return new ProofOfPermission(ProofOfPermission.SCHEME_SOLANA, proof);
     }
 
     static deserialize(deserializer: Deserializer): Result<ProofOfPermission> {
@@ -382,12 +363,7 @@ export class CustomFlowProof {
 
     static createSolana(txn: Uint8Array): CustomFlowProof {
         const p = new CustomFlowProof(CustomFlowProof.SCHEME_SOLANA);
-        let innerScheme = 0;
-        try {
-            const versioned = VersionedTransaction.deserialize(txn);
-            if (versioned.version !== 'legacy') innerScheme = 1;
-        } catch {}
-        p._solanaInnerScheme = innerScheme;
+        p._solanaInnerScheme = inferTransactionScheme(txn);
         p._solanaTxnBytes = txn;
         return p;
     }

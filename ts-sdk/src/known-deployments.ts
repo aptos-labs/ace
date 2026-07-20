@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { AccountAddress } from "@aptos-labs/ts-sdk";
-import { AceDeployment } from "./_internal/common";
+import { AceDeployment } from "./_internal/deployment";
 
 function knownDeployment<const T extends { aceDeployment: AceDeployment }>(
     deployment: T,

@@ -38,7 +38,7 @@ export const knownDeployments = {
         vrfKeypairId: AccountAddress.fromString('0xf47b51b8c648a3dd53a1c0ec5d38e2b861f0b6d4c3181f0b84b0d535e274a98d'),
     }),
     shelbynet: knownDeployment({
-        chainId: 114,
+        chainId: 118,
         aceDeployment: new AceDeployment({
             apiEndpoint: 'https://api.shelbynet.shelby.xyz/v1',
             contractAddr: AccountAddress.fromString('0xd95fb70f8e0d2d4c21a3062cbe4b00e643a62cdade2e37c7e1a094d5deb0ca47'),

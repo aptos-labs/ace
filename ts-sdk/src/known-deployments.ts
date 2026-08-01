@@ -37,4 +37,13 @@ export const knownDeployments = {
         ibeKeypairId: AccountAddress.fromString('0x50ca2eb86412416256522777770b9846ced2b0185db1d301f233d5f47215f4c3'),
         vrfKeypairId: AccountAddress.fromString('0xf47b51b8c648a3dd53a1c0ec5d38e2b861f0b6d4c3181f0b84b0d535e274a98d'),
     }),
+    'shelbynet-20260731': knownDeployment({
+        chainId: 118,
+        aceDeployment: new AceDeployment({
+            apiEndpoint: 'https://api.shelbynet.shelby.xyz/v1',
+            contractAddr: AccountAddress.fromString('0x2a800d06b231476e045e874b5319409f80aa4449d7cabcdc68d2e0b5a66ee43d'),
+        }),
+        ibeKeypairId: AccountAddress.fromString('0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17'),
+        vrfKeypairId: AccountAddress.fromString('0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17'),
+    }),
 } as const;

@@ -280,8 +280,24 @@ export function aceDeploymentFromConfig(cfg: AceConfig): ACE.AceDeployment {
 }
 
 export function aptosFromConfig(cfg: AceConfig): Aptos {
+    // Pick the SDK Network enum from the *endpoint*, not the ACE_NETWORK label.
+    // Named networks (TESTNET/LOCAL) short-circuit getChainId() to a hardcoded
+    // value (testnet=2, local=4) instead of querying the fullnode. When the
+    // endpoint is overridden to a custom deployment (e.g. shelbynet, chain_id
+    // 118) we must use Network.CUSTOM so getChainId() actually asks the node —
+    // otherwise transactions get signed with chain_id 2 and rejected with
+    // BAD_CHAIN_ID.
+    const endpoint = cfg.apiEndpoint;
+    let network: Network;
+    if (endpoint === 'https://api.testnet.aptoslabs.com/v1') {
+        network = Network.TESTNET;
+    } else if (endpoint === 'http://localhost:8080/v1') {
+        network = Network.LOCAL;
+    } else {
+        network = Network.CUSTOM;
+    }
     return new Aptos(new AptosConfig({
-        network: cfg.network === 'testnet' ? Network.TESTNET : Network.LOCAL,
+        network,
         fullnode: cfg.apiEndpoint,
     }));
 }

@@ -1,0 +1,28 @@
+{
+  "name": "@aptos-labs/ace-discovery-server",
+  "version": "0.1.0",
+  "description": "Keyless ACE discovery service: caches the on-chain discovery_view_v0_bcs snapshot and serves it to clients so they need no node API key",
+  "license": "Apache-2.0",
+  "private": true,
+  "bin": {
+    "ace-discovery-server": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aptos-labs/ts-sdk": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  }
+}

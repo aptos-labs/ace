@@ -14,6 +14,7 @@ import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { AceDeployment } from "./deployment";
+import { ChainReader, DiscoveryChainReader, SessionPks } from "./discovery";
 import {
     ContractID as SolanaContractID,
     ProofOfPermission as SolanaProofOfPermission,
@@ -595,17 +596,7 @@ export class WorkerRequest {
 }
 
 export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<NetworkState> {
-    const aptos = createAptos(aceDeployment);
-    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-    const [stateHex] = await aptos.view({
-        payload: {
-            function: `${aceContractAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
-            typeArguments: [],
-            functionArguments: [],
-        },
-    });
-    const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
-    return NetworkState.fromBytes(stateBytes).unwrapOrThrow('ACE: parse network state');
+    return getChainReader(aceDeployment).networkState();
 }
 
 export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, context}: {
@@ -617,20 +608,11 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
     if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-            const [hexBytes] = await aptos.view({
-                payload: {
-                    function: `${aceContractAddr}::dkg::get_session_bcs` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [keypairId.toStringLong()],
-                },
-            });
-            const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
-            const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow(`${context}: parse DKG session`);
-            if (!session.resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
+            // The keypairId is always the origin DKG session.
+            const { basePoint, resultPk } = await getChainReader(aceDeployment).session(keypairId.toStringLong(), true);
+            if (!resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
 
-            return tibe.MasterPublicKey.fromGroupElements(tibeScheme, session.basePoint, session.resultPk)
+            return tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk)
                 .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`);
         },
         recordsExecutionTimeMs: true,
@@ -642,18 +624,7 @@ export async function fetchNetworkStateAndBuildRequest(
     fullDecryptionDomain: FullDecryptionDomain,
     ephemeralEncryptionKey: pke.EncryptionKey,
 ): Promise<{networkState: NetworkState, request: DecryptionRequestPayload}> {
-    const aptos = createAptos(aceDeployment);
-    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
-
-    const [stateHex] = await aptos.view({
-        payload: {
-            function: `${aceContractAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
-            typeArguments: [],
-            functionArguments: [],
-        },
-    });
-    const stateBytes = hexToBytes((stateHex as string).replace(/^0x/, ''));
-    const networkState = NetworkState.fromBytes(stateBytes).unwrapOrThrow('ACE: parse network state');
+    const networkState = await getChainReader(aceDeployment).networkState();
 
     const request = new DecryptionRequestPayload({
         keypairId: fullDecryptionDomain.keypairId,
@@ -713,35 +684,18 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
  * from subsequent DKR sessions.
  */
 export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
-    const aptos = createAptos(aceDeployment);
-    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const keypairIdStr = keypairId.toStringLong();
 
     const secret = networkState.secrets.find(s => s.keypairId.toStringLong() === keypairIdStr);
     if (secret === undefined) {
         throw `ACE: keypairId ${keypairIdStr} not found in network state secrets`;
     }
+    // currentSession === keypairId => the initial DKG (no DKR yet); otherwise a DKR session.
     const isInitialDkg = secret.currentSession.toStringLong() === keypairIdStr;
-    const sessionFn = isInitialDkg ? 'dkg::get_session_bcs' : 'dkr::get_session_bcs';
 
-    const [hexBytes] = await aptos.view({
-        payload: {
-            function: `${aceContractAddr}::${sessionFn}` as `${string}::${string}::${string}`,
-            typeArguments: [],
-            functionArguments: [secret.currentSession.toStringLong()],
-        },
-    });
-    const sessionBytes = hexToBytes((hexBytes as string).replace(/^0x/, ''));
-
-    // Session classes already store basePoint / sharePks as group.Element (see vss/index.ts
-    // re-export `Element as PublicPoint`).  No re-wrapping needed.
-    if (isInitialDkg) {
-        const session = dkg.Session.fromBytes(sessionBytes).unwrapOrThrow('ACE: parse DKG session');
-        return { basePoint: session.basePoint, sharePks: session.sharePks };
-    } else {
-        const session = dkr.Session.fromBytes(sessionBytes).unwrapOrThrow('ACE: parse DKR session');
-        return { basePoint: session.publicBaseElement, sharePks: session.sharePks };
-    }
+    const { basePoint, sharePks } = await getChainReader(aceDeployment)
+        .session(secret.currentSession.toStringLong(), isInitialDkg);
+    return { basePoint, sharePks };
 }
 
 export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
@@ -770,8 +724,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+            const reader = getChainReader(aceDeployment);
 
             const fdd = new FullDecryptionDomain({
                 keypairId: request.keypairId,
@@ -783,25 +736,11 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
             const [nodeInfos, currentSessionPks] = await Promise.all([
                 Promise.all(networkState.curNodes.map(async (nodeAddr) => {
                     const addrStr = nodeAddr.toStringLong();
-                    const [[endpoint], [ekHex]] = await Promise.all([
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
+                    const [endpoint, nodeEncKey] = await Promise.all([
+                        reader.workerEndpoint(addrStr),
+                        reader.workerEncKey(addrStr),
                     ]);
-                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCore: parse pke enc key for ${addrStr}`);
-                    return { endpoint: endpoint as string, nodeEncKey };
+                    return { endpoint, nodeEncKey };
                 })),
                 fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
             ]);
@@ -896,8 +835,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+            const reader = getChainReader(aceDeployment);
 
             const fdd = new FullDecryptionDomain({
                 keypairId: customRequest.keypairId,
@@ -909,25 +847,11 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
             const [nodeInfos, currentSessionPks] = await Promise.all([
                 Promise.all(networkState.curNodes.map(async (nodeAddr) => {
                     const addrStr = nodeAddr.toStringLong();
-                    const [[endpoint], [ekHex]] = await Promise.all([
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
-                        aptos.view({
-                            payload: {
-                                function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                                typeArguments: [],
-                                functionArguments: [addrStr],
-                            },
-                        }),
+                    const [endpoint, nodeEncKey] = await Promise.all([
+                        reader.workerEndpoint(addrStr),
+                        reader.workerEncKey(addrStr),
                     ]);
-                    const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                        .unwrapOrThrow(`ACE.fetchIdentityKeySharesCoreCustom: parse pke enc key for ${addrStr}`);
-                    return { endpoint: endpoint as string, nodeEncKey };
+                    return { endpoint, nodeEncKey };
                 })),
                 fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
             ]);
@@ -1032,30 +956,15 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment);
-            const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+            const reader = getChainReader(aceDeployment);
 
             const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
                 const addrStr = nodeAddr.toStringLong();
-                const [[endpoint], [ekHex]] = await Promise.all([
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
-                    aptos.view({
-                        payload: {
-                            function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                            typeArguments: [],
-                            functionArguments: [addrStr],
-                        },
-                    }),
+                const [endpoint, nodeEncKey] = await Promise.all([
+                    reader.workerEndpoint(addrStr),
+                    reader.workerEncKey(addrStr),
                 ]);
-                const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
-                    .unwrapOrThrow(`ACE.buildPerNodeRequest: parse pke enc key for ${addrStr}`);
-                return { endpoint: endpoint as string, nodeEncKey };
+                return { endpoint, nodeEncKey };
             }));
 
             const sdkIdx = nodeInfos.findIndex(n => n.endpoint === targetEndpoint);
@@ -1096,4 +1005,67 @@ export function createAptos(
         fullnode: apiEndpoint ?? 'http://localhost:8080/v1',
         clientConfig: Object.keys(mergedClientConfig).length > 0 ? mergedClientConfig : undefined,
     }));
+}
+
+/** ChainReader backed by direct fullnode view calls — one `aptos.view` per read. */
+class FullnodeChainReader implements ChainReader {
+    private readonly aptos: Aptos;
+    private readonly contractAddr: string;
+
+    constructor(aceDeployment: AceDeployment) {
+        this.aptos = createAptos(aceDeployment);
+        this.contractAddr = aceDeployment.contractAddr.toStringLong();
+    }
+
+    private async view(fn: string, args: string[]): Promise<unknown[]> {
+        return this.aptos.view({
+            payload: {
+                function: `${this.contractAddr}::${fn}` as `${string}::${string}::${string}`,
+                typeArguments: [],
+                functionArguments: args,
+            },
+        });
+    }
+
+    async networkState(): Promise<NetworkState> {
+        const [stateHex] = await this.view("network::state_view_v0_bcs", []);
+        return NetworkState.fromBytes(hexToBytes((stateHex as string).replace(/^0x/, '')))
+            .unwrapOrThrow('ACE: parse network state');
+    }
+
+    async session(addr: string, isDkg: boolean): Promise<SessionPks> {
+        const [hex] = await this.view(isDkg ? "dkg::get_session_bcs" : "dkr::get_session_bcs", [addr]);
+        const bytes = hexToBytes((hex as string).replace(/^0x/, ''));
+        if (isDkg) {
+            const s = dkg.Session.fromBytes(bytes).unwrapOrThrow('ACE: parse DKG session');
+            return { basePoint: s.basePoint, sharePks: s.sharePks, resultPk: s.resultPk };
+        }
+        const s = dkr.Session.fromBytes(bytes).unwrapOrThrow('ACE: parse DKR session');
+        return { basePoint: s.publicBaseElement, sharePks: s.sharePks };
+    }
+
+    async workerEndpoint(addr: string): Promise<string> {
+        const [endpoint] = await this.view("worker_config::get_endpoint", [addr]);
+        return endpoint as string;
+    }
+
+    async workerEncKey(addr: string): Promise<pke.EncryptionKey> {
+        const [ekHex] = await this.view("worker_config::get_pke_enc_key_bcs", [addr]);
+        return pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, '')))
+            .unwrapOrThrow(`ACE: parse pke enc key for ${addr}`);
+    }
+}
+
+/**
+ * Resolve the chain reader for a deployment. All ACE chain reads go through this. Precedence:
+ *   apiKey set        -> authenticated fullnode
+ *   else discoveryUrl -> keyless discovery service (aggregated snapshot, no fullnode calls)
+ *   else              -> anonymous fullnode
+ * An explicit apiKey always wins, so a caller that provides one keeps the plain fullnode path.
+ */
+export function getChainReader(aceDeployment: AceDeployment): ChainReader {
+    if (!aceDeployment.apiKey && aceDeployment.discoveryUrl) {
+        return new DiscoveryChainReader(aceDeployment.discoveryUrl);
+    }
+    return new FullnodeChainReader(aceDeployment);
 }

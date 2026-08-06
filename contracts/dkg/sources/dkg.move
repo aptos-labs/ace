@@ -250,6 +250,14 @@ module ace::dkg {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
+    /// (public_base_element, secretly_scaled_element, share_pks) of a completed session — the
+    /// base point, master public key, and per-holder share PKs an off-chain client needs.
+    public fun base_result_shares(addr: address): (group::Element, group::Element, vector<group::Element>) {
+        let s = &Session[addr];
+        assert!(s.secretly_scaled_element.is_some(), error::invalid_argument(E_SESSION_NOT_COMPLETED));
+        (s.public_base_element, *s.secretly_scaled_element.borrow(), s.share_pks)
+    }
+
     #[randomness]
     entry fun touch_entry(session_addr: address) {
         touch(session_addr);

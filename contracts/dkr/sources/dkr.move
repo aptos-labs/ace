@@ -186,6 +186,13 @@ module ace::dkr {
         bcs::to_bytes(borrow_global<Session>(session_addr))
     }
 
+    /// (public_base_element, secretly_scaled_element, share_pks) — the base point, master public
+    /// key, and per-holder share PKs an off-chain client needs. Uniform with `dkg::base_result_shares`.
+    public fun base_result_shares(addr: address): (group::Element, group::Element, vector<group::Element>) {
+        let s = &Session[addr];
+        (s.public_base_element, s.secretly_scaled_element, s.share_pks)
+    }
+
     public fun completed(session_addr: address): bool {
         if (!exists<Session>(session_addr)) return false;
         borrow_global<Session>(session_addr).state_code == STATE__DONE

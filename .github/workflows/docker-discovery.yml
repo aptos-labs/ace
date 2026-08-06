@@ -1,0 +1,103 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+name: Docker / discovery-server
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit SHA to build (e.g. main, v0.1.0, abc1234)'
+        required: false
+        default: 'main'
+      image_tag:
+        description: 'Image tag to push (e.g. 0.1.0, main, dev). Defaults to short SHA.'
+        required: false
+      dry_run:
+        description: 'If true, skip the Docker Hub copy step'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  build:
+    name: Build and push to GCP
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.image_tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - name: Derive image tag
+        id: image_tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$INPUT_IMAGE_TAG" ]; then
+              echo "value=$INPUT_IMAGE_TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # push: tags — strip leading `v` so e.g. `v1.2.3` → image tag `1.2.3`
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: aptos-labs/actions/gar-auth@main
+        with:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          file: discovery-server/Dockerfile
+          push: true
+          tags: us-docker.pkg.dev/aptos-registry/docker/ace-discovery:${{ steps.image_tag.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Copy to Docker Hub
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aptos-labs/actions/gar-auth@main
+        with:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: imjasonh/setup-crane@00c9e93efa4e1138c9a7a5c594acd6c75a2fbf0c # v0.3
+        with:
+          version: v0.15.2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3
+        with:
+          username: ${{ secrets.ENV_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.ENV_DOCKERHUB_PASSWORD }}
+
+      - name: Copy to Docker Hub
+        env:
+          BUILD_IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          crane copy \
+            "us-docker.pkg.dev/aptos-registry/docker/ace-discovery:${BUILD_IMAGE_TAG}" \
+            "docker.io/aptoslabs/ace-discovery:${BUILD_IMAGE_TAG}"

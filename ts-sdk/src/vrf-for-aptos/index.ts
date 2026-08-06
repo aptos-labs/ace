@@ -17,14 +17,14 @@ import { bls12_381 } from "@noble/curves/bls12-381";
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { sha3_256 } from "@noble/hashes/sha3";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils";
 
 import * as pke from "../pke";
 import * as group from "../group";
 import {
     AceDeployment,
     ContractID,
-    createAptos,
+    getChainReader,
     fetchCurrentSessionPks,
     fetchNetworkState,
     NetworkState,
@@ -217,30 +217,15 @@ async function fetchCurrentNodeInfos(
     aceDeployment: AceDeployment,
     networkState: NetworkState,
 ): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
-    const aptos = createAptos(aceDeployment);
-    const aceContractAddr = aceDeployment.contractAddr.toStringLong();
+    const reader = getChainReader(aceDeployment);
 
     return Promise.all(networkState.curNodes.map(async (nodeAddr) => {
         const addrStr = nodeAddr.toStringLong();
-        const [[endpoint], [ekHex]] = await Promise.all([
-            aptos.view({
-                payload: {
-                    function: `${aceContractAddr}::worker_config::get_endpoint` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [addrStr],
-                },
-            }),
-            aptos.view({
-                payload: {
-                    function: `${aceContractAddr}::worker_config::get_pke_enc_key_bcs` as `${string}::${string}::${string}`,
-                    typeArguments: [],
-                    functionArguments: [addrStr],
-                },
-            }),
+        const [endpoint, nodeEncKey] = await Promise.all([
+            reader.workerEndpoint(addrStr),
+            reader.workerEncKey(addrStr),
         ]);
-        const nodeEncKey = pke.EncryptionKey.fromBytes(hexToBytes((ekHex as string).replace(/^0x/, "")))
-            .unwrapOrThrow(`ACE.VRF_Aptos: parse pke enc key for ${addrStr}`);
-        return { nodeAddr: addrStr, endpoint: endpoint as string, nodeEncKey };
+        return { nodeAddr: addrStr, endpoint, nodeEncKey };
     }));
 }
 

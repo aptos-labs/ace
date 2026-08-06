@@ -1058,10 +1058,15 @@ class FullnodeChainReader implements ChainReader {
 
 /**
  * Resolve the chain reader for a deployment. All ACE chain reads go through this. Precedence:
- *   apiKey set        -> authenticated fullnode
- *   else discoveryUrl -> keyless discovery service (aggregated snapshot, no fullnode calls)
- *   else              -> anonymous fullnode
+ *   apiKey set        -> authenticated fullnode  (FullnodeChainReader)
+ *   else discoveryUrl -> keyless discovery service, aggregated snapshot, no fullnode calls  (DiscoveryChainReader)
+ *   else              -> anonymous fullnode  (FullnodeChainReader)
  * An explicit apiKey always wins, so a caller that provides one keeps the plain fullnode path.
+ *
+ * The two readers use disjoint transports: the fullnode path builds an Aptos client (honoring
+ * `aceDeployment.clientConfig`), the discovery path uses the platform `fetch` (ignores
+ * `clientConfig`). So `clientConfig` and `discoveryUrl` never interact — each applies only to its
+ * own path.
  */
 export function getChainReader(aceDeployment: AceDeployment): ChainReader {
     if (!aceDeployment.apiKey && aceDeployment.discoveryUrl) {

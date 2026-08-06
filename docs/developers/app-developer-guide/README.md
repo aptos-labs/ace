@@ -18,6 +18,53 @@ ACE lets an app encrypt data or derive values scoped to a contract, account, and
 - `contract id`: the app contract or program ACE checks for access decisions. Aptos uses `(chainId, moduleAddr, moduleName)`. Solana uses `(knownChainName, programId)`.
 - `origin`: an Aptos wallet/WebAuthn application origin extracted by ACE from the signed message. Solana proofs do not currently include this field automatically.
 
+## Connecting to the ACE network
+
+Every SDK call takes an `aceDeployment`. Beyond `apiEndpoint` and `contractAddr`, three optional
+fields control how the SDK reaches the network to read ACE config (epoch, node endpoints, keys).
+They fall into **two mutually exclusive transport paths**:
+
+| Path | When it is used | Transport | `clientConfig` applies? |
+|------|-----------------|-----------|--------------------------|
+| **Fullnode** | `apiKey` is set, **or** no `discoveryUrl` | Aptos client → fullnode REST view calls | Yes |
+| **Discovery** | `discoveryUrl` is set **and** no `apiKey` | plain `fetch` of one aggregated snapshot | No |
+
+- **`apiKey`** — attaches `Authorization: Bearer` to fullnode requests. Needed on rate-limited public
+  endpoints. Cannot ship safely in client-side code.
+- **`discoveryUrl`** — points at a keyless ACE discovery service. On this path the client makes
+  **zero fullnode calls** (so no API key, no backend proxy), fetching one cached snapshot instead.
+  Normally pre-filled in the `knownDeployments` entry, so upgrading the SDK is enough to benefit.
+- **`clientConfig`** — forwarded verbatim to `AptosConfig` for the fullnode client (proxy, extra
+  headers, `http2: false` for runtimes without HTTP/2).
+
+Precedence when resolving the path: **`apiKey` → `discoveryUrl` → anonymous fullnode.** An explicit
+`apiKey` always wins, so providing one keeps you on the fullnode path even if a `discoveryUrl` exists.
+
+Practical consequences of the two-path split:
+
+- `clientConfig` only affects the fullnode path. On the discovery path the SDK never builds an Aptos
+  client, so proxy/header/HTTP-2 settings there have no effect — they are *not applicable* rather
+  than silently dropped.
+- A runtime **without HTTP/2** does not hang on the discovery path: it uses the platform `fetch`
+  (HTTP/1.1 by default) and never touches the fullnode client that would attempt HTTP/2. (On the
+  fullnode path, such a runtime should set `clientConfig: { http2: false }`.)
+- Worker share requests (the direct calls to ACE nodes during decryption/VRF) are plain `fetch`
+  POSTs on **both** paths and never need an API key.
+
+```typescript
+// Keyless: fullnode calls resolve from the discovery service (usually pre-set in knownDeployments).
+const aceDeployment = new ACE.AceDeployment({
+  apiEndpoint: "https://api.testnet.aptoslabs.com/v1", // still the fallback if no discoveryUrl/apiKey
+  contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),
+  discoveryUrl: "https://<ace-discovery-host>",
+});
+
+// Fullnode with an HTTP/2 opt-out (e.g. a runtime that cannot negotiate HTTP/2):
+const viaFullnode = knownDeployments["<name>"]
+  .withApiKey("<node-api-key>")
+  .withClientConfig({ http2: false });
+```
+
 ## Common Build Order
 
 1. Design your access policy data model.

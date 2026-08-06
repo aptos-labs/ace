@@ -1,7 +1,7 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { AccountAddress, Aptos, AptosConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Aptos, AptosConfig, ClientConfig, Deserializer, Network, Serializer } from "@aptos-labs/ts-sdk";
 import { sha3_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
@@ -595,7 +595,7 @@ export class WorkerRequest {
 }
 
 export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<NetworkState> {
-    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+    const aptos = createAptos(aceDeployment);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const [stateHex] = await aptos.view({
         payload: {
@@ -617,7 +617,7 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
     if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+            const aptos = createAptos(aceDeployment);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
             const [hexBytes] = await aptos.view({
                 payload: {
@@ -642,7 +642,7 @@ export async function fetchNetworkStateAndBuildRequest(
     fullDecryptionDomain: FullDecryptionDomain,
     ephemeralEncryptionKey: pke.EncryptionKey,
 ): Promise<{networkState: NetworkState, request: DecryptionRequestPayload}> {
-    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+    const aptos = createAptos(aceDeployment);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
     const [stateHex] = await aptos.view({
@@ -713,7 +713,7 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
  * from subsequent DKR sessions.
  */
 export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
-    const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+    const aptos = createAptos(aceDeployment);
     const aceContractAddr = aceDeployment.contractAddr.toStringLong();
     const keypairIdStr = keypairId.toStringLong();
 
@@ -770,7 +770,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+            const aptos = createAptos(aceDeployment);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
@@ -896,7 +896,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+            const aptos = createAptos(aceDeployment);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const fdd = new FullDecryptionDomain({
@@ -1032,7 +1032,7 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const aptos = createAptos(aceDeployment.apiEndpoint, aceDeployment.apiKey);
+            const aptos = createAptos(aceDeployment);
             const aceContractAddr = aceDeployment.contractAddr.toStringLong();
 
             const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
@@ -1072,11 +1072,28 @@ export async function buildPerNodeRequestCore({
     });
 }
 
-export function createAptos(rpcUrl?: string, apiKey?: string): Aptos {
-    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+/**
+ * Builds the Aptos client used for every on-chain read the SDK performs.
+ *
+ * `clientConfig` on the deployment is forwarded to `AptosConfig` untouched, so
+ * callers can supply proxy settings, extra headers, or `http2: false` for
+ * runtimes without HTTP/2 support. `apiKey` keeps ownership of the
+ * `Authorization` header and is applied on top of any headers passed in.
+ */
+export function createAptos(
+    aceDeployment?: Pick<AceDeployment, 'apiEndpoint' | 'apiKey' | 'clientConfig'>,
+): Aptos {
+    const { apiEndpoint, apiKey, clientConfig } = aceDeployment ?? {};
+    const headers = apiKey
+        ? { ...clientConfig?.HEADERS, Authorization: `Bearer ${apiKey}` }
+        : clientConfig?.HEADERS;
+    const mergedClientConfig: ClientConfig = {
+        ...clientConfig,
+        ...(headers ? { HEADERS: headers } : {}),
+    };
     return new Aptos(new AptosConfig({
         network: Network.CUSTOM,
-        fullnode: rpcUrl ?? 'http://localhost:8080/v1',
-        clientConfig: headers ? { HEADERS: headers } : undefined,
+        fullnode: apiEndpoint ?? 'http://localhost:8080/v1',
+        clientConfig: Object.keys(mergedClientConfig).length > 0 ? mergedClientConfig : undefined,
     }));
 }

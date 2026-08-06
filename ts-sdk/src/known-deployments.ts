@@ -1,19 +1,36 @@
 // Copyright (c) Aptos Labs
 // SPDX-License-Identifier: Apache-2.0
 
-import { AccountAddress } from "@aptos-labs/ts-sdk";
+import { AccountAddress, ClientConfig } from "@aptos-labs/ts-sdk";
 import { AceDeployment } from "./_internal/deployment";
 
+/** A known deployment plus the builders that override its connection settings. */
+type KnownDeployment<T> = T & {
+    withApiKey(apiKey?: string): KnownDeployment<T>;
+    withClientConfig(clientConfig?: ClientConfig): KnownDeployment<T>;
+};
+
+/**
+ * Wraps a deployment so its connection settings can be overridden. The builders
+ * return wrapped deployments too, so they can be chained — a caller that needs
+ * both an API key and custom client settings applies them in either order.
+ */
 function knownDeployment<const T extends { aceDeployment: AceDeployment }>(
     deployment: T,
-): T & { withApiKey(apiKey?: string): T } {
+): KnownDeployment<T> {
     return {
         ...deployment,
-        withApiKey(apiKey?: string): T {
-            return {
+        withApiKey(apiKey?: string): KnownDeployment<T> {
+            return knownDeployment({
                 ...deployment,
                 aceDeployment: deployment.aceDeployment.withApiKey(apiKey),
-            };
+            });
+        },
+        withClientConfig(clientConfig?: ClientConfig): KnownDeployment<T> {
+            return knownDeployment({
+                ...deployment,
+                aceDeployment: deployment.aceDeployment.withClientConfig(clientConfig),
+            });
         },
     };
 }

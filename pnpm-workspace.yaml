@@ -2,6 +2,7 @@ packages:
   - "ts-sdk"
   - "worker"
   - "cli"
+  - "discovery-server"
   - "examples/*"
   - "scenarios"
   - "scenarios/custom-flow-solana"

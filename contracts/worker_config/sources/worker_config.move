@@ -28,6 +28,10 @@ module ace::worker_config {
         exists<PkeEncryptionKey>(worker)
     }
 
+    public fun has_endpoint(worker: address): bool {
+        exists<Endpoint>(worker)
+    }
+
     #[view]
     /// Return the worker's registered HTTP endpoint string.
     public fun get_endpoint(worker: address): String acquires Endpoint {
@@ -40,5 +44,10 @@ module ace::worker_config {
     /// Compatible with ts-sdk `pke.EncryptionKey.fromBytes()` and `vss-common` `pke::EncryptionKey::from_bytes()`.
     public fun get_pke_enc_key_bcs(worker: address): vector<u8> acquires PkeEncryptionKey {
         bcs::to_bytes(&borrow_global<PkeEncryptionKey>(worker).ek)
+    }
+
+    /// Return the worker's PKE encryption key by value (EncryptionKey has `copy`).
+    public fun get_pke_enc_key(worker: address): pke::EncryptionKey acquires PkeEncryptionKey {
+        borrow_global<PkeEncryptionKey>(worker).ek
     }
 }

@@ -1,6 +1,8 @@
 module ace::network {
     use std::error;
     use ace::worker_config;
+    use ace::group;
+    use ace::pke;
     use aptos_framework::timestamp;
     use ace::dkr;
     use std::option::{Option, Self};
@@ -121,6 +123,10 @@ module ace::network {
     // need to make local decisions (touch, epoch-change-nxt membership, proposal vote status).
     #[view]
     public fun state_view_v0_bcs(): vector<u8> {
+        bcs::to_bytes(&build_state_view_v0())
+    }
+
+    fun build_state_view_v0(): StateViewV0 {
         let state = &State[@ace];
 
         let proposals = vector[];
@@ -178,7 +184,7 @@ module ace::network {
             result
         };
 
-        bcs::to_bytes(&StateViewV0 {
+        StateViewV0 {
             epoch: state.epoch,
             epoch_start_time_micros: state.epoch_start_time_micros,
             epoch_duration_micros: state.epoch_duration_micros,
@@ -187,6 +193,89 @@ module ace::network {
             secrets,
             proposals,
             epoch_change_info,
+        }
+    }
+
+    struct NodeDiscoveryV0 has drop {
+        addr: address,
+        /// worker_config::get_endpoint(addr); none if the node has not registered one yet.
+        endpoint: Option<String>,
+        enc_key: pke::EncryptionKey,
+    }
+
+    /// A secret's session, reduced to exactly what an off-chain client reads: the base point, the
+    /// master public key (result_pk), and the per-holder share PKs. Uniform across DKG and DKR
+    /// sessions, so no dkg/dkr discriminator is needed.
+    struct SessionDiscoveryV0 has drop {
+        addr: address,
+        base_point: group::Element,
+        result_pk: group::Element,
+        share_pks: vector<group::Element>,
+    }
+
+    /// Everything an off-chain client needs to encrypt / decrypt / VRF-derive without any
+    /// follow-up node-API calls, bundled into one typed #[view].
+    struct DiscoveryViewV0 has drop {
+        state_view: StateViewV0,
+        /// One per State.cur_nodes, in cur_nodes order.
+        nodes: vector<NodeDiscoveryV0>,
+        /// Dedup union over secrets of {current_session, keypair_id}. keypair_id is always a DKG
+        /// session (the origin); current_session is dkg for initial secrets, dkr after resharing.
+        sessions: vector<SessionDiscoveryV0>,
+    }
+
+    // Single #[view] that collapses the per-decryption 2N+1 node-API calls into one, so a keyless
+    // discovery service can serve the whole snapshot. See DiscoveryViewV0.
+    #[view]
+    public fun discovery_view_v0_bcs(): vector<u8> {
+        let state = &State[@ace];
+
+        let nodes = vector[];
+        state.cur_nodes.for_each_ref(|node_ref| {
+            let node = *node_ref;
+            let endpoint = if (worker_config::has_endpoint(node)) {
+                option::some(worker_config::get_endpoint(node))
+            } else {
+                option::none()
+            };
+            nodes.push_back(NodeDiscoveryV0 {
+                addr: node,
+                endpoint,
+                enc_key: worker_config::get_pke_enc_key(node),
+            });
+        });
+
+        // Collect the dedup union of {current_session, keypair_id} over all secrets.
+        let session_addrs = vector[];
+        state.secrets.for_each_ref(|secret_ref| {
+            let current_session = *secret_ref;
+            let (keypair_id, _, _, _) = if (dkg::is_session(current_session)) {
+                dkg::keypair_id_scheme_usage_and_note(current_session)
+            } else {
+                dkr::keypair_id_scheme_usage_and_note(current_session)
+            };
+            if (!session_addrs.contains(&current_session)) {
+                session_addrs.push_back(current_session);
+            };
+            if (!session_addrs.contains(&keypair_id)) {
+                session_addrs.push_back(keypair_id);
+            };
+        });
+
+        let sessions = vector[];
+        session_addrs.for_each(|addr| {
+            let (base_point, result_pk, share_pks) = if (dkg::is_session(addr)) {
+                dkg::base_result_shares(addr)
+            } else {
+                dkr::base_result_shares(addr)
+            };
+            sessions.push_back(SessionDiscoveryV0 { addr, base_point, result_pk, share_pks });
+        });
+
+        bcs::to_bytes(&DiscoveryViewV0 {
+            state_view: build_state_view_v0(),
+            nodes,
+            sessions,
         })
     }
 

@@ -31,7 +31,7 @@ export const knownDeployments = {
     'shelby-beta-usce1': knownDeployment({
         chainId: 125,
         aceDeployment: new AceDeployment({
-            apiEndpoint: 'https://api.shelby-beta.teraswitch.aptosdev.com/v1',
+            apiEndpoint: 'https://api.beta.shelby.xyz/v1',
             contractAddr: AccountAddress.fromString('0x086f9a291d3d28140413505f6224d10e07cb6d6d08ab5933f62ff1b685830408'),
         }),
         ibeKeypairId: AccountAddress.fromString('0x50ca2eb86412416256522777770b9846ced2b0185db1d301f233d5f47215f4c3'),

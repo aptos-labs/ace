@@ -1,7 +1,7 @@
 # @aptos-labs/ace-discovery-server
 
-A tiny, keyless HTTP service that lets ACE clients operate **without a node API key
-and without a backend proxy**.
+A tiny HTTP service that lets ACE clients operate **without a node API key and
+without a backend proxy**.
 
 It reads the on-chain aggregate view `ace::network::discovery_view_v0_bcs()` once
 (with the operator's node API key), caches it, and serves the raw snapshot to any

@@ -22,7 +22,8 @@ export class AceDeployment {
      */
     clientConfig?: ClientConfig;
     /**
-     * Optional keyless ACE discovery service base URL. Normally baked into the `knownDeployments`
+     * Optional ACE discovery service base URL (lets the client read config without a node API key).
+     * Normally baked into the `knownDeployments`
      * entry so a client gets rate-limit immunity just by upgrading the SDK — no code change.
      *
      * When set AND no `apiKey` is provided, the on-chain reads behind enc/dec/VRF operations

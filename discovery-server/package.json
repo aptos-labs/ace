@@ -1,7 +1,7 @@
 {
   "name": "@aptos-labs/ace-discovery-server",
   "version": "0.1.0",
-  "description": "Keyless ACE discovery service: caches the on-chain discovery_view_v0_bcs snapshot and serves it to clients so they need no node API key",
+  "description": "ACE discovery service: caches the on-chain discovery_view_v0_bcs snapshot and serves it to clients so they need no node API key",
   "license": "Apache-2.0",
   "private": true,
   "bin": {

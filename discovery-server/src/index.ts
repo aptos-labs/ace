@@ -31,7 +31,7 @@ function main() {
     const cache = new SnapshotCache(cfg);
 
     const server = http.createServer(async (req, res) => {
-        // Public, read-only, keyless. Discovery data is the same for everyone.
+        // Public, read-only, no API key required. Discovery data is the same for everyone.
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
 

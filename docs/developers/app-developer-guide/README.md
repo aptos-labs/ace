@@ -31,7 +31,7 @@ They fall into **two mutually exclusive transport paths**:
 
 - **`apiKey`** — attaches `Authorization: Bearer` to fullnode requests. Needed on rate-limited public
   endpoints. Cannot ship safely in client-side code.
-- **`discoveryUrl`** — points at a keyless ACE discovery service. On this path the client makes
+- **`discoveryUrl`** — points at an ACE discovery service (needs no node API key). On this path the client makes
   **zero fullnode calls** (so no API key, no backend proxy), fetching one cached snapshot instead.
   Normally pre-filled in the `knownDeployments` entry, so upgrading the SDK is enough to benefit.
 - **`clientConfig`** — forwarded verbatim to `AptosConfig` for the fullnode client (proxy, extra
@@ -52,7 +52,7 @@ Practical consequences of the two-path split:
   POSTs on **both** paths and never need an API key.
 
 ```typescript
-// Keyless: fullnode calls resolve from the discovery service (usually pre-set in knownDeployments).
+// No node API key: fullnode reads resolve from the discovery service (usually pre-set in knownDeployments).
 const aceDeployment = new ACE.AceDeployment({
   apiEndpoint: "https://api.testnet.aptoslabs.com/v1", // still the fallback if no discoveryUrl/apiKey
   contractAddr: AccountAddress.fromString("0x<ace-contract-address>"),

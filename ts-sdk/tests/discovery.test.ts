@@ -125,8 +125,10 @@ describe("DiscoveryChainReader", () => {
         expect(s.resultPk!.equals(EL)).toBe(true);
         expect(s.sharePks).toHaveLength(2);
 
-        // Snapshot fetched exactly once for the whole operation.
+        // Snapshot fetched exactly once for the whole operation, from the base URL + /bcs
+        // (trailing slash collapsed).
         expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0]).toBe("https://discovery.example/bcs");
     });
 
     it("also accepts a JSON-enveloped body", async () => {

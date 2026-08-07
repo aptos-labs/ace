@@ -23,6 +23,7 @@ export class AceDeployment {
     clientConfig?: ClientConfig;
     /**
      * Optional ACE discovery service base URL (lets the client read config without a node API key).
+     * Give the service root (e.g. `https://…run.app`); the SDK appends the endpoint path (`/bcs`).
      * Normally baked into the `knownDeployments`
      * entry so a client gets rate-limit immunity just by upgrading the SDK — no code change.
      *

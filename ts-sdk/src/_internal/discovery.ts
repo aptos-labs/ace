@@ -136,9 +136,12 @@ export class DiscoveryViewV0 {
 
 /** GET the aggregated snapshot from the discovery service and decode it. */
 async function fetchDiscoveryView(discoveryUrl: string): Promise<DiscoveryViewV0> {
-    const resp = await fetch(discoveryUrl);
+    // `discoveryUrl` is the service base; the SDK reads the raw-BCS endpoint (`/json` is the
+    // human-readable sibling). Appending here keeps the endpoint path an SDK concern, not config.
+    const url = discoveryUrl.replace(/\/+$/, "") + "/bcs";
+    const resp = await fetch(url);
     if (!resp.ok) {
-        throw new Error(`ACE discovery: GET ${discoveryUrl} -> HTTP ${resp.status}`);
+        throw new Error(`ACE discovery: GET ${url} -> HTTP ${resp.status}`);
     }
     let hex = (await resp.text()).trim();
     // The server serves the plain 0x hex body; also tolerate a { discoveryViewV0Bcs } JSON envelope.

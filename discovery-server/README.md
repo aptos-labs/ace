@@ -19,8 +19,9 @@ Clients fetch fresh per operation; the upstream fullnode is shielded by this
 server's own short-TTL cache, not by client-side caching.
 
 - `GET /bcs` (and `GET /` for convenience) → the `0x`-prefixed BCS hex of
-  `DiscoveryViewV0` as a plain-text body. **This is what the SDK consumes** — point
-  `AceDeployment.discoveryUrl` at `<base>/bcs`. Pure pass-through, authoritative.
+  `DiscoveryViewV0` as a plain-text body. **This is what the SDK consumes**: set
+  `AceDeployment.discoveryUrl` to the service base URL and the SDK appends `/bcs`.
+  Pure pass-through, authoritative.
 - `GET /json` → a human-readable JSON projection of the same snapshot (epoch,
   threshold, nodes with endpoints + enc keys, keypairs with master/base/share PKs;
   all crypto material hex-encoded). For eyeballing/debugging — decoded via the

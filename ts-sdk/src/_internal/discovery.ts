@@ -6,6 +6,25 @@ import { Element as GroupElement } from "../group";
 import * as pke from "../pke";
 import { State as NetworkState } from "../network";
 
+/** Human-readable projection of `DiscoveryViewV0` (all crypto material hex-encoded). */
+export interface DiscoveryReadableV0 {
+    epoch: number;
+    epochChanging: boolean;
+    threshold: number;
+    epochStartTimeMicros: string;
+    epochDurationMicros: string;
+    nodes: { address: string; endpoint: string | null; pkeEncKey: string | null }[];
+    keypairs: {
+        keypairId: string;
+        currentSession: string;
+        scheme: number;
+        note: string;
+        masterPublicKey: string | null;
+        basePoint: string | null;
+        sharePks: string[];
+    }[];
+}
+
 /** The base point, master public key, and per-holder share PKs of a secret's session. */
 export interface SessionPks {
     basePoint: GroupElement;
@@ -37,6 +56,43 @@ export class DiscoveryViewV0 {
         /** session address (long form) -> SessionPks. */
         readonly sessions: Map<string, SessionPks>,
     ) {}
+
+    /**
+     * A plain, JSON-serializable, human-readable projection — all crypto material as hex, epoch
+     * timers as decimal strings (bigint isn't JSON-serializable). Intended for the discovery
+     * service's `/json` debug endpoint and for eyeballing; the SDK itself decodes the BCS directly.
+     */
+    toReadable(): DiscoveryReadableV0 {
+        const nodes = this.state.curNodes.map((addr) => {
+            const key = addr.toStringLong();
+            const n = this.nodes.get(key);
+            return { address: key, endpoint: n?.endpoint ?? null, pkeEncKey: n ? n.encKey.toHex() : null };
+        });
+        const keypairs = this.state.secrets.map((s) => {
+            const keypairId = s.keypairId.toStringLong();
+            const currentSession = s.currentSession.toStringLong();
+            const cur = this.sessions.get(currentSession);
+            const origin = this.sessions.get(keypairId); // keypairId is always the origin DKG session
+            return {
+                keypairId,
+                currentSession,
+                scheme: s.scheme,
+                note: s.note,
+                masterPublicKey: origin?.resultPk?.toHex() ?? null,
+                basePoint: cur?.basePoint.toHex() ?? null,
+                sharePks: cur ? cur.sharePks.map((p) => p.toHex()) : [],
+            };
+        });
+        return {
+            epoch: this.state.epoch,
+            epochChanging: this.state.isEpochChanging(),
+            threshold: this.state.curThreshold,
+            epochStartTimeMicros: this.state.epochStartTimeMicros.toString(),
+            epochDurationMicros: this.state.epochDurationMicros.toString(),
+            nodes,
+            keypairs,
+        };
+    }
 
     static fromBytes(bytes: Uint8Array): DiscoveryViewV0 {
         const d = new Deserializer(bytes);

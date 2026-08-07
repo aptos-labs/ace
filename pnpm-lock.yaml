@@ -50,6 +50,9 @@ importers:
 
   discovery-server:
     dependencies:
+      '@aptos-labs/ace-sdk':
+        specifier: workspace:*
+        version: link:../ts-sdk
       '@aptos-labs/ts-sdk':
         specifier: ^5.2.0
         version: 5.2.1(got@11.8.6)

@@ -14,10 +14,17 @@ service caches it for a short TTL and is trivially CDN-cacheable.
 
 ## Endpoints
 
-- `GET /` → the `0x`-prefixed BCS hex of `DiscoveryViewV0` as the plain response
-  body, served with `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`.
-  Clients fetch fresh per operation; the upstream fullnode is shielded by this
-  server's own short-TTL cache, not by client-side caching.
+All responses are `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`.
+Clients fetch fresh per operation; the upstream fullnode is shielded by this
+server's own short-TTL cache, not by client-side caching.
+
+- `GET /bcs` (and `GET /` for convenience) → the `0x`-prefixed BCS hex of
+  `DiscoveryViewV0` as a plain-text body. **This is what the SDK consumes** — point
+  `AceDeployment.discoveryUrl` at `<base>/bcs`. Pure pass-through, authoritative.
+- `GET /json` → a human-readable JSON projection of the same snapshot (epoch,
+  threshold, nodes with endpoints + enc keys, keypairs with master/base/share PKs;
+  all crypto material hex-encoded). For eyeballing/debugging — decoded via the
+  SDK's `DiscoveryViewV0` so it can't drift from what the SDK reads.
 - `GET /healthz` → `ok`.
 
 ## Configuration (env)
@@ -48,4 +55,4 @@ docker run -p 8080:8080 \
 ```
 
 > Requires the contract to expose `network::discovery_view_v0_bcs()` (added
-> alongside this service). Against an older deployment, `GET /` returns 502.
+> alongside this service). Against an older deployment, `GET /bcs` and `/json` return 502.

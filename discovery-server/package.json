@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aptos-labs/ace-sdk": "workspace:*",
     "@aptos-labs/ts-sdk": "^5.2.0"
   },
   "devDependencies": {

@@ -59,6 +59,9 @@ export const knownDeployments = {
         aceDeployment: new AceDeployment({
             apiEndpoint: 'https://api.shelbynet.shelby.xyz/v1',
             contractAddr: AccountAddress.fromString('0x2a800d06b231476e045e874b5319409f80aa4449d7cabcdc68d2e0b5a66ee43d'),
+            // Keyless discovery service — clients with no node API key read config from here (zero
+            // fullnode calls). Points at the `/bcs` endpoint (raw BCS the SDK decodes).
+            discoveryUrl: 'https://ace-discovery-646682240579.us-central1.run.app/bcs',
         }),
         ibeKeypairId: AccountAddress.fromString('0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17'),
         vrfKeypairId: AccountAddress.fromString('0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17'),

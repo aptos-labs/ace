@@ -299,7 +299,7 @@ function secretEnv(bindings: SecretBinding[]): Record<string, string> {
 
 export function gcpDeployCmd(
     serviceName: string, image: string, project: string, region: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): GcpDeployScript {
@@ -363,7 +363,7 @@ export function gcpDeployCmdMicroservices(
         handlerMaxInstances: number;
     },
     image: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): GcpDeployScript {
@@ -403,6 +403,16 @@ export function gcpDeployCmdMicroservices(
     const handlerArgsBeforeUrl = ['run', '--mode=handler'];
     const handlerArgsAfterUrl = [
         `--port=8080`,
+        // The handler serves reconstruction requests; give it the reconstructor
+        // pk, the ACE address, and the ACE fullnode URL (to fetch chain id) for
+        // the domain check. All public.
+        ...(node.reconstructorPk
+            ? [
+                `--ace-deployment-addr=${aceAddr}`,
+                `--ace-deployment-api=${rpcUrl}`,
+                `--reconstructor-pk=${node.reconstructorPk}`,
+            ]
+            : []),
         ...chainRpcArgs(chainRpc, { includeSecrets: false }),
     ];
 
@@ -461,7 +471,7 @@ export function gcpDeployCmdMicroservices(
 
 export function dockerRunCmd(
     containerName: string, image: string, port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
@@ -478,6 +488,7 @@ export function dockerRunCmd(
         `  --account-addr=${node.accountAddr}`,
         `  --account-sk=${node.accountSk}`,
         `  --pke-dk=${node.pkeDk}`,
+        ...(node.reconstructorPk ? [`  --reconstructor-pk=${node.reconstructorPk}`] : []),
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc),
     ].join(' \\\n');
@@ -489,7 +500,7 @@ export function localBuildCmd(repoPath: string): string {
 
 export function localRunCmd(
     repoPath: string, port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string {
@@ -502,6 +513,7 @@ export function localRunCmd(
         `  --account-addr=${node.accountAddr}`,
         `  --account-sk=${node.accountSk}`,
         `  --pke-dk=${node.pkeDk}`,
+        ...(node.reconstructorPk ? [`  --reconstructor-pk=${node.reconstructorPk}`] : []),
         `  --port=${port}`,
         ...chainRpcArgs(chainRpc).map(a => `  ${a}`),
     ].join(' \\\n');
@@ -509,7 +521,7 @@ export function localRunCmd(
 
 export function localRunArgs(
     port: string,
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
 ): string[] {
@@ -522,6 +534,7 @@ export function localRunArgs(
         `--account-addr=${node.accountAddr}`,
         `--account-sk=${node.accountSk}`,
         `--pke-dk=${node.pkeDk}`,
+        ...(node.reconstructorPk ? [`--reconstructor-pk=${node.reconstructorPk}`] : []),
         `--port=${port}`,
         ...chainRpcArgs(chainRpc),
     ];
@@ -536,7 +549,7 @@ function defaultRepoPath(): string | undefined {
 }
 
 function nodeRunArgs(
-    node: { accountAddr: string; accountSk: string; pkeDk: string },
+    node: { accountAddr: string; accountSk: string; pkeDk: string; reconstructorPk?: string },
     rpcUrl: string, aceAddr: string, rpcApiKey?: string, gasStationKey?: string,
     chainRpc?: ChainRpcOverrides,
     opts: { includeSecrets?: boolean } = {},
@@ -550,6 +563,8 @@ function nodeRunArgs(
         ...(includeSecrets && gasStationKey ? [`--ace-deployment-gaskey=${gasStationKey}`] : []),
         `--account-addr=${node.accountAddr}`,
         ...(includeSecrets ? [`--account-sk=${node.accountSk}`, `--pke-dk=${node.pkeDk}`] : []),
+        // Public value → always emitted (not a secret; safe in plaintext args).
+        ...(node.reconstructorPk ? [`--reconstructor-pk=${node.reconstructorPk}`] : []),
         '--port=8080',
         ...chainRpcArgs(chainRpc, { includeSecrets }),
     ];

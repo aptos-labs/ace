@@ -56,11 +56,13 @@ pub use ibe_solana_basic_flow::SolanaProofOfPermission;
 ///   0 = DecryptionBasicFlow
 ///   1 = DecryptionCustomFlow
 ///   2 = ThresholdVrf
+///   3 = Reconstruction  (disaster-recovery; see [`ReconstructionRequest`])
 #[derive(Serialize, Deserialize)]
 pub enum WorkerRequest {
     DecryptionBasicFlow(DecryptionBasicFlowRequest),
     DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(ThresholdVrfRequest),
+    Reconstruction(ReconstructionRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
@@ -129,6 +131,47 @@ pub type AptosAccountSignatureProof = AptosProofOfPermission;
 pub struct ThresholdVrfRequest {
     pub payload: ThresholdVrfRequestPayload,
     pub auth_proof: AptosAccountSignatureProof,
+}
+
+/// Disaster-recovery reconstruction request. Unlike a decryption request, the
+/// authorization is a single `reconstructor` signature (not the on-chain ACE
+/// hook), and the node returns its **raw scalar share** (encrypted to
+/// `eph_pke_ek`) rather than a per-identity IDK share. Only served when the node
+/// was started with `--reconstructor-pk`; the signature must verify under that
+/// key. See `http_server/flows/reconstruction.rs`.
+#[derive(Serialize, Deserialize)]
+pub struct ReconstructionRequest {
+    pub payload: ReconstructionRequestPayload,
+    /// Signature by the reconstructor over `bcs::to_bytes(&payload)`.
+    pub sig: vss_common::sig::Signature,
+}
+
+/// Fields the reconstructor signs over. `chain_id` + `ace_addr` domain-separate
+/// the request (a node rejects a request naming a different deployment), so a
+/// signature captured for one ACE can't be replayed against another; `keypair_id`
+/// + `epoch` locate the per-epoch share; `eph_pke_ek` is bound in so the returned
+/// share can only be delivered to the key the reconstructor chose.
+#[derive(Serialize, Deserialize)]
+pub struct ReconstructionRequestPayload {
+    pub chain_id: u8,
+    pub ace_addr: [u8; 32],
+    pub keypair_id: [u8; 32],
+    pub epoch: u64,
+    pub eph_pke_ek: EncryptionKey,
+}
+
+/// What the node returns to the reconstructor. The **entire** struct is
+/// BCS-encoded and then PKE-encrypted to `eph_pke_ek` (see
+/// `http_server/flows/reconstruction.rs`), so `eval_point` / `group_scheme` are
+/// not exposed in the clear either — the HTTP body is just a `pke::Ciphertext`.
+/// `eval_point` and `group_scheme` let the reconstructor Lagrange-interpolate
+/// without any chain read.
+#[derive(Serialize, Deserialize)]
+pub struct ReconstructionResponse {
+    pub eval_point: u64,
+    pub group_scheme: u8,
+    /// The node's raw 32-byte LE Fr Shamir share.
+    pub scalar_le32: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]

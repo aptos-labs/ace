@@ -34,6 +34,10 @@ pub(crate) async fn dispatch_request(
             metadata::record_vrf(ctx, &req);
             flows::handle_threshold_vrf(state, snapshot, req, ctx).await
         }
+        WorkerRequest::Reconstruction(req) => {
+            metadata::record_reconstruction(ctx, &req);
+            flows::handle_reconstruction(state, snapshot, req, ctx).await
+        }
     }
 }
 

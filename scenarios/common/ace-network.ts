@@ -58,6 +58,9 @@ export interface AceNetworkOptions {
      *  normal access-failure tests. Set lower (e.g., 30) for scenarios that
      *  intentionally drive auto-rotations. */
     reshareIntervalSecs?: number;
+    /** Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
+     *  When set, every spawned worker is launched with `--reconstructor-pk`. */
+    reconstructorPk?: string;
 }
 
 export interface AceNetworkState {
@@ -161,6 +164,7 @@ export async function setupAceNetworkAndWorkers(
             aceDeploymentAddr: adminAddr,
             aceDeploymentApi: LOCALNET_URL,
             workerBasePort: WORKER_BASE_PORT,
+            reconstructorPk: opts.reconstructorPk,
         }));
     }
     await sleep(2000);
@@ -218,6 +222,8 @@ export interface SetupAceOnLocalnetOpts {
      *  600 (no auto-rotation during normal tests). Set to 30 to drive
      *  auto-rotation in a buffer/epoch-transition test. */
     reshareIntervalSecs?: number;
+    /** Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`). */
+    reconstructorPk?: string;
 }
 
 export interface SetupAceOnLocalnetResult {
@@ -253,6 +259,7 @@ export async function setupAceOnLocalnet(
         epoch0Threshold: opts.epoch0Threshold,
         fundAccount: opts.fundAccount,
         reshareIntervalSecs: opts.reshareIntervalSecs,
+        reconstructorPk: opts.reconstructorPk,
     });
     const approvers = ace.epoch0WorkerAccounts.slice(0, opts.epoch0Threshold);
     const keypairIds: AccountAddress[] = [];

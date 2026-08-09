@@ -195,6 +195,14 @@ pub enum Mode {
         port: u16,
         chain_rpc: ChainRpcConfig,
         max_concurrent: Option<usize>,
+        /// Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
+        reconstructor_pk: Option<String>,
+        /// ACE contract address (may be empty in handler-only mode); used for the
+        /// reconstruction domain check when reconstruction is enabled.
+        ace_addr: String,
+        /// ACE deployment fullnode URL; used to fetch the chain id for the
+        /// reconstruction domain check when reconstruction is enabled.
+        ace_deployment_api: String,
     },
 }
 
@@ -218,6 +226,8 @@ pub struct HandlerLocalConfig {
     pub port: u16,
     pub chain_rpc: ChainRpcConfig,
     pub max_concurrent: Option<usize>,
+    /// Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
+    pub reconstructor_pk: Option<String>,
 }
 
 // ── BCS mirror of ace::network::StateViewV0 ─────────────────────────────────
@@ -323,8 +333,72 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
             port,
             chain_rpc,
             max_concurrent,
-        } => run_handler(maintainer_url, pke_dk, port, chain_rpc, max_concurrent, shutdown_rx).await,
+            reconstructor_pk,
+            ace_addr,
+            ace_deployment_api,
+        } => {
+            run_handler(
+                maintainer_url,
+                pke_dk,
+                port,
+                chain_rpc,
+                max_concurrent,
+                reconstructor_pk,
+                ace_addr,
+                ace_deployment_api,
+                shutdown_rx,
+            )
+            .await
+        }
     }
+}
+
+/// Parse the optional `--reconstructor-pk` (hex of a BCS-serialized generic
+/// `sig::PublicKey`) into the shared `AppState` form. `None` in ⇒ `None` out
+/// (feature off). Logs loudly when the disaster-recovery backdoor is enabled.
+fn parse_reconstructor_pk(
+    hex_opt: &Option<String>,
+) -> Result<Option<Arc<vss_common::sig::PublicKey>>> {
+    let Some(hex_str) = hex_opt.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let raw = hex::decode(hex_str.trim_start_matches("0x"))
+        .map_err(|e| anyhow::anyhow!("reconstructor_pk hex decode: {}", e))?;
+    let pk = vss_common::sig::PublicKey::from_bytes(&raw)
+        .map_err(|e| anyhow::anyhow!("reconstructor_pk decode: {:#}", e))?;
+    wlog!(
+        "network-node: RECONSTRUCTION ENABLED — this node will release raw scalar shares to \
+         requests signed by reconstructor_pk (scheme={})",
+        pk.scheme()
+    );
+    Ok(Some(Arc::new(pk)))
+}
+
+/// Best-effort fetch of the ACE chain id from the deployment fullnode, for the
+/// reconstruction domain check. Logs and returns `None` on failure (the check
+/// then falls back to `ace_addr` + signature-only separation).
+async fn fetch_ace_chain_id(rpc: &AptosRpc) -> Option<u8> {
+    match rpc.get_chain_id().await {
+        Ok(id) => Some(id),
+        Err(e) => {
+            wlog!(
+                "network-node: could not fetch ACE chain_id for reconstruction domain check: {:#}",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Parse a normalized ACE address (`0x`-prefixed 64-hex) into `[u8; 32]` for the
+/// reconstruction domain check. Returns `None` for an empty/missing address.
+fn parse_ace_addr_opt(ace_addr: &str) -> Option<[u8; 32]> {
+    let raw = ace_addr.trim().trim_start_matches("0x");
+    if raw.is_empty() {
+        return None;
+    }
+    let bytes = hex::decode(raw).ok()?;
+    bytes.try_into().ok()
 }
 
 // ── Maintainer / monolith ─────────────────────────────────────────────────────
@@ -382,6 +456,14 @@ async fn run_with_maintainer(
 
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
+        let reconstructor_pk = parse_reconstructor_pk(&h.reconstructor_pk)?;
+        // Fetch the ACE chain id for the reconstruction domain check (only when the
+        // feature is on — avoids a startup RPC for nodes that don't need it).
+        let recon_chain_id = if reconstructor_pk.is_some() {
+            fetch_ace_chain_id(&rpc).await
+        } else {
+            None
+        };
         let max_concurrent = resolve_max_concurrent(h.max_concurrent);
         let mut dependencies = vec![deployment_dependency.clone()];
         dependencies.extend(http_server::chain_rpc_dependency_targets(&h.chain_rpc));
@@ -397,6 +479,9 @@ async fn run_with_maintainer(
             concurrency: Arc::new(Semaphore::new(max_concurrent)),
             pke_dk_bytes: pke_dk_bytes.clone(),
             status,
+            reconstructor_pk,
+            ace_addr: parse_ace_addr_opt(&ace),
+            chain_id: recon_chain_id,
         };
         if let Some(admin_port) = admin_status_port(h.port) {
             tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));
@@ -698,12 +783,24 @@ async fn run_handler(
     port: u16,
     chain_rpc: ChainRpcConfig,
     max_concurrent: Option<usize>,
+    reconstructor_pk_hex: Option<String>,
+    ace_addr: String,
+    ace_deployment_api: String,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     wlog!(
         "network-node: starting handler-only (maintainer_url={})",
         maintainer_url
     );
+    let reconstructor_pk = parse_reconstructor_pk(&reconstructor_pk_hex)?;
+    let ace_addr = parse_ace_addr_opt(&ace_addr);
+    // Fetch the ACE chain id for the reconstruction domain check (only when the
+    // feature is on and an ACE fullnode URL was supplied).
+    let recon_chain_id = if reconstructor_pk.is_some() && !ace_deployment_api.trim().is_empty() {
+        fetch_ace_chain_id(&AptosRpc::new(ace_deployment_api)).await
+    } else {
+        None
+    };
     let pke_dk_bytes: Arc<Vec<u8>> = {
         let raw = pke_dk.trim().trim_start_matches("0x");
         Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
@@ -726,6 +823,9 @@ async fn run_handler(
         concurrency: Arc::new(Semaphore::new(max_concurrent_requests)),
         pke_dk_bytes,
         status,
+        reconstructor_pk,
+        ace_addr,
+        chain_id: recon_chain_id,
     };
     if let Some(admin_port) = admin_status_port(port) {
         tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));

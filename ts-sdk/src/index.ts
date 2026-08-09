@@ -23,6 +23,12 @@ export { Result } from "./result";
 // Public Key Encryption
 export * as pke from "./pke";
 
+// Generic (scheme-tagged) signatures
+export * as sig from "./sig";
+
+// Disaster-recovery master-secret reconstruction (admin-side)
+export * as adminRecovery from "./admin-recovery";
+
 // Shared types
 export { AceDeployment, ContractID } from "./_internal/common";
 

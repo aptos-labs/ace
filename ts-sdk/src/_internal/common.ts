@@ -519,6 +519,7 @@ export class DecryptionBasicFlowRequest {
 //   0 = DecryptionBasicFlow
 //   1 = DecryptionCustomFlow
 //   2 = ThresholdVrf
+//   3 = Reconstruction  (disaster-recovery; see ts-sdk/src/admin-recovery)
 
 interface SerializableWorkerRequest {
     serialize(serializer: Serializer): void;
@@ -528,6 +529,7 @@ export class WorkerRequest {
     static readonly SCHEME_DECRYPTION_BASIC_FLOW = 0;
     static readonly SCHEME_DECRYPTION_CUSTOM_FLOW = 1;
     static readonly SCHEME_THRESHOLD_VRF = 2;
+    static readonly SCHEME_RECONSTRUCTION = 3;
 
     scheme: number;
     /** The scheme-specific request body. `scheme` discriminates which class
@@ -575,6 +577,13 @@ export class WorkerRequest {
     static newThresholdVrf(request: SerializableWorkerRequest): WorkerRequest {
         return new WorkerRequest(
             WorkerRequest.SCHEME_THRESHOLD_VRF,
+            request,
+        );
+    }
+
+    static newReconstruction(request: SerializableWorkerRequest): WorkerRequest {
+        return new WorkerRequest(
+            WorkerRequest.SCHEME_RECONSTRUCTION,
             request,
         );
     }

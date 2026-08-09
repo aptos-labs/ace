@@ -169,6 +169,9 @@ mod tests {
             concurrency: Arc::new(Semaphore::new(1)),
             pke_dk_bytes: Arc::new(Vec::new()),
             status: node_status(),
+            reconstructor_pk: None,
+            ace_addr: None,
+            chain_id: None,
         }
     }
 

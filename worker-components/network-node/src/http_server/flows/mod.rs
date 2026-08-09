@@ -3,6 +3,7 @@
 
 mod basic;
 mod custom;
+mod reconstruction;
 mod timing;
 mod vrf;
 mod vrf_share;
@@ -11,6 +12,7 @@ use super::outcome::{Outcome, Reason};
 
 pub(crate) use basic::handle_basic_flow;
 pub(crate) use custom::handle_custom_flow;
+pub(crate) use reconstruction::handle_reconstruction;
 pub(crate) use vrf::handle_threshold_vrf;
 
 fn forbidden(e: anyhow::Error) -> Outcome {

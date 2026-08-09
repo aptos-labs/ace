@@ -69,6 +69,11 @@ struct RunArgs {
     /// PKE decryption key hex (0x prefix optional).
     #[arg(long, default_value = "")]
     pke_dk: String,
+    /// Optional disaster-recovery reconstructor public key: hex of the BCS-serialized
+    /// generic `sig::PublicKey`. When set, this node answers signed reconstruction
+    /// requests by releasing its raw scalar share. Leave unset to disable the feature.
+    #[arg(long)]
+    reconstructor_pk: Option<String>,
 
     // ── HTTP-server port (all modes) ─────────────────────────────────────────
     /// TCP port. In monolith and handler modes serves `POST /` (user requests);
@@ -120,6 +125,7 @@ struct RunArgs {
 struct EnvConfig {
     account_sk: Option<String>,
     pke_dk: Option<String>,
+    reconstructor_pk: Option<String>,
     deployment_api_key: Option<String>,
     deployment_gas_key: Option<String>,
     aptos_mainnet_api_key: Option<String>,
@@ -175,6 +181,11 @@ impl RunArgs {
         self.account_sk =
             string_or_env_or_config(self.account_sk, "ACE_ACCOUNT_SK", cfg.account_sk.clone());
         self.pke_dk = string_or_env_or_config(self.pke_dk, "ACE_PKE_DK", cfg.pke_dk.clone());
+        self.reconstructor_pk = option_or_env_or_config(
+            self.reconstructor_pk,
+            "ACE_RECONSTRUCTOR_PK",
+            cfg.reconstructor_pk.clone(),
+        );
         self.aptos_mainnet_apikey = option_or_env_or_config(
             self.aptos_mainnet_apikey,
             "ACE_APTOS_MAINNET_APIKEY",
@@ -279,6 +290,7 @@ async fn main() {
                         port: p,
                         chain_rpc: build_chain_rpc(&args),
                         max_concurrent: args.max_concurrent,
+                        reconstructor_pk: args.reconstructor_pk.clone(),
                     }),
                 },
                 CliMode::Maintainer => network_node::Mode::Maintainer {
@@ -291,6 +303,10 @@ async fn main() {
                     port: require("port", args.port),
                     chain_rpc: build_chain_rpc(&args),
                     max_concurrent: args.max_concurrent,
+                    reconstructor_pk: args.reconstructor_pk.clone(),
+                    // Optional in handler mode; enable the reconstruction domain check.
+                    ace_addr: args.ace_deployment_addr.clone(),
+                    ace_deployment_api: args.ace_deployment_api.clone(),
                 },
             };
 

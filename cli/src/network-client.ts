@@ -100,6 +100,15 @@ export class NetworkClient {
         return this.account?.accountAddress.toStringLong();
     }
 
+    async getChainId(): Promise<number> {
+        const info = await this.aptos.getLedgerInfo();
+        return Number((info as { chain_id: number }).chain_id);
+    }
+
+    static fromDeployment(dep: { rpcUrl: string; aceAddr: string; sharedNodeApiKey?: string }): NetworkClient {
+        return new NetworkClient(dep.rpcUrl, dep.aceAddr, dep.sharedNodeApiKey);
+    }
+
     async getNetworkState(): Promise<aceNetwork.State> {
         const [hex] = await this.aptos.view({
             payload: {

@@ -17,6 +17,8 @@ import { deploymentListCommand, deploymentDeleteCommand, deploymentDefaultComman
 import { updateContractsCommand } from './commands/update-contracts.js';
 import { deploymentEditCommand } from './commands/deployment-edit.js';
 import { deploymentNewCommand } from './commands/deployment-new.js';
+import { reconstructionSetupCommand } from './commands/reconstruction-setup.js';
+import { reconstructSecretCommand } from './commands/reconstruct-secret.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
@@ -103,6 +105,33 @@ deploymentCmd
     .action(async (opts: { profile?: string; account?: string }) => {
         try {
             await deploymentEditCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('reconstruction-setup')
+    .description('Enable disaster-recovery reconstruction: generate a reconstructor key and push it to all nodes')
+    .option('-p, --profile <alias>', 'Deployment profile alias to use')
+    .option('-a, --account <addr>', 'Admin account address of the profile to use')
+    .action(async (opts: { profile?: string; account?: string }) => {
+        try {
+            await reconstructionSetupCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+deploymentCmd
+    .command('reconstruct-secret')
+    .description('Disaster recovery: collect ≥t shares from the committee and reveal a master secret')
+    .option('-p, --profile <alias>', 'Deployment profile alias to use')
+    .option('-a, --account <addr>', 'Admin account address of the profile to use')
+    .option('-k, --keypair <id>', 'Keypair id to reconstruct (interactive picker if omitted)')
+    .action(async (opts: { profile?: string; account?: string; keypair?: string }) => {
+        try {
+            await reconstructSecretCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

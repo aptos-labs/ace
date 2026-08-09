@@ -7,6 +7,7 @@ pub(crate) enum Flow {
     Basic,
     Custom,
     ThresholdVrf,
+    Reconstruction,
 }
 
 impl Flow {
@@ -16,6 +17,7 @@ impl Flow {
             Flow::Basic => "basic",
             Flow::Custom => "custom",
             Flow::ThresholdVrf => "threshold_vrf",
+            Flow::Reconstruction => "reconstruction",
         }
     }
 }

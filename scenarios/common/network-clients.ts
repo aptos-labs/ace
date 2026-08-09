@@ -59,6 +59,9 @@ export type NetworkNodeSpawnInput = {
     aceDeploymentApi?: string;
     /** TCP port for the UserRequestHandler HTTP server. */
     port?: number;
+    /** Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
+     *  When set, the node is launched with `--reconstructor-pk`. */
+    reconstructorPk?: string;
 };
 
 /**
@@ -83,6 +86,9 @@ export function spawnNetworkNode(opts: NetworkNodeSpawnInput): ChildProcess {
         '--account-sk', `0x${pkHex}`,
         '--pke-dk', pkeDkHex,
     ];
+    if (opts.reconstructorPk) {
+        args.push('--reconstructor-pk', opts.reconstructorPk);
+    }
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));
     }
@@ -144,6 +150,10 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
             '--mode', 'handler',
             '--maintainer-url', `http://127.0.0.1:${opts.maintainerPort}/secrets`,
             '--pke-dk', pkeDkHex,
+            // Handler serves reconstruction; give it the pk + ace addr (domain check).
+            ...(opts.reconstructorPk
+                ? ['--reconstructor-pk', opts.reconstructorPk, '--ace-deployment-addr', opts.aceDeploymentAddr]
+                : []),
             '--port', String(opts.port),
         ],
         `ace-node-handler-${accountAddr}`,
@@ -186,6 +196,7 @@ export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess
             aceDeploymentApi: opts.aceDeploymentApi,
             port: handlerPort,
             maintainerPort: opts.workerBasePort + offset + opts.index,
+            reconstructorPk: opts.reconstructorPk,
         });
         return [maintainer, handler];
     }
@@ -195,6 +206,7 @@ export function spawnNetworkNodeMaybeSplit(opts: WorkerSpawnInput): ChildProcess
         aceDeploymentAddr: opts.aceDeploymentAddr,
         aceDeploymentApi: opts.aceDeploymentApi,
         port: handlerPort,
+        reconstructorPk: opts.reconstructorPk,
     })];
 }
 

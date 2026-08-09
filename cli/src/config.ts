@@ -82,6 +82,13 @@ export interface TrackedDeployment {
     adminPrivateKey:   string;       // 0x-prefixed hex
     sharedNodeApiKey?: string;
     gasStationApiKey?: string;
+    /**
+     * Disaster-recovery reconstructor signing key: hex of the BCS-serialized generic
+     * `sig::SigningKey` (scheme-tagged). Set by `ace deployment reconstruction-setup`; its
+     * public counterpart is pushed to every node as `--reconstructor-pk`. Local-only; holding it
+     * (plus ≥t cooperating nodes) reconstructs a master secret, so treat it like `adminPrivateKey`.
+     */
+    reconstructorKey?: string;
     alias?:            string;
     /** One of `mainnet | testnet | devnet | localnet | shelbynet | shelby-private-beta | custom`. Tags the deployment for display. */
     network?:          string;
@@ -116,6 +123,12 @@ export interface TrackedNode {
     local?:         LocalConfig;
     gasStationKey?: string;
     chainRpc?:      ChainRpcOverrides;
+    /**
+     * Disaster-recovery reconstructor public key: hex of the BCS-serialized generic `sig::PublicKey`.
+     * When set, the node is launched with `--reconstructor-pk` and will answer reconstruction
+     * requests signed by the matching key. Pushed by `ace deployment reconstruction-setup`.
+     */
+    reconstructorPk?: string;
 }
 
 /** Helper: read the mode of a tracked node, defaulting to `monolith`. */

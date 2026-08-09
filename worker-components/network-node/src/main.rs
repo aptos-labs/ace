@@ -304,8 +304,9 @@ async fn main() {
                     chain_rpc: build_chain_rpc(&args),
                     max_concurrent: args.max_concurrent,
                     reconstructor_pk: args.reconstructor_pk.clone(),
-                    // Optional in handler mode; enables the reconstruction domain check.
+                    // Optional in handler mode; enable the reconstruction domain check.
                     ace_addr: args.ace_deployment_addr.clone(),
+                    ace_deployment_api: args.ace_deployment_api.clone(),
                 },
             };
 

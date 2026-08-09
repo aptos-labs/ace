@@ -70,22 +70,24 @@ describe("admin-recovery reconstruction", () => {
         expect(bytes[0]).toBe(3);
     });
 
-    it("ReconstructionResponse round-trips and the share decrypts", async () => {
+    it("ReconstructionResponse: whole response is encrypted, then parses", async () => {
         const eph = await pke.keygen();
         const scalar = numberToBytesLE(123456789n, 32);
-        const ct = await pke.encrypt({ encryptionKey: eph.encryptionKey, plaintext: scalar });
 
-        // Build BCS(ReconstructionResponse { eval_point, group_scheme, ct }).
-        const s = new Serializer();
-        s.serializeU64(3n); // eval_point
-        s.serializeU8(1); // group_scheme (G2)
-        ct.serialize(s);
+        // Worker builds BCS(ReconstructionResponse { eval_point, group_scheme, scalar_le32 })
+        // then PKE-encrypts the WHOLE thing to the ephemeral key (nothing in the clear).
+        const inner = new Serializer();
+        inner.serializeU64(3n); // eval_point
+        inner.serializeU8(1); // group_scheme (G2)
+        inner.serializeFixedBytes(scalar); // scalar_le32: [u8; 32], no length prefix
+        const ct = await pke.encrypt({ encryptionKey: eph.encryptionKey, plaintext: inner.toUint8Array() });
 
-        const parsed = parseReconstructionResponse(s.toUint8Array());
+        // Client decrypts the whole response, then parses.
+        const plain = (await pke.decrypt({ decryptionKey: eph.decryptionKey, ciphertext: ct })).okValue!;
+        const parsed = parseReconstructionResponse(plain);
         expect(parsed.evalPoint).toBe(3n);
         expect(parsed.groupScheme).toBe(1);
-        const plain = (await pke.decrypt({ decryptionKey: eph.decryptionKey, ciphertext: parsed.ct })).okValue!;
-        expect(bytesToHex(plain)).toBe(bytesToHex(scalar));
+        expect(bytesToHex(parsed.scalar)).toBe(bytesToHex(scalar));
     });
 
     it("lagrangeAtZero recovers the secret from t-of-n shares", () => {

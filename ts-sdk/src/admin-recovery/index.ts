@@ -15,7 +15,7 @@
 //! standard encrypted `POST /` channel via `WorkerRequest` variant 3.
 
 import { AccountAddress, Deserializer, Serializer } from "@aptos-labs/ts-sdk";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
+import { bytesToHex } from "@noble/hashes/utils";
 import { bytesToNumberLE, numberToBytesLE } from "@noble/curves/utils";
 
 import * as pke from "../pke";
@@ -69,21 +69,24 @@ export class ReconstructionRequest {
     }
 }
 
+/** The decrypted reconstruction response (the whole struct is PKE-encrypted on
+ *  the wire; this is what you get after decrypting with the ephemeral key). */
 export interface ReconstructionResponse {
     evalPoint: bigint;
     groupScheme: number;
-    ct: pke.Ciphertext;
+    /** Raw 32-byte LE Fr scalar — the node's Shamir share. */
+    scalar: Uint8Array;
 }
 
+/** Parse the *decrypted* response bytes (`bcs(ReconstructionResponse)`). Field
+ *  order/encoding must match the Rust `ReconstructionResponse` struct. */
 export function parseReconstructionResponse(bytes: Uint8Array): ReconstructionResponse {
     const d = new Deserializer(bytes);
     const evalPoint = d.deserializeU64();
     const groupScheme = d.deserializeU8();
-    const ct = pke.Ciphertext.deserialize(d).unwrapOrThrow(
-        "parseReconstructionResponse: ciphertext",
-    );
+    const scalar = d.deserializeFixedBytes(32); // Rust [u8; 32] → 32 raw bytes
     if (d.remaining() !== 0) throw new Error("parseReconstructionResponse: trailing bytes");
-    return { evalPoint, groupScheme, ct };
+    return { evalPoint, groupScheme, scalar };
 }
 
 export interface ReconstructResult {
@@ -165,18 +168,24 @@ export async function reconstructSecret({
                         log(`  node ${addrStr} (${endpoint}): HTTP ${resp.status} — ${body.trim().slice(0, 120)}`);
                         return null;
                     }
-                    // Body is hex(BCS(ReconstructionResponse)); the raw scalar is inside `ct`.
-                    const r = parseReconstructionResponse(hexToBytes((await resp.text()).trim()));
-                    const scalarBytes = (
-                        await pke.decrypt({ decryptionKey: eph.decryptionKey, ciphertext: r.ct })
-                    ).okValue;
-                    if (!scalarBytes) {
-                        log(`  node ${addrStr}: share decryption failed`);
+                    // Body is hex(BCS(pke::Ciphertext)) over the whole encrypted
+                    // response. Decrypt, then parse {eval_point, group_scheme, scalar}.
+                    const respCt = pke.Ciphertext.fromHex((await resp.text()).trim());
+                    if (!respCt.isOk) {
+                        log(`  node ${addrStr}: response ciphertext parse failed`);
                         return null;
                     }
+                    const plain = (
+                        await pke.decrypt({ decryptionKey: eph.decryptionKey, ciphertext: respCt.okValue! })
+                    ).okValue;
+                    if (!plain) {
+                        log(`  node ${addrStr}: response decryption failed`);
+                        return null;
+                    }
+                    const r = parseReconstructionResponse(plain);
                     log(`  node ${addrStr}: OK (eval_point=${r.evalPoint})`);
                     // The share is 32-byte little-endian Fr.
-                    return { x: r.evalPoint, y: bytesToNumberLE(scalarBytes) };
+                    return { x: r.evalPoint, y: bytesToNumberLE(r.scalar) };
                 } catch (e) {
                     log(`  node ${addrStr}: error — ${e}`);
                     return null;

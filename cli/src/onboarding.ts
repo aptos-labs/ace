@@ -404,9 +404,14 @@ export function gcpDeployCmdMicroservices(
     const handlerArgsAfterUrl = [
         `--port=8080`,
         // The handler serves reconstruction requests; give it the reconstructor
-        // pk and the ACE address (for the domain check). Both are public.
+        // pk, the ACE address, and the ACE fullnode URL (to fetch chain id) for
+        // the domain check. All public.
         ...(node.reconstructorPk
-            ? [`--ace-deployment-addr=${aceAddr}`, `--reconstructor-pk=${node.reconstructorPk}`]
+            ? [
+                `--ace-deployment-addr=${aceAddr}`,
+                `--ace-deployment-api=${rpcUrl}`,
+                `--reconstructor-pk=${node.reconstructorPk}`,
+            ]
             : []),
         ...chainRpcArgs(chainRpc, { includeSecrets: false }),
     ];

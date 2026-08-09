@@ -171,6 +171,7 @@ mod tests {
             status: node_status(),
             reconstructor_pk: None,
             ace_addr: None,
+            chain_id: None,
         }
     }
 

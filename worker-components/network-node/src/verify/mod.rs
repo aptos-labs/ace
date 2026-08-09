@@ -160,15 +160,18 @@ pub struct ReconstructionRequestPayload {
     pub eph_pke_ek: EncryptionKey,
 }
 
-/// What the node returns (encrypted transport is the `ct`). `eval_point` and
-/// `group_scheme` let the reconstructor Lagrange-interpolate without any chain
-/// read.
+/// What the node returns to the reconstructor. The **entire** struct is
+/// BCS-encoded and then PKE-encrypted to `eph_pke_ek` (see
+/// `http_server/flows/reconstruction.rs`), so `eval_point` / `group_scheme` are
+/// not exposed in the clear either — the HTTP body is just a `pke::Ciphertext`.
+/// `eval_point` and `group_scheme` let the reconstructor Lagrange-interpolate
+/// without any chain read.
 #[derive(Serialize, Deserialize)]
 pub struct ReconstructionResponse {
     pub eval_point: u64,
     pub group_scheme: u8,
-    /// `pke_encrypt(eph_pke_ek, scalar_le32)` — the node's raw 32-byte Shamir share.
-    pub ct: vss_common::pke::Ciphertext,
+    /// The node's raw 32-byte LE Fr Shamir share.
+    pub scalar_le32: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]

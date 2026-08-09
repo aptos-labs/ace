@@ -132,19 +132,20 @@ async fn reconstruction_serves_raw_share_to_valid_signature() {
     let (eph_ek, eph_dk_bytes) = eph_pke_keypair();
     let req = signed_reconstruction_request(&sk, kp_bytes, epoch, eph_ek);
 
-    let state = app_state_with_reconstructor(Some(pk), Some([9u8; 32]));
+    let state = app_state_with_reconstructor(Some(pk), Some([9u8; 32]), Some(4));
     let mut ctx = RequestContext::default();
     let outcome = handle_reconstruction(&state, &snapshot, req, &mut ctx).await;
 
     let Outcome::Ok { share_hex } = outcome else {
         panic!("expected Ok, got rejection");
     };
-    let resp: ReconstructionResponse =
-        bcs::from_bytes(&hex::decode(share_hex).unwrap()).unwrap();
+    // Body is hex(BCS(pke::Ciphertext)) over the whole encrypted response.
+    let resp_ct: pke::Ciphertext = bcs::from_bytes(&hex::decode(share_hex).unwrap()).unwrap();
+    let plaintext = pke::pke_decrypt(&eph_dk_bytes, &resp_ct).unwrap();
+    let resp: ReconstructionResponse = bcs::from_bytes(&plaintext).unwrap();
     assert_eq!(resp.eval_point, 3);
     assert_eq!(resp.group_scheme, SCHEME_BLS12381G2);
-    let plaintext = pke::pke_decrypt(&eph_dk_bytes, &resp.ct).unwrap();
-    assert_eq!(plaintext, scalar.to_vec(), "decrypted share must equal the raw scalar");
+    assert_eq!(resp.scalar_le32, scalar, "decrypted share must equal the raw scalar");
 }
 
 #[tokio::test]
@@ -169,7 +170,7 @@ async fn reconstruction_rejects_wrong_signature() {
     let (eph_ek, _) = eph_pke_keypair();
     let req = signed_reconstruction_request(&attacker_sk, kp_bytes, epoch, eph_ek);
 
-    let state = app_state_with_reconstructor(Some(pk), Some([9u8; 32])); // node trusts the honest key
+    let state = app_state_with_reconstructor(Some(pk), Some([9u8; 32]), Some(4)); // node trusts the honest key
     let mut ctx = RequestContext::default();
     let outcome = handle_reconstruction(&state, &snapshot, req, &mut ctx).await;
 
@@ -200,13 +201,44 @@ async fn reconstruction_rejects_ace_addr_mismatch() {
     // Request is validly signed and names ace_addr = [9u8;32]...
     let req = signed_reconstruction_request(&sk, kp_bytes, epoch, eph_ek);
     // ...but this node belongs to a different deployment.
-    let state = app_state_with_reconstructor(Some(pk), Some([0xEE; 32]));
+    let state = app_state_with_reconstructor(Some(pk), Some([0xEE; 32]), Some(4));
     let mut ctx = RequestContext::default();
     let outcome = handle_reconstruction(&state, &snapshot, req, &mut ctx).await;
 
     assert!(
         matches!(outcome, Outcome::Rejected { reason: Reason::Forbidden, .. }),
         "ace_addr mismatch must be Forbidden"
+    );
+}
+
+#[tokio::test]
+async fn reconstruction_rejects_chain_id_mismatch() {
+    let (sk, pk) = reconstructor_keypair(3);
+    let kp_bytes = [0xAB; 32];
+    let epoch = 5;
+    let keypair_id = super::shares::keypair_id_str(&kp_bytes);
+    let snapshot = snapshot_with_share(
+        &keypair_id,
+        epoch,
+        ShareEntry {
+            scalar_le32: [0x42u8; 32],
+            group_scheme: SCHEME_BLS12381G2,
+            expected_usage: secret_usage::USAGE_BFIBE_BLS12381_SHORTSIG_AEAD,
+            eval_point: 3,
+            note: "test".to_string(),
+        },
+    );
+    let (eph_ek, _) = eph_pke_keypair();
+    // Request is validly signed with ace_addr [9u8;32] and chain_id 4...
+    let req = signed_reconstruction_request(&sk, kp_bytes, epoch, eph_ek);
+    // ...but this node is on a different chain (chain_id 2), same ace_addr.
+    let state = app_state_with_reconstructor(Some(pk), Some([9u8; 32]), Some(2));
+    let mut ctx = RequestContext::default();
+    let outcome = handle_reconstruction(&state, &snapshot, req, &mut ctx).await;
+
+    assert!(
+        matches!(outcome, Outcome::Rejected { reason: Reason::Forbidden, .. }),
+        "chain_id mismatch must be Forbidden"
     );
 }
 
@@ -230,7 +262,7 @@ async fn reconstruction_disabled_when_no_reconstructor_pk() {
     let (eph_ek, _) = eph_pke_keypair();
     let req = signed_reconstruction_request(&sk, kp_bytes, epoch, eph_ek);
 
-    let state = app_state_with_reconstructor(None, None); // feature off
+    let state = app_state_with_reconstructor(None, None, None); // feature off
     let mut ctx = RequestContext::default();
     let outcome = handle_reconstruction(&state, &snapshot, req, &mut ctx).await;
 

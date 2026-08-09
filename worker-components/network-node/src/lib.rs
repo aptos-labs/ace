@@ -200,6 +200,9 @@ pub enum Mode {
         /// ACE contract address (may be empty in handler-only mode); used for the
         /// reconstruction domain check when reconstruction is enabled.
         ace_addr: String,
+        /// ACE deployment fullnode URL; used to fetch the chain id for the
+        /// reconstruction domain check when reconstruction is enabled.
+        ace_deployment_api: String,
     },
 }
 
@@ -332,6 +335,7 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
             max_concurrent,
             reconstructor_pk,
             ace_addr,
+            ace_deployment_api,
         } => {
             run_handler(
                 maintainer_url,
@@ -341,6 +345,7 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
                 max_concurrent,
                 reconstructor_pk,
                 ace_addr,
+                ace_deployment_api,
                 shutdown_rx,
             )
             .await
@@ -367,6 +372,22 @@ fn parse_reconstructor_pk(
         pk.scheme()
     );
     Ok(Some(Arc::new(pk)))
+}
+
+/// Best-effort fetch of the ACE chain id from the deployment fullnode, for the
+/// reconstruction domain check. Logs and returns `None` on failure (the check
+/// then falls back to `ace_addr` + signature-only separation).
+async fn fetch_ace_chain_id(rpc: &AptosRpc) -> Option<u8> {
+    match rpc.get_chain_id().await {
+        Ok(id) => Some(id),
+        Err(e) => {
+            wlog!(
+                "network-node: could not fetch ACE chain_id for reconstruction domain check: {:#}",
+                e
+            );
+            None
+        }
+    }
 }
 
 /// Parse a normalized ACE address (`0x`-prefixed 64-hex) into `[u8; 32]` for the
@@ -436,6 +457,13 @@ async fn run_with_maintainer(
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
         let reconstructor_pk = parse_reconstructor_pk(&h.reconstructor_pk)?;
+        // Fetch the ACE chain id for the reconstruction domain check (only when the
+        // feature is on — avoids a startup RPC for nodes that don't need it).
+        let recon_chain_id = if reconstructor_pk.is_some() {
+            fetch_ace_chain_id(&rpc).await
+        } else {
+            None
+        };
         let max_concurrent = resolve_max_concurrent(h.max_concurrent);
         let mut dependencies = vec![deployment_dependency.clone()];
         dependencies.extend(http_server::chain_rpc_dependency_targets(&h.chain_rpc));
@@ -453,6 +481,7 @@ async fn run_with_maintainer(
             status,
             reconstructor_pk,
             ace_addr: parse_ace_addr_opt(&ace),
+            chain_id: recon_chain_id,
         };
         if let Some(admin_port) = admin_status_port(h.port) {
             tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));
@@ -756,6 +785,7 @@ async fn run_handler(
     max_concurrent: Option<usize>,
     reconstructor_pk_hex: Option<String>,
     ace_addr: String,
+    ace_deployment_api: String,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     wlog!(
@@ -764,6 +794,13 @@ async fn run_handler(
     );
     let reconstructor_pk = parse_reconstructor_pk(&reconstructor_pk_hex)?;
     let ace_addr = parse_ace_addr_opt(&ace_addr);
+    // Fetch the ACE chain id for the reconstruction domain check (only when the
+    // feature is on and an ACE fullnode URL was supplied).
+    let recon_chain_id = if reconstructor_pk.is_some() && !ace_deployment_api.trim().is_empty() {
+        fetch_ace_chain_id(&AptosRpc::new(ace_deployment_api)).await
+    } else {
+        None
+    };
     let pke_dk_bytes: Arc<Vec<u8>> = {
         let raw = pke_dk.trim().trim_start_matches("0x");
         Arc::new(hex::decode(raw).map_err(|e| anyhow::anyhow!("pke_dk decode: {}", e))?)
@@ -788,6 +825,7 @@ async fn run_handler(
         status,
         reconstructor_pk,
         ace_addr,
+        chain_id: recon_chain_id,
     };
     if let Some(admin_port) = admin_status_port(port) {
         tokio::spawn(http_server::run_user_admin_server(admin_port, state.clone()));

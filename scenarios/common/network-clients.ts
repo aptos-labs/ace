@@ -150,9 +150,12 @@ export function spawnNetworkNodeSplit(opts: NetworkNodeSplitSpawnInput): {
             '--mode', 'handler',
             '--maintainer-url', `http://127.0.0.1:${opts.maintainerPort}/secrets`,
             '--pke-dk', pkeDkHex,
-            // Handler serves reconstruction; give it the pk + ace addr (domain check).
+            // Handler serves reconstruction; give it the pk + ace addr + ACE
+            // fullnode URL (to fetch chain id) for the domain check.
             ...(opts.reconstructorPk
-                ? ['--reconstructor-pk', opts.reconstructorPk, '--ace-deployment-addr', opts.aceDeploymentAddr]
+                ? ['--reconstructor-pk', opts.reconstructorPk,
+                   '--ace-deployment-addr', opts.aceDeploymentAddr,
+                   '--ace-deployment-api', rpc]
                 : []),
             '--port', String(opts.port),
         ],

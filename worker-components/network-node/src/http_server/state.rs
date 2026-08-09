@@ -27,6 +27,10 @@ pub struct AppState {
     /// without `--ace-deployment-addr`), so it relies on signature-only domain
     /// separation (the reconstructor key is per-deployment).
     pub ace_addr: Option<[u8; 32]>,
+    /// This node's ACE chain id, fetched from the ACE fullnode at startup. Used
+    /// alongside `ace_addr` for the reconstruction domain check. `None` ⇒ the
+    /// chain id couldn't be determined, so that half of the check is skipped.
+    pub chain_id: Option<u8>,
 }
 
 #[derive(Clone)]

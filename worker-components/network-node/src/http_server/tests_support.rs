@@ -43,6 +43,7 @@ fn dummy_chain_rpc() -> ChainRpcConfig {
 pub(crate) fn app_state_with_reconstructor(
     reconstructor_pk: Option<sig::PublicKey>,
     ace_addr: Option<[u8; 32]>,
+    chain_id: Option<u8>,
 ) -> AppState {
     AppState {
         provider: Arc::new(SecretsProvider::Local(LocalSecrets {
@@ -54,6 +55,7 @@ pub(crate) fn app_state_with_reconstructor(
         status: Arc::new(NodeStatus::new(PublicNodeConfig::new("test"), Vec::new())),
         reconstructor_pk: reconstructor_pk.map(Arc::new),
         ace_addr,
+        chain_id,
     }
 }
 

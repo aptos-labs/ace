@@ -19,6 +19,7 @@ import { deploymentEditCommand } from './commands/deployment-edit.js';
 import { deploymentNewCommand } from './commands/deployment-new.js';
 import { reconstructionSetupCommand } from './commands/reconstruction-setup.js';
 import { reconstructSecretCommand } from './commands/reconstruct-secret.js';
+import { ibeEncryptCommand, ibeAdminExtractCommand, ibeAdminDecryptCommand } from './commands/ibe.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
@@ -132,6 +133,67 @@ deploymentCmd
     .action(async (opts: { profile?: string; account?: string; keypair?: string }) => {
         try {
             await reconstructSecretCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// `ace ibe` — t-IBE toolkit (validate a reconstructed master secret; admin decrypt)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const ibeCmd = program.command('ibe').description('t-IBE encrypt / extract / decrypt (reconstruction validation + admin recovery)');
+
+ibeCmd
+    .command('encrypt')
+    .description('IBE-encrypt a message under (base, mpk) to a label/identity')
+    .option('--base-hex <hex>', 'Base point as BCS group-element hex')
+    .option('--base-path <path>', 'Base point as a file of BCS group-element bytes')
+    .option('--mpk-hex <hex>', 'Master public key as BCS group-element hex')
+    .option('--mpk-path <path>', 'Master public key as a file of BCS group-element bytes')
+    .option('--label <str>', 'Identity/label as a string')
+    .option('--label-hex <hex>', 'Identity/label as hex')
+    .option('--label-path <path>', 'Identity/label as a file')
+    .option('--msg <str>', 'Message as a string')
+    .option('--msg-hex <hex>', 'Message as hex')
+    .option('--msg-path <path>', 'Message as a file')
+    .option('--out-path <path>', 'Write ciphertext bytes here (else print hex to stdout)')
+    .action(async (opts) => {
+        try {
+            await ibeEncryptCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+ibeCmd
+    .command('admin-extract')
+    .description('Extract an identity decryption key from a master secret + label')
+    .option('--msk-hex <hex>', 'Master secret (32-byte LE Fr) as hex')
+    .option('--msk-path <path>', 'Master secret as a file of 32 LE bytes')
+    .option('--label <str>', 'Identity/label as a string')
+    .option('--label-hex <hex>', 'Identity/label as hex')
+    .option('--label-path <path>', 'Identity/label as a file')
+    .option('--out-path <path>', 'Write the IDK bytes here (else print hex to stdout)')
+    .action(async (opts) => {
+        try {
+            await ibeAdminExtractCommand(opts);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+ibeCmd
+    .command('admin-decrypt')
+    .description('Decrypt an IBE ciphertext with an extracted identity decryption key')
+    .option('--idk-hex <hex>', 'Identity decryption key as hex')
+    .option('--idk-path <path>', 'Identity decryption key as a file')
+    .option('--ciphertext-hex <hex>', 'Ciphertext as hex')
+    .option('--ciphertext-path <path>', 'Ciphertext as a file')
+    .option('--out-path <path>', 'Write plaintext bytes here (else print decoded string to stdout)')
+    .action(async (opts) => {
+        try {
+            await ibeAdminDecryptCommand(opts);
         } catch (e) {
             exitOnError(e);
         }

@@ -29,6 +29,9 @@ export * as sig from "./sig";
 // Disaster-recovery master-secret reconstruction (admin-side)
 export * as adminRecovery from "./admin-recovery";
 
+// Threshold IBE primitives (encrypt / extract / decrypt) — used by the ibe CLI + validation
+export * as tibe from "./t-ibe";
+
 // Shared types
 export { AceDeployment, ContractID } from "./_internal/common";
 

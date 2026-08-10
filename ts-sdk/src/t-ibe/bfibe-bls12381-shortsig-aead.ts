@@ -328,6 +328,20 @@ export function derivePublicKey(msk: MasterPrivateKey): MasterPublicKey {
     return new MasterPublicKey(msk.base, pk);
 }
 
+/**
+ * Extract the full identity decryption key for `id` from a master-secret scalar.
+ *
+ * This is the single-party (admin / disaster-recovery) counterpart to the
+ * threshold extraction the committee performs: `idk = mskScalar · H_G1(id)`.
+ * It's returned wrapped as a single `IdentityDecryptionKeyShare` at evalPoint 1 —
+ * a one-element share set Lagrange-interpolates to itself (λ = 1), so it can be
+ * fed straight to `decrypt`.
+ */
+export function extract(mskScalar: bigint, id: Uint8Array): IdentityDecryptionKeyShare {
+    const idPoint = bls12_381.G1.hashToCurve(id, { DST: DST_HASH_ID_TO_CURVE }) as unknown as WeierstrassPoint<bigint>;
+    return new IdentityDecryptionKeyShare(1n, idPoint.multiply(mskScalar), undefined);
+}
+
 // ── Encrypt / Decrypt ────────────────────────────────────────────────────────
 
 export function encryptWithRandomness(

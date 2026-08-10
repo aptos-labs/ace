@@ -475,6 +475,26 @@ export function verifyShare({basePoint, sharePk, id, share}: {
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
 
+/**
+ * Extract the full identity decryption key for `id` directly from a master-secret
+ * scalar (`mskScalar`, the little-endian Fr integer). Returns it wrapped as a
+ * single `IdentityDecryptionKeyShare` (usable directly with `decrypt`). This is
+ * the admin / disaster-recovery counterpart to the committee's threshold
+ * extraction. Only the production scheme (shortsig-aead) is supported.
+ */
+export function extract({scheme, mskScalar, id}: {scheme?: number, mskScalar: bigint, id: Uint8Array}): Result<IdentityDecryptionKeyShare> {
+    return Result.capture({
+        recordsExecutionTimeMs: false,
+        task: (_extra) => {
+            const s = scheme ?? SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
+            if (s === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+                return new IdentityDecryptionKeyShare(s, BfibeBls12381ShortSigAead.extract(mskScalar, id));
+            }
+            throw `extract: unsupported scheme ${s} (only shortsig-aead)`;
+        },
+    });
+}
+
 export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionKeyShare[], ciphertext: Ciphertext}): Result<Uint8Array> {
     const task = (_extra: Record<string, any>) => {
         const scheme = ciphertext.scheme;

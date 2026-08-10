@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ace-sdk"
+version = "0.1.1"
+description = "Python SDK for ACE (mirrors @aptos-labs/ace-sdk)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+  "aptos-sdk>=0.11.0",
+  "cryptography>=46.0.0",
+  "PyNaCl>=1.5.0,<2",
+  "py_ecc>=8.0.0",
+  "pyhpke>=0.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ace_sdk"]

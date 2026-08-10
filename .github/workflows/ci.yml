@@ -81,6 +81,29 @@ jobs:
       - name: Test
         run: cargo test
 
+  unit-tests-python:
+    name: Unit tests / Python SDK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Python SDK
+        working-directory: python-sdk
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e '.[dev]'
+      - name: Test
+        working-directory: python-sdk
+        run: |
+          .venv/bin/python -m pytest -q
+          .venv/bin/python -m compileall -q src tests ../scenarios/test-python-sdk-custom-flow.py
+          .venv/bin/python -m pip check
+          .venv/bin/python -m pip wheel . --no-deps -w /tmp/ace-python-sdk-wheel-check
+
   unit-tests-move:
     name: Unit tests / Move
     runs-on: ubuntu-latest
@@ -98,6 +121,25 @@ jobs:
           aptos move test --package-dir contracts/sigma-dlog-linear
           aptos move test --package-dir contracts/pedersen-polynomial-commitment
           aptos move test --package-dir contracts/network
+
+  python-sdk-custom-flow:
+    name: scenario / python-sdk-custom-flow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Install Python SDK
+        working-directory: python-sdk
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e '.[dev]'
+      - name: Run Python custom-flow scenario
+        run: pnpm --filter ace-scenarios test-python-sdk-custom-flow
 
   solana-example:
     name: scenario / solana-example

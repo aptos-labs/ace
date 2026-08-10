@@ -35,6 +35,7 @@
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",
     "test-solana-example": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-solana-example.ts",
     "test-custom-flow-aptos": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-aptos.ts",
+    "test-python-sdk-custom-flow": "../python-sdk/.venv/bin/python test-python-sdk-custom-flow.py",
     "test-custom-flow-solana": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-solana.ts",
     "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
   },

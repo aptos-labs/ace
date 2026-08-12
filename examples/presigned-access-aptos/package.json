@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "monitor:setup": "tsx scripts/monitor-setup.ts",
+    "monitor:run": "tsx scripts/monitor-run.ts",
     "1-setup": "tsx scripts/1-setup.ts",
     "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
     "3-grant": "tsx scripts/3-grant.ts",

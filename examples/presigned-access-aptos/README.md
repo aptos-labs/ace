@@ -198,6 +198,90 @@ pnpm 5-rotate:localnet
 pnpm 6-decrypt-after-rotate:localnet
 ```
 
+## Run as a monitor (headless health probe)
+
+The walkthrough above is interactive and stateful. For an uptime monitor, two
+extra commands strip it down to a **one-time setup** plus a **headless probe**
+that reads only env vars, touches no `data/` files, and exits `0`/`1`.
+
+### One-time: `pnpm monitor:setup`
+
+Run once per target deployment. Interactive: resolves Alice (from
+`ALICE_PRIVATE_KEY_HEX`, else `data/alice.json`, else generated), funds her,
+publishes `presigned_access` if needed, derives the deterministic access key
+via tVRF, and `register`s it on-chain. At the end it prints the exact env block
+`monitor:run` needs.
+
+```bash
+ACE_API_ENDPOINT=https://api.shelbynet.shelby.xyz/v1 \
+ACE_CONTRACT=0x… IBE_KEYPAIR_ID=0x… VRF_KEYPAIR_ID=0x… \
+BLOB_SUFFIX=song-1.mp3 pnpm monitor:setup
+```
+
+Store the printed `ALICE_PRIVATE_KEY_HEX` in a secret manager — the probe must
+load the *same* Alice (the access key derivation is deterministic in her
+address).
+
+### Each cycle: `pnpm monitor:run`
+
+Read-only, **zero on-chain transactions** (no gas). Re-encrypts a fixed
+plaintext, re-derives the same access key, decrypts it against the live worker
+committee, and asserts the round-trip. Exits `0` healthy / `1` unhealthy, and
+emits exactly one structured JSON line — stdout on success, stderr on failure —
+alongside the SDK's per-worker `[decrypt-custom]`/`[tVRF]` lines. On a platform
+like Cloud Run the whole run, *including why it failed*, lands in your logging
+backend.
+
+```bash
+ACE_API_ENDPOINT=https://api.shelbynet.shelby.xyz/v1 \
+ACE_CONTRACT=0x… IBE_KEYPAIR_ID=0x… VRF_KEYPAIR_ID=0x… \
+APP_CONTRACT_ADDR=0x… BLOB_SUFFIX=song-1.mp3 \
+ALICE_PRIVATE_KEY_HEX=0x… pnpm monitor:run
+```
+
+Failure line (single-line; pretty-printed here):
+
+```json
+{ "probe": "presigned-access", "ok": false, "status": "unhealthy",
+  "severity": "ERROR", "reason": "permission-denied", "durationMs": 1446,
+  "message": "…" }
+```
+
+`reason` buckets the cause so you can build a failure-rate-by-cause metric off
+the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `permission-denied`,
+`threshold-not-met`, `decrypt-shares-insufficient`, `chain-read-error`,
+`committee-drift`, `version-mismatch`, `plaintext-mismatch`,
+`chain-id-mismatch`, `keypair-missing`, `config-error`, `unknown`.
+
+### Env reference
+
+| Env | Used by | Required | Default |
+| --- | --- | --- | --- |
+| `ACE_API_ENDPOINT` | both | for custom deployments | testnet public preview |
+| `ACE_CONTRACT` | both | with `IBE`/`VRF` ids | knownDeployments (testnet) |
+| `IBE_KEYPAIR_ID`, `VRF_KEYPAIR_ID` | both | with `ACE_CONTRACT` | knownDeployments (testnet) |
+| `APP_CONTRACT_ADDR` | `monitor:run` | yes | — (setup deploys / prints it) |
+| `ALICE_PRIVATE_KEY_HEX` | `monitor:run` | yes | — (setup prints it) |
+| `APP_MODULE_NAME` | both | no | `presigned_access` |
+| `APP_ORIGIN` | both | no | `https://example.com` |
+| `BLOB_SUFFIX` | both | no | `song-1.mp3` |
+| `EXPECTED_PLAINTEXT` | both | no | demo lyric |
+| `SERVICE_LABEL` | `monitor:run` | no | — (tags the log line) |
+| `EXPECT_CHAIN_ID` / `EXPECT_COMMITTEE_SIZE` / `EXPECT_THRESHOLD` / `EXPECT_CONTRACT_VERSION` | `monitor:run` | no | — (asserted only if set) |
+
+### As a Cloud Run job
+
+The monitor image can be a stock Node image whose command clones this repo and
+runs the probe — nothing bespoke to build or maintain:
+
+```bash
+git clone --depth 1 <repo-url> ace && cd ace && pnpm install && \
+  pnpm --filter presigned-access-aptos monitor:run
+```
+
+Trigger it on a schedule (Cloud Scheduler → Cloud Run job) and alert on the
+job's failure metric or a log-based metric over the `reason` field.
+
 ## Layout
 
 ```

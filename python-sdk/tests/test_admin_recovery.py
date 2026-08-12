@@ -1,31 +1,22 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
-
 from aptos_sdk.account_address import AccountAddress
-from py_ecc.bls.hash_to_curve import hash_to_G1
 
-import ace_sdk
 from ace_sdk import (
     admin_recovery,
-    decryption,
     group,
-    ibe_aptos,
-    known_deployments,
     network,
     pke,
     sig,
-    t_ibe,
-    vrf_aptos,
-    vss,
 )
-from ace_sdk._internal.common import ContractID, FullDecryptionDomain
 from ace_sdk._internal.deployment import AceDeployment
-from ace_sdk._internal import discovery
-from ace_sdk.bcs import Serializer, serialize_account_address
-from ace_sdk.group import bls12381g1, bls12381g2
+from ace_sdk.bcs import Serializer
 from ace_sdk.result import Result
+
+from tests.helpers import AdminRecoveryReader, BytesResponse
+
+
 def test_admin_recovery_wire_formats_match_ts_rust_known_answer() -> None:
     eph_ek = pke.EncryptionKey.from_hex("0120" + "07" * 32).unwrap_or_throw("ek")
     payload = admin_recovery.ReconstructionRequestPayload(
@@ -79,26 +70,20 @@ def test_admin_recovery_reconstruct_secret_with_fake_workers(monkeypatch) -> Non
     )
     node_enc_key, node_dec_key = pke.keygen()
     eph_ek, eph_dk = pke.keygen()
-
-    class FakeReader:
-        def network_state(self):
-            return network.State(
-                epoch=7,
-                epoch_start_time_micros=0,
-                epoch_duration_micros=0,
-                cur_nodes=nodes,
-                cur_threshold=2,
-                secrets=[],
-                proposals=[],
-                epoch_change_info=None,
-            )
-
-        def worker_endpoint(self, addr: str) -> str:
-            return f"https://node-{addr[-1]}.example/"
-
-        def worker_enc_key(self, addr: str):
-            del addr
-            return node_enc_key
+    reader = AdminRecoveryReader(
+        nodes=nodes,
+        node_enc_key=node_enc_key,
+        network_state_value=network.State(
+            epoch=7,
+            epoch_start_time_micros=0,
+            epoch_duration_micros=0,
+            cur_nodes=nodes,
+            cur_threshold=2,
+            secrets=[],
+            proposals=[],
+            epoch_change_info=None,
+        ),
+    )
 
     requests_seen = []
 
@@ -109,21 +94,6 @@ def test_admin_recovery_reconstruct_secret_with_fake_workers(monkeypatch) -> Non
         serializer.serialize_fixed_bytes(scalar.to_bytes(32, "little"))
         return pke.encrypt(eph_ek, serializer.to_bytes()).to_hex()
 
-    class Response:
-        status = 200
-
-        def __init__(self, body: str) -> None:
-            self._body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self):
-            return self._body.encode("utf-8")
-
     def fake_urlopen(request, timeout):
         del timeout
         requests_seen.append(request)
@@ -132,10 +102,10 @@ def test_admin_recovery_reconstruct_secret_with_fake_workers(monkeypatch) -> Non
         plain = pke.decrypt(node_dec_key, ciphertext).unwrap_or_throw("request plain")
         assert plain[0] == admin_recovery.SCHEME_RECONSTRUCTION
         if request.full_url == "https://node-1.example/":
-            return Response(encrypted_response(1, 47))
-        return Response(encrypted_response(2, 52))
+            return BytesResponse(encrypted_response(1, 47).encode("utf-8"))
+        return BytesResponse(encrypted_response(2, 52).encode("utf-8"))
 
-    monkeypatch.setattr(admin_recovery, "get_chain_reader", lambda _deployment: FakeReader())
+    monkeypatch.setattr(admin_recovery, "get_chain_reader", lambda _deployment: reader)
     monkeypatch.setattr(admin_recovery.pke, "keygen", lambda: (eph_ek, eph_dk))
     monkeypatch.setattr(admin_recovery, "fetch_tibe_public_key", lambda **_kwargs: Result.Err("skip"))
     monkeypatch.setattr(admin_recovery, "urlopen", fake_urlopen)

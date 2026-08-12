@@ -1,31 +1,24 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
-
 from aptos_sdk.account_address import AccountAddress
-from py_ecc.bls.hash_to_curve import hash_to_G1
 
-import ace_sdk
 from ace_sdk import (
-    admin_recovery,
     decryption,
     group,
     ibe_aptos,
-    known_deployments,
     network,
     pke,
-    sig,
     t_ibe,
-    vrf_aptos,
-    vss,
 )
 from ace_sdk._internal.common import ContractID, FullDecryptionDomain
 from ace_sdk._internal.deployment import AceDeployment
 from ace_sdk._internal import discovery
-from ace_sdk.bcs import Serializer, serialize_account_address
-from ace_sdk.group import bls12381g1, bls12381g2
-from ace_sdk.result import Result
+from ace_sdk.group import bls12381g2
+
+from tests.helpers import BytesResponse, SessionPksFixture, SingleNodeReader
+
+
 def test_decryption_request_wire_formats_and_webauthn_challenge() -> None:
     eph_ek = pke.EncryptionKey.from_hex("0120" + "07" * 32).unwrap_or_throw("ek")
     keypair_id = AccountAddress.from_str("0x" + "ab" * 32)
@@ -123,48 +116,25 @@ def test_decryption_core_fetches_verified_share_and_decrypts(monkeypatch) -> Non
         share_pks=[group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.pk))],
         result_pk=group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.pk)),
     )
-
-    class FakeReader:
-        def network_state(self):
-            return state
-
-        def session(self, addr: str, is_dkg: bool = True):
-            assert addr == "0x" + keypair_id.address.hex()
-            assert is_dkg is True
-            return session
-
-        def worker_endpoint(self, addr: str) -> str:
-            assert addr == "0x" + node.address.hex()
-            return "https://node.example/"
-
-        def worker_enc_key(self, addr: str):
-            assert addr == "0x" + node.address.hex()
-            return node_ek
+    reader = SingleNodeReader(
+        node=node,
+        node_enc_key=node_ek,
+        session_pks=SessionPksFixture(keypair_id, session),
+        network_state_value=state,
+    )
 
     seen_request_plaintexts = []
-
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self):
-            return pke.encrypt(eph_ek, idk.to_bytes()).to_hex().encode("utf-8")
 
     def fake_urlopen(request, timeout):
         del timeout
         request_ct = pke.Ciphertext.from_hex(request.data.decode("utf-8")).unwrap_or_throw("ct")
         request_plain = pke.decrypt(node_dk, request_ct).unwrap_or_throw("plain")
         seen_request_plaintexts.append(request_plain)
-        return Response()
+        return BytesResponse(pke.encrypt(eph_ek, idk.to_bytes()).to_hex().encode("utf-8"))
 
-    monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: FakeReader())
+    monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: reader)
     monkeypatch.setattr(decryption, "urlopen", fake_urlopen)
-    monkeypatch.setattr(ibe_aptos, "get_chain_reader", lambda _deployment: FakeReader())
+    monkeypatch.setattr(ibe_aptos, "get_chain_reader", lambda _deployment: reader)
 
     request = decryption.DecryptionRequestPayload(
         keypair_id=fdd.keypair_id,

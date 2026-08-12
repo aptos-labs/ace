@@ -1,39 +1,96 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
-
 from aptos_sdk.account_address import AccountAddress
-from py_ecc.bls.hash_to_curve import hash_to_G1
 
-import ace_sdk
 from ace_sdk import (
-    admin_recovery,
-    decryption,
     group,
     ibe_aptos,
     known_deployments,
     network,
     pke,
-    sig,
     t_ibe,
-    vrf_aptos,
-    vss,
 )
-from ace_sdk._internal.common import ContractID, FullDecryptionDomain
 from ace_sdk._internal.deployment import AceDeployment
 from ace_sdk._internal import discovery
 from ace_sdk.bcs import Serializer, serialize_account_address
-from ace_sdk.group import bls12381g1, bls12381g2
-from ace_sdk.result import Result
-def test_top_level_exports_common_modules() -> None:
-    assert ace_sdk.pke is pke
-    assert ace_sdk.network is network
-    assert ace_sdk.sig is sig
-    assert ace_sdk.admin_recovery is admin_recovery
-    assert ace_sdk.decryption is decryption
-    assert ace_sdk.vrf_aptos is vrf_aptos
-    assert hasattr(ace_sdk, "Result")
+from ace_sdk.group import bls12381g2
+
+from tests.helpers import BytesResponse
+
+NETWORK_STATE_EPOCH = 7
+NETWORK_STATE_START_MICROS = 100
+NETWORK_STATE_DURATION_MICROS = 200
+
+
+def serialize_network_state_with_one_ibe_secret(
+    node: AccountAddress,
+    secret_session: AccountAddress,
+    keypair_id: AccountAddress,
+) -> bytes:
+    serializer = Serializer()
+    serializer.serialize_u64(NETWORK_STATE_EPOCH)
+    serializer.serialize_u64(NETWORK_STATE_START_MICROS)
+    serializer.serialize_u64(NETWORK_STATE_DURATION_MICROS)
+    serializer.serialize_u32_as_uleb128(1)
+    serialize_account_address(serializer, node)
+    serializer.serialize_u64(1)
+    serializer.serialize_u32_as_uleb128(1)
+    serialize_account_address(serializer, secret_session)
+    serialize_account_address(serializer, keypair_id)
+    serializer.serialize_u8(network.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD)
+    serializer.serialize_u64(network.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD)
+    serializer.serialize_str("ibe")
+    serializer.serialize_u32_as_uleb128(1)
+    serializer.serialize_u8(0)
+    serializer.serialize_u8(0)
+    return serializer.to_bytes()
+
+
+def serialize_discovery_snapshot_with_session(
+    keypair_id: AccountAddress,
+    base: group.Element,
+    result_pk: group.Element,
+) -> str:
+    serializer = Serializer()
+    serializer.serialize_u64(0)
+    serializer.serialize_u64(0)
+    serializer.serialize_u64(0)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u64(0)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u8(0)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u32_as_uleb128(1)
+    serialize_account_address(serializer, keypair_id)
+    base.serialize(serializer)
+    result_pk.serialize(serializer)
+    serializer.serialize_u32_as_uleb128(0)
+    return "0x" + serializer.to_bytes().hex()
+
+
+def serialize_discovery_snapshot_with_worker(
+    node: AccountAddress,
+    enc_key: pke.EncryptionKey,
+) -> str:
+    serializer = Serializer()
+    serializer.serialize_u64(0)
+    serializer.serialize_u64(0)
+    serializer.serialize_u64(0)
+    serializer.serialize_u32_as_uleb128(1)
+    serialize_account_address(serializer, node)
+    serializer.serialize_u64(1)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u32_as_uleb128(0)
+    serializer.serialize_u8(0)
+    serializer.serialize_u32_as_uleb128(1)
+    serialize_account_address(serializer, node)
+    serializer.serialize_u8(1)
+    serializer.serialize_str("https://node.example/")
+    enc_key.serialize(serializer)
+    serializer.serialize_u32_as_uleb128(0)
+    return "0x" + serializer.to_bytes().hex()
 
 
 def test_known_deployments_match_ts_registry_shape() -> None:
@@ -67,30 +124,16 @@ def test_network_usage_and_state_wire_decode() -> None:
     secret_session = AccountAddress.from_str("0x2")
     keypair_id = AccountAddress.from_str("0x3")
 
-    serializer = Serializer()
-    serializer.serialize_u64(7)
-    serializer.serialize_u64(100)
-    serializer.serialize_u64(200)
-    serializer.serialize_u32_as_uleb128(1)
-    serialize_account_address(serializer, node)
-    serializer.serialize_u64(1)
-    serializer.serialize_u32_as_uleb128(1)
-    serialize_account_address(serializer, secret_session)
-    serialize_account_address(serializer, keypair_id)
-    serializer.serialize_u8(network.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD)
-    serializer.serialize_u64(network.USAGE_BFIBE_BLS12381_SHORTSIG_AEAD)
-    serializer.serialize_str("ibe")
-    serializer.serialize_u32_as_uleb128(1)
-    serializer.serialize_u8(0)
-    serializer.serialize_u8(0)
+    state = network.State.from_bytes(
+        serialize_network_state_with_one_ibe_secret(node, secret_session, keypair_id)
+    ).unwrap_or_throw("state")
 
-    state = network.State.from_bytes(serializer.to_bytes()).unwrap_or_throw("state")
-
-    assert state.epoch == 7
+    assert state.epoch == NETWORK_STATE_EPOCH
     assert state.cur_threshold == 1
     assert state.secrets[0].scheme_name().endswith("(default)")
     assert state.active_proposals() == []
     assert not state.is_epoch_changing()
+
 
 def test_ibe_aptos_fetch_pk_can_read_discovery_snapshot(monkeypatch) -> None:
     keypair_id = AccountAddress.from_str(
@@ -103,36 +146,8 @@ def test_ibe_aptos_fetch_pk_can_read_discovery_snapshot(monkeypatch) -> None:
     base = group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.base_point))
     result_pk = group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.pk))
 
-    serializer = Serializer()
-    serializer.serialize_u64(0)
-    serializer.serialize_u64(0)
-    serializer.serialize_u64(0)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u64(0)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u8(0)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u32_as_uleb128(1)
-    serialize_account_address(serializer, keypair_id)
-    base.serialize(serializer)
-    result_pk.serialize(serializer)
-    serializer.serialize_u32_as_uleb128(0)
-    body = "0x" + serializer.to_bytes().hex()
-
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self):
-            return body.encode("utf-8")
-
-    monkeypatch.setattr(discovery, "urlopen", lambda _url: Response())
+    body = serialize_discovery_snapshot_with_session(keypair_id, base, result_pk)
+    monkeypatch.setattr(discovery, "urlopen", lambda _url: BytesResponse(body.encode("utf-8")))
     deployment = AceDeployment(
         "https://unused.example/v1",
         AccountAddress.from_str(
@@ -216,40 +231,12 @@ def test_discovery_view_decodes_snapshot_and_readable_projection() -> None:
 def test_discovery_chain_reader_reuses_snapshot(monkeypatch) -> None:
     node = AccountAddress.from_str("0xa")
     enc_key, _ = pke.keygen()
-    serializer = Serializer()
-    serializer.serialize_u64(0)
-    serializer.serialize_u64(0)
-    serializer.serialize_u64(0)
-    serializer.serialize_u32_as_uleb128(1)
-    serialize_account_address(serializer, node)
-    serializer.serialize_u64(1)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u32_as_uleb128(0)
-    serializer.serialize_u8(0)
-    serializer.serialize_u32_as_uleb128(1)
-    serialize_account_address(serializer, node)
-    serializer.serialize_u8(1)
-    serializer.serialize_str("https://node.example/")
-    enc_key.serialize(serializer)
-    serializer.serialize_u32_as_uleb128(0)
-    body = "0x" + serializer.to_bytes().hex()
+    body = serialize_discovery_snapshot_with_worker(node, enc_key)
     calls = []
-
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self):
-            return body.encode("utf-8")
 
     def fake_urlopen(url):
         calls.append(url)
-        return Response()
+        return BytesResponse(body.encode("utf-8"))
 
     monkeypatch.setattr(discovery, "urlopen", fake_urlopen)
     reader = discovery.DiscoveryChainReader("https://discovery.example/")

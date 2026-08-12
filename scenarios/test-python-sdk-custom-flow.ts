@@ -24,7 +24,7 @@ import {
     type AptosCustomFlowSetup,
     bringUpAceAndDeployCheckAclDemo,
     prepareEncryptedContent,
-} from './test-custom-flow-aptos';
+} from './custom-flow-aptos/helpers';
 
 const PYTHON_BIN = path.join(REPO_ROOT, 'python-sdk', '.venv', 'bin', 'python');
 const PYTHON_CLIENT = path.join(REPO_ROOT, 'scenarios', 'python-sdk-custom-flow-client.py');
@@ -38,7 +38,7 @@ function accountHex(addr: { toStringLong(): string }): string {
     return addr.toStringLong();
 }
 
-function writePythonFixture(setup: AptosCustomFlowSetup): Promise<string> {
+function writePythonClientInput(setup: AptosCustomFlowSetup): Promise<string> {
     return prepareEncryptedContent(setup).then(fixtures => {
         const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'ace-python-sdk-custom-flow-'));
         const fixturePath = path.join(tmpRoot, 'fixture.json');
@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     let exitCode = 0;
     try {
         setup = await bringUpAceAndDeployCheckAclDemo();
-        fixturePath = await writePythonFixture(setup);
+        fixturePath = await writePythonClientInput(setup);
         await runPythonClient(fixturePath);
         log('\n✅ Python SDK custom-flow scenario passed!\n');
     } catch (err) {

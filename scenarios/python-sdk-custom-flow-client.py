@@ -55,7 +55,6 @@ def main(argv: list[str]) -> int:
     if plaintext != expected:
         raise AssertionError(f"plaintext mismatch: {plaintext!r} != {expected!r}")
 
-    print("python-sdk custom-flow localnet scenario passed")
     return 0
 
 

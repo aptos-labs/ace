@@ -17,6 +17,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import { pke } from '@aptos-labs/ace-sdk';
 import { type ChildProcess } from 'child_process';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 import {
     CHAIN_ID,
@@ -44,7 +45,7 @@ const CHECK_ACL_DEMO_CONTRACT_DIR = path.join(REPO_ROOT, 'scenarios', 'custom-fl
 const NUM_WORKERS = 3;
 const THRESHOLD = 2;
 
-interface AptosCustomFlowSetup {
+export interface AptosCustomFlowSetup {
     localnetProc: ChildProcess;
     nodeProcs: ChildProcess[];
     adminAccount: Account;
@@ -53,7 +54,7 @@ interface AptosCustomFlowSetup {
     keypairId: AccountAddress;
 }
 
-async function main() {
+export async function main() {
     let setup: AptosCustomFlowSetup | undefined;
     const cleanup = () => {
         if (setup) for (const p of setup.nodeProcs) p.kill();
@@ -79,7 +80,7 @@ async function main() {
 /** Bring up Aptos localnet + ACE contracts + workers + initial epoch +
  *  DKG, then deploy `check_acl_demo` and initialize it. Returns
  *  everything the test cases need. */
-async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlowSetup> {
+export async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlowSetup> {
     const localnetProc = await startLocalnet();
     const accounts: Account[] = Array.from({ length: NUM_WORKERS + 1 }, () => Account.generate());
     const encKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => pke.keygen()));
@@ -202,7 +203,7 @@ async function deployAndInitCheckAclDemo(
     log('check_acl_demo deployed and initialized');
 }
 
-interface CustomFlowFixtures {
+export interface CustomFlowFixtures {
     aceDeployment: ACE.AceDeployment;
     keypairId: AccountAddress;
     adminAddr: AccountAddress;
@@ -216,7 +217,7 @@ interface CustomFlowFixtures {
 /** Store an access code on-chain, encrypt a fixed plaintext under
  *  `label`, mint a caller PKE keypair, and bundle everything the test
  *  cases need into a single `CustomFlowFixtures` object. */
-async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<CustomFlowFixtures> {
+export async function prepareEncryptedContent(setup: AptosCustomFlowSetup): Promise<CustomFlowFixtures> {
     const { adminAccount, adminAddr, aceContract, keypairId } = setup;
     const label = new TextEncoder().encode('custom-test-content');
     const correctCode = new TextEncoder().encode('open-sesame');
@@ -320,4 +321,6 @@ async function expectCustomFlowDecryptFails(
     log(`  ✓ ${caseLabel} rejected`);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main();
+}

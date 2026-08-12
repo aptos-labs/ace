@@ -58,6 +58,15 @@ plaintext = t_ibe.decrypt([idk], ciphertext).unwrap_or_throw("decrypt")
 For Aptos app encryption, `ibe_aptos.encrypt` builds the same full decryption
 domain as the TypeScript SDK before t-IBE encryption.
 
+## Benchmarks
+
+The BLS12-381 pairing implementation is pure Python and intentionally kept out
+of the default test suite. Run its opt-in benchmark with:
+
+```bash
+python benchmarks/bench_pairing.py --iterations 5
+```
+
 ## Aptos custom flow
 
 For custom access-control flows, callers provide the application proof payload

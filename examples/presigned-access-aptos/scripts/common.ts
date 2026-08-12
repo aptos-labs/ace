@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as readline from 'readline';
-import { AccountAddress, Aptos, AptosConfig, Network, Serializer } from '@aptos-labs/ts-sdk';
+import { Account, AccountAddress, Aptos, AptosConfig, Network, Serializer } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { bls12_381 } from '@noble/curves/bls12-381';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
@@ -300,4 +300,143 @@ export function aptosFromConfig(cfg: AceConfig): Aptos {
         network,
         fullnode: cfg.apiEndpoint,
     }));
+}
+
+// ── Monitor helpers ──────────────────────────────────────────────────────────
+//
+// Shared between `monitor:setup` (interactive, one-time) and `monitor:run`
+// (headless probe). The tutorial steps above intentionally don't use these — a
+// monitor reads everything from env and touches no `data/` files.
+
+/** Canonical blob_id the contract builds with `create_full_blob_name(signer, suffix)`. */
+export function buildBlobId(ownerAddressLong: string, blobSuffix: string): string {
+    return `@${ownerAddressLong.replace(/^0x/, '')}/${blobSuffix}`;
+}
+
+/** Read `<aceAddr>::network::state_view_v0_bcs` and parse it. */
+export async function fetchNetworkState(aptos: Aptos, aceContractAddr: string): Promise<ACE.network.State> {
+    const [hex] = await aptos.view({
+        payload: {
+            function: `${aceContractAddr}::network::state_view_v0_bcs` as `${string}::${string}::${string}`,
+            typeArguments: [],
+            functionArguments: [],
+        },
+    });
+    return ACE.network.State
+        .fromBytes(new Uint8Array(Buffer.from((hex as string).replace(/^0x/, ''), 'hex')))
+        .unwrapOrThrow('Failed to parse ACE network state');
+}
+
+/** Deployed Move version of the `Network` package, or null on any failure. */
+export async function fetchContractVersion(aptos: Aptos, aceContractAddr: string): Promise<string | null> {
+    try {
+        const resource = await aptos.getAccountResource({
+            accountAddress: AccountAddress.fromString(aceContractAddr),
+            resourceType: '0x1::code::PackageRegistry',
+        });
+        const packages = (resource as { packages?: Array<{ name: string; manifest: string }> }).packages ?? [];
+        const pkg = packages.find(p => p.name === 'Network');
+        if (!pkg?.manifest) return null;
+        const zlib = await import('zlib');
+        const toml = zlib.gunzipSync(Buffer.from(pkg.manifest.replace(/^0x/, ''), 'hex')).toString('utf8');
+        return toml.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Deterministically derive `(accessPrivateKey, accessPublicKey)` via threshold
+ * VRF. Identical inputs → identical scalar, so `monitor:setup` registers the
+ * exact public half `monitor:run` re-derives every cycle. `alice` signs an
+ * identity proof (no gas); the wallet-message `nonce` is replay protection on
+ * that proof only and does not enter the VRF domain.
+ */
+export async function deriveAccessKeypair(params: {
+    aceDeployment: ACE.AceDeployment,
+    vrfKeypairId: AccountAddress,
+    chainId: number,
+    moduleAddr: AccountAddress,
+    moduleName: string,
+    blobSuffix: string,
+    appOrigin: string,
+    alice: Account,
+}): Promise<{ accessPrivateKey: bigint; accessPublicKey: Uint8Array }> {
+    const { aceDeployment, vrfKeypairId, chainId, moduleAddr, moduleName, blobSuffix, appOrigin, alice } = params;
+    const vrfBytes = await ACE.VRF_Aptos.derive({
+        aceDeployment,
+        keypairId: vrfKeypairId,
+        chainId, moduleAddr, moduleName,
+        label: new TextEncoder().encode(blobSuffix),
+        accountAddress: alice.accountAddress,
+        sign: async (message: string) => {
+            const fullMessage = ACE.VRF_Aptos.buildAptosWalletFullMessage({
+                accountAddress: alice.accountAddress,
+                application: appOrigin,
+                chainId, message,
+                nonce: `presigned-derive-${blobSuffix}`,
+            });
+            return { pubKey: alice.publicKey, signature: alice.sign(fullMessage), fullMessage };
+        },
+    });
+    return vrfOutputToAccessKeypair(vrfBytes);
+}
+
+// ── Monitor config (env-driven) ──────────────────────────────────────────────
+
+function reqEnv(name: string): string {
+    const v = process.env[name]?.trim();
+    if (!v) throw new Error(`Missing required env ${name}`);
+    return v;
+}
+
+function optIntEnv(name: string): number | undefined {
+    const v = process.env[name]?.trim();
+    if (!v) return undefined;
+    const n = Number(v);
+    if (!Number.isInteger(n)) throw new Error(`${name} must be an integer, got ${JSON.stringify(v)}`);
+    return n;
+}
+
+export const DEFAULT_BLOB_SUFFIX = 'song-1.mp3';
+export const DEFAULT_PLAINTEXT = 'Lyrics for song 1: hello sunshine!';
+
+export interface MonitorRunConfig {
+    ace: AceConfig;
+    /** Publisher address of the `presigned_access` app module. */
+    appContractAddr: string;
+    appModuleName: string;
+    appOrigin: string;
+    blobSuffix: string;
+    expectedPlaintext: string;
+    alicePrivateKeyHex: string;
+    /** Free-text label to tag the structured log line (e.g. "shelbynet-v3.7.1"). */
+    serviceLabel?: string;
+    /** Optional asserts; unset ones are skipped. */
+    expect: {
+        chainId?: number;
+        contractVersion?: string;
+        committeeSize?: number;
+        threshold?: number;
+    };
+}
+
+/** Config for the headless `monitor:run` probe. Reads only env — no `data/` files. */
+export function readMonitorRunConfig(): MonitorRunConfig {
+    return {
+        ace: readAceConfig(),
+        appContractAddr: reqEnv('APP_CONTRACT_ADDR'),
+        appModuleName: process.env.APP_MODULE_NAME?.trim() || 'presigned_access',
+        appOrigin: process.env.APP_ORIGIN?.trim() || APP_ORIGIN,
+        blobSuffix: process.env.BLOB_SUFFIX?.trim() || DEFAULT_BLOB_SUFFIX,
+        expectedPlaintext: process.env.EXPECTED_PLAINTEXT ?? DEFAULT_PLAINTEXT,
+        alicePrivateKeyHex: reqEnv('ALICE_PRIVATE_KEY_HEX'),
+        serviceLabel: process.env.SERVICE_LABEL?.trim() || undefined,
+        expect: {
+            chainId: optIntEnv('EXPECT_CHAIN_ID'),
+            contractVersion: process.env.EXPECT_CONTRACT_VERSION?.trim() || undefined,
+            committeeSize: optIntEnv('EXPECT_COMMITTEE_SIZE'),
+            threshold: optIntEnv('EXPECT_THRESHOLD'),
+        },
+    };
 }

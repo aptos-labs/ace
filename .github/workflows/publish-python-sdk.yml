@@ -1,0 +1,121 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish Python SDK
+
+on:
+  # Real PyPI release: the version is taken from the product release tag
+  # (e.g. `v3.11.0` publishes aptos-ace-sdk 3.11.0). The tag is the
+  # already-cut release, i.e. the predecessor of NEXT_RELEASE.
+  push:
+    tags:
+      - 'v[0-9]*'
+  # Manual runs, e.g. to smoke-test against TestPyPI. Provide the version
+  # explicitly since there is no tag to read it from.
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to publish
+        type: choice
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
+      version:
+        description: Version to publish (required for manual runs, e.g. 3.11.0)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Resolve version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            echo "::error::No version to publish: push a v* tag or set the 'version' input."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version $VERSION"
+      - name: Stamp version into pyproject.toml
+        working-directory: python-sdk
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          version = os.environ["VERSION"]
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          text, count = re.subn(r'(?m)^version = ".*"$', f'version = "{version}"', text, count=1)
+          if count != 1:
+              raise SystemExit("could not find a single [project] version line to stamp")
+          path.write_text(text)
+          print(f"stamped version = {version}")
+          PY
+      - name: Build sdist and wheel
+        working-directory: python-sdk
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --outdir dist
+      - name: Check metadata
+        working-directory: python-sdk
+        run: |
+          python -m pip install twine
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: python-sdk-dist
+          path: python-sdk/dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write # Trusted Publishing (OIDC); no API token needed.
+    steps:
+      - uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: python-sdk-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # Trusted Publishing (OIDC); no API token needed.
+    steps:
+      - uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: python-sdk-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

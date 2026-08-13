@@ -13,7 +13,8 @@ from ace_sdk import (
 )
 from ace_sdk._internal.common import ContractID, FullDecryptionDomain
 from ace_sdk._internal.deployment import AceDeployment
-from ace_sdk.group import bls12381g2
+from ace_sdk.group import bls12381g1, bls12381g2
+from ace_sdk.pke import _ristretto255
 
 
 def test_pke_hpke_round_trip_default_scheme() -> None:
@@ -25,6 +26,18 @@ def test_pke_hpke_round_trip_default_scheme() -> None:
 
     assert decrypted.is_ok
     assert decrypted.ok_value == plaintext
+
+
+def test_default_hpke_does_not_require_libsodium_until_ristretto_use(monkeypatch) -> None:
+    def fail_load_libsodium():
+        raise AssertionError("libsodium should not load for default HPKE")
+
+    monkeypatch.setattr(_ristretto255, "_lib", None)
+    monkeypatch.setattr(_ristretto255, "_load_libsodium", fail_load_libsodium)
+
+    pke.keygen()
+
+    assert _ristretto255.group_identity() == bytes(_ristretto255.RISTRETTO_BYTES)
 
 
 def test_pke_elgamal_golden_vector_and_hex_roundtrip() -> None:
@@ -151,3 +164,21 @@ def test_ibe_aptos_encrypt_uses_full_decryption_domain() -> None:
     idk = t_ibe.extract(msk_scalar=msk.inner.scalar, identity=fdd.to_bytes()).unwrap_or_throw("idk")
 
     assert t_ibe.decrypt([idk], ciphertext).unwrap_or_throw("decrypt") == plaintext
+
+
+def test_bls12381_deserialization_rejects_non_prime_order_points() -> None:
+    non_subgroup_g1 = bytes.fromhex(
+        "8000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000004"
+    )
+    non_subgroup_g2 = bytes.fromhex(
+        "a000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000010"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000"
+    )
+
+    assert not bls12381g1.PublicPoint.from_raw_bytes(non_subgroup_g1).is_ok
+    assert not bls12381g2.PublicPoint.from_raw_bytes(non_subgroup_g2).is_ok
+    assert bls12381g1.PublicPoint.from_raw_bytes(bls12381g1.g1_generator().raw_bytes()).is_ok
+    assert bls12381g2.PublicPoint.from_raw_bytes(bls12381g2.g2_generator().raw_bytes()).is_ok

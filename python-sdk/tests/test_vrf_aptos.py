@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import hashlib
+import io
+from urllib.error import HTTPError
 
 from aptos_sdk.account_address import AccountAddress
 from py_ecc.bls.hash_to_curve import hash_to_G1
+import pytest
 
 from ace_sdk import (
     decryption,
@@ -164,3 +167,87 @@ def test_vrf_aptos_derive_core_with_fake_worker(monkeypatch) -> None:
 
     assert len(output) == 32
     assert seen_request[0][0] == vrf_aptos.SCHEME_THRESHOLD_VRF
+
+
+def test_vrf_aptos_derive_core_reports_worker_not_implemented(monkeypatch) -> None:
+    node = AccountAddress.from_str("0x1")
+    account = AccountAddress.from_str("0x2")
+    keypair_id = AccountAddress.from_str("0x" + "22" * 32)
+    contract_id = ContractID.new_aptos(42, AccountAddress.from_str("0x1"), "example")
+    response_ek, response_dk = pke.keygen()
+    node_ek, _node_dk = pke.keygen()
+    ace_deployment = AceDeployment(
+        "https://unused.example/v1",
+        AccountAddress.from_str(
+            "0x0000000000000000000000000000000000000000000000000000000000000ace"
+        ),
+    )
+    payload = vrf_aptos.ThresholdVrfRequestPayload(
+        keypair_id=keypair_id,
+        epoch=8,
+        contract_id=contract_id,
+        label=b"vrf-label",
+        account_address=account,
+        response_enc_key=response_ek,
+    )
+    auth_proof = vrf_aptos.AptosProofOfPermission.new_ed25519(
+        user_addr=account,
+        public_key_bytes=bytes(32),
+        signature_bytes=bytes(64),
+        full_message="0x" + payload.to_hex(),
+    )
+    msk = t_ibe.keygen_for_testing(
+        t_ibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
+    ).unwrap_or_throw("msk")
+    mpk = t_ibe.derive_public_key(msk).unwrap_or_throw("mpk")
+    state = network.State(
+        epoch=8,
+        epoch_start_time_micros=0,
+        epoch_duration_micros=0,
+        cur_nodes=[node],
+        cur_threshold=1,
+        secrets=[
+            network.SecretInfo(
+                current_session=keypair_id,
+                keypair_id=keypair_id,
+                scheme=network.PRIMITIVE_BLS12381_THRESHOLD_VRF,
+                expected_usage=network.USAGE_BLS12381_THRESHOLD_VRF,
+                note="vrf",
+            )
+        ],
+        proposals=[],
+        epoch_change_info=None,
+    )
+    session = discovery.SessionPks(
+        base_point=group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.base_point)),
+        share_pks=[group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.pk))],
+        result_pk=group.Element.from_bls12381_g2(bls12381g2.PublicPoint(mpk.inner.pk)),
+    )
+    reader = SingleNodeReader(
+        node=node,
+        node_enc_key=node_ek,
+        session_pks=SessionPksFixture(keypair_id, session),
+    )
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        raise HTTPError(
+            request.full_url,
+            501,
+            "Not Implemented",
+            {},
+            io.BytesIO(b"handler missing"),
+        )
+
+    monkeypatch.setattr(vrf_aptos, "get_chain_reader", lambda _deployment: reader)
+    monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: reader)
+    monkeypatch.setattr(vrf_aptos, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="threshold VRF worker handler is not implemented"):
+        vrf_aptos.derive_core(
+            ace_deployment=ace_deployment,
+            network_state=state,
+            payload=payload,
+            auth_proof=auth_proof,
+            response_decryption_key=response_dk,
+        )

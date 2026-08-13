@@ -23,6 +23,8 @@ from py_ecc.bls.point_compression import compress_G1, decompress_G1
 from py_ecc.optimized_bls12_381 import G1 as _G1_GENERATOR
 from py_ecc.optimized_bls12_381 import Z1 as _G1_INFINITY
 from py_ecc.optimized_bls12_381 import add as _g1_add
+from py_ecc.optimized_bls12_381 import curve_order as _CURVE_ORDER
+from py_ecc.optimized_bls12_381 import is_inf as _g1_is_inf
 from py_ecc.optimized_bls12_381 import multiply as _g1_multiply
 from py_ecc.optimized_bls12_381 import normalize as _g1_normalize
 
@@ -41,7 +43,10 @@ def _g1_from_compressed(raw: bytes) -> _OptPoint:
     z = int.from_bytes(raw, "big")
     # decompress_G1 already returns the full Jacobian tuple (x, y, FQ(1)),
     # not just the affine (x, y) pair.
-    return decompress_G1(z)
+    pt = decompress_G1(z)
+    if not _g1_is_inf(_g1_multiply(pt, _CURVE_ORDER)):
+        raise ValueError("point is not in the prime-order G1 subgroup")
+    return pt
 
 
 def _g1_to_compressed(pt: _OptPoint) -> bytes:

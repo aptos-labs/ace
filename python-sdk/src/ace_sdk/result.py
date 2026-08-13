@@ -56,7 +56,6 @@ class Result(Generic[T]):
     def unwrap_or_throw(self, to_throw: Any) -> T:
         if not self.is_ok:
             raise to_throw
-        assert self.ok_value is not None or True
         return self.ok_value  # type: ignore[return-value]
 
     def unwrap_err_or_throw(self, to_throw: Any) -> Any:

@@ -42,6 +42,11 @@ The API follows Python naming conventions (`from_bytes`, `to_hex`,
 `derive_encryption_key`) while preserving ACE's byte-level compatibility with
 the TypeScript SDK.
 
+The default PKE scheme is HPKE and does not require native system libraries.
+The legacy `ElGamalOtpRistretto255` scheme requires libsodium >= 1.0.18 with
+the `crypto_core_ristretto255_*` APIs. Install it with your system package
+manager, or set `ACE_SDK_LIBSODIUM_PATH` to the library path.
+
 ## Admin IBE validation
 
 The reconstructed master secret printed by the ACE disaster-recovery flow is a

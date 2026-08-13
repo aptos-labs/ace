@@ -24,6 +24,8 @@ from dataclasses import dataclass
 
 from py_ecc.bls.point_compression import compress_G2, decompress_G2
 from py_ecc.optimized_bls12_381 import G2 as _G2_GENERATOR
+from py_ecc.optimized_bls12_381 import curve_order as _CURVE_ORDER
+from py_ecc.optimized_bls12_381 import is_inf as _g2_is_inf
 from py_ecc.optimized_bls12_381 import multiply as _g2_multiply
 from py_ecc.optimized_bls12_381 import normalize as _g2_normalize
 
@@ -42,7 +44,10 @@ def _g2_from_compressed(raw: bytes) -> _OptPoint:
     c0 = int.from_bytes(raw[:48], "big")
     c1 = int.from_bytes(raw[48:], "big")
     # decompress_G2 already returns a Jacobian point (x, y, FQ2([1, 0])).
-    return decompress_G2((c0, c1))
+    pt = decompress_G2((c0, c1))
+    if not _g2_is_inf(_g2_multiply(pt, _CURVE_ORDER)):
+        raise ValueError("point is not in the prime-order G2 subgroup")
+    return pt
 
 
 def _g2_to_compressed(pt: _OptPoint) -> bytes:

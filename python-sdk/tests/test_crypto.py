@@ -1,6 +1,9 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+from pathlib import Path
+
 from aptos_sdk.account_address import AccountAddress
 
 from ace_sdk import (
@@ -66,6 +69,27 @@ def test_pke_elgamal_golden_vector_and_hex_roundtrip() -> None:
     assert not pke.Ciphertext.from_bytes(golden_ciphertext + b"\x00").is_ok
 
 
+def _cross_impl_fixture() -> dict:
+    path = Path(__file__).resolve().parents[2] / "test-fixtures" / "python-sdk-cross-impl.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_cross_impl_fixture_decrypts_typescript_default_hpke_ciphertext() -> None:
+    fixture = _cross_impl_fixture()["hpke"]
+    decryption_key = pke.DecryptionKey.from_hex(
+        fixture["decryption_key_hex"]
+    ).unwrap_or_throw("hpke dk")
+    ciphertext = pke.Ciphertext.from_hex(
+        fixture["typescript_ciphertext_hex"]
+    ).unwrap_or_throw("ts hpke ct")
+    encryption_key = pke.derive_encryption_key(decryption_key)
+
+    assert encryption_key.to_hex() == fixture["encryption_key_hex"]
+    assert pke.decrypt(decryption_key, ciphertext).unwrap_or_throw("hpke decrypt") == fixture[
+        "plaintext_utf8"
+    ].encode()
+
+
 def test_sig_ed25519_round_trip_and_bcs_hex() -> None:
     signing_key = sig.SigningKey(sig.SCHEME_ED25519, bytes(range(32)))
     public_key = signing_key.public_key()
@@ -123,6 +147,30 @@ def test_tibe_admin_extract_decrypts_production_ciphertext() -> None:
         msk_scalar=msk.inner.scalar,
         identity=identity,
     ).is_ok
+
+
+def test_cross_impl_fixture_decrypts_typescript_tibe_shortsig_aead_ciphertext() -> None:
+    fixture = _cross_impl_fixture()["t_ibe_shortsig_aead"]
+    mpk = t_ibe.MasterPublicKey.from_hex(
+        fixture["master_public_key_hex"]
+    ).unwrap_or_throw("mpk")
+    idk = t_ibe.IdentityDecryptionKeyShare.from_hex(
+        fixture["identity_decryption_key_hex"]
+    ).unwrap_or_throw("idk")
+    expected_ct = t_ibe.encrypt_with_randomness(
+        mpk,
+        fixture["identity_utf8"].encode(),
+        fixture["plaintext_utf8"].encode(),
+        bytes.fromhex(fixture["randomness_hex"]),
+    ).unwrap_or_throw("deterministic t-ibe ct")
+    ciphertext = t_ibe.Ciphertext.from_hex(
+        fixture["typescript_ciphertext_hex"]
+    ).unwrap_or_throw("ts t-ibe ct")
+
+    assert expected_ct.to_hex() == fixture["typescript_ciphertext_hex"]
+    assert t_ibe.decrypt([idk], ciphertext).unwrap_or_throw("t-ibe decrypt") == fixture[
+        "plaintext_utf8"
+    ].encode()
 
 
 def test_ibe_aptos_encrypt_uses_full_decryption_domain() -> None:

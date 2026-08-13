@@ -13,6 +13,7 @@ from ace_sdk import (
 )
 from ace_sdk._internal.common import ContractID, FullDecryptionDomain
 from ace_sdk._internal.deployment import AceDeployment
+from ace_sdk._internal import http as internal_http
 from ace_sdk._internal import discovery
 from ace_sdk.group import bls12381g2
 
@@ -133,7 +134,7 @@ def test_decryption_core_fetches_verified_share_and_decrypts(monkeypatch) -> Non
         return BytesResponse(pke.encrypt(eph_ek, idk.to_bytes()).to_hex().encode("utf-8"))
 
     monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: reader)
-    monkeypatch.setattr(decryption, "urlopen", fake_urlopen)
+    monkeypatch.setattr(internal_http, "urlopen", fake_urlopen)
     monkeypatch.setattr(ibe_aptos, "get_chain_reader", lambda _deployment: reader)
 
     request = decryption.DecryptionRequestPayload(

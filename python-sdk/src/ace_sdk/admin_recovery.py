@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable
-from urllib.request import Request, urlopen
 
 from aptos_sdk.account_address import AccountAddress
 
 from ace_sdk import group, pke, sig, t_ibe
 from ace_sdk._internal.common import fetch_tibe_public_key, get_chain_reader
 from ace_sdk._internal.deployment import AceDeployment
+from ace_sdk._internal.http import post_hex as _post_hex
 from ace_sdk.bcs import Deserializer, Serializer, serialize_account_address
 from ace_sdk.group import bls12381g1, bls12381g2
 from ace_sdk.vss.dealing import lagrange_at_zero
@@ -120,16 +120,6 @@ def parse_reconstruction_response(data: bytes) -> ReconstructionResponse:
     if deserializer.remaining() != 0:
         raise ValueError("parse_reconstruction_response: trailing bytes")
     return response
-
-
-def _post_hex(endpoint: str, body_hex: str, timeout: float) -> str:
-    request = Request(endpoint, data=body_hex.encode("utf-8"), method="POST")
-    with urlopen(request, timeout=timeout) as response:
-        status = getattr(response, "status", 200)
-        body = response.read().decode("utf-8").strip()
-    if status < 200 or status >= 300:
-        raise RuntimeError(f"HTTP {status}: {body[:120]}")
-    return body
 
 
 def _verify_secret_against_mpk(

@@ -1,7 +1,11 @@
 # Copyright (c) Aptos Labs
 # SPDX-License-Identifier: Apache-2.0
 
+import io
+from urllib.error import HTTPError
+
 from aptos_sdk.account_address import AccountAddress
+import pytest
 
 from ace_sdk import (
     admin_recovery,
@@ -10,6 +14,7 @@ from ace_sdk import (
     pke,
     sig,
 )
+from ace_sdk._internal import http as internal_http
 from ace_sdk._internal.deployment import AceDeployment
 from ace_sdk.bcs import Serializer
 from ace_sdk.result import Result
@@ -57,6 +62,23 @@ def test_admin_recovery_wire_formats_match_ts_rust_known_answer() -> None:
         assert "trailing bytes" in str(err)
     else:
         raise AssertionError("expected trailing bytes rejection")
+
+
+def test_admin_recovery_worker_http_errors_include_response_body(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        del timeout
+        raise HTTPError(
+            request.full_url,
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b"reconstruction failed"),
+        )
+
+    monkeypatch.setattr(internal_http, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="HTTP 500: reconstruction failed"):
+        internal_http.post_hex("https://node.example/", "00", 1.0)
 
 
 def test_admin_recovery_reconstruct_secret_with_fake_workers(monkeypatch) -> None:
@@ -108,7 +130,7 @@ def test_admin_recovery_reconstruct_secret_with_fake_workers(monkeypatch) -> Non
     monkeypatch.setattr(admin_recovery, "get_chain_reader", lambda _deployment: reader)
     monkeypatch.setattr(admin_recovery.pke, "keygen", lambda: (eph_ek, eph_dk))
     monkeypatch.setattr(admin_recovery, "fetch_tibe_public_key", lambda **_kwargs: Result.Err("skip"))
-    monkeypatch.setattr(admin_recovery, "urlopen", fake_urlopen)
+    monkeypatch.setattr(internal_http, "urlopen", fake_urlopen)
 
     result = admin_recovery.reconstruct_secret(
         ace_deployment=ace_deployment,

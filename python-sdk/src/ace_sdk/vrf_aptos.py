@@ -7,8 +7,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from typing import Callable
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from aptos_sdk.account_address import AccountAddress
 from py_ecc.bls.hash_to_curve import hash_to_G1
@@ -17,6 +15,7 @@ from py_ecc.optimized_bls12_381 import add as _g1_add
 from ace_sdk import group, pke
 from ace_sdk._internal.common import ContractID, get_chain_reader
 from ace_sdk._internal.deployment import AceDeployment
+from ace_sdk._internal.http import post_hex as _post_hex
 from ace_sdk.bcs import Deserializer, Serializer, deserialize_account_address, serialize_account_address
 from ace_sdk.decryption import AptosProofOfPermission, fetch_current_session_pks
 from ace_sdk.group import bls12381g1
@@ -170,20 +169,6 @@ class _WorkerRequest:
         serializer.serialize_u8(SCHEME_THRESHOLD_VRF)
         self.request.serialize(serializer)
         return serializer.to_bytes()
-
-
-def _post_hex(endpoint: str, body_hex: str, timeout: float) -> str:
-    request = Request(endpoint, data=body_hex.encode("utf-8"), method="POST")
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            status = getattr(response, "status", 200)
-            body = response.read().decode("utf-8", errors="replace").strip()
-    except HTTPError as err:
-        body = err.read().decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"HTTP {err.code}: {body[:120]}") from err
-    if status < 200 or status >= 300:
-        raise RuntimeError(f"HTTP {status}: {body[:120]}")
-    return body
 
 
 def verify_threshold_vrf_share(

@@ -17,6 +17,7 @@ from ace_sdk import (
     t_ibe,
     vrf_aptos,
 )
+from ace_sdk._internal import http as internal_http
 from ace_sdk._internal.common import ContractID
 from ace_sdk._internal.deployment import AceDeployment
 from ace_sdk._internal import discovery
@@ -155,7 +156,7 @@ def test_vrf_aptos_derive_core_with_fake_worker(monkeypatch) -> None:
 
     monkeypatch.setattr(vrf_aptos, "get_chain_reader", lambda _deployment: reader)
     monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: reader)
-    monkeypatch.setattr(vrf_aptos, "urlopen", fake_urlopen)
+    monkeypatch.setattr(internal_http, "urlopen", fake_urlopen)
 
     output = vrf_aptos.derive_core(
         ace_deployment=ace_deployment,
@@ -241,7 +242,7 @@ def test_vrf_aptos_derive_core_reports_worker_not_implemented(monkeypatch) -> No
 
     monkeypatch.setattr(vrf_aptos, "get_chain_reader", lambda _deployment: reader)
     monkeypatch.setattr(decryption, "get_chain_reader", lambda _deployment: reader)
-    monkeypatch.setattr(vrf_aptos, "urlopen", fake_urlopen)
+    monkeypatch.setattr(internal_http, "urlopen", fake_urlopen)
 
     with pytest.raises(RuntimeError, match="threshold VRF worker handler is not implemented"):
         vrf_aptos.derive_core(

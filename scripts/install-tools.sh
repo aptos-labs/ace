@@ -3,7 +3,9 @@
 # Safe to re-run — skips tools that are already at the pinned version.
 set -euo pipefail
 
-APTOS_CLI_VERSION="9.0.0"
+# 9.0.0 cannot compile current aptos-framework `mainnet` (map_spec_aborts_*
+# pragmas and `old(..)` in spec). 9.5.0 includes the prover map-intrinsic work.
+APTOS_CLI_VERSION="9.5.0"
 
 # ---------------------------------------------------------------------------
 # Aptos CLI

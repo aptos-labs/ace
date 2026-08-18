@@ -24,11 +24,12 @@ import {
 } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 import type { Account } from '@aptos-labs/ts-sdk';
 
-/** `<repo>` — `cli/src` is two levels deep (cli is CommonJS, so `__dirname` is available). */
-export const REPO_ROOT = path.resolve(__dirname, '../..');
+/** `<repo>` — two levels above this file in source (`cli/src`) and in the bundled CLI (`cli/dist`). */
+export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Placeholder address baked into every package's `Move.toml` `[addresses]` section. */
 export const ADMIN_PLACEHOLDER_FOR_MOVE_TOML = '0xcafe';

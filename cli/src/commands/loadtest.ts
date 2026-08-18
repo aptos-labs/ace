@@ -19,6 +19,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { Account, AccountAddress } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
 
@@ -42,13 +43,14 @@ const DOMAIN_BYTES = new TextEncoder().encode('loadtest');
 
 // Resolve the loadtest-acl Move package. Lives under `cli/move/` (NOT
 // `cli/contracts/`, which would collide with the repo-root protocol contracts).
-// The `__dirname` differs between dev mode (running from `cli/src/commands/`)
-// and built mode (bundled into `cli/dist/`), so we probe both candidates and
-// pick whichever actually has the package.
+// `import.meta.url` differs between dev mode (`cli/src/commands/`) and the
+// bundled CLI (`cli/dist/`), so we probe both candidates and pick whichever
+// actually has the package.
 function findLoadtestAclPackage(): string {
+    const here = path.dirname(fileURLToPath(import.meta.url));
     const candidates = [
-        path.resolve(__dirname, '..', 'move', 'loadtest-acl'),         // dist/index.js → cli/move/...
-        path.resolve(__dirname, '..', '..', 'move', 'loadtest-acl'),   // src/commands/loadtest.ts → cli/move/...
+        path.resolve(here, '..', 'move', 'loadtest-acl'),         // dist/index.js → cli/move/...
+        path.resolve(here, '..', '..', 'move', 'loadtest-acl'),   // src/commands/loadtest.ts → cli/move/...
     ];
     for (const c of candidates) {
         if (existsSync(path.join(c, 'Move.toml'))) return c;

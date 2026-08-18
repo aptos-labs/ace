@@ -12,9 +12,9 @@ import {
     PrivateKeyVariants,
     Serializer,
 } from '@aptos-labs/ts-sdk';
-import { GasStationTransactionSubmitter } from '@aptos-labs/gas-station-client';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
 import type { TrackedNode } from './config.js';
+import { gasStationTransactionSubmitter } from './gas-station.js';
 
 export type ProposalInput = {
     nodes: AccountAddress[];
@@ -63,7 +63,7 @@ function buildAptos(rpcUrl: string, rpcApiKey?: string, gasStationKey?: string):
         ? { HEADERS: { Authorization: `Bearer ${rpcApiKey}` } }
         : undefined;
     if (gasStationKey) {
-        const gs = new GasStationTransactionSubmitter({ network, apiKey: gasStationKey });
+        const gs = gasStationTransactionSubmitter({ network, apiKey: gasStationKey });
         return new Aptos(new AptosConfig({
             network, fullnode: rpcUrl, clientConfig,
             pluginSettings: { TRANSACTION_SUBMITTER: gs },

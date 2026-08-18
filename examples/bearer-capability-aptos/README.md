@@ -65,7 +65,7 @@ Four properties:
 
 ## Prerequisites
 
-- **Node.js ≥ 18** and **pnpm**
+- **Node.js ≥ 22** and **pnpm**
 - **Aptos CLI** — `cargo install aptos` or download from [aptos.dev](https://aptos.dev/tools/aptos-cli/)
 - **For testnet:** no ACE localnet is needed. The default target is `knownDeployments.preview20260714`. To target a different ACE deployment, set `ACE_CONTRACT`, `IBE_KEYPAIR_ID`, and `VRF_KEYPAIR_ID`; optionally set `ACE_API_ENDPOINT` and `ACE_API_KEY`.
 

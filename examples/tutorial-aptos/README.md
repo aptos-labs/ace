@@ -27,7 +27,7 @@ By default, the tutorial uses the SDK's `knownDeployments.preview20260714` testn
 
 ## Prerequisites
 
-- **Node.js ≥ 18** and **pnpm**
+- **Node.js ≥ 22** and **pnpm**
 - **Aptos CLI** — `cargo install aptos` or download from [aptos.dev](https://aptos.dev/tools/aptos-cli/)
 
 Install dependencies from the repo root:

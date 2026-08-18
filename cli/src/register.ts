@@ -8,8 +8,8 @@ import {
     Ed25519PrivateKey,
     Network,
 } from '@aptos-labs/ts-sdk';
-import { GasStationTransactionSubmitter } from '@aptos-labs/gas-station-client';
 import { workerConfig } from '@aptos-labs/ace-sdk';
+import { gasStationTransactionSubmitter } from './gas-station.js';
 
 function inferNetwork(rpcUrl: string): Network {
     const url = rpcUrl.toLowerCase();
@@ -39,7 +39,7 @@ function buildAptos(rpcUrl: string, rpcApiKey?: string, gasStationKey?: string):
     const faucet = network === Network.LOCAL ? localFaucetUrl(rpcUrl) : undefined;
 
     if (gasStationKey) {
-        const gasStation = new GasStationTransactionSubmitter({ network, apiKey: gasStationKey });
+        const gasStation = gasStationTransactionSubmitter({ network, apiKey: gasStationKey });
         return new Aptos(new AptosConfig({
             network, fullnode: rpcUrl, faucet, clientConfig,
             pluginSettings: { TRANSACTION_SUBMITTER: gasStation },

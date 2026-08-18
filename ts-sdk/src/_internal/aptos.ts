@@ -9,9 +9,6 @@ import {
     Deserializer,
     Ed25519PublicKey,
     Ed25519Signature,
-    FederatedKeylessPublicKey,
-    KeylessPublicKey,
-    KeylessSignature,
     MultiEd25519PublicKey,
     MultiEd25519Signature,
     MultiKey,
@@ -20,6 +17,11 @@ import {
     Serializer,
     Signature,
 } from "@aptos-labs/ts-sdk";
+import {
+    FederatedKeylessPublicKey,
+    KeylessPublicKey,
+    KeylessSignature,
+} from "@aptos-labs/ts-sdk/keyless";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { Result } from "../result";
 import {

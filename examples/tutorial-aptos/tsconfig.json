@@ -2,14 +2,18 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "noEmit": true
+    "baseUrl": ".",
+    "noEmit": true,
+    "paths": {
+      "@aptos-labs/ace-sdk": ["../../ts-sdk/src/index.ts"]
+    }
   },
   "include": ["scripts/**/*"],
   "exclude": ["node_modules", "data"]

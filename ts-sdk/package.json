@@ -2,19 +2,14 @@
   "name": "@aptos-labs/ace-sdk",
   "version": "0.1.1",
   "description": "TypeScript SDK for ACE",
-  "main": "dist/common/index.js",
+  "main": "dist/esm/index.mjs",
   "module": "dist/esm/index.mjs",
-  "types": "dist/common/index.d.ts",
+  "types": "dist/esm/index.d.mts",
   "exports": {
     ".": {
-      "require": {
-        "types": "./dist/common/index.d.ts",
-        "default": "./dist/common/index.js"
-      },
-      "import": {
-        "types": "./dist/esm/index.d.mts",
-        "default": "./dist/esm/index.mjs"
-      }
+      "types": "./dist/esm/index.d.mts",
+      "import": "./dist/esm/index.mjs",
+      "default": "./dist/esm/index.mjs"
     }
   },
   "files": [

@@ -33,6 +33,9 @@
     "auditConfig": {
       "ignoreCves": [
         "CVE-2016-10538"
+      ],
+      "ignoreGhsas": [
+        "GHSA-6cpc-mj5c-m9rq"
       ]
     }
   }

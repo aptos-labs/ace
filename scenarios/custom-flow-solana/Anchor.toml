@@ -16,4 +16,4 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "pnpm ts-mocha -p ./tsconfig.json -t 1000000 \"tests/e2e.ts\""
+test = "NODE_OPTIONS='--import tsx/esm' pnpm exec mocha -t 1000000 \"tests/e2e.ts\""

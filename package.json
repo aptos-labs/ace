@@ -19,8 +19,25 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
-  "packageManager": "pnpm@9.0.0"
+  "packageManager": "pnpm@9.0.0",
+  "pnpm": {
+    "overrides": {
+      "nanoid": "3.3.18",
+      "picomatch": "4.0.5",
+      "postcss": "8.5.26",
+      "rollup": "4.62.4",
+      "undici": "6.28.0"
+    },
+    "auditConfig": {
+      "ignoreCves": [
+        "CVE-2016-10538"
+      ],
+      "ignoreGhsas": [
+        "GHSA-6cpc-mj5c-m9rq"
+      ]
+    }
+  }
 }
 

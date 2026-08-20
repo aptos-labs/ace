@@ -2,39 +2,24 @@
   "name": "@aptos-labs/ace-sdk",
   "version": "0.1.1",
   "description": "TypeScript SDK for ACE",
-  "main": "dist/common/index.js",
+  "main": "dist/esm/index.mjs",
   "module": "dist/esm/index.mjs",
-  "types": "dist/common/index.d.ts",
+  "types": "dist/esm/index.d.mts",
   "exports": {
     ".": {
-      "require": {
-        "types": "./dist/common/index.d.ts",
-        "default": "./dist/common/index.js"
-      },
-      "import": {
-        "types": "./dist/esm/index.d.mts",
-        "default": "./dist/esm/index.mjs"
-      }
+      "types": "./dist/esm/index.d.mts",
+      "import": "./dist/esm/index.mjs",
+      "default": "./dist/esm/index.mjs"
     },
     "./aptos": {
-      "require": {
-        "types": "./dist/common/aptos.d.ts",
-        "default": "./dist/common/aptos.js"
-      },
-      "import": {
-        "types": "./dist/esm/aptos.d.mts",
-        "default": "./dist/esm/aptos.mjs"
-      }
+      "types": "./dist/esm/aptos.d.mts",
+      "import": "./dist/esm/aptos.mjs",
+      "default": "./dist/esm/aptos.mjs"
     },
     "./solana": {
-      "require": {
-        "types": "./dist/common/solana.d.ts",
-        "default": "./dist/common/solana.js"
-      },
-      "import": {
-        "types": "./dist/esm/solana.d.mts",
-        "default": "./dist/esm/solana.mjs"
-      }
+      "types": "./dist/esm/solana.d.mts",
+      "import": "./dist/esm/solana.mjs",
+      "default": "./dist/esm/solana.mjs"
     }
   },
   "files": [

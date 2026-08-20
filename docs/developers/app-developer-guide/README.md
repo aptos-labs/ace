@@ -2,6 +2,8 @@
 
 ACE exposes Aptos-authorized threshold IBE decryption and threshold VRF derivation. Your app contract decides whether a request is allowed; the SDK verifies worker shares before combining them.
 
+`@aptos-labs/ace-sdk` requires **Node.js ≥ 22**, is published as ESM-only, and peers `@aptos-labs/ts-sdk@^7`.
+
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
 | [`ibe-aptos-basic.md`](./ibe-aptos-basic.md) | An Aptos account signs a decryption request and your hook authorizes that account | allowlists, paid content, timelocks |

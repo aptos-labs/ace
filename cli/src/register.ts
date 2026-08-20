@@ -9,16 +9,8 @@ import {
     Network,
 } from '@aptos-labs/ts-sdk';
 import { workerConfig } from '@aptos-labs/ace-sdk';
+import { inferNetwork } from './aptos-network.js';
 import { gasStationTransactionSubmitter } from './gas-station.js';
-
-function inferNetwork(rpcUrl: string): Network {
-    const url = rpcUrl.toLowerCase();
-    if (url.includes('mainnet')) return Network.MAINNET;
-    if (url.includes('testnet')) return Network.TESTNET;
-    if (url.includes('devnet'))  return Network.DEVNET;
-    if (url.includes('localhost') || url.includes('127.0.0.1')) return Network.LOCAL;
-    return Network.CUSTOM;
-}
 
 function localFaucetUrl(rpcUrl: string): string {
     try {

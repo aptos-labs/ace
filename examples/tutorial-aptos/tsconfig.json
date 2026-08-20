@@ -9,11 +9,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "baseUrl": ".",
-    "noEmit": true,
-    "paths": {
-      "@aptos-labs/ace-sdk": ["../../ts-sdk/src/index.ts"]
-    }
+    "noEmit": true
   },
   "include": ["scripts/**/*"],
   "exclude": ["node_modules", "data"]

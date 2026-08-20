@@ -7,5 +7,6 @@ export default defineConfig({
   banner: { js: '#!/usr/bin/env node' },
   clean: true,
   splitting: false,
-  shims: true,
+  skipNodeModulesBundle: true,
+  external: ['@aptos-labs/ts-sdk', '@aptos-labs/gas-station-client'],
 });

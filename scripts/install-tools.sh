@@ -19,15 +19,28 @@ install_aptos() {
     fi
 
     case "$(uname -s)" in
-        Linux)  os="Ubuntu-22.04" ;;
-        Darwin) os="macOS" ;;
-        *)      echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
-    esac
-
-    case "$(uname -m)" in
-        x86_64)  arch="x86_64" ;;
-        arm64|aarch64) arch="aarch64" ;;
-        *)       echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+        Linux)
+            case "$(uname -m)" in
+                x86_64)
+                    os="Ubuntu-22.04"
+                    arch="x86_64"
+                    ;;
+                arm64|aarch64)
+                    os="Linux"
+                    arch="aarch64"
+                    ;;
+                *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+            esac
+            ;;
+        Darwin)
+            os="macOS"
+            case "$(uname -m)" in
+                x86_64) arch="x86_64" ;;
+                arm64|aarch64) arch="arm64" ;;
+                *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+            esac
+            ;;
+        *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
     esac
 
     zip="aptos-cli-${APTOS_CLI_VERSION}-${os}-${arch}.zip"

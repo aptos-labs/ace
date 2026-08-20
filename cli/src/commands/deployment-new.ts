@@ -32,7 +32,6 @@ import {
     Aptos,
     AptosConfig,
     Ed25519PrivateKey,
-    Network,
 } from '@aptos-labs/ts-sdk';
 import { select, input, confirm } from '@inquirer/prompts';
 import {
@@ -47,6 +46,7 @@ import {
     deployContracts,
     ed25519PrivateKeyHex,
 } from '../deploy-contracts.js';
+import { inferNetwork } from '../aptos-network.js';
 import { CLI } from '../cli-name.js';
 
 const NETWORKS: { name: 'mainnet' | 'testnet' | 'devnet' | 'localnet' | 'shelby-private-beta' | 'custom'; rpcUrl?: string; faucet?: string }[] = [
@@ -146,19 +146,10 @@ function preflightTagAndCleanCheck(): { tag: string; commit: string; version: st
 
 // ── Aptos helpers ─────────────────────────────────────────────────────────────
 
-function inferAptosNetwork(rpcUrl: string): Network {
-    const u = rpcUrl.toLowerCase();
-    if (u.includes('mainnet')) return Network.MAINNET;
-    if (u.includes('testnet')) return Network.TESTNET;
-    if (u.includes('devnet')) return Network.DEVNET;
-    if (u.includes('localhost') || u.includes('127.0.0.1')) return Network.LOCAL;
-    return Network.CUSTOM;
-}
-
 function makeAptos(rpcUrl: string, faucet: string | undefined, apiKey: string | undefined): Aptos {
     const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
     return new Aptos(new AptosConfig({
-        network: inferAptosNetwork(rpcUrl),
+        network: inferNetwork(rpcUrl),
         fullnode: rpcUrl,
         faucet,
         clientConfig: headers ? { HEADERS: headers } : undefined,

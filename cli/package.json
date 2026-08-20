@@ -14,8 +14,12 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit",
+    "test": "tsx --test src/aptos-network.test.ts src/gas-station.test.ts",
     "prepublishOnly": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

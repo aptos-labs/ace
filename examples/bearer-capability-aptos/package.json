@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit",
     "1-setup": "tsx scripts/1-setup.ts",
     "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
     "3-create-capability": "tsx scripts/3-create-capability.ts",

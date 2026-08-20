@@ -7,12 +7,12 @@ import {
     AptosConfig,
     Aptos,
     Ed25519PrivateKey,
-    Network,
     PrivateKey,
     PrivateKeyVariants,
     Serializer,
 } from '@aptos-labs/ts-sdk';
 import { network as aceNetwork } from '@aptos-labs/ace-sdk';
+import { inferNetwork } from './aptos-network.js';
 import type { TrackedNode } from './config.js';
 import { gasStationTransactionSubmitter } from './gas-station.js';
 
@@ -42,15 +42,6 @@ export function serializeProposal(proposal: ProposalInput): number[] {
     ser.serializeStr(proposal.description);
     ser.serializeU64(proposal.targetEpoch);
     return Array.from(ser.toUint8Array());
-}
-
-function inferNetwork(rpcUrl: string): Network {
-    const url = rpcUrl.toLowerCase();
-    if (url.includes('mainnet')) return Network.MAINNET;
-    if (url.includes('testnet')) return Network.TESTNET;
-    if (url.includes('devnet'))  return Network.DEVNET;
-    if (url.includes('localhost') || url.includes('127.0.0.1')) return Network.LOCAL;
-    return Network.CUSTOM;
 }
 
 function hexToBytes(hex: string): Uint8Array {

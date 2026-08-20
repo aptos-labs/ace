@@ -7,11 +7,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "@aptos-labs/ace-sdk": ["../ts-sdk/src/index.ts"]
-    }
+    "outDir": "dist"
   },
   "include": ["src"]
 }

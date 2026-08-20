@@ -11,7 +11,7 @@
     "4-decrypt-fail": "tsx scripts/4-decrypt-fail.ts",
     "5-buy": "tsx scripts/5-buy.ts",
     "6-decrypt": "tsx scripts/6-decrypt.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

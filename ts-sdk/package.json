@@ -1,6 +1,6 @@
 {
   "name": "@aptos-labs/ace-sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "TypeScript SDK for ACE",
   "main": "dist/esm/index.mjs",
   "module": "dist/esm/index.mjs",
@@ -50,7 +50,7 @@
     "@noble/hashes": "^1.7.1"
   },
   "peerDependencies": {
-    "@aptos-labs/ts-sdk": "^5.2.0",
+    "@aptos-labs/ts-sdk": "^7",
     "@solana/web3.js": "^1.95.0"
   },
   "peerDependenciesMeta": {
@@ -59,11 +59,15 @@
     }
   },
   "devDependencies": {
-    "@aptos-labs/ts-sdk": "^5.2.0",
+    "@aptos-labs/ts-sdk": "^7",
     "@solana/web3.js": "^1.95.0",
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
+    "postcss": "8.5.26",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
-    "vitest": "^1.0.0"
+    "vitest": "^3.2.6"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

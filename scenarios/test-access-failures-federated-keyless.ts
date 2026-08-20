@@ -37,7 +37,8 @@
  *   cd scenarios && pnpm test-access-failures-federated-keyless
  */
 
-import { AccountAddress, FederatedKeylessAccount } from '@aptos-labs/ts-sdk';
+import { AccountAddress } from '@aptos-labs/ts-sdk';
+import { FederatedKeylessAccount } from '@aptos-labs/ts-sdk/keyless';
 import { ChildProcess } from 'child_process';
 
 import {

@@ -32,7 +32,7 @@
  *   cd scenarios && pnpm test-access-failures-keyless
  */
 
-import { KeylessAccount } from '@aptos-labs/ts-sdk';
+import { KeylessAccount } from '@aptos-labs/ts-sdk/keyless';
 import { ChildProcess } from 'child_process';
 
 import {

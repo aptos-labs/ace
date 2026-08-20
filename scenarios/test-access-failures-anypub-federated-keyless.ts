@@ -29,8 +29,8 @@ import {
     AccountAddress,
     AnyPublicKey,
     AnySignature,
-    FederatedKeylessAccount,
 } from '@aptos-labs/ts-sdk';
+import { FederatedKeylessAccount } from '@aptos-labs/ts-sdk/keyless';
 import { ChildProcess } from 'child_process';
 
 import {

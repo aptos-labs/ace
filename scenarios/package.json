@@ -41,13 +41,13 @@
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",
-    "@aptos-labs/ts-sdk": "^5.1.1",
+    "@aptos-labs/ts-sdk": "^7",
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
     "tsx": "^4.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
     "typescript": "^5.0.0"
   }
 }

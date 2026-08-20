@@ -22,7 +22,8 @@
  *   cd scenarios && pnpm test-access-failures-anypub-keyless
  */
 
-import { AnyPublicKey, AnySignature, KeylessAccount } from '@aptos-labs/ts-sdk';
+import { AnyPublicKey, AnySignature } from '@aptos-labs/ts-sdk';
+import { KeylessAccount } from '@aptos-labs/ts-sdk/keyless';
 import { ChildProcess } from 'child_process';
 
 import {

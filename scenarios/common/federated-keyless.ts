@@ -26,13 +26,15 @@ import {
     Account,
     AccountAddress,
     Ed25519PrivateKey,
+    ZkpVariant,
+} from '@aptos-labs/ts-sdk';
+import {
     EphemeralKeyPair,
     FederatedKeylessAccount,
     Groth16Zkp,
     ZeroKnowledgeSig,
     ZkProof,
-    ZkpVariant,
-} from '@aptos-labs/ts-sdk';
+} from '@aptos-labs/ts-sdk/keyless';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import * as os from 'os';

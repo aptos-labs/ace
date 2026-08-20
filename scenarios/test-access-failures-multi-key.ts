@@ -66,7 +66,6 @@ import {
     AnySignature,
     AuthenticationKey,
     Ed25519PrivateKey,
-    KeylessAccount,
     MultiKey,
     MultiKeySignature,
     Secp256r1PrivateKey,
@@ -74,6 +73,7 @@ import {
     SingleKeyAccount,
     WebAuthnSignature,
 } from '@aptos-labs/ts-sdk';
+import { KeylessAccount } from '@aptos-labs/ts-sdk/keyless';
 import * as ACE from '@aptos-labs/ace-sdk';
 import { p256 } from '@noble/curves/p256';
 import { ChildProcess } from 'child_process';

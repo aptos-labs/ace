@@ -12,23 +12,25 @@
  */
 
 import {
-    AbstractKeylessAccount,
     Account,
     AccountAddress,
     Ed25519Signature,
-    EphemeralCertificate,
     EphemeralCertificateVariant,
+    PublicKey,
+    Signature,
+    ZkpVariant,
+} from '@aptos-labs/ts-sdk';
+import {
+    AbstractKeylessAccount,
+    EphemeralCertificate,
     EphemeralSignature,
     FederatedKeylessPublicKey,
     Groth16Zkp,
     KeylessPublicKey,
     KeylessSignature,
-    PublicKey,
-    Signature,
     ZeroKnowledgeSig,
     ZkProof,
-    ZkpVariant,
-} from '@aptos-labs/ts-sdk';
+} from '@aptos-labs/ts-sdk/keyless';
 import * as ACE from '@aptos-labs/ace-sdk';
 
 import { assert } from './helpers';

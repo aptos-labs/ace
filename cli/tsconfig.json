@@ -1,16 +1,13 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "CommonJS",
-    "moduleResolution": "node",
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
-    "outDir": "dist",
-    "paths": {
-      "@aptos-labs/ace-sdk": ["../ts-sdk/src/index.ts"]
-    }
+    "outDir": "dist"
   },
   "include": ["src"]
 }

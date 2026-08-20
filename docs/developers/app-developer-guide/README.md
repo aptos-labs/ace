@@ -2,6 +2,8 @@
 
 ACE lets an app encrypt data or derive values scoped to a contract, account, and label, then ask an on-chain policy whether a user is allowed to receive the result. Pick the guide that matches your chain and proof style.
 
+`@aptos-labs/ace-sdk` requires **Node.js ≥ 22**, is published as ESM-only, and peers `@aptos-labs/ts-sdk@^7`.
+
 | Guide | Use when | Typical apps |
 |-------|----------|--------------|
 | [`ibe-aptos-basic.md`](./ibe-aptos-basic.md) | Your Aptos contract decides whether Aptos account X can access object Y | pay-to-download, allowlists, time locks, subscriptions |

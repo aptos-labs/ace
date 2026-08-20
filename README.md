@@ -124,7 +124,9 @@ Operator                              Admin / existing committee
 
 **Install**
 
-The CLI isn't on npm yet. Clone the repo and install dependencies:
+The CLI isn't on npm yet. Clone the repo and install dependencies.
+
+Requires **Node.js ≥ 22**. `@aptos-labs/ace-sdk` is ESM-only and peers `@aptos-labs/ts-sdk@^7` (CommonJS `require` and Node 20 are not supported).
 
 ```bash
 git clone git@github.com:aptos-labs/ace.git

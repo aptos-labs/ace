@@ -30,7 +30,7 @@ small allowance on-chain when he shows up in step 4.
 
 ## Prerequisites
 
-- **Node.js ≥ 18** and **pnpm**
+- **Node.js ≥ 22** and **pnpm**
 - **Aptos CLI** — `cargo install aptos` or download from [aptos.dev](https://aptos.dev/tools/aptos-cli/)
 
 Install dependencies from the repo root:

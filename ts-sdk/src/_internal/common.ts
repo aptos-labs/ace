@@ -443,8 +443,9 @@ export class DecryptionCustomFlowRequest {
     label: Uint8Array;
     encPk: pke.EncryptionKey;
     proof: CustomFlowProof;
-    /** Client-asserted t-IBE scheme the share should be formatted for. */
-    tibeScheme: number;
+    /** On-chain secret `primitive` id the share should be formatted for (0=shortpk, 1=shortsig,
+     *  3=shortsig-stream). Positional u8; values 0/1 equal the legacy `tibe_scheme`. */
+    primitive: number;
 
     constructor(args: {
         keypairId: AccountAddress,
@@ -453,7 +454,7 @@ export class DecryptionCustomFlowRequest {
         label: Uint8Array,
         encPk: pke.EncryptionKey,
         proof: CustomFlowProof,
-        tibeScheme: number,
+        primitive: number,
     }) {
         this.keypairId = args.keypairId;
         this.epoch = args.epoch;
@@ -461,7 +462,7 @@ export class DecryptionCustomFlowRequest {
         this.label = args.label;
         this.encPk = args.encPk;
         this.proof = args.proof;
-        this.tibeScheme = args.tibeScheme;
+        this.primitive = args.primitive;
     }
 
     serialize(s: Serializer): void {
@@ -471,7 +472,7 @@ export class DecryptionCustomFlowRequest {
         s.serializeBytes(this.label);
         this.encPk.serialize(s);
         this.proof.serialize(s);
-        s.serializeU8(this.tibeScheme);
+        s.serializeU8(this.primitive);
     }
 
     toBytes(): Uint8Array {
@@ -490,20 +491,21 @@ export class DecryptionCustomFlowRequest {
 export class DecryptionBasicFlowRequest {
     request: DecryptionRequestPayload;
     proof: ProofOfPermission;
-    /** Client-asserted t-IBE scheme the share should be formatted for. The
-     *  worker handler validates this against the share's group_scheme. */
-    tibeScheme: number;
+    /** On-chain secret `primitive` id the share should be formatted for (0=shortpk, 1=shortsig,
+     *  3=shortsig-stream). The worker validates it against the share's group + usage mask.
+     *  Positional u8; values 0/1 equal the legacy `tibe_scheme`, so the wire is unchanged. */
+    primitive: number;
 
-    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission, tibeScheme: number }) {
+    constructor(args: { request: DecryptionRequestPayload, proof: ProofOfPermission, primitive: number }) {
         this.request = args.request;
         this.proof = args.proof;
-        this.tibeScheme = args.tibeScheme;
+        this.primitive = args.primitive;
     }
 
     serialize(s: Serializer): void {
         this.request.serialize(s);
         this.proof.serialize(s);
-        s.serializeU8(this.tibeScheme);
+        s.serializeU8(this.primitive);
     }
 
     toBytes(): Uint8Array {
@@ -548,17 +550,17 @@ export class WorkerRequest {
     static newDecryptionBasicFlow(
         request: DecryptionRequestPayload,
         proof: ProofOfPermission,
-        tibeScheme: number,
+        primitive: number,
     ): WorkerRequest {
         return new WorkerRequest(
             WorkerRequest.SCHEME_DECRYPTION_BASIC_FLOW,
-            new DecryptionBasicFlowRequest({ request, proof, tibeScheme }),
+            new DecryptionBasicFlowRequest({ request, proof, primitive }),
         );
     }
 
     static newDecryptionCustomFlow(
         customRequest: CustomFlowRequest,
-        tibeScheme: number,
+        primitive: number,
     ): WorkerRequest {
         return new WorkerRequest(
             WorkerRequest.SCHEME_DECRYPTION_CUSTOM_FLOW,
@@ -569,7 +571,7 @@ export class WorkerRequest {
                 label: customRequest.label,
                 encPk: customRequest.encPk,
                 proof: customRequest.proof,
-                tibeScheme,
+                primitive,
             }),
         );
     }
@@ -723,13 +725,13 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
     });
 }
 
-export async function fetchIdentityKeySharesCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, tibeScheme}: {
+export async function fetchIdentityKeySharesCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, primitive}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
     ephemeralDecryptionKey: pke.DecryptionKey,
-    tibeScheme: number,
+    primitive: number,
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
@@ -758,7 +760,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                 throw `ACE.fetchIdentityKeySharesCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, primitive).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -826,7 +828,7 @@ export async function decryptCore(args: {
         request: args.request,
         proof: args.proof,
         ephemeralDecryptionKey: args.ephemeralDecryptionKey,
-        tibeScheme: ciphertext.okValue!.scheme,
+        primitive: ciphertext.okValue!.scheme,
     });
     if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
     return decryptWithIdentityKeyShares({
@@ -835,12 +837,12 @@ export async function decryptCore(args: {
     });
 }
 
-export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, tibeScheme}: {
+export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, primitive}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     customRequest: CustomFlowRequest,
     callerDecryptionKey: pke.DecryptionKey,
-    tibeScheme: number,
+    primitive: number,
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
@@ -869,7 +871,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                 throw `ACE.fetchIdentityKeySharesCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
             }
 
-            const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, primitive).toBytes();
 
             const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
@@ -935,7 +937,7 @@ export async function decryptCoreCustom(args: {
         networkState: args.networkState,
         customRequest: args.customRequest,
         callerDecryptionKey: args.callerDecryptionKey,
-        tibeScheme: ciphertext.okValue!.scheme,
+        primitive: ciphertext.okValue!.scheme,
     });
     if (!identityKeySharesResult.isOk) return Result.Err({error: identityKeySharesResult.errValue, extra: identityKeySharesResult.extra});
     return decryptWithIdentityKeyShares({
@@ -954,13 +956,13 @@ export async function decryptCoreCustom(args: {
  * current committee member's registered endpoint equals `targetEndpoint`.
  */
 export async function buildPerNodeRequestCore({
-    aceDeployment, networkState, request, proof, tibeScheme, targetEndpoint,
+    aceDeployment, networkState, request, proof, primitive, targetEndpoint,
 }: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
-    tibeScheme: number,
+    primitive: number,
     targetEndpoint: string,
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
@@ -982,7 +984,7 @@ export async function buildPerNodeRequestCore({
             }
             const { nodeEncKey } = nodeInfos[sdkIdx];
 
-            const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, tibeScheme).toBytes();
+            const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, primitive).toBytes();
             const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
             return { encReqHex, epoch: Number(networkState.epoch), sdkIdx };
         },

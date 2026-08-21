@@ -2,14 +2,17 @@
 
 t-IBE is the layer the **end-user** sees: encryption is to a "keypair-id" (an on-chain DKG session address) and an "identity" (the BCS bytes of `(keypair_id, contract_id, label)`, where `label` is the app-specific scoping bytes); decryption requires t-of-n workers to each release a partial extraction of the IBE identity decryption key (IDK). Each worker holds a Shamir share of the master secret $s$; the master public key $\mathsf{mpk}$ is the joint DKG output (constant-term commitment of the joint polynomial over $\mathbb{F}_r$). See [`dkg.md`](./dkg.md) for how $\mathsf{mpk}$ and the shares are produced.
 
-| Scheme | Tag | Status | Defined |
+| Scheme (t-IBE object tag) | Tag | Status | Defined |
 |--------|-----|--------|---------|
-| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **test-only** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs:34` |
-| BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **production, default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs:35` |
+| BFIBE-BLS12381-ShortPK-OTP-HMAC | `0x00` | **test-only** (see below) | `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts`, `worker-components/network-node/src/crypto.rs` |
+| BFIBE-BLS12381-ShortSig-AEAD | `0x01` | **production, default** | `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead.ts`, `worker-components/network-node/src/crypto.rs` |
+
+The streaming + seekable variant (**StreamIBE**, §3) is a sibling **primitive** (`3`), not a new
+t-IBE object scheme: it reuses the `0x01` key/share objects verbatim. See §3.
 
 > **Audit scope.** Only **scheme `0x01`** is audited. Scheme `0x00` is **test-only** — Boneh–Franklin in G1 with the same hand-rolled OTP + custom-HMAC-SHA3-256 DEM as PKE scheme `0x00` ([`pke.md`](./pke.md)). It is selected only when the underlying DKG uses a G1 basepoint, which today happens only in the regression scenario `scenarios/test-network-protocol-shortpk.ts` and an internal SDK test. Production deployments use a G2 basepoint and therefore scheme `0x01`. A follow-up PR may delete scheme `0x00` from the codebase. The remainder of this file describes scheme `0x01` only.
 
-The request carries the t-IBE scheme used by the ciphertext. The worker validates that scheme against the underlying DKG basepoint group via `worker-components/network-node/src/crypto.rs::group_scheme_for_tibe`: scheme `0x00` requires G1 (test-only), and scheme `0x01` requires G2 (production).
+The decryption request carries an on-chain **`primitive`** id (`worker-components/network-node/src/verify/mod.rs`; `0`=shortpk, `1`=shortsig, `3`=shortsig-stream — VRF's `2` uses its own request variant). For the two block primitives this equals the ciphertext's t-IBE object tag (`0`/`1`), so the wire is unchanged from the legacy `tibe_scheme` field it replaces. The worker validates it against the underlying DKG basepoint group via `crypto::group_scheme_for_primitive` (primitive `0` requires G1; primitives `1` and `3` require G2) and against the on-chain usage mask via `secret_usage::usage_for_primitive`.
 
 ## 1. BFIBE-BLS12381-ShortSig-AEAD (scheme `0x01`, default)
 
@@ -96,3 +99,54 @@ The t-IBE scheme feeds a Gt element into HKDF as IKM. Gt is $\mathbb{F}_{p^{12}}
 Implementation: `ts-sdk/src/t-ibe/bfibe-bls12381-shortpk-otp-hmac.ts::bls12381GtReprNobleToAptos` and the Rust mirror in `worker-components/network-node/src/crypto.rs`.
 
 Audit hook: any change to this canonicalization breaks cross-implementation interop silently. Round-trip tests in `ts-sdk/tests/bfibe-bls12381-*.test.ts` are the regression gate.
+
+## 3. StreamIBE — streaming + seekable variant (primitive `3`)
+
+StreamIBE is a **streaming + seekable** variant for large payloads and web-video seek. It is a
+sibling **primitive** (on-chain `primitive = 3`, usage bit `8`), **not** a new t-IBE object scheme:
+the **IBE half is byte-for-byte identical to `0x01`** — same G2 keys, same `H_G1(id)` DST, same
+per-message seed `e(Q_id, pk^r)`, same `c0`, and the **same G1 IDK share**. It reuses the `0x01`
+`MasterPublicKey` / `IdentityDecryptionKeyShare` objects verbatim. Only the client-side **DEM**
+changes; the worker never runs it.
+
+**Worker impact.** Because the released IDK share is DEM-agnostic, a decryption request carrying
+`primitive = 3` is served by the **same** `partial_extract_idk_share` shortsig branch and returns a
+share tagged as shortsig (`0x01`), byte-identical to a block-shortsig share. The only worker
+differences vs. `primitive = 1` are (a) it maps to usage bit `8` (so on-chain policy can authorize
+"encrypt stream" separately from "encrypt block") and (b) group check → G2. Provisioning: a keypair
+must carry usage bit `8` (fresh or a combined `bit2|bit8` mask, both G2) to serve streaming.
+
+**DEM (client-side only).** Seekable segmented AEAD (STREAM construction, à la age / Tink):
+```
+key   := HKDF-SHA256(IKM=seed, salt=∅, info="BONEH_FRANKLIN_BLS12381_SHORTSIG_AEADSTREAM/KDF", L=32)
+P     := 65536                                        # plaintext bytes per segment (64 KiB, fixed)
+for segment i of k:  nonce_i := BE_11(i) ‖ (0x01 if i==k-1 else 0x00)   # 11B counter ‖ 1B last-flag
+                     seg_ct_i := ChaCha20-Poly1305(key, nonce_i, AAD=∅).encrypt(p_i)   # p_i ‖ 16B tag
+```
+
+**Wire form — ciphertext *chunks*, not a `Ciphertext` object.** True streaming can't length-prefix
+an unknown-size body, and there is no single ciphertext object — only a header chunk plus segment
+chunks. On-storage bytes:
+```
+0x03                       1-byte stream marker (= the primitive), then
+c0                         G2 compressed, 96 bytes
+seg_ct_0 ‖ … ‖ seg_ct_{k-1}   read to EOF
+```
+Non-final segments are exactly `P+16` bytes; the final one is the remainder. Segment count +
+plaintext length are derivable from the total length (no header field), enabling `readRange` seek:
+plaintext `[x, x+len)` → segments `⌊x/P⌋ … ⌊(x+len−1)/P⌋` → their ciphertext bytes, decrypted
+independently (each nonce is a pure function of its index) and sliced.
+
+**Security.** Per-segment single-use ChaCha20-Poly1305 (the per-message seed makes `key` unique →
+counter nonces never repeat across messages); the counter defeats reordering; the last-flag defeats
+truncation in forward streaming. **Seekable tradeoff:** whole-stream truncation is detected only
+once the declared end is read (the consumer must know the total length — always true for media via
+Content-Length/manifest); every segment remains individually authenticated, so any single-segment
+tampering fails closed. ~128-bit.
+
+**Client API / conformance.** Chain-agnostic DEM in `ts-sdk/src/t-ibe/bfibe-bls12381-shortsig-aead-stream.ts`
+(+ `t-ibe-stream/`) and `python-sdk/src/ace_sdk/t_ibe/bfibe_bls12381_shortsig_aead_stream.py` (+
+`t_ibe_stream.py`); chain scopes `StreamIBE_Aptos` / `StreamIBE_Solana`. Byte-identical TS/Python
+chunks are pinned by `test-fixtures/python-sdk-cross-impl.json → t_ibe_shortsig_aead_stream`
+(consumed by `ts-sdk/tests/python-cross-impl-fixtures.test.ts` and `python-sdk/tests/test_crypto.py`);
+round-trip / seek / fails-closed live in `*-shortsig-aead-stream.test.ts` and `test_tibe_stream.py`.

@@ -21,14 +21,14 @@ export class BasicDecryptionSession {
     aceDeployment: AceDeployment;
     fullDecryptionDomain: FullDecryptionDomain;
     ciphertext: Uint8Array | undefined;
-    tibeScheme: number | undefined;
+    primitive: number | undefined;
     ephemeralDecryptionKey: pke.DecryptionKey;
     ephemeralEncryptionKey: pke.EncryptionKey;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
 
     private constructor({
-        aceDeployment, keypairId, knownChainName, programId, label, ciphertext, tibeScheme,
+        aceDeployment, keypairId, knownChainName, programId, label, ciphertext, primitive,
         ephemeralEncryptionKey, ephemeralDecryptionKey,
     }: {
         aceDeployment: AceDeployment,
@@ -37,7 +37,7 @@ export class BasicDecryptionSession {
         programId: string,
         label: Uint8Array,
         ciphertext?: Uint8Array,
-        tibeScheme?: number,
+        primitive?: number,
         ephemeralEncryptionKey: pke.EncryptionKey,
         ephemeralDecryptionKey: pke.DecryptionKey,
     }) {
@@ -45,7 +45,7 @@ export class BasicDecryptionSession {
         const contractId = ContractID.newSolana({knownChainName, programId});
         this.fullDecryptionDomain = new FullDecryptionDomain({keypairId, contractId, label});
         this.ciphertext = ciphertext;
-        this.tibeScheme = tibeScheme;
+        this.primitive = primitive;
         this.ephemeralEncryptionKey = ephemeralEncryptionKey;
         this.ephemeralDecryptionKey = ephemeralDecryptionKey;
     }
@@ -57,7 +57,7 @@ export class BasicDecryptionSession {
         programId: string,
         label: Uint8Array,
         ciphertext?: Uint8Array,
-        tibeScheme?: number,
+        primitive?: number,
     }): Promise<BasicDecryptionSession> {
         const {encryptionKey, decryptionKey} = await pke.keygen();
         return new BasicDecryptionSession({
@@ -87,9 +87,9 @@ export class BasicDecryptionSession {
         return Result.Ok({value: this.ciphertext});
     }
 
-    private getTibeScheme(): Result<number> {
-        if (this.tibeScheme !== undefined) {
-            return Result.Ok({value: this.tibeScheme});
+    private getPrimitive(): Result<number> {
+        if (this.primitive !== undefined) {
+            return Result.Ok({value: this.primitive});
         }
         if (this.ciphertext === undefined) {
             return Result.Ok({value: tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD});
@@ -111,8 +111,8 @@ export class BasicDecryptionSession {
     }
 
     async fetchIdentityKeySharesWithProof({txn}: {txn: Uint8Array}): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
-        const tibeScheme = this.getTibeScheme();
-        if (!tibeScheme.isOk) return Result.Err({error: tibeScheme.errValue, extra: tibeScheme.extra});
+        const primitive = this.getPrimitive();
+        if (!primitive.isOk) return Result.Err({error: primitive.errValue, extra: primitive.extra});
         const proof = ProofOfPermission.createSolana({txn});
         return fetchIdentityKeySharesCore({
             aceDeployment: this.aceDeployment,
@@ -120,7 +120,7 @@ export class BasicDecryptionSession {
             request: this.request!,
             proof,
             ephemeralDecryptionKey: this.ephemeralDecryptionKey,
-            tibeScheme: tibeScheme.okValue!,
+            primitive: primitive.okValue!,
         });
     }
 }

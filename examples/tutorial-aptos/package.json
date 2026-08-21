@@ -11,6 +11,7 @@
     "4-decrypt-fail": "tsx scripts/4-decrypt-fail.ts",
     "5-buy": "tsx scripts/5-buy.ts",
     "6-decrypt": "tsx scripts/6-decrypt.ts",
+    "7-stream-demo": "tsx scripts/7-stream-demo.ts",
     "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
   },
   "dependencies": {

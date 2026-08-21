@@ -48,25 +48,10 @@ type G2Hasher =
 type G1Hasher =
     MapToCurveBasedHasher<G1Projective, DefaultFieldHasher<Sha256, 128>, WBMap<ark_bls12_381::g1::Config>>;
 
-/// Map from on-chain DKG basepoint group (`group::Element` scheme byte) to the t-IBE scheme
-/// the worker should serve from a share derived from that DKG.
-///
-/// 1-to-1 for the variants currently defined:
-/// - DKG basepoint in G1 (group scheme 0) → master pk in G1 → `bfibe-bls12381-shortpk-otp-hmac`
-/// - DKG basepoint in G2 (group scheme 1) → master pk in G2 → `bfibe-bls12381-shortsig-aead`
-pub fn primitive_for_group(group_scheme: u8) -> Result<u8> {
-    use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
-    match group_scheme {
-        SCHEME_BLS12381G1 => Ok(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC),
-        SCHEME_BLS12381G2 => Ok(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD),
-        s => Err(anyhow!("primitive_for_group: unsupported group scheme {}", s)),
-    }
-}
-
-/// Inverse of [`primitive_for_group`] in spirit — but **not** an inverse in
-/// general. A group can back multiple t-IBE schemes; this maps a specific
-/// t-IBE scheme to the unique group it is built over. Used to validate
-/// `request.primitive` is compatible with the share's stored `group_scheme`.
+/// Map a request's `primitive` id to the DKG basepoint group it must be built over. This is a
+/// function in this direction only: G2 backs multiple primitives (shortsig-aead IBE, its streaming
+/// sibling, and threshold VRF), so there is no meaningful group→primitive inverse. Used to validate
+/// `request.primitive` against the share's stored `group_scheme`.
 pub fn group_scheme_for_primitive(primitive: u8) -> Result<u8> {
     use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
     match primitive {
@@ -281,17 +266,22 @@ mod tests {
     }
 
     #[test]
-    fn group_to_tibe_mapping() {
+    fn group_scheme_for_primitive_mapping() {
         use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
         assert_eq!(
-            primitive_for_group(SCHEME_BLS12381G1).unwrap(),
-            SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC
+            group_scheme_for_primitive(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap(),
+            SCHEME_BLS12381G1
         );
         assert_eq!(
-            primitive_for_group(SCHEME_BLS12381G2).unwrap(),
-            SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
+            group_scheme_for_primitive(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap(),
+            SCHEME_BLS12381G2
         );
-        assert!(primitive_for_group(0xff).is_err());
+        // The streaming sibling shares G2 with block shortsig-aead.
+        assert_eq!(
+            group_scheme_for_primitive(PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM).unwrap(),
+            SCHEME_BLS12381G2
+        );
+        assert!(group_scheme_for_primitive(0xff).is_err());
     }
 
     #[test]

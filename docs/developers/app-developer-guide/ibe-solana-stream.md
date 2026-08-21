@@ -6,14 +6,13 @@
 payload is too big to hold in memory (files, video, backups) or when a browser `<video>` element
 must **seek** into encrypted media.
 
-The access-control model is identical to `IBE_Solana` (same program hook, same `label`, same
-basic/custom flows). The differences are entirely client-side: you work in **ciphertext chunks**
-(not one blob), and `createSeekableDecryptor` supports random access. There is **no scheme/primitive
-parameter**.
+It works like `IBE_Solana` — same program hook, same `label`, and the same basic (signed
+transaction) or custom (app-supplied proof) decryption. You just encrypt and decrypt in
+**ciphertext chunks** and get a `createSeekableDecryptor` for random access.
 
-See [`ibe-aptos-stream.md`](./ibe-aptos-stream.md) for the full conceptual walkthrough (chunks vs.
-objects, the seekable/Service-Worker `<video>` pattern, and the fails-closed guarantees). This page
-shows only the Solana-specific inputs (`knownChainName` / `programId`, and a signed-transaction
+See [`ibe-aptos-stream.md`](./ibe-aptos-stream.md) for the full walkthrough (working in chunks, the
+seekable/Service-Worker `<video>` pattern, and the fails-closed behavior). This page shows only the
+Solana-specific inputs (`knownChainName` / `programId`, and a signed-transaction
 proof).
 
 ## Encrypt

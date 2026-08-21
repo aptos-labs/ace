@@ -6,24 +6,21 @@
 payload is too big to hold in memory (files, video, backups) or when you want a browser `<video>`
 element to **seek** into encrypted media.
 
-**Streaming is orthogonal to the basic/custom flow choice.** "Block vs stream" (the payload shape)
-is a separate axis from "basic vs custom" (how you prove access). Everything in
-[`ibe-aptos-basic.md`](./ibe-aptos-basic.md) and [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) —
-the contract hook, the `label`, the wallet-signature (basic) or app-supplied-proof (custom) auth —
-is unchanged; you just swap `IBE_Aptos` for `StreamIBE_Aptos` and work in chunks. StreamIBE offers
-the **same two flows**: `createStreamDecryptorBasicFlow` and `createStreamDecryptorCustomFlow`.
+It works like `IBE_Aptos` — same contract hook, same `label`, and the same wallet-signature
+(basic) or app-supplied-proof (custom) decryption you'd use in
+[`ibe-aptos-basic.md`](./ibe-aptos-basic.md) / [`ibe-aptos-custom.md`](./ibe-aptos-custom.md).
+Swap `IBE_Aptos` for `StreamIBE_Aptos` and, for decryption, use `createStreamDecryptorBasicFlow` or
+`createStreamDecryptorCustomFlow` in place of the basic/custom decrypt.
 
-The access-control model is thus identical to `IBE_Aptos`. The differences are entirely client-side:
+What's different is client-side:
 
 - You work in **ciphertext chunks**, not a single ciphertext blob. `encryptStream` yields chunks;
   `decryptStream` consumes chunks and yields plaintext chunks; memory stays ~one chunk.
 - For random access, `createSeekableDecryptor` decrypts arbitrary plaintext byte ranges, fetching
   only the ciphertext segments that cover them.
-- There is **no scheme/primitive parameter** — you pick the `StreamIBE_Aptos` scope and that's it.
 
-> Streaming reuses the production shortsig-aead IBE keys, but a keypair must be provisioned with the
-> streaming usage bit to authorize it. Use the `keypairId` your ACE deployment designates for
-> streaming (during preview, the value the ACE team / localnet config provides).
+> Streaming needs a `keypairId` provisioned for streaming. Use the one your ACE deployment
+> designates for it (during preview, the value the ACE team / localnet config provides).
 
 ## Encrypt: plaintext chunks → ciphertext chunks
 
@@ -58,17 +55,16 @@ const pk = (await ACE.StreamIBE_Aptos.fetchPk({ aceDeployment, keypairId }))
   .unwrapOrThrow("ACE stream public key fetch failed");
 ```
 
-## Decrypt: pick your flow (basic *or* custom), authenticate once, then stream or seek
+## Decrypt: authenticate once, then stream or seek
 
-Choose the **same flow you'd use with `IBE_Aptos`** — this is the basic-vs-custom axis, unchanged
-by streaming:
+Use the same flow you'd use with `IBE_Aptos`:
 
-- **Basic** (wallet signature): `createStreamDecryptorBasicFlow` — see below.
+- **Basic** (wallet signature): `createStreamDecryptorBasicFlow` — shown below.
 - **Custom** (app-supplied proof, e.g. ZK): `createStreamDecryptorCustomFlow({ …, encPk, encSk,
   payload })` — same proof inputs as `ACE.IBE_Aptos.decryptCustomFlow`.
 
-Either returns the same `decryptor`. Authenticate **once** to fetch the threshold key shares (tiny,
-independent of payload size), then decrypt as many times as you like — forward-streaming or
+Either returns the same `decryptor`. It fetches the threshold key shares once (they're tiny and
+independent of payload size), and you can then decrypt as many times as you like — forward or
 random-access.
 
 ```typescript
@@ -182,7 +178,6 @@ clip = seek.read_range(start_byte, length)          # plaintext bytes
 
 ## Notes
 
-- **No ciphertext object, no scheme param.** You deal in chunks (or byte ranges for seek). The
-  internal wire detail (`primitive = 3`) is set by the SDK; you never pass it.
+- **You deal in chunks** (or byte ranges for seek) — there's no single ciphertext value to hold.
 - **Fails closed.** Any tampered, reordered, dropped, or truncated segment makes decryption throw.
-- **Chunk size** is 64 KiB by default and rarely needs changing (tests may override it).
+- **Chunk size** is 64 KiB by default and rarely needs changing.

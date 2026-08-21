@@ -128,6 +128,8 @@ The CLI isn't on npm yet. Clone the repo and install dependencies.
 
 Requires **Node.js ≥ 22**. `@aptos-labs/ace-sdk` is ESM-only and peers `@aptos-labs/ts-sdk@^7` (CommonJS `require` and Node 20 are not supported).
 
+> **Solana support is dropped on this line** — the Solana examples/scenarios are not maintained or CI-covered here.
+
 ```bash
 git clone git@github.com:aptos-labs/ace.git
 cd ace

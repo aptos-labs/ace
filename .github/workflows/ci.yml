@@ -67,6 +67,7 @@ jobs:
       - uses: ./.github/actions/setup-node-pnpm
       - name: Typecheck, build, and test CLI
         run: |
+          pnpm --filter @aptos-labs/ace-sdk build
           pnpm --filter @aptos-labs/ace-cli typecheck
           pnpm --filter @aptos-labs/ace-cli build
           pnpm --filter @aptos-labs/ace-cli test
@@ -139,78 +140,6 @@ jobs:
           aptos move test --package-dir contracts/sigma-dlog-linear
           aptos move test --package-dir contracts/pedersen-polynomial-commitment
           aptos move test --package-dir contracts/network
-
-  solana-example:
-    name: scenario / solana-example
-    needs: build-rust
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-node-pnpm
-
-      - name: Download Rust binaries
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
-        with:
-          name: rust-binaries
-          path: target/debug/
-
-      - name: Make binaries executable
-        run: chmod +x target/debug/*
-
-      - name: Install tools
-        run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
-
-      - name: Cache Solana SBF platform tools
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: ~/.cache/solana
-          key: solana-sbf-tools-${{ runner.os }}
-
-      - name: Run solana-example
-        env:
-          ACE_SKIP_CARGO_BUILD: "1"
-        run: pnpm --filter ace-scenarios test-solana-example
-
-  custom-flow-solana:
-    name: scenario / custom-flow-solana
-    needs: build-rust
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-node-pnpm
-
-      - name: Download Rust binaries
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
-        with:
-          name: rust-binaries
-          path: target/debug/
-
-      - name: Make binaries executable
-        run: chmod +x target/debug/*
-
-      - name: Install tools
-        run: sudo scripts/install-tools.sh && sudo scripts/install-solana-tools.sh
-
-      - name: Cache Solana SBF platform tools
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: ~/.cache/solana
-          key: solana-sbf-tools-${{ runner.os }}
-
-      - name: Run custom-flow-solana
-        env:
-          ACE_SKIP_CARGO_BUILD: "1"
-        run: pnpm --filter ace-scenarios test-custom-flow-solana
 
   scenarios:
     name: scenario / ${{ matrix.scenario }}

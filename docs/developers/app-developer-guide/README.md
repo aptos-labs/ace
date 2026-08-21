@@ -10,9 +10,24 @@ ACE lets an app encrypt data or derive values scoped to a contract, account, and
 | [`ibe-solana-basic.md`](./ibe-solana-basic.md) | Your Solana program decides whether Solana account X can access object Y | pay-to-download, receipt-based access, PDA-backed ACLs |
 | [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) | Your Aptos contract decides whether off-chain identity X can access object Y | ZK-gated access, signed attestations, bearer-token style grants |
 | [`ibe-solana-custom.md`](./ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
-| [`ibe-aptos-stream.md`](./ibe-aptos-stream.md) | Same access model as `ibe-aptos-*`, but the payload is large or needs seeking | encrypted file storage, backups, **web-video streaming/seek** |
-| [`ibe-solana-stream.md`](./ibe-solana-stream.md) | Same access model as `ibe-solana-*`, but the payload is large or needs seeking | encrypted file storage, backups, **web-video streaming/seek** |
 | [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract, account, and label | per-object signing keys, deterministic grants, app-scoped randomness |
+
+## Large or seekable payloads: streaming (orthogonal to the guides above)
+
+The IBE guides above pick your **access model** — chain (Aptos/Solana) and proof style
+(**basic** wallet signature vs **custom** app-supplied proof). Whether you encrypt a whole in-memory
+blob (**block**) or a **stream** of chunks is a *separate, orthogonal* choice: both compose with any
+of those flows.
+
+- **Block** (default): `ACE.IBE_Aptos` / `ACE.IBE_Solana` — one plaintext in, one ciphertext out.
+- **Streaming + seekable**: `ACE.StreamIBE_Aptos` / `ACE.StreamIBE_Solana` — chunk-in / chunk-out,
+  bounded memory, plus random-access decrypt for **web-video seek**. Same contract hook, same
+  `label`, and the **same basic/custom flows** (`createStreamDecryptorBasicFlow` /
+  `createStreamDecryptorCustomFlow`).
+
+Reach for streaming when the payload is too big to hold in memory (files, video, backups) or a
+browser `<video>` must seek. How-to (both flows, both chains):
+[`ibe-aptos-stream.md`](./ibe-aptos-stream.md), [`ibe-solana-stream.md`](./ibe-solana-stream.md).
 
 ## Vocabulary
 

@@ -6,8 +6,14 @@
 payload is too big to hold in memory (files, video, backups) or when you want a browser `<video>`
 element to **seek** into encrypted media.
 
-The access-control model is identical to `IBE_Aptos` (same contract hook, same `label`, same
-basic/custom flows). The differences are entirely client-side:
+**Streaming is orthogonal to the basic/custom flow choice.** "Block vs stream" (the payload shape)
+is a separate axis from "basic vs custom" (how you prove access). Everything in
+[`ibe-aptos-basic.md`](./ibe-aptos-basic.md) and [`ibe-aptos-custom.md`](./ibe-aptos-custom.md) —
+the contract hook, the `label`, the wallet-signature (basic) or app-supplied-proof (custom) auth —
+is unchanged; you just swap `IBE_Aptos` for `StreamIBE_Aptos` and work in chunks. StreamIBE offers
+the **same two flows**: `createStreamDecryptorBasicFlow` and `createStreamDecryptorCustomFlow`.
+
+The access-control model is thus identical to `IBE_Aptos`. The differences are entirely client-side:
 
 - You work in **ciphertext chunks**, not a single ciphertext blob. `encryptStream` yields chunks;
   `decryptStream` consumes chunks and yields plaintext chunks; memory stays ~one chunk.
@@ -52,12 +58,22 @@ const pk = (await ACE.StreamIBE_Aptos.fetchPk({ aceDeployment, keypairId }))
   .unwrapOrThrow("ACE stream public key fetch failed");
 ```
 
-## Decrypt: authenticate once, then stream or seek
+## Decrypt: pick your flow (basic *or* custom), authenticate once, then stream or seek
 
-Authenticate **once** to fetch the threshold key shares (tiny, independent of payload size), then
-decrypt as many times as you like — forward-streaming or random-access.
+Choose the **same flow you'd use with `IBE_Aptos`** — this is the basic-vs-custom axis, unchanged
+by streaming:
+
+- **Basic** (wallet signature): `createStreamDecryptorBasicFlow` — see below.
+- **Custom** (app-supplied proof, e.g. ZK): `createStreamDecryptorCustomFlow({ …, encPk, encSk,
+  payload })` — same proof inputs as `ACE.IBE_Aptos.decryptCustomFlow`.
+
+Either returns the same `decryptor`. Authenticate **once** to fetch the threshold key shares (tiny,
+independent of payload size), then decrypt as many times as you like — forward-streaming or
+random-access.
 
 ```typescript
+// Basic flow (wallet signature). For custom flow, call createStreamDecryptorCustomFlow instead —
+// same return type, same decryptStream / createSeekableDecryptor below.
 const decryptor = await ACE.StreamIBE_Aptos.createStreamDecryptorBasicFlow({
   aceDeployment,
   keypairId,

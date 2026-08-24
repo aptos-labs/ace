@@ -62,6 +62,7 @@ known_deployments: dict[str, KnownDeployment] = {
             contract_addr=_addr(
                 "0x086f9a291d3d28140413505f6224d10e07cb6d6d08ab5933f62ff1b685830408"
             ),
+            discovery_url="https://ace.shelby-beta.aptoslabs.com/discovery",
         ),
         ibe_keypair_id=_addr(
             "0x50ca2eb86412416256522777770b9846ced2b0185db1d301f233d5f47215f4c3"

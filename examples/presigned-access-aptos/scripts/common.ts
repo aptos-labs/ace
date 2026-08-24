@@ -25,6 +25,12 @@ export interface AceConfig {
     contractAddr: string;
     ibeKeypairId: string;
     vrfKeypairId: string;
+    /** ACE discovery service base URL. When set, chain reads go through discovery
+     *  (no node API key, no fullnode calls). Populated from a known deployment. */
+    discoveryUrl?: string;
+    /** Chain id from the known deployment, so the monitor need not query the
+     *  fullnode for it in discovery mode. */
+    chainId?: number;
 }
 
 function targetNetwork(): AceNetwork {
@@ -70,6 +76,31 @@ function readLocalnetConfig(): AceConfig {
 export function readAceConfig(): AceConfig {
     const network = targetNetwork();
     const envIds = idsFromEnv();
+
+    // Highest precedence: pick a named known deployment (e.g. ACE_DEPLOYMENT=shelby-beta-usce1).
+    // Everything — endpoint, contract, keypair ids, chain id, and discoveryUrl — comes from the
+    // SDK registry, so a monitor needs no per-field env and (for deployments with a discoveryUrl)
+    // reads the chain keyless via discovery.
+    const deploymentName = process.env.ACE_DEPLOYMENT?.trim();
+    if (deploymentName) {
+        const registry = ACE.knownDeployments as Record<string, (typeof ACE.knownDeployments)[keyof typeof ACE.knownDeployments]>;
+        const known = registry[deploymentName];
+        if (!known) {
+            throw new Error(
+                `Unknown ACE_DEPLOYMENT="${deploymentName}". Known: ${Object.keys(ACE.knownDeployments).join(', ')}.`,
+            );
+        }
+        return {
+            network,
+            apiEndpoint: known.aceDeployment.apiEndpoint,
+            contractAddr: known.aceDeployment.contractAddr.toStringLong(),
+            ibeKeypairId: known.ibeKeypairId.toStringLong(),
+            vrfKeypairId: known.vrfKeypairId.toStringLong(),
+            discoveryUrl: known.aceDeployment.discoveryUrl,
+            chainId: known.chainId,
+        };
+    }
+
     if (process.env.ACE_CONTRACT && envIds) {
         return {
             network,
@@ -276,6 +307,7 @@ export function aceDeploymentFromConfig(cfg: AceConfig): ACE.AceDeployment {
     return new ACE.AceDeployment({
         apiEndpoint: cfg.apiEndpoint,
         contractAddr: AccountAddress.fromString(cfg.contractAddr),
+        discoveryUrl: cfg.discoveryUrl,
     });
 }
 

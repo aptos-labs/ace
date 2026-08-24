@@ -18,12 +18,12 @@ export interface StreamDecryptor {
     createSeekableDecryptor(ciphertextSource: tibeStream.CiphertextSource): Promise<tibeStream.SeekableDecryptor>;
 }
 
-function makeDecryptor(idkShares: tibe.IdentityDecryptionKeyShare[], chunkSize?: number): StreamDecryptor {
+function makeDecryptor(idkShares: tibe.IdentityDecryptionKeyShare[]): StreamDecryptor {
     return {
         idkShares,
-        decryptStream: (ciphertextChunks) => tibeStream.decryptStream({ idkShares, ciphertextChunks, chunkSize }),
+        decryptStream: (ciphertextChunks) => tibeStream.decryptStream({ idkShares, ciphertextChunks }),
         createSeekableDecryptor: (ciphertextSource) =>
-            tibeStream.createSeekableDecryptor({ idkShares, ciphertextSource, chunkSize }),
+            tibeStream.createSeekableDecryptor({ idkShares, ciphertextSource }),
     };
 }
 
@@ -38,7 +38,6 @@ export async function createStreamDecryptorBasicFlow(args: {
     programId: string,
     label: Uint8Array,
     signTxn: (fullRequestBytes: Uint8Array) => Promise<Uint8Array>,
-    chunkSize?: number,
 }): Promise<StreamDecryptor> {
     const session = await BasicDecryptionSession.create({
         aceDeployment: args.aceDeployment,
@@ -52,7 +51,7 @@ export async function createStreamDecryptorBasicFlow(args: {
     const signedTxn = await args.signTxn(fullRequestBytes);
     const idkShares = (await session.fetchIdentityKeySharesWithProof({ txn: signedTxn }))
         .unwrapOrThrow('StreamIBE_Solana.basicFlow: fetchIdentityKeyShares failed');
-    return makeDecryptor(idkShares, args.chunkSize);
+    return makeDecryptor(idkShares);
 }
 
 /** Custom-flow streaming decrypt on Solana. */
@@ -66,7 +65,6 @@ export async function createStreamDecryptorCustomFlow(args: {
     encSk: Uint8Array,
     epoch: number,
     txn: Uint8Array,
-    chunkSize?: number,
 }): Promise<StreamDecryptor> {
     const idkShares = (await fetchIdentityKeySharesCustomFlow({
         label: args.label,
@@ -81,5 +79,5 @@ export async function createStreamDecryptorCustomFlow(args: {
         // Forwarded into the request's `primitive` field.
         tibeScheme: PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM,
     })).unwrapOrThrow('StreamIBE_Solana.customFlow: fetchIdentityKeyShares failed');
-    return makeDecryptor(idkShares, args.chunkSize);
+    return makeDecryptor(idkShares);
 }

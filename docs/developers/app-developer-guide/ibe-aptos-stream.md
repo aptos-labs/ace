@@ -179,5 +179,6 @@ clip = seek.read_range(start_byte, length)          # plaintext bytes
 ## Notes
 
 - **You deal in chunks** (or byte ranges for seek) — there's no single ciphertext value to hold.
+  Your input can be chunked any way (e.g. `file.stream()`); the SDK re-segments internally.
 - **Fails closed.** Any tampered, reordered, dropped, or truncated segment makes decryption throw.
-- **Chunk size** is 64 KiB by default and rarely needs changing.
+- The segment size is a fixed 64 KiB — not a caller parameter (it's part of the wire format).

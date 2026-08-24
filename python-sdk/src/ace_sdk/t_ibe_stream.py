@@ -49,38 +49,42 @@ def _require_shortsig_shares(idk_shares: list["tibe.IdentityDecryptionKeyShare"]
     return out
 
 
+# The segment size is a fixed part of the wire format (not stored in the ciphertext), so it is
+# intentionally not a public parameter here: encrypt and decrypt must agree, and the caller's input
+# chunking is re-segmented internally. It remains a knob only on the low-level DEM + the vector
+# helpers (below) that the cross-impl fixtures need.
+
+
 def encrypt_stream(
     mpk: "tibe.MasterPublicKey",
     identity: bytes,
     plaintext: Iterable[bytes],
     randomness: bytes | None = None,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> Iterator[bytes]:
     """Encrypt plaintext byte chunks into ciphertext chunks (header chunk, then segments)."""
     return _stream.encrypt_chunks(
-        _require_shortsig_mpk(mpk), identity, plaintext, randomness=randomness, chunk_size=chunk_size
+        _require_shortsig_mpk(mpk), identity, plaintext, randomness=randomness
     )
 
 
 def decrypt_stream(
     idk_shares: list["tibe.IdentityDecryptionKeyShare"],
     ciphertext_chunks: Iterable[bytes],
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> Iterator[bytes]:
     """Decrypt ciphertext chunks (any re-chunking) into plaintext byte chunks. Fails closed."""
-    return _stream.decrypt_chunks(_require_shortsig_shares(idk_shares), ciphertext_chunks, chunk_size=chunk_size)
+    return _stream.decrypt_chunks(_require_shortsig_shares(idk_shares), ciphertext_chunks)
 
 
 def create_seekable_decryptor(
     idk_shares: list["tibe.IdentityDecryptionKeyShare"],
     source: CiphertextSource,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> SeekableDecryptor:
     """Build a seekable decryptor over a random-access ciphertext source (see CiphertextSource)."""
-    return _stream.create_seekable_decryptor(_require_shortsig_shares(idk_shares), source, chunk_size)
+    return _stream.create_seekable_decryptor(_require_shortsig_shares(idk_shares), source)
 
 
-# -- Byte-exact whole-buffer helpers (concatenated ciphertext chunks, for vectors only) ---------
+# -- Byte-exact whole-buffer helpers (concatenated ciphertext chunks, for cross-impl vectors) ----
+# These keep an explicit `chunk_size` so fixtures can pin compact multi-segment vectors.
 
 
 def encrypt_to_concat_chunks_with_randomness(

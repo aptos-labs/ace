@@ -28,7 +28,7 @@ import {
     bringUpAceAndDeployCheckAclDemo,
 } from './custom-flow-aptos/helpers';
 
-const CHUNK = 64 * 1024; // production default; the payload below spans several segments
+const INPUT_CHUNK = 64 * 1024; // how we slice the input stream; the SDK re-segments internally
 
 async function* chunked(bytes: Uint8Array, size: number): AsyncGenerator<Uint8Array> {
     for (let i = 0; i < bytes.length; i += size) yield bytes.subarray(i, Math.min(i + size, bytes.length));
@@ -93,14 +93,14 @@ async function runStreamTestCases(setup: AptosCustomFlowSetup): Promise<void> {
     // Encrypt as ciphertext CHUNKS (streaming fetches the pk once).
     const cipherChunks = await collect(ACE.StreamIBE_Aptos.encryptStream({
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr, moduleName: 'check_acl_demo',
-        label, plaintext: chunked(plaintext, CHUNK), chunkSize: CHUNK,
+        label, plaintext: chunked(plaintext, INPUT_CHUNK),
     }));
     log(`encryptStream produced ${cipherChunks.length} ciphertext chunks`);
 
     const caller = await pke.keygen();
     const baseDecryptArgs = {
         aceDeployment, keypairId, chainId: CHAIN_ID, moduleAddr: adminAddr, moduleName: 'check_acl_demo',
-        label, encPk: caller.encryptionKey.toBytes(), encSk: caller.decryptionKey.toBytes(), chunkSize: CHUNK,
+        label, encPk: caller.encryptionKey.toBytes(), encSk: caller.decryptionKey.toBytes(),
     };
 
     // Custom-flow stream decrypt with the correct payload → authenticate once, then stream + seek.

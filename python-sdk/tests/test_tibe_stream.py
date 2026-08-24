@@ -131,13 +131,15 @@ def test_generic_api_round_trip_and_rejects_non_shortsig():
     share = tibe.extract(scheme=scheme, msk_scalar=msk.inner.scalar, identity=identity).unwrap_or_throw(
         ValueError("extract")
     )
-    pt = _bytes(3 * CHUNK + 7)
-    ct = b"".join(t_ibe_stream.encrypt_stream(mpk, identity, _pieces(pt, 9), chunk_size=CHUNK))
-    assert b"".join(t_ibe_stream.decrypt_stream([share], _pieces(ct, 11), chunk_size=CHUNK)) == pt
+    # The generic API fixes the segment size at 64 KiB (no chunk_size param); use a >64 KiB payload
+    # to still cross segment boundaries. Boundary edge cases are covered above via the low-level DEM.
+    pt = _bytes(3 * st.DEFAULT_CHUNK_SIZE + 7)
+    ct = b"".join(t_ibe_stream.encrypt_stream(mpk, identity, _pieces(pt, 4096)))
+    assert b"".join(t_ibe_stream.decrypt_stream([share], _pieces(ct, 5000))) == pt
 
     otp_msk = tibe.keygen_for_testing(tibe.SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap_or_throw(
         ValueError("otp")
     )
     otp_mpk = tibe.derive_public_key(otp_msk).unwrap_or_throw(ValueError("otp mpk"))
     with pytest.raises(ValueError):
-        list(t_ibe_stream.encrypt_stream(otp_mpk, identity, [b"hi"], chunk_size=CHUNK))
+        list(t_ibe_stream.encrypt_stream(otp_mpk, identity, [b"hi"]))

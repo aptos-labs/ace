@@ -151,27 +151,32 @@ describe("t-ibe-stream generic API (reuses shortsig-aead objects)", () => {
         return { mpk, id, shares: [share] };
     }
 
+    // The generic API fixes the segment size at the 64 KiB default (no chunkSize param), so these
+    // use a >64 KiB payload to still cross segment boundaries through the public path. Boundary
+    // edge cases are covered above via the low-level module.
+    const P = stream.DEFAULT_CHUNK_SIZE;
+
     it("generic encryptStream → decryptStream round-trip", async () => {
         const { mpk, id, shares } = genericFixture();
-        const pt = bytesOfLen(3 * CHUNK + 7);
-        const ct = await collect(tibeStream.encryptStream({ mpk, id, plaintext: pieces(pt, 9), chunkSize: CHUNK }));
-        const got = await collect(tibeStream.decryptStream({ idkShares: shares, ciphertextChunks: pieces(ct, 11), chunkSize: CHUNK }));
+        const pt = bytesOfLen(3 * P + 7);
+        const ct = await collect(tibeStream.encryptStream({ mpk, id, plaintext: pieces(pt, 4096) }));
+        const got = await collect(tibeStream.decryptStream({ idkShares: shares, ciphertextChunks: pieces(ct, 5000) }));
         expect(got).toEqual(pt);
     });
 
     it("generic seekable readRange over stored ciphertext chunks", async () => {
         const { mpk, id, shares } = genericFixture();
-        const pt = bytesOfLen(4 * CHUNK + 2);
+        const pt = bytesOfLen(3 * P + 2);
         const r = numberToBytesLE(5n, 32);
-        const ctChunks = tibeStream.encryptToConcatChunksWithRandomness({ mpk, id, plaintext: pt, randomness: r, chunkSize: CHUNK });
+        const ctChunks = tibeStream.encryptToConcatChunksWithRandomness({ mpk, id, plaintext: pt, randomness: r });
         const source: stream.CiphertextSource = { byteLength: ctChunks.length, readRange: (o, l) => ctChunks.subarray(o, o + l) };
-        const dec = await tibeStream.createSeekableDecryptor({ idkShares: shares, ciphertextSource: source, chunkSize: CHUNK });
-        expect(await dec.readRange(CHUNK + 1, CHUNK)).toEqual(pt.subarray(CHUNK + 1, 2 * CHUNK + 1));
+        const dec = await tibeStream.createSeekableDecryptor({ idkShares: shares, ciphertextSource: source });
+        expect(await dec.readRange(P + 1, P)).toEqual(pt.subarray(P + 1, 2 * P + 1));
     });
 
     it("rejects a non-shortsig mpk", () => {
         const otpMsk = tibe.keygenForTesting(tibe.SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrapOrThrow("otp msk");
         const otpMpk = tibe.derivePublicKey(otpMsk).unwrapOrThrow("otp mpk");
-        expect(() => tibeStream.encryptStream({ mpk: otpMpk, id: utf8("x"), plaintext: [utf8("hi")], chunkSize: CHUNK })).toThrow();
+        expect(() => tibeStream.encryptStream({ mpk: otpMpk, id: utf8("x"), plaintext: [utf8("hi")] })).toThrow();
     });
 });

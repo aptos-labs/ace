@@ -28,7 +28,7 @@ export async function fetchPk({ aceDeployment, keypairId }: {
  * is fully buffered. There is no ciphertext object — the caller stores/uploads the chunks.
  */
 export async function* encryptStream({
-    aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, plaintext, pk, randomness, chunkSize,
+    aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, plaintext, pk, randomness,
 }: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
@@ -36,17 +36,15 @@ export async function* encryptStream({
     moduleAddr: AccountAddress,
     moduleName: string,
     label: Uint8Array,
-    /** Plaintext as an (async) iterable of byte chunks of any size. */
+    /** Plaintext as an (async) iterable of byte chunks of any size (re-segmented internally). */
     plaintext: ByteChunks,
     /** Optional cached master public key from `fetchPk`. */
     pk?: tibe.MasterPublicKey,
     /** Test-only: pin the IBE randomness. Omit in production. */
     randomness?: Uint8Array,
-    /** Plaintext bytes per segment; defaults to 64 KiB. Rarely overridden outside tests. */
-    chunkSize?: number,
 }): AsyncGenerator<Uint8Array> {
     const mpk = pk ?? (await fetchPk({ aceDeployment, keypairId })).unwrapOrThrow('StreamIBE_Aptos.encryptStream: fetchPk failed');
     const contractId = ContractID.newAptos({ chainId, moduleAddr, moduleName });
     const fdd = new FullDecryptionDomain({ keypairId, contractId, label });
-    yield* tibeStream.encryptStream({ mpk, id: fdd.toBytes(), plaintext, randomness, chunkSize });
+    yield* tibeStream.encryptStream({ mpk, id: fdd.toBytes(), plaintext, randomness });
 }

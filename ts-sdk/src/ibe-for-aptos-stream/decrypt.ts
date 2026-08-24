@@ -24,12 +24,12 @@ export interface StreamDecryptor {
     createSeekableDecryptor(ciphertextSource: tibeStream.CiphertextSource): Promise<tibeStream.SeekableDecryptor>;
 }
 
-function makeDecryptor(idkShares: tibe.IdentityDecryptionKeyShare[], chunkSize?: number): StreamDecryptor {
+function makeDecryptor(idkShares: tibe.IdentityDecryptionKeyShare[]): StreamDecryptor {
     return {
         idkShares,
-        decryptStream: (ciphertextChunks) => tibeStream.decryptStream({ idkShares, ciphertextChunks, chunkSize }),
+        decryptStream: (ciphertextChunks) => tibeStream.decryptStream({ idkShares, ciphertextChunks }),
         createSeekableDecryptor: (ciphertextSource) =>
-            tibeStream.createSeekableDecryptor({ idkShares, ciphertextSource, chunkSize }),
+            tibeStream.createSeekableDecryptor({ idkShares, ciphertextSource }),
     };
 }
 
@@ -48,7 +48,6 @@ export async function createStreamDecryptorBasicFlow(args: {
     label: Uint8Array,
     accountAddress: AccountAddress,
     sign: (msgToSign: string) => Promise<{ pubKey: PublicKey; signature: Signature; fullMessage: string }>,
-    chunkSize?: number,
 }): Promise<StreamDecryptor> {
     const session = await BasicDecryptionSession.create({
         aceDeployment: args.aceDeployment,
@@ -64,7 +63,7 @@ export async function createStreamDecryptorBasicFlow(args: {
     const idkShares = (await session.fetchIdentityKeySharesWithProof({
         userAddr: args.accountAddress, publicKey: pubKey, signature, fullMessage,
     })).unwrapOrThrow('StreamIBE_Aptos.basicFlow: fetchIdentityKeyShares failed');
-    return makeDecryptor(idkShares, args.chunkSize);
+    return makeDecryptor(idkShares);
 }
 
 /**
@@ -81,7 +80,6 @@ export async function createStreamDecryptorCustomFlow(args: {
     encPk: Uint8Array,
     encSk: Uint8Array,
     payload: Uint8Array,
-    chunkSize?: number,
 }): Promise<StreamDecryptor> {
     const idkShares = (await fetchIdentityKeySharesCustomFlow({
         label: args.label,
@@ -96,5 +94,5 @@ export async function createStreamDecryptorCustomFlow(args: {
         // The custom-flow helper forwards this into the request's `primitive` field.
         tibeScheme: PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM,
     })).unwrapOrThrow('StreamIBE_Aptos.customFlow: fetchIdentityKeyShares failed');
-    return makeDecryptor(idkShares, args.chunkSize);
+    return makeDecryptor(idkShares);
 }

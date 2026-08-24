@@ -48,33 +48,29 @@ def encrypt_stream(
     plaintext: Iterable[bytes],
     pk: t_ibe.MasterPublicKey | None = None,
     randomness: bytes | None = None,
-    chunk_size: int = t_ibe_stream.DEFAULT_CHUNK_SIZE,
 ) -> Iterator[bytes]:
-    """Streaming, bounded-memory encryption. Consumes an iterable of plaintext byte chunks and
-    yields ciphertext chunks (a header chunk, then one 64 KiB segment chunk at a time)."""
+    """Streaming, bounded-memory encryption. Consumes an iterable of plaintext byte chunks (any
+    sizes; re-segmented internally) and yields ciphertext chunks (a header chunk, then segments)."""
     mpk = pk or fetch_pk(ace_deployment, keypair_id).unwrap_or_throw(
         ValueError("StreamIBE_Aptos.encrypt_stream: fetch_pk failed")
     )
     contract_id = ContractID.new_aptos(chain_id, module_addr, module_name)
     fdd = FullDecryptionDomain(keypair_id, contract_id, label)
-    yield from t_ibe_stream.encrypt_stream(
-        mpk, fdd.to_bytes(), plaintext, randomness=randomness, chunk_size=chunk_size
-    )
+    yield from t_ibe_stream.encrypt_stream(mpk, fdd.to_bytes(), plaintext, randomness=randomness)
 
 
 class StreamDecryptor:
     """Streaming decryptor bound to already-fetched IDK shares. Authenticate once (fetch shares),
     then stream-decrypt or seek arbitrarily many times over the same shares."""
 
-    def __init__(self, idk_shares: list[t_ibe.IdentityDecryptionKeyShare], chunk_size: int) -> None:
+    def __init__(self, idk_shares: list[t_ibe.IdentityDecryptionKeyShare]) -> None:
         self.idk_shares = idk_shares
-        self._chunk_size = chunk_size
 
     def decrypt_stream(self, ciphertext_chunks: Iterable[bytes]) -> Iterator[bytes]:
-        return t_ibe_stream.decrypt_stream(self.idk_shares, ciphertext_chunks, chunk_size=self._chunk_size)
+        return t_ibe_stream.decrypt_stream(self.idk_shares, ciphertext_chunks)
 
     def create_seekable_decryptor(self, source: "t_ibe_stream.CiphertextSource"):
-        return t_ibe_stream.create_seekable_decryptor(self.idk_shares, source, chunk_size=self._chunk_size)
+        return t_ibe_stream.create_seekable_decryptor(self.idk_shares, source)
 
 
 def create_stream_decryptor_custom_flow(
@@ -87,7 +83,6 @@ def create_stream_decryptor_custom_flow(
     enc_pk: bytes | pke.EncryptionKey,
     enc_sk: bytes | pke.DecryptionKey,
     payload: bytes,
-    chunk_size: int = t_ibe_stream.DEFAULT_CHUNK_SIZE,
     per_node_timeout_ms: int = 8000,
 ) -> Result[StreamDecryptor]:
     """Custom-flow (app-supplied proof) streaming decrypt: fetch the streaming-primitive (3) IDK
@@ -108,7 +103,7 @@ def create_stream_decryptor_custom_flow(
             tibe_scheme=_STREAM_PRIMITIVE,
             per_node_timeout_ms=per_node_timeout_ms,
         ).unwrap_or_throw(ValueError("StreamIBE_Aptos.custom_flow: fetch shares failed"))
-        return StreamDecryptor(shares, chunk_size)
+        return StreamDecryptor(shares)
 
     return Result.capture(task, records_execution_time_ms=True)
 

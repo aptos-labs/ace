@@ -44,36 +44,41 @@ function requireShortsigShares(idkShares: tibe.IdentityDecryptionKeyShare[]): Sh
     });
 }
 
+// The segment size is a fixed part of the wire format — it is NOT stored in the ciphertext, so the
+// decryptor derives layout from the total length assuming a constant. It is therefore deliberately
+// not a public parameter: encrypt and decrypt would have to agree with nothing enforcing it, and
+// the caller's input chunking is already re-segmented internally. It stays a constant here and a
+// knob only on the low-level DEM (below) that the tests / cross-impl vectors need.
+
 /** Encrypt plaintext byte chunks into ciphertext byte chunks (header chunk, then segments). */
-export function encryptStream({ mpk, id, plaintext, randomness, chunkSize }: {
+export function encryptStream({ mpk, id, plaintext, randomness }: {
     mpk: tibe.MasterPublicKey;
     id: Uint8Array;
     plaintext: ByteChunks;
     randomness?: Uint8Array;
-    chunkSize?: number;
 }): AsyncGenerator<Uint8Array> {
-    return Stream.encryptChunks(requireShortsigMpk(mpk), id, plaintext, { randomness, chunkSize });
+    return Stream.encryptChunks(requireShortsigMpk(mpk), id, plaintext, { randomness });
 }
 
 /** Decrypt ciphertext byte chunks (any re-chunking) into plaintext byte chunks. Fails closed. */
-export function decryptStream({ idkShares, ciphertextChunks, chunkSize }: {
+export function decryptStream({ idkShares, ciphertextChunks }: {
     idkShares: tibe.IdentityDecryptionKeyShare[];
     ciphertextChunks: ByteChunks;
-    chunkSize?: number;
 }): AsyncGenerator<Uint8Array> {
-    return Stream.decryptChunks(requireShortsigShares(idkShares), ciphertextChunks, { chunkSize });
+    return Stream.decryptChunks(requireShortsigShares(idkShares), ciphertextChunks);
 }
 
 /** Build a seekable decryptor over a random-access ciphertext source (see `CiphertextSource`). */
-export function createSeekableDecryptor({ idkShares, ciphertextSource, chunkSize }: {
+export function createSeekableDecryptor({ idkShares, ciphertextSource }: {
     idkShares: tibe.IdentityDecryptionKeyShare[];
     ciphertextSource: CiphertextSource;
-    chunkSize?: number;
 }): Promise<SeekableDecryptor> {
-    return Stream.createSeekableDecryptor({ idkShares: requireShortsigShares(idkShares), ciphertextSource, chunkSize });
+    return Stream.createSeekableDecryptor({ idkShares: requireShortsigShares(idkShares), ciphertextSource });
 }
 
-// ── Byte-exact whole-buffer helpers (concatenated ciphertext chunks, for vectors only) ──
+// ── Byte-exact whole-buffer helpers (concatenated ciphertext chunks, for cross-impl vectors) ──
+// These keep an explicit `chunkSize` because the fixtures pin multi-segment vectors with a tiny
+// size to stay compact; they are not part of the streaming/seekable production surface.
 
 export function encryptToConcatChunksWithRandomness({ mpk, id, plaintext, randomness, chunkSize }: {
     mpk: tibe.MasterPublicKey;

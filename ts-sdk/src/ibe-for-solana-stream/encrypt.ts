@@ -24,7 +24,7 @@ export async function fetchPk({ aceDeployment, keypairId }: {
 
 /** Streaming, bounded-memory encryption for Solana. Yields ciphertext chunks (see Aptos equiv). */
 export async function* encryptStream({
-    aceDeployment, keypairId, knownChainName, programId, label, plaintext, pk, randomness, chunkSize,
+    aceDeployment, keypairId, knownChainName, programId, label, plaintext, pk, randomness,
 }: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
@@ -34,10 +34,9 @@ export async function* encryptStream({
     plaintext: ByteChunks,
     pk?: tibe.MasterPublicKey,
     randomness?: Uint8Array,
-    chunkSize?: number,
 }): AsyncGenerator<Uint8Array> {
     const mpk = pk ?? (await fetchPk({ aceDeployment, keypairId })).unwrapOrThrow('StreamIBE_Solana.encryptStream: fetchPk failed');
     const contractId = ContractID.newSolana({ knownChainName, programId });
     const fdd = new FullDecryptionDomain({ keypairId, contractId, label });
-    yield* tibeStream.encryptStream({ mpk, id: fdd.toBytes(), plaintext, randomness, chunkSize });
+    yield* tibeStream.encryptStream({ mpk, id: fdd.toBytes(), plaintext, randomness });
 }

@@ -138,30 +138,11 @@ Expected output:
 This last step is the punchline: domain-binding is what makes ACE's
 per-ciphertext access control meaningful.
 
-### Step 7 — Streaming + seekable encryption (StreamIBE), self-contained
+### Next: large or seekable payloads
 
-> *Steps 1–6 encrypt small blobs. When the payload is large (files, video) or you want a browser
-> `<video>` to seek into encrypted media, use `ACE.StreamIBE_Aptos` — same access model, but you
-> work in ciphertext **chunks** and get a seekable decryptor. This step is a self-contained demo
-> (no localnet needed) of the streaming mechanics: chunk-in/chunk-out encryption, bounded-memory
-> decryption, and `readRange` seeking.*
-
-```bash
-pnpm 7-stream-demo
-```
-
-Expected output:
-
-```
-Encrypted into 6 ciphertext chunks (1 header + segments)
-✓ Forward stream round-trip matches
-✓ Seek readRange(...) matches — fetched only ~65 KiB of ~300 KiB ciphertext bytes
-```
-
-The seek line is the point: reading a 4 KiB slice fetches only the one 64 KiB segment that covers
-it — exactly what makes encrypted `<video>` seeking cheap. For the network-backed app flow
-(`encryptStream` + `createStreamDecryptorBasicFlow` against the ACE nodes, plus the Service-Worker
-`<video>` recipe), see
+This tutorial encrypts small blobs. When the payload is large (files, video) or a browser
+`<video>` must seek into encrypted media, use `ACE.StreamIBE_Aptos` instead of `ACE.IBE_Aptos` —
+same access model, but you encrypt/decrypt in chunks and get a seekable decryptor. See the guide:
 [`docs/developers/app-developer-guide/ibe-aptos-stream.md`](../../docs/developers/app-developer-guide/ibe-aptos-stream.md).
 
 ## What's in this tutorial

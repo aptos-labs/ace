@@ -30,7 +30,7 @@ import * as ACE from '@aptos-labs/ace-sdk';
 import {
     ReaderProof, SignableRequest,
     aceDeploymentFromConfig, aptosFromConfig, buildBlobId, deriveAccessKeypair,
-    fetchContractVersion, fetchNetworkState, readMonitorRunConfig, signWithAccessPrivateKey,
+    readMonitorRunConfig, signWithAccessPrivateKey,
 } from './common.js';
 
 /**
@@ -68,7 +68,6 @@ function classifyReason(message: string, sdkLogs: string[]): string {
 async function runProbe(): Promise<Record<string, unknown>> {
     const cfg = readMonitorRunConfig();
 
-    const aptos = aptosFromConfig(cfg.ace);
     const aceDeployment = aceDeploymentFromConfig(cfg.ace);
     const ibeKeypairId = AccountAddress.fromString(cfg.ace.ibeKeypairId);
     const vrfKeypairId = AccountAddress.fromString(cfg.ace.vrfKeypairId);
@@ -79,34 +78,11 @@ async function runProbe(): Promise<Record<string, unknown>> {
         ),
     });
 
-    const chainId = await aptos.getChainId();
+    // chainId from the known deployment when available (discovery mode never touches the
+    // fullnode); otherwise query the node.
+    const chainId = cfg.ace.chainId ?? await aptosFromConfig(cfg.ace).getChainId();
     if (cfg.expect.chainId !== undefined && chainId !== cfg.expect.chainId) {
         throw new Error(`chain id mismatch: expected ${cfg.expect.chainId}, got ${chainId}`);
-    }
-
-    const [networkState, contractVersion] = await Promise.all([
-        fetchNetworkState(aptos, cfg.ace.contractAddr),
-        fetchContractVersion(aptos, cfg.ace.contractAddr),
-    ]);
-    const epoch = networkState.epoch;
-    const committeeSize = networkState.curNodes.length;
-    const threshold = networkState.curThreshold;
-
-    const secretIds = new Set(networkState.secrets.map(s => s.keypairId.toStringLong()));
-    if (!secretIds.has(ibeKeypairId.toStringLong())) {
-        throw new Error(`IBE keypair ${ibeKeypairId.toStringLong()} not in network state`);
-    }
-    if (!secretIds.has(vrfKeypairId.toStringLong())) {
-        throw new Error(`VRF keypair ${vrfKeypairId.toStringLong()} not in network state`);
-    }
-    if (cfg.expect.committeeSize !== undefined && committeeSize !== cfg.expect.committeeSize) {
-        throw new Error(`committee size mismatch: expected ${cfg.expect.committeeSize}, got ${committeeSize}`);
-    }
-    if (cfg.expect.threshold !== undefined && threshold !== cfg.expect.threshold) {
-        throw new Error(`threshold mismatch: expected ${cfg.expect.threshold}, got ${threshold}`);
-    }
-    if (cfg.expect.contractVersion && contractVersion !== cfg.expect.contractVersion) {
-        throw new Error(`contract version mismatch: expected ${cfg.expect.contractVersion}, got ${contractVersion ?? 'null'}`);
     }
 
     const blobId = buildBlobId(alice.accountAddress.toStringLong(), cfg.blobSuffix);
@@ -145,9 +121,8 @@ async function runProbe(): Promise<Record<string, unknown>> {
     }
 
     return {
-        chainId, epoch, committeeSize, threshold, contractVersion,
+        chainId,
         blobId,
-        committee: networkState.curNodes.map(n => n.toStringLong()),
     };
 }
 

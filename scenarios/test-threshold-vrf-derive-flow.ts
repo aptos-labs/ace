@@ -47,7 +47,9 @@ import {
     waitFor,
 } from './common/helpers';
 import { setupAceOnLocalnet, SetupAceOnLocalnetResult } from './common/ace-network';
-import { CHAIN_ID, REPO_ROOT } from './common/config';
+import { spawnDiscoveryServer } from './common/network-clients';
+import { CHAIN_ID, LOCALNET_URL, REPO_ROOT } from './common/config';
+import { ChildProcess } from 'child_process';
 import { ACE_SCENARIO_APP_ORIGIN, buildAptosWalletFullMessage } from './common/aptos-wallet-message';
 
 const TOTAL_WORKERS = 3;
@@ -70,6 +72,7 @@ async function deployOriginContract(admin: SetupAceOnLocalnetResult['actors']['a
 
 async function main() {
     let scenario: SetupAceOnLocalnetResult | undefined;
+    let discoveryProc: ChildProcess | undefined;
     let exitCode = 0;
 
     try {
@@ -141,6 +144,46 @@ async function main() {
         assert(derived.length === 32, `tVRF output should be 32 bytes, got ${derived.length}`);
         console.log(`  randomBytes: 0x${Buffer.from(derived).toString('hex')}`);
 
+        step('3b', 'Derive the same tVRF value via the discovery server (no fullnode reads)');
+        // Bring up the real discovery bundle against this localnet and drive the exact same derive
+        // through it — the SDK reads network state / worker endpoints from discovery (discoveryUrl
+        // set, no apiKey → discovery mode, zero fullnode calls). Proves the discovery read path used
+        // by production works, and that the shipped bundle actually boots.
+        const DISCOVERY_PORT = 18080;
+        discoveryProc = await spawnDiscoveryServer({
+            contractAddr: ace.adminAccountAddress.toStringLong(),
+            port: DISCOVERY_PORT,
+        });
+        const discoveryDeployment = new ACE.AceDeployment({
+            apiEndpoint: LOCALNET_URL, // not consulted for chain reads while discoveryUrl is set
+            contractAddr: ace.adminAccountAddress,
+            discoveryUrl: `http://localhost:${DISCOVERY_PORT}`,
+        });
+        const discSession = await ACE.VRF_Aptos.DerivationSession.create({
+            aceDeployment: discoveryDeployment,
+            keypairId,
+            contractId,
+            label,
+            accountAddress: owner.accountAddress,
+        });
+        const discMsg = await discSession.getRequestToSign();
+        const discFullMessage = buildAptosWalletFullMessage({
+            accountAddress: owner.accountAddress.toStringLong(),
+            chainId: CHAIN_ID,
+            message: discMsg,
+            nonce: 'threshold-vrf-derive-discovery',
+        });
+        const discDerived = await discSession.deriveWithSignature({
+            pubKey: owner.publicKey,
+            signature: owner.sign(discFullMessage),
+            fullMessage: discFullMessage,
+        });
+        assert(
+            Buffer.from(discDerived).equals(Buffer.from(derived)),
+            'discovery-backed derive should match the fullnode-backed derive',
+        );
+        console.log('  discovery-backed tVRF derive matches the fullnode result');
+
         step(4, 'Advance one epoch while retaining the same tVRF keypair');
         const stateBeforeEpochChange = (await getNetworkState(ace.adminAccountAddress))
             .unwrapOrThrow('state read failed before epoch change');
@@ -197,6 +240,7 @@ async function main() {
         console.error('\nTest failed:', err);
         exitCode = 1;
     } finally {
+        if (discoveryProc) discoveryProc.kill('SIGKILL');
         if (scenario) cleanupScenario(scenario.ace.workers, scenario.localnetProc);
         process.exit(exitCode);
     }

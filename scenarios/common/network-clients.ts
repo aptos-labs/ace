@@ -50,6 +50,57 @@ export async function buildRustWorkspace(): Promise<void> {
     await spawnExitZero('cargo', ['build'], REPO_ROOT, 'cargo build');
 }
 
+/**
+ * Spawn the discovery server and wait until `/healthz` is green. Runs the SHIPPED bundle
+ * (`discovery-server/dist/index.js`, built by the scenario's npm script), NOT the TS source — so
+ * bundling/runtime bugs in the real artifact (e.g. an ESM "Dynamic require of http2" crash) fail
+ * the scenario instead of only surfacing in production. Caller kills the returned process.
+ */
+export async function spawnDiscoveryServer(opts: {
+    contractAddr: string;
+    port: number;
+    fullnode?: string;
+}): Promise<ChildProcess> {
+    const dist = path.join(REPO_ROOT, 'discovery-server', 'dist', 'index.js');
+    if (!fs.existsSync(dist)) {
+        throw new Error(
+            `discovery-server bundle not found at ${dist} — ` +
+            `run \`pnpm --filter @aptos-labs/ace-discovery-server build\` before this scenario.`,
+        );
+    }
+    const logPath = path.join(os.tmpdir(), 'ace-discovery.log');
+    const logFd = fs.openSync(logPath, 'w');
+    _nodeLogPaths.push(logPath);
+    console.log(`  $ node ${dist} (spawn discovery-server on :${opts.port})`);
+    const child = spawn('node', [dist], {
+        env: {
+            ...process.env,
+            ACE_DISCOVERY_FULLNODE: opts.fullnode ?? LOCALNET_URL,
+            ACE_DISCOVERY_CONTRACT_ADDR: opts.contractAddr,
+            ACE_DISCOVERY_PORT: String(opts.port),
+        },
+        stdio: ['ignore', logFd, logFd],
+    });
+    fs.closeSync(logFd);
+
+    const base = `http://localhost:${opts.port}`;
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+        if (child.exitCode !== null) {
+            throw new Error(`discovery-server exited early (code ${child.exitCode}); see ${logPath}`);
+        }
+        try {
+            const res = await fetch(`${base}/healthz`);
+            if (res.ok) return child;
+        } catch {
+            // not listening yet
+        }
+        await new Promise((r) => setTimeout(r, 300));
+    }
+    child.kill('SIGKILL');
+    throw new Error(`discovery-server did not become healthy on :${opts.port} within 30s; see ${logPath}`);
+}
+
 export type NetworkNodeSpawnInput = {
     runAs: Account;
     /** PKE decryption key bytes as `0x` + hex (TS `decryptionKey.toBytes()`). */

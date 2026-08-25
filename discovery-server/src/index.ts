@@ -14,6 +14,9 @@ function hexToBytes(hex: string): Uint8Array {
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_CACHE_TTL_MS = 1500;
+// Latest-mode by default (lag disabled) so behavior is unchanged unless explicitly opted in.
+const DEFAULT_LAG_MS = 0;
+const DEFAULT_SAMPLE_INTERVAL_MS = 1000;
 
 function required(name: string): string {
     const v = process.env[name];
@@ -30,13 +33,27 @@ function loadConfig(): SnapshotConfig & { port: number } {
         cacheTtlMs: process.env.ACE_DISCOVERY_CACHE_TTL_MS
             ? Number(process.env.ACE_DISCOVERY_CACHE_TTL_MS)
             : DEFAULT_CACHE_TTL_MS,
+        // Serve state ~lagMs behind latest to dodge the epoch-boundary share-registration race.
+        // 0 = disabled (serve latest). sampleIntervalMs is the age granularity and must be ≪ lagMs.
+        lagMs: process.env.ACE_DISCOVERY_LAG_MS ? Number(process.env.ACE_DISCOVERY_LAG_MS) : DEFAULT_LAG_MS,
+        sampleIntervalMs: process.env.ACE_DISCOVERY_SAMPLE_INTERVAL_MS
+            ? Number(process.env.ACE_DISCOVERY_SAMPLE_INTERVAL_MS)
+            : DEFAULT_SAMPLE_INTERVAL_MS,
         port: process.env.ACE_DISCOVERY_PORT ? Number(process.env.ACE_DISCOVERY_PORT) : DEFAULT_PORT,
     };
 }
 
 function main() {
     const cfg = loadConfig();
+    if (cfg.lagMs > 0 && cfg.sampleIntervalMs * 2 > cfg.lagMs) {
+        // eslint-disable-next-line no-console
+        console.warn(
+            `ace-discovery: sampleIntervalMs=${cfg.sampleIntervalMs} is not ≪ lagMs=${cfg.lagMs}; ` +
+            `served-view age granularity will be coarse. Prefer sampleIntervalMs ≤ lagMs/4.`,
+        );
+    }
     const cache = new SnapshotCache(cfg);
+    cache.start(); // no-op unless lagMs>0
 
     const server = http.createServer(async (req, res) => {
         // Public, read-only, no API key required. Discovery data is the same for everyone.
@@ -94,12 +111,22 @@ function main() {
     });
 
     server.listen(cfg.port, () => {
+        const mode = cfg.lagMs > 0
+            ? `lag=${cfg.lagMs}ms sample=${cfg.sampleIntervalMs}ms`
+            : `ttl=${cfg.cacheTtlMs}ms`;
         // eslint-disable-next-line no-console
         console.log(
             `ace-discovery-server listening on :${cfg.port} — fullnode=${cfg.fullnode} ` +
-            `contract=${cfg.contractAddr} ttl=${cfg.cacheTtlMs}ms`,
+            `contract=${cfg.contractAddr} ${mode}`,
         );
     });
+
+    for (const sig of ["SIGTERM", "SIGINT"] as const) {
+        process.on(sig, () => {
+            cache.stop();
+            server.close(() => process.exit(0));
+        });
+    }
 }
 
 main();

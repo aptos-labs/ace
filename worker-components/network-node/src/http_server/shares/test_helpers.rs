@@ -12,11 +12,11 @@ pub(crate) fn extract_and_respond(
     epoch: u64,
     identity: &[u8],
     response_enc_key: &EncryptionKey,
-    tibe_scheme: u8,
+    primitive: u8,
 ) -> Outcome {
-    let entry = match preflight_tibe_share(snapshot, keypair_id, epoch, tibe_scheme) {
+    let entry = match preflight_tibe_share(snapshot, keypair_id, epoch, primitive) {
         Ok(entry) => entry,
         Err(outcome) => return outcome,
     };
-    derive_tibe_share_and_respond(&entry, identity, response_enc_key, tibe_scheme)
+    derive_tibe_share_and_respond(&entry, identity, response_enc_key, primitive)
 }

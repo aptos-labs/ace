@@ -48,7 +48,7 @@ pub use ibe_solana_basic_flow::SolanaProofOfPermission;
 
 /// Top-level request body. Outer enum tag picks the flow.
 ///
-/// Decryption variants carry an explicit `tibe_scheme: u8` so the handler can serve
+/// Decryption variants carry an explicit `primitive: u8` so the handler can serve
 /// shares formatted for the client's actual t-IBE choice, rather than guessing
 /// it from the share's group scheme via a hard-coded 1:1 mapping.
 ///
@@ -101,7 +101,7 @@ pub struct DecryptionBasicFlowRequest {
     pub proof: ProofOfPermission,
     /// Client-asserted t-IBE scheme the share should be formatted for.
     /// The handler validates both the share's group and its on-chain usage mask.
-    pub tibe_scheme: u8,
+    pub primitive: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,7 +112,7 @@ pub struct DecryptionCustomFlowRequest {
     pub label: Vec<u8>,
     pub enc_pk: EncryptionKey,
     pub proof: CustomFlowProof,
-    pub tibe_scheme: u8,
+    pub primitive: u8,
 }
 
 #[derive(Serialize, Deserialize)]

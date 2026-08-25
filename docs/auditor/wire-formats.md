@@ -102,7 +102,7 @@ enum WorkerRequest {
 }
 ```
 
-Decryption variants carry an explicit `tibe_scheme: u8` so the handler serves the share formatted for the client's actual t-IBE choice instead of guessing from the share's group via `crypto::tibe_scheme_for_group`. The handler validates `t_ibe_scheme_group(tibe_scheme) == share.group_scheme` and rejects otherwise.
+Decryption variants carry an explicit `primitive: u8` (on-chain secret primitive id: `0`=shortpk, `1`=shortsig, `3`=shortsig-stream) so the handler serves the correctly-formatted share and enforces the on-chain usage bit, instead of guessing from the share's group. The handler validates `crypto::group_scheme_for_primitive(primitive) == share.group_scheme` and `secret_usage::usage_for_primitive(primitive)` against the share's usage mask, rejecting otherwise. This `u8` replaces the legacy `tibe_scheme` field; it is positionally identical and byte-compatible (block values `0`/`1` are unchanged). Streaming (`3`) returns a share tagged as shortsig (`0x01`), byte-identical to a block-shortsig share.
 
 ### 2.2 `DecryptionBasicFlowRequest`
 
@@ -118,14 +118,14 @@ struct DecryptionRequestPayload {
 struct DecryptionBasicFlowRequest {     // tag 0
     payload:           DecryptionRequestPayload,
     proof:             ProofOfPermission,
-    tibe_scheme:       u8,
+    primitive:         u8,
 }
 ```
 
 Wire layout:
 
 ```
-after outer `00`: [DecryptionRequestPayload] [ProofOfPermission] [1B tibe_scheme]
+after outer `00`: [DecryptionRequestPayload] [ProofOfPermission] [1B primitive]
 ```
 
 ### 2.3 `DecryptionCustomFlowRequest`
@@ -138,14 +138,14 @@ struct DecryptionCustomFlowRequest {    // tag 1
     label:       Vec<u8>,
     enc_pk:      pke::EncryptionKey,
     proof:       CustomFlowProof,
-    tibe_scheme: u8,
+    primitive:   u8,
 }
 ```
 
 Wire layout:
 
 ```
-after outer `01`: [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof] [1B tibe_scheme]
+after outer `01`: [32B keypair_id] [8B epoch LE] [ContractId] [ULEB | label] [EncryptionKey] [CustomFlowProof] [1B primitive]
 ```
 
 ### 2.4 `ContractId`
@@ -235,7 +235,26 @@ struct IdentityDecryptionKeyShare {
 }
 ```
 
-Total bytes (excluding wire ULEBs): **129 B (scheme 0)** or **81 B (scheme 1)**.
+Total bytes (excluding wire ULEBs): **129 B (scheme 0)** or **81 B (scheme 1)**. A request for the streaming primitive (`3`) returns the **same 81 B shortsig share (tag `0x01`)** — the worker reuses the shortsig extraction branch and only enforces a different usage bit.
+
+### 2.8 Streaming ciphertext chunks (StreamIBE) — **not BCS**
+
+StreamIBE (primitive `3`, see [`cryptography/t-ibe.md §3`](./cryptography/t-ibe.md)) is the one
+t-IBE ciphertext that is **not** a length-prefixed BCS object: true streaming can't size the body up
+front, and there is no single ciphertext object — only a header chunk plus segment chunks. The DEM
+runs entirely client-side (no Rust worker produces/consumes these bytes), so the layout is pinned by
+the TS↔Python cross-impl vectors (`test-fixtures/python-sdk-cross-impl.json → t_ibe_shortsig_aead_stream`),
+not by serde derives. On-storage bytes:
+
+```
+0x03                         1-byte stream marker (= the primitive)
+c0                           G2 compressed, 96 bytes (no ULEB length prefix)
+seg_0 ‖ … ‖ seg_{k-1}        each = ct_i ‖ 16B Poly1305 tag; read to EOF
+```
+
+Non-final segments are exactly `65536 + 16` bytes; the final one is the remainder; plaintext length
+and segment count are recovered from the total length. The scheme-tagged `MasterPublicKey` /
+`IdentityDecryptionKeyShare` used with streaming are the ordinary shortsig-aead (`0x01`) BCS objects.
 
 ---
 

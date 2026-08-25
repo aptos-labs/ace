@@ -19,12 +19,17 @@ module ace::secret_usage {
     const PRIMITIVE__BFIBE_BLS12381_SHORTPK_OTP_HMAC: u8 = 0;
     const PRIMITIVE__BFIBE_BLS12381_SHORTSIG_AEAD: u8 = 1;
     const PRIMITIVE__BLS12381_THRESHOLD_VRF: u8 = 2;
+    // Streaming + seekable sibling of shortsig-aead. Same G2 IBE half; only the client-side
+    // DEM/API differs. A distinct primitive/usage lets on-chain policy authorize "encrypt stream"
+    // separately from "encrypt block".
+    const PRIMITIVE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM: u8 = 3;
 
     const USAGE__BFIBE_BLS12381_SHORTPK_OTP_HMAC: u64 = 1;
     const USAGE__BFIBE_BLS12381_SHORTSIG_AEAD: u64 = 2;
     const USAGE__BLS12381_THRESHOLD_VRF: u64 = 4;
+    const USAGE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM: u64 = 8;
 
-    const SUPPORTED_USAGE_MASK: u64 = 7;
+    const SUPPORTED_USAGE_MASK: u64 = 15;
     const MAX_NOTE_BYTES: u64 = 256;
 
     struct SecretRequest has copy, drop, store {
@@ -48,6 +53,11 @@ module ace::secret_usage {
     }
 
     #[view]
+    public fun primitive_bfibe_bls12381_shortsig_aeadstream(): u8 {
+        PRIMITIVE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM
+    }
+
+    #[view]
     public fun usage_bfibe_bls12381_shortpk_otp_hmac(): u64 {
         USAGE__BFIBE_BLS12381_SHORTPK_OTP_HMAC
     }
@@ -60,6 +70,11 @@ module ace::secret_usage {
     #[view]
     public fun usage_bls12381_threshold_vrf(): u64 {
         USAGE__BLS12381_THRESHOLD_VRF
+    }
+
+    #[view]
+    public fun usage_bfibe_bls12381_shortsig_aeadstream(): u64 {
+        USAGE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM
     }
 
     #[view]
@@ -80,6 +95,8 @@ module ace::secret_usage {
             USAGE__BFIBE_BLS12381_SHORTSIG_AEAD
         } else if (primitive == PRIMITIVE__BLS12381_THRESHOLD_VRF) {
             USAGE__BLS12381_THRESHOLD_VRF
+        } else if (primitive == PRIMITIVE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM) {
+            USAGE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM
         } else {
             abort error::invalid_argument(E_UNSUPPORTED_USAGE)
         }
@@ -128,6 +145,9 @@ module ace::secret_usage {
             scheme = merge_group_scheme(scheme, group::scheme_bls12381_g2());
         };
         if (has_usage(expected_usage, USAGE__BLS12381_THRESHOLD_VRF)) {
+            scheme = merge_group_scheme(scheme, group::scheme_bls12381_g2());
+        };
+        if (has_usage(expected_usage, USAGE__BFIBE_BLS12381_SHORTSIG_AEADSTREAM)) {
             scheme = merge_group_scheme(scheme, group::scheme_bls12381_g2());
         };
 

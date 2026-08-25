@@ -5,17 +5,22 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::crypto::{SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD};
+use crate::crypto::{
+    PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM, SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+    SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+};
 
 pub const USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC: u64 = 1;
 pub const USAGE_BFIBE_BLS12381_SHORTSIG_AEAD: u64 = 2;
 pub const USAGE_BLS12381_THRESHOLD_VRF: u64 = 4;
+pub const USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM: u64 = 8;
 
-pub fn usage_for_tibe_scheme(tibe_scheme: u8) -> Result<u64> {
-    match tibe_scheme {
+pub fn usage_for_primitive(primitive: u8) -> Result<u64> {
+    match primitive {
         SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => Ok(USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC),
         SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => Ok(USAGE_BFIBE_BLS12381_SHORTSIG_AEAD),
-        s => Err(anyhow!("unsupported t-IBE scheme {}", s)),
+        PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM => Ok(USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM),
+        s => Err(anyhow!("unsupported primitive {}", s)),
     }
 }
 
@@ -28,16 +33,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tibe_scheme_maps_to_usage_bit() {
+    fn primitive_maps_to_usage_bit() {
         assert_eq!(
-            usage_for_tibe_scheme(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap(),
+            usage_for_primitive(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap(),
             USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC
         );
         assert_eq!(
-            usage_for_tibe_scheme(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap(),
+            usage_for_primitive(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap(),
             USAGE_BFIBE_BLS12381_SHORTSIG_AEAD
         );
-        assert!(usage_for_tibe_scheme(0xff).is_err());
+        assert_eq!(
+            usage_for_primitive(PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM).unwrap(),
+            USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM
+        );
+        assert!(usage_for_primitive(0xff).is_err());
     }
 
     #[test]

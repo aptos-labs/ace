@@ -11,10 +11,10 @@ pub(crate) fn derive_tibe_share_and_respond(
     entry: &ShareEntry,
     identity: &[u8],
     response_enc_key: &EncryptionKey,
-    tibe_scheme: u8,
+    primitive: u8,
 ) -> Outcome {
     let share_hex = match crate::crypto::partial_extract_idk_share(
-        tibe_scheme,
+        primitive,
         identity,
         &entry.scalar_le32,
         entry.eval_point,

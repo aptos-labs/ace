@@ -162,7 +162,7 @@ def test_decryption_core_fetches_verified_share_and_decrypts(monkeypatch) -> Non
         network_state=state,
         request=request,
         proof=proof,
-        tibe_scheme=t_ibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+        primitive=t_ibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
         target_endpoint="https://node.example/",
     ).unwrap_or_throw("per-node")
     assert per_node.epoch == state.epoch

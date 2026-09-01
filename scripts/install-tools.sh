@@ -3,7 +3,11 @@
 # Safe to re-run — skips tools that are already at the pinned version.
 set -euo pipefail
 
-APTOS_CLI_VERSION="9.0.0"
+# Must track the `mainnet` branch of aptos-framework that every contracts/Move.toml
+# pins as a git dependency: on 2026-08-13 mainnet picked up spec features (`old(..)`
+# on references, `map_spec_aborts_*`) that the 9.0.0 compiler rejects, which broke
+# `aptos move test`/`publish` in CI. 9.5.1 is the current release and compiles it.
+APTOS_CLI_VERSION="9.5.1"
 
 # ---------------------------------------------------------------------------
 # Aptos CLI

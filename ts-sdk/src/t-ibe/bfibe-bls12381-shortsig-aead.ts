@@ -393,35 +393,53 @@ export function verifyShare({ basePoint, sharePk, id, share }: {
     return bls12_381.fields.Fp12.eql(lhs, rhs);
 }
 
+/**
+ * Combine threshold IDK shares into the full identity decryption key by
+ * Lagrange interpolation in the exponent (G1) at x=0.
+ *
+ * The result is the same `idkFull = s · H_G1(id)` that {@link decrypt} recovers
+ * internally, wrapped as a single share at evalPoint 1 — a one-element set
+ * Lagrange-interpolates to itself (λ = 1), so it can be fed straight back into
+ * {@link decrypt}. This mirrors {@link extract}, the single-party counterpart.
+ *
+ * Throws on a degenerate share set (duplicate or all-zero evaluation points);
+ * callers that want a `Result` should use the t-ibe wrapper.
+ */
+export function aggregateIdentityDecryptionKey(idkShares: IdentityDecryptionKeyShare[]): IdentityDecryptionKeyShare {
+    if (idkShares.length === 0) throw "aggregateIdentityDecryptionKey: no IDK shares provided";
+
+    // Lagrange interpolation in the exponent (G1) to recover the full identity decryption key.
+    const xs = idkShares.map(s => frMod(s.evalPoint));
+    for (let i = 0; i < xs.length; i++) {
+        for (let j = i + 1; j < xs.length; j++) {
+            if (xs[i] === xs[j]) throw "aggregateIdentityDecryptionKey: duplicate evalPoint";
+        }
+    }
+    const lambdas: bigint[] = xs.map((xi, i) => {
+        let lambda = 1n;
+        for (let j = 0; j < xs.length; j++) {
+            if (i === j) continue;
+            lambda = frMul(lambda, frMul(frMod(-xs[j]), frInv(frMod(xi - xs[j]))));
+        }
+        return lambda;
+    });
+
+    let idkFull: WeierstrassPoint<bigint> | null = null;
+    for (let i = 0; i < idkShares.length; i++) {
+        if (lambdas[i] === 0n) continue;
+        const scaled = idkShares[i].idkShare.multiply(lambdas[i]);
+        idkFull = idkFull === null ? scaled : idkFull.add(scaled);
+    }
+    if (idkFull === null) throw "aggregateIdentityDecryptionKey: all Lagrange coefficients were zero";
+
+    return new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+}
+
 export function decrypt({ idkShares, ciphertext }: { idkShares: IdentityDecryptionKeyShare[]; ciphertext: Ciphertext }): Result<Uint8Array> {
     return Result.capture({
         recordsExecutionTimeMs: true,
         task: () => {
-            if (idkShares.length === 0) throw "decrypt: no IDK shares provided";
-
-            // Lagrange interpolation in the exponent (G1) to recover the full identity decryption key.
-            const xs = idkShares.map(s => frMod(s.evalPoint));
-            for (let i = 0; i < xs.length; i++) {
-                for (let j = i + 1; j < xs.length; j++) {
-                    if (xs[i] === xs[j]) throw "decrypt: duplicate evalPoint";
-                }
-            }
-            const lambdas: bigint[] = xs.map((xi, i) => {
-                let lambda = 1n;
-                for (let j = 0; j < xs.length; j++) {
-                    if (i === j) continue;
-                    lambda = frMul(lambda, frMul(frMod(-xs[j]), frInv(frMod(xi - xs[j]))));
-                }
-                return lambda;
-            });
-
-            let idkFull: WeierstrassPoint<bigint> | null = null;
-            for (let i = 0; i < idkShares.length; i++) {
-                if (lambdas[i] === 0n) continue;
-                const scaled = idkShares[i].idkShare.multiply(lambdas[i]);
-                idkFull = idkFull === null ? scaled : idkFull.add(scaled);
-            }
-            if (idkFull === null) throw "decrypt: all Lagrange coefficients were zero";
+            const idkFull = aggregateIdentityDecryptionKey(idkShares).idkShare;
 
             // Standard BF-IBE decryption: e(idkFull, c0) = e(s · H_G1(id), r · basePoint)
             //                                            = e(H_G1(id), basePoint)^{rs}

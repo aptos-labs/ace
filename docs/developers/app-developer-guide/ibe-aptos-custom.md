@@ -372,6 +372,18 @@ const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
 }).unwrapOrThrow("ACE local decrypt failed");
 ```
 
+If you need the reconstructed identity decryption key itself, combine the shares you already fetched with `aggregateIdentityDecryptionKey` — the same pure local function the basic flow uses; it contacts nothing. It returns an `ACE.tibe.IdentityDecryptionKeyShare`; serialize it with `.toBytes()` (and parse it back with `ACE.tibe.IdentityDecryptionKeyShare.fromBytes`):
+
+```typescript
+const idk = ACE.IBE_Aptos.aggregateIdentityDecryptionKey({
+  identityKeyShares,
+}).unwrapOrThrow("ACE aggregate identity key failed");
+
+const keyBytes = idk.toBytes(); // persist or transport
+```
+
+In the custom flow the shares are already a bearer capability, and the aggregated key is the same: anyone holding it can decrypt every object under that `label`.
+
 Unlike the Aptos account access flow, custom flow does not automatically receive a wallet `origin` parameter. If origin matters, include it in the app-defined bytes passed as the SDK `payload` argument, and verify it in the hook. The recommended real order is to deploy the web app, learn the exact origin, then call a setter like `set_client_origin` once for the app so only that origin is accepted.
 
 ## Remarks

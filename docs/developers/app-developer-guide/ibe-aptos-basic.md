@@ -186,14 +186,14 @@ const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
 
 For key reuse before you have a specific ciphertext, create the session with `tibeScheme` instead of `ciphertext`.
 
-The committee returns one share per node. If you need the reconstructed identity decryption key itself, combine those shares locally with `aggregateIdentityDecryptionKey`. It is a pure function over the shares you already fetched; it contacts nothing. It returns the key as an `ACE.tibe.IdentityDecryptionKeyShare`, which serializes to bytes with `.toBytes()` (and parses back with `ACE.tibe.IdentityDecryptionKeyShare.fromBytes`):
+The committee returns one share per node. If you need the reconstructed identity decryption key itself, combine those shares locally with `aggregateIdentityDecryptionKey`. It is a pure function over the shares you already fetched; it contacts nothing. It returns the key as an `ACE.tibe.IdentityDecryptionKeyShare`, which serializes to bytes with `.toBytes()`:
 
 ```typescript
 const idk = ACE.IBE_Aptos.aggregateIdentityDecryptionKey({
   identityKeyShares,
 }).unwrapOrThrow("ACE aggregate identity key failed");
 
-const keyBytes = idk.toBytes(); // persist or transport
+const keyBytes = idk.toBytes();
 ```
 
 Anyone holding this key can decrypt every object under that `label`, so treat it exactly like the plaintext: keep it inside your trust boundary and don't persist it anywhere the raw content wouldn't also be safe.

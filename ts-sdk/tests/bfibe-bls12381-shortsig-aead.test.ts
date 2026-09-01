@@ -113,16 +113,16 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         const subset = [allShares[0], allShares[2], allShares[4]];
 
         const aggregated = aggregateIdentityDecryptionKey(subset);
-        // Wrapped as a one-element share at evalPoint 1 that Lagrange-interpolates to itself.
-        expect(aggregated.evalPoint).toEqual(1n);
+        // evalPoint 0: the interpolation at x=0, i.e. the secret in the exponent.
+        // A one-element set still Lagrange-interpolates to itself.
+        expect(aggregated.evalPoint).toEqual(0n);
 
         const viaAggregate = decrypt({ idkShares: [aggregated], ciphertext: ct }).unwrapOrThrow("decrypt via aggregate");
         expect(viaAggregate).toEqual(plaintext);
 
-        // Equivalently, the aggregate is the single-party extraction s · H_G1(id).
+        // The recovered key is exactly s · H_G1(id).
         const idkFull = (idPoint as any).multiply(msk.scalar);
-        const single = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
-        expect(aggregated.toBytes()).toEqual(single.toBytes());
+        expect((aggregated.idkShare as any).toBytes()).toEqual((idkFull as any).toBytes());
     });
 
     it("aggregateIdentityDecryptionKey: independent of which threshold subset reconstructs it", () => {

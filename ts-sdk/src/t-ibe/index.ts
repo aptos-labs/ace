@@ -519,7 +519,7 @@ export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionK
 /**
  * Combine threshold IDK shares into the full identity decryption key, without
  * decrypting anything. Returns the aggregate wrapped as a single
- * {@link IdentityDecryptionKeyShare} at evalPoint 1, so it round-trips through
+ * {@link IdentityDecryptionKeyShare} at evalPoint 0, so it round-trips through
  * `serialize`/`toBytes` like any other share and can be fed straight back into
  * {@link decrypt} (a one-element set Lagrange-interpolates to itself).
  *

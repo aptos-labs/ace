@@ -398,9 +398,10 @@ export function verifyShare({ basePoint, sharePk, id, share }: {
  * Lagrange interpolation in the exponent (G1) at x=0.
  *
  * The result is the same `idkFull = s · H_G1(id)` that {@link decrypt} recovers
- * internally, wrapped as a single share at evalPoint 1 — a one-element set
- * Lagrange-interpolates to itself (λ = 1), so it can be fed straight back into
- * {@link decrypt}. This mirrors {@link extract}, the single-party counterpart.
+ * internally: the value the shares interpolate to at x=0, i.e. the secret in the
+ * exponent — not a normal share (real shares live at x≥1). It's returned wrapped
+ * at evalPoint 0 to reflect that. A one-element set still Lagrange-interpolates
+ * to itself (λ = 1), so it can be fed straight back into {@link decrypt}.
  *
  * Throws on a degenerate share set (duplicate or all-zero evaluation points);
  * callers that want a `Result` should use the t-ibe wrapper.
@@ -432,7 +433,9 @@ export function aggregateIdentityDecryptionKey(idkShares: IdentityDecryptionKeyS
     }
     if (idkFull === null) throw "aggregateIdentityDecryptionKey: all Lagrange coefficients were zero";
 
-    return new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+    // evalPoint 0: this is the interpolation at x=0, i.e. the secret in the
+    // exponent, not a share at a node index.
+    return new IdentityDecryptionKeyShare(0n, idkFull, undefined);
 }
 
 export function decrypt({ idkShares, ciphertext }: { idkShares: IdentityDecryptionKeyShare[]; ciphertext: Ciphertext }): Result<Uint8Array> {

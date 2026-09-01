@@ -515,3 +515,37 @@ export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionK
     };
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
+
+/**
+ * Combine threshold IDK shares into the full identity decryption key, without
+ * decrypting anything. Returns the aggregate wrapped as a single
+ * {@link IdentityDecryptionKeyShare} at evalPoint 1, so it round-trips through
+ * `serialize`/`toBytes` like any other share and can be fed straight back into
+ * {@link decrypt} (a one-element set Lagrange-interpolates to itself).
+ *
+ * This exposes the intermediate that {@link decrypt} otherwise computes and
+ * discards — useful when a caller needs to cache the reconstructed key, reuse
+ * it across many ciphertexts under the same identity, or hand it to another
+ * layer (e.g. a storage gateway's seed recovery) instead of the plaintext.
+ */
+export function aggregateIdentityDecryptionKey({idkShares}: {idkShares: IdentityDecryptionKeyShare[]}): Result<IdentityDecryptionKeyShare> {
+    const task = (_extra: Record<string, any>) => {
+        if (idkShares.length === 0) throw 'aggregateIdentityDecryptionKey: no IDK shares provided';
+        const scheme = idkShares[0].scheme;
+        for (const idkShare of idkShares) if (idkShare.scheme !== scheme) throw 'scheme mismatch';
+        if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
+            const inner = BfibeBls12381ShortPkOtpHmac.aggregateIdentityDecryptionKey(
+                idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare),
+            );
+            return new IdentityDecryptionKeyShare(scheme, inner);
+        }
+        if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
+            const inner = BfibeBls12381ShortSigAead.aggregateIdentityDecryptionKey(
+                idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare),
+            );
+            return new IdentityDecryptionKeyShare(scheme, inner);
+        }
+        throw `aggregateIdentityDecryptionKey: unknown scheme ${scheme}`;
+    };
+    return Result.capture({task, recordsExecutionTimeMs: true});
+}

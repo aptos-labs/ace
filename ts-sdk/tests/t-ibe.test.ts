@@ -286,6 +286,61 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
         });
     });
 
+    describe('aggregateIdentityDecryptionKey', () => {
+        it('scheme-level: aggregated key decrypts identically to the raw shares', () => {
+            const id = new TextEncoder().encode('aggregate@test.com');
+            const plaintext = new TextEncoder().encode('aggregate then decrypt');
+            const { mpkInner, shares } = setupShares(3, 5, id);
+            const ciphertext = BfibeBls12381.encrypt({ mpk: mpkInner, id, plaintext }).unwrapOrThrow('encrypt');
+
+            const subset = [shares[0], shares[2], shares[4]];
+            const aggregated = BfibeBls12381.aggregateIdentityDecryptionKey(subset);
+            expect(aggregated.evalPoint).toEqual(1n);
+
+            // The aggregate is a one-element share set that decrypts on its own.
+            const viaAggregate = BfibeBls12381.decrypt({ idkShares: [aggregated], ciphertext }).unwrapOrThrow('decrypt via aggregate');
+            const viaShares = BfibeBls12381.decrypt({ idkShares: subset, ciphertext }).unwrapOrThrow('decrypt via shares');
+            expect(viaAggregate).toEqual(plaintext);
+            expect(viaAggregate).toEqual(viaShares);
+        });
+
+        it('scheme-level: independent of which threshold subset reconstructs it', () => {
+            const id = new TextEncoder().encode('subset-invariant@test.com');
+            const { shares } = setupShares(2, 3, id);
+            const a = BfibeBls12381.aggregateIdentityDecryptionKey([shares[0], shares[1]]);
+            const b = BfibeBls12381.aggregateIdentityDecryptionKey([shares[1], shares[2]]);
+            expect(a.toBytes()).toEqual(b.toBytes());
+        });
+
+        it('wrapper: matches the scheme-level aggregate and round-trips through bytes', () => {
+            const id = new TextEncoder().encode('wrapper-agg@test.com');
+            const { shares } = setupShares(2, 3, id);
+            const subset = [shares[0], shares[1]];
+
+            const wrapped = subset.map(s =>
+                TIBE.IdentityDecryptionKeyShare.newBonehFranklinBls12381ShortPkOtpHmac(s.evalPoint, s.idkShare, undefined)
+                    .unwrapOrThrow('wrap share'));
+            const agg = TIBE.aggregateIdentityDecryptionKey({ idkShares: wrapped }).unwrapOrThrow('wrapper aggregate');
+
+            const schemeAgg = BfibeBls12381.aggregateIdentityDecryptionKey(subset);
+            expect((agg.inner as BfibeBls12381.IdentityDecryptionKeyShare).toBytes()).toEqual(schemeAgg.toBytes());
+
+            // Serializes like any other wrapper share.
+            const restored = TIBE.IdentityDecryptionKeyShare.fromBytes(agg.toBytes()).unwrapOrThrow('agg round-trip');
+            expect(restored.toBytes()).toEqual(agg.toBytes());
+        });
+
+        it('wrapper: rejects a mixed-scheme share set', () => {
+            const id = new TextEncoder().encode('mixed@test.com');
+            const { shares } = setupShares(2, 3, id);
+            const wrapped = TIBE.IdentityDecryptionKeyShare.newBonehFranklinBls12381ShortPkOtpHmac(
+                shares[0].evalPoint, shares[0].idkShare, undefined).unwrapOrThrow('wrap');
+            const result = TIBE.aggregateIdentityDecryptionKey({ idkShares: [wrapped, wrapped] });
+            // Duplicate eval point → Err rather than a throw (Result contract).
+            expect(result.isOk).toBe(false);
+        });
+    });
+
     describe('keygenForTesting + derivePublicKey', () => {
         it('derivePublicKey is consistent after msk serde round-trip', () => {
             const msk = TIBE.keygenForTesting().unwrapOrThrow('keygenForTesting');

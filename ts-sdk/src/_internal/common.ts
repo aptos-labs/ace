@@ -723,6 +723,25 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
     });
 }
 
+/**
+ * Combine the per-node identity key shares into the single aggregated identity
+ * decryption key, without decrypting a ciphertext. The returned share is the
+ * reconstructed key (at evalPoint 1); serialize it with `.toBytes()` to persist
+ * or transport it, or pass it back to {@link decryptWithIdentityKeyShares} as a
+ * one-element array to decrypt.
+ */
+export function aggregateIdentityDecryptionKey({identityKeyShares}: {
+    identityKeyShares: tibe.IdentityDecryptionKeyShare[],
+}): Result<tibe.IdentityDecryptionKeyShare> {
+    return Result.capture({
+        task: (_extra) => {
+            return tibe.aggregateIdentityDecryptionKey({idkShares: identityKeyShares})
+                .unwrapOrThrow('ACE.aggregateIdentityDecryptionKey: tibe.aggregateIdentityDecryptionKey failed');
+        },
+        recordsExecutionTimeMs: true,
+    });
+}
+
 export async function fetchIdentityKeySharesCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, tibeScheme}: {
     aceDeployment: AceDeployment,
     networkState: NetworkState,

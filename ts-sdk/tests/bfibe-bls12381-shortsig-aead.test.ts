@@ -24,6 +24,7 @@ import {
     encryptWithRandomness,
     verifyShare,
     decrypt,
+    aggregateIdentityDecryptionKey,
 } from "../src/t-ibe/bfibe-bls12381-shortsig-aead";
 import { frMod } from "../src/group/bls12381fr";
 
@@ -93,6 +94,62 @@ describe("BF-IBE bls12381-shortsig-aead", () => {
         const subset = [allShares[0], allShares[2], allShares[4]];
         const recovered = decrypt({ idkShares: subset, ciphertext: ct }).unwrapOrThrow("decrypt");
         expect(recovered).toEqual(plaintext);
+    });
+
+    it("aggregateIdentityDecryptionKey: reconstructed key decrypts like the raw shares", () => {
+        const msk = keygenForTesting();
+        const mpk = derivePublicKey(msk);
+        const id = utf8("aggregate@example.com");
+        const plaintext = utf8("expose the aggregated identity decryption key");
+        const ct = encrypt({ mpk, id, plaintext }).unwrapOrThrow("encrypt");
+
+        const points = shamirShares(msk.scalar, 3, 5);
+        const idPoint = bls12_381.G1.hashToCurve(id, {
+            DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
+        });
+        const allShares = points.map(p =>
+            new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y), undefined)
+        );
+        const subset = [allShares[0], allShares[2], allShares[4]];
+
+        const aggregated = aggregateIdentityDecryptionKey(subset);
+        // Wrapped as a one-element share at evalPoint 1 that Lagrange-interpolates to itself.
+        expect(aggregated.evalPoint).toEqual(1n);
+
+        const viaAggregate = decrypt({ idkShares: [aggregated], ciphertext: ct }).unwrapOrThrow("decrypt via aggregate");
+        expect(viaAggregate).toEqual(plaintext);
+
+        // Equivalently, the aggregate is the single-party extraction s · H_G1(id).
+        const idkFull = (idPoint as any).multiply(msk.scalar);
+        const single = new IdentityDecryptionKeyShare(1n, idkFull, undefined);
+        expect(aggregated.toBytes()).toEqual(single.toBytes());
+    });
+
+    it("aggregateIdentityDecryptionKey: independent of which threshold subset reconstructs it", () => {
+        const msk = keygenForTesting();
+        const id = utf8("subset-invariant@example.com");
+        const points = shamirShares(msk.scalar, 2, 3);
+        const idPoint = bls12_381.G1.hashToCurve(id, {
+            DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
+        });
+        const s = points.map(p => new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y), undefined));
+
+        const a = aggregateIdentityDecryptionKey([s[0], s[1]]);
+        const b = aggregateIdentityDecryptionKey([s[1], s[2]]);
+        expect(a.toBytes()).toEqual(b.toBytes());
+    });
+
+    it("aggregateIdentityDecryptionKey: throws on a degenerate share set", () => {
+        const msk = keygenForTesting();
+        const id = utf8("degenerate@example.com");
+        const points = shamirShares(msk.scalar, 2, 3);
+        const idPoint = bls12_381.G1.hashToCurve(id, {
+            DST: utf8("BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE"),
+        });
+        const s = points.map(p => new IdentityDecryptionKeyShare(p.x, (idPoint as any).multiply(p.y), undefined));
+
+        expect(() => aggregateIdentityDecryptionKey([])).toThrow();
+        expect(() => aggregateIdentityDecryptionKey([s[0], s[0]])).toThrow();
     });
 
     it("encrypt is randomised: repeated calls give different ciphertexts but same decryption", () => {

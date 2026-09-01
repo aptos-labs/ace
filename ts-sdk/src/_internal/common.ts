@@ -726,7 +726,7 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
 /**
  * Combine the per-node identity key shares into the single aggregated identity
  * decryption key, without decrypting a ciphertext. The returned share is the
- * reconstructed key (at evalPoint 1); serialize it with `.toBytes()` to persist
+ * reconstructed key (at evalPoint 0); serialize it with `.toBytes()` to persist
  * or transport it, or pass it back to {@link decryptWithIdentityKeyShares} as a
  * one-element array to decrypt.
  */

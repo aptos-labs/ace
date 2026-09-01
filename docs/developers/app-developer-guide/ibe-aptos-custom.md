@@ -372,14 +372,14 @@ const plaintext = ACE.IBE_Aptos.decryptWithIdentityKeyShares({
 }).unwrapOrThrow("ACE local decrypt failed");
 ```
 
-If you need the reconstructed identity decryption key itself, combine the shares you already fetched with `aggregateIdentityDecryptionKey` — the same pure local function the basic flow uses; it contacts nothing. It returns an `ACE.tibe.IdentityDecryptionKeyShare`; serialize it with `.toBytes()` (and parse it back with `ACE.tibe.IdentityDecryptionKeyShare.fromBytes`):
+If you need the reconstructed identity decryption key itself, combine the shares you already fetched with `aggregateIdentityDecryptionKey` — the same pure local function the basic flow uses; it contacts nothing. It returns an `ACE.tibe.IdentityDecryptionKeyShare`; serialize it with `.toBytes()`:
 
 ```typescript
 const idk = ACE.IBE_Aptos.aggregateIdentityDecryptionKey({
   identityKeyShares,
 }).unwrapOrThrow("ACE aggregate identity key failed");
 
-const keyBytes = idk.toBytes(); // persist or transport
+const keyBytes = idk.toBytes();
 ```
 
 In the custom flow the shares are already a bearer capability, and the aggregated key is the same: anyone holding it can decrypt every object under that `label`.

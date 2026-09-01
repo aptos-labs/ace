@@ -295,7 +295,7 @@ describe('T-IBE (Threshold Identity-Based Encryption)', () => {
 
             const subset = [shares[0], shares[2], shares[4]];
             const aggregated = BfibeBls12381.aggregateIdentityDecryptionKey(subset);
-            expect(aggregated.evalPoint).toEqual(1n);
+            expect(aggregated.evalPoint).toEqual(0n);
 
             // The aggregate is a one-element share set that decrypts on its own.
             const viaAggregate = BfibeBls12381.decrypt({ idkShares: [aggregated], ciphertext }).unwrapOrThrow('decrypt via aggregate');

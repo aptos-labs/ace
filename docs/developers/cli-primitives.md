@@ -28,6 +28,7 @@ The existing offline admin commands stay as `ace ibe admin-extract` / `ace ibe a
 ```sh
 # encrypt a string, write ciphertext bytes to a file
 ace ibe encrypt --deployment shelbynet-20260731 --keypair-id 0xabcd…ef01 \
+    --module-addr 0x1234…5678 --module-name acl \
     --label str:zhoujun/2025/finance --input str:HELLO_WORLD --output file:/tmp/ct.bin
 
 # decrypt with an aptos CLI profile as the signer, print plaintext as utf-8
@@ -53,9 +54,13 @@ ace vrf derive --deployment shelbynet-20260731 --keypair-id 0xabcd…ef01 \
 |--------------------------|---------|
 | `--deployment <id>`      | a `knownDeployments` id (e.g. `shelbynet-20260731`) **or** a local CLI deployment profile alias (`ace deployment ls`). Omitted → the CLI's default profile. |
 | `--keypair-id <0x…>`     | on-chain keypair id. Required in v1. |
-| `--api-endpoint`, `--contract`, `--discovery-url`, `--api-key` | override individual fields of the resolved deployment (escape hatch; same names as the SDK's `AceDeployment`). |
+| `--module-addr <0x…>`, `--module-name <name>` | the **app contract** (access-control module) the key is bound to. Required in v1 for every op; may default from a profile later. |
+| `--api-endpoint`, `--contract`, `--discovery-url`, `--api-key`, `--chain-id` | override individual fields of the resolved deployment (escape hatch; same names as the SDK's `AceDeployment`). `--chain-id` is needed only for local profiles whose fullnode can't be queried; otherwise it is taken from `knownDeployments` or fetched from `GET <api-endpoint>/v1`. |
 
-Resolution order: explicit override flags > `--deployment` > default profile. The
+Resolution order: explicit override flags > `--deployment` > default profile. Local CLI
+profiles map `rpcUrl → apiEndpoint`, `aceAddr → contract`, `sharedNodeApiKey → apiKey`;
+they carry no `discoveryUrl` (pass `--discovery-url` if wanted). Other examples omit
+`--module-addr/--module-name` for brevity; they are required. The
 resolved deployment is echoed to stderr (and in `--json`) so scripts can see what was used.
 
 ## 3. Values: one grammar for `--input`, `--output`, `--label`, `--seed`, …

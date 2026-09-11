@@ -1,0 +1,108 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish TypeScript SDK
+
+on:
+  # Real npm release: the version is taken from the product release tag
+  # (e.g. `v5.1.0` publishes @aptos-labs/ace-sdk 5.1.0). The tag is the
+  # already-cut release, i.e. the predecessor of NEXT_RELEASE.
+  push:
+    tags:
+      - 'v[0-9]*'
+  # Manual runs, e.g. to dry-run the pipeline end to end without publishing.
+  # Provide the version explicitly since there is no tag to read it from.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and run `npm publish --dry-run` (nothing is uploaded)
+        type: boolean
+        default: true
+      version:
+        description: Version to publish (required for manual runs, e.g. 5.1.0)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build package tarball
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Resolve version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            echo "::error::No version to publish: push a v* tag or set the 'version' input."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version $VERSION"
+      - name: Stamp version into ts-sdk/package.json
+        working-directory: ts-sdk
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version --no-git-tag-version "$VERSION"
+      - name: Build
+        run: pnpm --filter @aptos-labs/ace-sdk build
+      - name: Pack
+        working-directory: ts-sdk
+        run: |
+          mkdir -p ../dist-npm
+          npm pack --pack-destination ../dist-npm
+          ls -l ../dist-npm
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: ts-sdk-dist
+          path: dist-npm/*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write # Trusted Publishing (OIDC); no npm token needed.
+      contents: read
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - name: Upgrade npm for trusted publishing
+        # OIDC trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.x.
+        run: |
+          npm install -g npm@latest
+          npm --version
+      - uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: ts-sdk-dist
+          path: dist
+      - name: Publish
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          TGZ=$(ls dist/*.tgz)
+          ARGS=(--access public --provenance)
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: not publishing $TGZ"
+            ARGS+=(--dry-run)
+          fi
+          npm publish "$TGZ" "${ARGS[@]}"

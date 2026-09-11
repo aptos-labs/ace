@@ -15,7 +15,8 @@
     "build": "tsup",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

@@ -31,6 +31,19 @@ export interface SnapshotConfig {
      * small interval (e.g. 1s) with a larger lag (e.g. 5s) gives a tight, consistent trail.
      */
     sampleIntervalMs: number;
+    /**
+     * Upper bound on a single upstream fetch. Without it one hung request (no response, no reset)
+     * leaves the sampler promise unsettled forever and the ring frozen on its last sample.
+     * Default: max(5s, 3 x sampleIntervalMs).
+     */
+    fetchTimeoutMs?: number;
+    /**
+     * lag>0 only: how old the newest sample may be before the ring is considered *broken* rather than
+     * merely lagging. Past this, `get()` bypasses the ring with a direct (timeout-bounded) read and
+     * `isStale()` reports true so `/healthz` fails. "Staleness beats an outage" holds for seconds,
+     * not for epochs: a view several epochs old makes every worker 404. Default: max(60s, 6 x lagMs).
+     */
+    maxStaleMs?: number;
 }
 
 interface Sample {
@@ -65,19 +78,38 @@ export class SnapshotCache {
     private ring: Sample[] = [];
     private timer?: ReturnType<typeof setTimeout>;
     private stopped = false;
+    private sampling = false;
 
-    constructor(private readonly cfg: SnapshotConfig, private readonly nowMs: () => number = Date.now) {
+    private readonly fetchTimeoutMs: number;
+    private readonly maxStaleMs: number;
+    private readonly rawFetch: () => Promise<string>;
+
+    constructor(
+        private readonly cfg: SnapshotConfig,
+        private readonly nowMs: () => number = Date.now,
+        fetcher?: () => Promise<string>,
+    ) {
         this.aptos = new Aptos(new AptosConfig({
             network: Network.CUSTOM,
             fullnode: cfg.fullnode,
             clientConfig: cfg.apiKey ? { HEADERS: { Authorization: `Bearer ${cfg.apiKey}` } } : undefined,
         }));
         this.fn = `${cfg.contractAddr}::network::discovery_view_v0_bcs`;
+        this.fetchTimeoutMs = cfg.fetchTimeoutMs ?? Math.max(5_000, 3 * cfg.sampleIntervalMs);
+        this.maxStaleMs = cfg.maxStaleMs ?? Math.max(60_000, 6 * cfg.lagMs);
+        this.rawFetch = fetcher ?? (() => this.viewUpstream());
+    }
+
+    /** lag>0 only: true when the newest sample is older than `maxStaleMs` (or none exists yet). */
+    isStale(): boolean {
+        if (this.cfg.lagMs <= 0) return false;
+        const newest = this.ring[this.ring.length - 1];
+        return newest === undefined || this.nowMs() - newest.ts > this.maxStaleMs;
     }
 
     /** Begin background sampling. No-op in latest (`lagMs<=0`) mode. Call once before serving. */
     start(): void {
-        if (this.cfg.lagMs <= 0 || this.timer !== undefined) return;
+        if (this.cfg.lagMs <= 0 || this.timer !== undefined || this.sampling) return;
         this.stopped = false;
         this.sampleLoop();
     }
@@ -124,6 +156,20 @@ export class SnapshotCache {
 
     /** Serve the newest sample at least `lagMs` old; warm up / bootstrap when the ring is too young. */
     private async getLagged(): Promise<string> {
+        if (this.ring.length > 0 && this.isStale()) {
+            // The ring is broken (sampler stuck or upstream down for a long time). Serving it would
+            // hand out an epoch the workers have long evicted, so bypass it with a direct bounded
+            // read; on failure fall through to the ring as a last resort. Also re-arm the sampler
+            // in case its timer chain was lost.
+            // eslint-disable-next-line no-console
+            console.warn(`[ring] newest sample is ${this.nowMs() - this.ring[this.ring.length - 1]!.ts}ms old (> ${this.maxStaleMs}ms); bypassing ring`);
+            this.ensureSampling();
+            try {
+                return await this.bootstrapFetch();
+            } catch {
+                // fall through to the stale ring
+            }
+        }
         const cutoff = this.nowMs() - this.cfg.lagMs;
         for (let i = this.ring.length - 1; i >= 0; i--) {
             if (this.ring[i]!.ts <= cutoff) return this.ring[i]!.hex;
@@ -148,8 +194,16 @@ export class SnapshotCache {
         return this.inFlight;
     }
 
+    /** Re-arm the sampler if no timer is pending (self-heal after a lost timer chain). */
+    private ensureSampling(): void {
+        if (this.cfg.lagMs <= 0 || this.stopped || this.timer !== undefined || this.sampling) return;
+        this.sampleLoop();
+    }
+
     private sampleLoop(): void {
         if (this.stopped) return;
+        this.timer = undefined;
+        this.sampling = true;
         const started = this.nowMs();
         void this.fetchUpstream()
             .then((hex) => {
@@ -163,6 +217,7 @@ export class SnapshotCache {
                 console.warn(`[ring] sample failed: ${err instanceof Error ? err.message : String(err)}`);
             })
             .finally(() => {
+                this.sampling = false;
                 if (this.stopped) return;
                 const elapsed = this.nowMs() - started;
                 const delay = Math.max(0, this.cfg.sampleIntervalMs - elapsed);
@@ -189,7 +244,19 @@ export class SnapshotCache {
         if (this.ring.length > cap) this.ring.splice(0, this.ring.length - cap);
     }
 
-    private async fetchUpstream(): Promise<string> {
+    /** One upstream read, bounded by `fetchTimeoutMs` so a hung request can never wedge the sampler. */
+    private fetchUpstream(): Promise<string> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`upstream fetch timed out after ${this.fetchTimeoutMs}ms`)),
+                this.fetchTimeoutMs,
+            );
+        });
+        return Promise.race([this.rawFetch(), timeout]).finally(() => clearTimeout(timer));
+    }
+
+    private async viewUpstream(): Promise<string> {
         const [hex] = await this.aptos.view<[string]>({
             payload: { function: this.fn, typeArguments: [], functionArguments: [] },
         });

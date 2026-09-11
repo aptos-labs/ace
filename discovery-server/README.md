@@ -12,6 +12,12 @@ operations (it still POSTs directly to worker nodes for shares, which needs no k
 Because the snapshot is identical for every client and constant within an epoch, the
 service caches it for a short TTL and is trivially CDN-cacheable.
 
+## Deployment notes
+
+- lag>0 relies on a background timer. On platforms that throttle CPU between requests (Cloud Run
+  default) enable "CPU always allocated" (`--no-cpu-throttling`), or the sampler starves.
+- Wire `/healthz` into the platform's liveness probe so a stale ring gets the instance restarted.
+
 ## Endpoints
 
 All responses are `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`.
@@ -36,7 +42,11 @@ server's own short-TTL cache, not by client-side caching.
 | `ACE_DISCOVERY_FULLNODE` | yes | — | Aptos fullnode REST base URL (…/v1) |
 | `ACE_DISCOVERY_API_KEY` | no | — | node API key; held server-side, never exposed |
 | `ACE_DISCOVERY_PORT` | no | `8080` | listen port |
-| `ACE_DISCOVERY_CACHE_TTL_MS` | no | `1500` | how long a snapshot is served before refresh |
+| `ACE_DISCOVERY_CACHE_TTL_MS` | no | `1500` | lag=0 only: how long a snapshot is served before refresh |
+| `ACE_DISCOVERY_LAG_MS` | no | `0` | serve on-chain state ~this far behind latest (0 = latest). Closes the epoch-boundary race where clients see epoch N+1 before workers have registered its share; must stay well under the workers' 30s previous-epoch grace (5000-10000 is typical) |
+| `ACE_DISCOVERY_SAMPLE_INTERVAL_MS` | no | `1000` | lag>0: sampler cadence (served-view age granularity); keep <= LAG_MS/4 |
+| `ACE_DISCOVERY_FETCH_TIMEOUT_MS` | no | `max(5000, 3*SAMPLE_INTERVAL_MS)` | bound on one upstream read; a hung request can otherwise wedge the sampler forever |
+| `ACE_DISCOVERY_MAX_STALE_MS` | no | `max(60000, 6*LAG_MS)` | lag>0: if the newest sample is older than this the ring is bypassed with a direct read and `/healthz` returns 503 |
 
 ## Run
 

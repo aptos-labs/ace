@@ -37,7 +37,8 @@
     "test-custom-flow-aptos": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-aptos.ts",
     "test-python-sdk-custom-flow": "python3 -m venv ../python-sdk/.venv && ../python-sdk/.venv/bin/python -m pip install --upgrade pip && ../python-sdk/.venv/bin/python -m pip install -e ../python-sdk && pnpm --filter @aptos-labs/ace-sdk build && tsx test-python-sdk-custom-flow.ts",
     "test-custom-flow-solana": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-custom-flow-solana.ts",
-    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit",
+    "test-stream-aptos": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-stream-aptos.ts"
   },
   "dependencies": {
     "@aptos-labs/ace-sdk": "workspace:*",

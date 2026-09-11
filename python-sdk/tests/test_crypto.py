@@ -173,6 +173,32 @@ def test_cross_impl_fixture_decrypts_typescript_tibe_shortsig_aead_ciphertext() 
     ].encode()
 
 
+def test_cross_impl_fixture_streaming_shortsig_aead() -> None:
+    from ace_sdk import t_ibe_stream
+
+    fixture = _cross_impl_fixture()["t_ibe_shortsig_aead_stream"]
+    # Streaming reuses the shortsig-aead (scheme 1) key + share objects verbatim.
+    mpk = t_ibe.MasterPublicKey.from_hex(fixture["master_public_key_hex"]).unwrap_or_throw("mpk")
+    idk = t_ibe.IdentityDecryptionKeyShare.from_hex(
+        fixture["identity_decryption_key_hex"]
+    ).unwrap_or_throw("idk")
+    identity = fixture["identity_utf8"].encode()
+    randomness = bytes.fromhex(fixture["randomness_hex"])
+    chunk_size = fixture["chunk_size"]
+
+    for case in fixture["cases"]:
+        plaintext = case["plaintext_utf8"].encode()
+        recomputed = t_ibe_stream.encrypt_to_concat_chunks_with_randomness(
+            mpk, identity, plaintext, randomness, chunk_size
+        ).hex()
+        assert recomputed == case["python_ciphertext_hex"], case["name"]
+        assert case["python_ciphertext_hex"] == case["typescript_ciphertext_hex"], case["name"]
+        decrypted = t_ibe_stream.decrypt_from_concat_chunks(
+            [idk], bytes.fromhex(case["typescript_ciphertext_hex"]), chunk_size
+        )
+        assert decrypted == plaintext, case["name"]
+
+
 def test_ibe_aptos_encrypt_uses_full_decryption_domain() -> None:
     keypair_id = AccountAddress.from_str(
         "0x00000000000000000000000000000000000000000000000000000000000000c1"

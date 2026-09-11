@@ -56,7 +56,11 @@ export interface CustomFlowFixtures {
 /** Bring up Aptos localnet + ACE contracts + workers + initial epoch +
  *  DKG, then deploy `check_acl_demo` and initialize it. Returns
  *  everything the test cases need. */
-export async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlowSetup> {
+export async function bringUpAceAndDeployCheckAclDemo(
+    /** ACE primitive to DKG the keypair under. Defaults to shortsig-aead (block). Pass
+     *  `PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM` (3) to provision a streaming keypair. */
+    dkgPrimitive: number = 1,
+): Promise<AptosCustomFlowSetup> {
     const localnetProc = await startLocalnet();
     const accounts: Account[] = Array.from({ length: NUM_WORKERS + 1 }, () => Account.generate());
     const encKeypairs = await Promise.all(Array.from({ length: NUM_WORKERS }, () => pke.keygen()));
@@ -76,7 +80,7 @@ export async function bringUpAceAndDeployCheckAclDemo(): Promise<AptosCustomFlow
     await buildRustWorkspace();
     killStaleNetworkNodes();
     const nodeProcs = spawnAceWorkers(workerAccounts, encKeypairs, aceContract);
-    const keypairId = await startInitialEpochAndRunDkg(adminAccount, workerAccounts, aceContract);
+    const keypairId = await startInitialEpochAndRunDkg(adminAccount, workerAccounts, aceContract, dkgPrimitive);
     await sleep(5_000); // let workers stabilise on the new shares
     await deployAndInitCheckAclDemo(adminAccount, adminAddr, ed25519PrivateKeyHex(adminAccount), aceContract);
     return { localnetProc, nodeProcs, adminAccount, adminAddr, aceContract, keypairId };
@@ -173,6 +177,7 @@ async function startInitialEpochAndRunDkg(
     admin: Account,
     workers: Account[],
     aceContract: string,
+    dkgPrimitive: number = 1,
 ): Promise<AccountAddress> {
     log('Admin: start_initial_epoch (resharing_interval_secs=3600)...');
     (await submitTxn({
@@ -183,7 +188,7 @@ async function startInitialEpochAndRunDkg(
     log('Admin: propose new_secret; workers 0,1 approve...');
     await proposeAndApprove(
         workers[0]!, workers.slice(0, THRESHOLD), aceContract,
-        serializeNewSecretProposal(1),
+        serializeNewSecretProposal(dkgPrimitive),
     );
     log('Waiting for DKG to complete...');
     const deadline = Date.now() + 300_000;

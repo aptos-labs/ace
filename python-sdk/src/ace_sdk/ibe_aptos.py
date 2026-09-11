@@ -113,7 +113,9 @@ def fetch_identity_key_shares_custom_flow(
             network_state=network_state,
             custom_request=custom_request,
             caller_decryption_key=caller_dec_sk,
-            tibe_scheme=(
+            # The public param stays `tibe_scheme` (0/1); it forwards into the request's `primitive`
+            # field (which equals it for block, and is 3 for the streaming scope).
+            primitive=(
                 t_ibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
                 if tibe_scheme is None
                 else tibe_scheme

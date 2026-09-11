@@ -32,6 +32,9 @@ export * as adminRecovery from "./admin-recovery";
 // Threshold IBE primitives (encrypt / extract / decrypt) — used by the ibe CLI + validation
 export * as tibe from "./t-ibe";
 
+// Streaming + seekable threshold IBE (chunk-in / chunk-out + random-access decrypt)
+export * as tibeStream from "./t-ibe-stream";
+
 // Shared types
 export { AceDeployment, ContractID } from "./_internal/common";
 
@@ -45,6 +48,10 @@ export type { DiscoveryReadableV0, SessionPks } from "./_internal/discovery";
 // Threshold IBE (encrypt + basic/custom-flow decrypt) — per chain
 export * as IBE_Aptos  from "./ibe-for-aptos";
 export * as IBE_Solana from "./ibe-for-solana";
+
+// Streaming + seekable threshold IBE (encryptStream + streaming/seekable decrypt) — per chain
+export * as StreamIBE_Aptos  from "./ibe-for-aptos-stream";
+export * as StreamIBE_Solana from "./ibe-for-solana-stream";
 
 // Threshold VRF (derive deterministic bytes from owner + label)
 export * as VRF_Aptos from "./vrf-for-aptos";

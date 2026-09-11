@@ -7,10 +7,13 @@ import { Result } from "../result";
 export const PRIMITIVE_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 0;
 export const PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEAD = 1;
 export const PRIMITIVE_BLS12381_THRESHOLD_VRF = 2;
+// Streaming + seekable sibling of shortsig-aead. Same G2 IBE half; only the client DEM/API differs.
+export const PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM = 3;
 
 export const USAGE_BFIBE_BLS12381_SHORTPK_OTP_HMAC = 1n;
 export const USAGE_BFIBE_BLS12381_SHORTSIG_AEAD = 2n;
 export const USAGE_BLS12381_THRESHOLD_VRF = 4n;
+export const USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM = 8n;
 
 export function usageForPrimitive(primitive: number): bigint {
     switch (primitive) {
@@ -20,6 +23,8 @@ export function usageForPrimitive(primitive: number): bigint {
             return USAGE_BFIBE_BLS12381_SHORTSIG_AEAD;
         case PRIMITIVE_BLS12381_THRESHOLD_VRF:
             return USAGE_BLS12381_THRESHOLD_VRF;
+        case PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM:
+            return USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM;
         default:
             throw new Error(`unsupported ACE primitive ${primitive}`);
     }
@@ -28,6 +33,7 @@ export function usageForPrimitive(primitive: number): bigint {
 const SCHEME_NAMES: Record<number, string> = {
     0: 'BLS12-381 G1 / BFIBE-shortpk-otp-hmac (legacy)',
     1: 'BLS12-381 G2 / BFIBE-shortsig-aead (default)',
+    3: 'BLS12-381 G2 / BFIBE-shortsig-aead-stream (streaming + seekable)',
 };
 
 export function schemeName(scheme: number): string {

@@ -34,6 +34,16 @@ module ace::secret_usage_tests {
                 == group::scheme_bls12381_g2(),
             4,
         );
+        assert!(
+            secret_usage::usage_for_primitive(secret_usage::primitive_bfibe_bls12381_shortsig_aeadstream())
+                == secret_usage::usage_bfibe_bls12381_shortsig_aeadstream(),
+            5,
+        );
+        assert!(
+            secret_usage::usage_group_scheme(secret_usage::usage_bfibe_bls12381_shortsig_aeadstream())
+                == group::scheme_bls12381_g2(),
+            6,
+        );
     }
 
     #[test]
@@ -41,6 +51,15 @@ module ace::secret_usage_tests {
         let usage = secret_usage::usage_bfibe_bls12381_shortsig_aead()
             | secret_usage::usage_bls12381_threshold_vrf();
         assert!(secret_usage::usage_group_scheme(usage) == group::scheme_bls12381_g2(), 10);
+    }
+
+    #[test]
+    fun test_secret_usage_allows_block_and_stream_on_one_keypair() {
+        // Block (bit 2) and stream (bit 8) shortsig-aead share the G2 group, so one keypair may
+        // carry both — reusing a single DKG for encrypt-block and encrypt-stream.
+        let usage = secret_usage::usage_bfibe_bls12381_shortsig_aead()
+            | secret_usage::usage_bfibe_bls12381_shortsig_aeadstream();
+        assert!(secret_usage::usage_group_scheme(usage) == group::scheme_bls12381_g2(), 11);
     }
 
     #[test]
@@ -52,7 +71,8 @@ module ace::secret_usage_tests {
     #[test]
     #[expected_failure]
     fun test_secret_usage_rejects_unsupported_usage() {
-        secret_usage::usage_group_scheme(secret_usage::supported_usage_mask() | 8);
+        // Bit 16 is above the supported mask (…|8 is now the streaming usage and is supported).
+        secret_usage::usage_group_scheme(secret_usage::supported_usage_mask() | 16);
     }
 
     #[test]

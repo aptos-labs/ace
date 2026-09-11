@@ -33,6 +33,11 @@ use crate::verify::ContractId;
 
 pub const SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC: u8 = 0;
 pub const SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD: u8 = 1;
+// Streaming + seekable sibling primitive (the on-chain `primitive` id, slot after VRF's 2). Its
+// released IDK share is DEM-agnostic and byte-identical to shortsig-aead: same G1 point, same
+// identity-hash DST. Only the client DEM differs, so the worker reuses the shortsig extraction and
+// tags the returned share with the shortsig object scheme (1), not the primitive.
+pub const PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM: u8 = 3;
 
 const DST_HASH_TO_G2_SHORTPK: &[u8] = b"BONEH_FRANKLIN_BLS12381_SHORT_PK/HASH_ID_TO_CURVE";
 const DST_HASH_TO_G1_SHORTSIG: &[u8] = b"BONEH_FRANKLIN_BLS12381_SHORTSIG_AEAD/HASH_ID_TO_CURVE";
@@ -43,38 +48,25 @@ type G2Hasher =
 type G1Hasher =
     MapToCurveBasedHasher<G1Projective, DefaultFieldHasher<Sha256, 128>, WBMap<ark_bls12_381::g1::Config>>;
 
-/// Map from on-chain DKG basepoint group (`group::Element` scheme byte) to the t-IBE scheme
-/// the worker should serve from a share derived from that DKG.
-///
-/// 1-to-1 for the variants currently defined:
-/// - DKG basepoint in G1 (group scheme 0) → master pk in G1 → `bfibe-bls12381-shortpk-otp-hmac`
-/// - DKG basepoint in G2 (group scheme 1) → master pk in G2 → `bfibe-bls12381-shortsig-aead`
-pub fn tibe_scheme_for_group(group_scheme: u8) -> Result<u8> {
+/// Map a request's `primitive` id to the DKG basepoint group it must be built over. This is a
+/// function in this direction only: G2 backs multiple primitives (shortsig-aead IBE, its streaming
+/// sibling, and threshold VRF), so there is no meaningful group→primitive inverse. Used to validate
+/// `request.primitive` against the share's stored `group_scheme`.
+pub fn group_scheme_for_primitive(primitive: u8) -> Result<u8> {
     use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
-    match group_scheme {
-        SCHEME_BLS12381G1 => Ok(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC),
-        SCHEME_BLS12381G2 => Ok(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD),
-        s => Err(anyhow!("tibe_scheme_for_group: unsupported group scheme {}", s)),
-    }
-}
-
-/// Inverse of [`tibe_scheme_for_group`] in spirit — but **not** an inverse in
-/// general. A group can back multiple t-IBE schemes; this maps a specific
-/// t-IBE scheme to the unique group it is built over. Used to validate
-/// `request.tibe_scheme` is compatible with the share's stored `group_scheme`.
-pub fn group_scheme_for_tibe(tibe_scheme: u8) -> Result<u8> {
-    use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
-    match tibe_scheme {
+    match primitive {
         SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => Ok(SCHEME_BLS12381G1),
-        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => Ok(SCHEME_BLS12381G2),
-        s => Err(anyhow!("group_scheme_for_tibe: unsupported t-IBE scheme {}", s)),
+        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD | PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM => {
+            Ok(SCHEME_BLS12381G2)
+        }
+        s => Err(anyhow!("group_scheme_for_primitive: unsupported primitive {}", s)),
     }
 }
 
 /// Compute this worker's IDK share for the given identity and return BCS-encoded
 /// `tibe.IdentityDecryptionKeyShare` bytes (as hex) for the requested t-IBE scheme.
 ///
-/// Wire format (depends on `tibe_scheme`):
+/// Wire format (depends on `primitive`):
 ///
 /// **shortpk-otp-hmac** (132 bytes):
 ///   `[0x00]` outer scheme
@@ -88,15 +80,17 @@ pub fn group_scheme_for_tibe(tibe_scheme: u8) -> Result<u8> {
 ///   `[0x30][48B G1 compressed]`
 ///   `[0x00]` no proof
 pub fn partial_extract_idk_share(
-    tibe_scheme: u8,
+    primitive: u8,
     id_bytes: &[u8],
     scalar_le32: &[u8; 32],
     eval_point: u64,
 ) -> Result<String> {
     let scalar_fr = Fr::from_le_bytes_mod_order(scalar_le32);
 
-    // Compute the share point in the right group, plus the on-wire length tag byte.
-    let (share_bytes, share_len_tag) = match tibe_scheme {
+    // Compute the share point in the right group, plus the on-wire length tag byte and the outer
+    // object-scheme tag the client will deserialize (0=shortpk, 1=shortsig). Streaming (primitive
+    // 3) reuses the shortsig share verbatim and is tagged as shortsig (1), not the primitive.
+    let (share_bytes, share_len_tag, outer_scheme) = match primitive {
         SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => {
             let h2c = G2Hasher::new(DST_HASH_TO_G2_SHORTPK)
                 .map_err(|e| anyhow!("G2Hasher::new: {:?}", e))?;
@@ -112,9 +106,9 @@ pub fn partial_extract_idk_share(
             if buf.len() != 96 {
                 return Err(anyhow!("G2 compressed must be 96 bytes, got {}", buf.len()));
             }
-            (buf, 0x60u8) // ULEB128(96)
+            (buf, 0x60u8, SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) // ULEB128(96)
         }
-        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => {
+        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD | PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM => {
             let h2c = G1Hasher::new(DST_HASH_TO_G1_SHORTSIG)
                 .map_err(|e| anyhow!("G1Hasher::new: {:?}", e))?;
             let id_proj: G1Projective = h2c
@@ -129,9 +123,9 @@ pub fn partial_extract_idk_share(
             if buf.len() != 48 {
                 return Err(anyhow!("G1 compressed must be 48 bytes, got {}", buf.len()));
             }
-            (buf, 0x30u8) // ULEB128(48)
+            (buf, 0x30u8, SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) // ULEB128(48)
         }
-        s => return Err(anyhow!("partial_extract_idk_share: unsupported t-IBE scheme {}", s)),
+        s => return Err(anyhow!("partial_extract_idk_share: unsupported primitive {}", s)),
     };
 
     // evalPoint as 32-byte LE Fr.
@@ -143,7 +137,7 @@ pub fn partial_extract_idk_share(
 
     // Build BCS output: [scheme][ULEB(32)][eval_bytes][ULEB(point_len)][point_bytes][0x00]
     let mut out = Vec::with_capacity(1 + 1 + 32 + 1 + share_bytes.len() + 1);
-    out.push(tibe_scheme);
+    out.push(outer_scheme);
     out.push(0x20u8); // ULEB128(32)
     out.extend_from_slice(&eval_bytes);
     out.push(share_len_tag);
@@ -272,17 +266,22 @@ mod tests {
     }
 
     #[test]
-    fn group_to_tibe_mapping() {
+    fn group_scheme_for_primitive_mapping() {
         use vss_common::group::{SCHEME_BLS12381G1, SCHEME_BLS12381G2};
         assert_eq!(
-            tibe_scheme_for_group(SCHEME_BLS12381G1).unwrap(),
-            SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC
+            group_scheme_for_primitive(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap(),
+            SCHEME_BLS12381G1
         );
         assert_eq!(
-            tibe_scheme_for_group(SCHEME_BLS12381G2).unwrap(),
-            SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
+            group_scheme_for_primitive(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap(),
+            SCHEME_BLS12381G2
         );
-        assert!(tibe_scheme_for_group(0xff).is_err());
+        // The streaming sibling shares G2 with block shortsig-aead.
+        assert_eq!(
+            group_scheme_for_primitive(PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM).unwrap(),
+            SCHEME_BLS12381G2
+        );
+        assert!(group_scheme_for_primitive(0xff).is_err());
     }
 
     #[test]

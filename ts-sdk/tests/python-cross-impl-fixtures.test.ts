@@ -4,9 +4,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { hexToBytes } from "@noble/hashes/utils";
+import { hexToBytes, bytesToHex } from "@noble/hashes/utils";
 import * as pke from "../src/pke";
 import * as tIbe from "../src/t-ibe";
+import * as tIbeStream from "../src/t-ibe-stream";
 
 type CrossImplFixture = {
     hpke: {
@@ -22,6 +23,19 @@ type CrossImplFixture = {
         identity_decryption_key_hex: string;
         randomness_hex: string;
         python_ciphertext_hex: string;
+    };
+    t_ibe_shortsig_aead_stream: {
+        identity_utf8: string;
+        master_public_key_hex: string;
+        identity_decryption_key_hex: string;
+        randomness_hex: string;
+        chunk_size: number;
+        cases: Array<{
+            name: string;
+            plaintext_utf8: string;
+            typescript_ciphertext_hex: string;
+            python_ciphertext_hex: string;
+        }>;
     };
 };
 
@@ -65,5 +79,32 @@ describe("Python SDK cross-implementation fixtures", () => {
         expect(new TextDecoder().decode(plaintext.unwrapOrThrow("t-ibe decrypt"))).toBe(
             fx.plaintext_utf8,
         );
+    });
+
+    it("reproduces + decrypts streaming (StreamIBE) ciphertext chunks across boundary sizes", () => {
+        const fx = fixture().t_ibe_shortsig_aead_stream;
+        // Streaming reuses the shortsig-aead (scheme 1) key + share objects verbatim.
+        const mpk = tIbe.MasterPublicKey.fromHex(fx.master_public_key_hex).unwrapOrThrow("stream mpk");
+        const idk = tIbe.IdentityDecryptionKeyShare.fromHex(
+            fx.identity_decryption_key_hex,
+        ).unwrapOrThrow("stream idk");
+        const id = new TextEncoder().encode(fx.identity_utf8);
+        const randomness = hexToBytes(fx.randomness_hex);
+
+        for (const c of fx.cases) {
+            const plaintext = new TextEncoder().encode(c.plaintext_utf8);
+            // Deterministic re-encryption reproduces BOTH recorded chunk-byte strings (equal) —
+            // this proves TS/Python streaming wire-format parity.
+            const recomputed = tIbeStream.encryptToConcatChunksWithRandomness({
+                mpk, id, plaintext, randomness, chunkSize: fx.chunk_size,
+            });
+            expect(bytesToHex(recomputed)).toBe(c.typescript_ciphertext_hex);
+            expect(c.typescript_ciphertext_hex).toBe(c.python_ciphertext_hex);
+            // Decrypt the Python-produced ciphertext chunks.
+            const decrypted = tIbeStream.decryptFromConcatChunks({
+                idkShares: [idk], chunks: hexToBytes(c.python_ciphertext_hex), chunkSize: fx.chunk_size,
+            });
+            expect(new TextDecoder().decode(decrypted)).toBe(c.plaintext_utf8);
+        }
     });
 });

@@ -15,12 +15,12 @@ pub(crate) async fn handle_basic_flow(
     state: &AppState,
     snapshot: &Snapshot,
     req: BasicFlowRequest,
-    tibe_scheme: u8,
+    primitive: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
     let keypair_id = keypair_id_str(&req.payload.keypair_id);
     let entry =
-        match timed_tibe_preflight(ctx, snapshot, &keypair_id, req.payload.epoch, tibe_scheme) {
+        match timed_tibe_preflight(ctx, snapshot, &keypair_id, req.payload.epoch, primitive) {
             Ok(entry) => entry,
             Err(outcome) => return outcome,
         };
@@ -40,6 +40,6 @@ pub(crate) async fn handle_basic_flow(
         &entry,
         &identity,
         &req.payload.ephemeral_enc_key,
-        tibe_scheme,
+        primitive,
     )
 }

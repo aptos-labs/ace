@@ -252,12 +252,12 @@ class CustomFlowRequest:
 class DecryptionBasicFlowRequest:
     request: DecryptionRequestPayload
     proof: ProofOfPermission
-    tibe_scheme: int
+    primitive: int
 
     def serialize(self, serializer: Serializer) -> None:
         self.request.serialize(serializer)
         self.proof.serialize(serializer)
-        serializer.serialize_u8(self.tibe_scheme)
+        serializer.serialize_u8(self.primitive)
 
 
 @dataclass(frozen=True)
@@ -268,11 +268,11 @@ class DecryptionCustomFlowRequest:
     label: bytes
     enc_pk: pke.EncryptionKey
     proof: CustomFlowProof
-    tibe_scheme: int
+    primitive: int
 
     @staticmethod
     def from_custom_request(
-        custom_request: CustomFlowRequest, tibe_scheme: int
+        custom_request: CustomFlowRequest, primitive: int
     ) -> "DecryptionCustomFlowRequest":
         return DecryptionCustomFlowRequest(
             keypair_id=custom_request.keypair_id,
@@ -281,7 +281,7 @@ class DecryptionCustomFlowRequest:
             label=custom_request.label,
             enc_pk=custom_request.enc_pk,
             proof=custom_request.proof,
-            tibe_scheme=tibe_scheme,
+            primitive=primitive,
         )
 
     def serialize(self, serializer: Serializer) -> None:
@@ -291,7 +291,7 @@ class DecryptionCustomFlowRequest:
         serializer.serialize_bytes(self.label)
         self.enc_pk.serialize(serializer)
         self.proof.serialize(serializer)
-        serializer.serialize_u8(self.tibe_scheme)
+        serializer.serialize_u8(self.primitive)
 
 
 class WorkerRequest:
@@ -308,20 +308,20 @@ class WorkerRequest:
     def new_decryption_basic_flow(
         request: DecryptionRequestPayload,
         proof: ProofOfPermission,
-        tibe_scheme: int,
+        primitive: int,
     ) -> "WorkerRequest":
         return WorkerRequest(
             SCHEME_DECRYPTION_BASIC_FLOW,
-            DecryptionBasicFlowRequest(request, proof, tibe_scheme),
+            DecryptionBasicFlowRequest(request, proof, primitive),
         )
 
     @staticmethod
     def new_decryption_custom_flow(
-        custom_request: CustomFlowRequest, tibe_scheme: int
+        custom_request: CustomFlowRequest, primitive: int
     ) -> "WorkerRequest":
         return WorkerRequest(
             SCHEME_DECRYPTION_CUSTOM_FLOW,
-            DecryptionCustomFlowRequest.from_custom_request(custom_request, tibe_scheme),
+            DecryptionCustomFlowRequest.from_custom_request(custom_request, primitive),
         )
 
     def serialize(self, serializer: Serializer) -> None:
@@ -428,7 +428,7 @@ def fetch_identity_key_shares_core(
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
     ephemeral_decryption_key: pke.DecryptionKey,
-    tibe_scheme: int,
+    primitive: int,
     per_node_timeout_ms: int = 8000,
     log: Callable[[str], None] | None = None,
 ) -> Result[list[t_ibe.IdentityDecryptionKeyShare]]:
@@ -447,7 +447,7 @@ def fetch_identity_key_shares_core(
                 f"{len(session_pks.share_pks)} != curNodes length {len(network_state.cur_nodes)}"
             )
         req_bytes = WorkerRequest.new_decryption_basic_flow(
-            request, proof, tibe_scheme
+            request, proof, primitive
         ).to_bytes()
         shares: list[t_ibe.IdentityDecryptionKeyShare] = []
         timeout_s = per_node_timeout_ms / 1000
@@ -503,7 +503,7 @@ def decrypt_core(
         request=request,
         proof=proof,
         ephemeral_decryption_key=ephemeral_decryption_key,
-        tibe_scheme=parsed.ok_value.scheme,
+        primitive=parsed.ok_value.scheme,
         log=log,
     )
     if not shares.is_ok or shares.ok_value is None:
@@ -516,7 +516,7 @@ def fetch_identity_key_shares_core_custom(
     network_state,
     custom_request: CustomFlowRequest,
     caller_decryption_key: pke.DecryptionKey,
-    tibe_scheme: int,
+    primitive: int,
     per_node_timeout_ms: int = 8000,
     log: Callable[[str], None] | None = None,
 ) -> Result[list[t_ibe.IdentityDecryptionKeyShare]]:
@@ -537,7 +537,7 @@ def fetch_identity_key_shares_core_custom(
                 f"{len(session_pks.share_pks)} != curNodes length {len(network_state.cur_nodes)}"
             )
         req_bytes = WorkerRequest.new_decryption_custom_flow(
-            custom_request, tibe_scheme
+            custom_request, primitive
         ).to_bytes()
         shares: list[t_ibe.IdentityDecryptionKeyShare] = []
         timeout_s = per_node_timeout_ms / 1000
@@ -598,7 +598,7 @@ def decrypt_core_custom(
         network_state=network_state,
         custom_request=custom_request,
         caller_decryption_key=caller_decryption_key,
-        tibe_scheme=parsed.ok_value.scheme,
+        primitive=parsed.ok_value.scheme,
         log=log,
     )
     if not shares.is_ok or shares.ok_value is None:
@@ -611,7 +611,7 @@ def build_per_node_request_core(
     network_state,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
-    tibe_scheme: int,
+    primitive: int,
     target_endpoint: str,
 ) -> Result[PerNodeRequest]:
     def task(_extra: dict) -> PerNodeRequest:
@@ -637,7 +637,7 @@ def build_per_node_request_core(
                 f"Registered endpoints: {endpoints}"
             )
         req_bytes = WorkerRequest.new_decryption_basic_flow(
-            request, proof, tibe_scheme
+            request, proof, primitive
         ).to_bytes()
         enc_req_hex = pke.encrypt(node_infos[sdk_idx]["node_enc_key"], req_bytes).to_hex()
         return PerNodeRequest(enc_req_hex, network_state.epoch, sdk_idx)

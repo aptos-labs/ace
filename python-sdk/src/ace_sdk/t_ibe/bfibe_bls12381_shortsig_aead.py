@@ -338,19 +338,62 @@ def extract(msk_scalar: int, identity: bytes) -> IdentityDecryptionKeyShare:
 # == Encrypt / Decrypt =========================================================
 
 
-def encrypt_with_randomness(
-    mpk: MasterPublicKey, identity: bytes, plaintext: bytes, randomness: bytes
-) -> Ciphertext:
+def ibe_encrypt_seed_and_c0(
+    mpk: MasterPublicKey, identity: bytes, randomness: bytes
+) -> tuple[bytes, _G2Point]:
+    """IBE-half of encryption, shared by the block (IBE_*) and streaming (StreamIBE_*) DEMs:
+    derive the raw Gt seed bytes fed into the DEM's HKDF, plus c0 = r * basePoint.
+    Mirrors ts-sdk `ibeEncryptSeedAndC0`."""
     r = int.from_bytes(randomness, "little")
     id_point = _hash_id_to_g1(identity)
     # seed = e(H_G1(id), pk^r) in Gt
     pk_r = _ob.multiply(mpk.pk, r)
     seed = _gt_to_seed_bytes(id_point, pk_r)
+    c0 = _ob.multiply(mpk.base_point, r)
+    return seed, c0
 
+
+def ibe_reconstruct_seed(idk_shares: list["IdentityDecryptionKeyShare"], c0: _G2Point) -> bytes:
+    """IBE-half of decryption, shared by the block (IBE_*) and streaming (StreamIBE_*) DEMs:
+    Lagrange-interpolate the IDK shares in G1 to recover the full identity decryption key, then
+    recover the raw Gt seed bytes via e(idkFull, c0). Mirrors ts-sdk `ibeReconstructSeed`."""
+    if len(idk_shares) == 0:
+        raise ValueError("decrypt: no IDK shares provided")
+
+    xs = [fr_mod(s.eval_point) for s in idk_shares]
+    for i in range(len(xs)):
+        for j in range(i + 1, len(xs)):
+            if xs[i] == xs[j]:
+                raise ValueError("decrypt: duplicate evalPoint")
+
+    lambdas: list[int] = []
+    for i, xi in enumerate(xs):
+        lam = 1
+        for j, xj in enumerate(xs):
+            if i == j:
+                continue
+            lam = fr_mul(lam, fr_mul(fr_mod(-xj), fr_inv(fr_mod(xi - xj))))
+        lambdas.append(lam)
+
+    idk_full = None
+    for i, share in enumerate(idk_shares):
+        if lambdas[i] == 0:
+            continue
+        scaled = _ob.multiply(share.idk_share, lambdas[i])
+        idk_full = scaled if idk_full is None else _ob.add(idk_full, scaled)
+    if idk_full is None:
+        raise ValueError("decrypt: all Lagrange coefficients were zero")
+
+    # e(idkFull, c0) = e(s * H_G1(id), r * basePoint) = e(H_G1(id), pk^r) = seed
+    return _gt_to_seed_bytes(idk_full, c0)
+
+
+def encrypt_with_randomness(
+    mpk: MasterPublicKey, identity: bytes, plaintext: bytes, randomness: bytes
+) -> Ciphertext:
+    seed, c0 = ibe_encrypt_seed_and_c0(mpk, identity, randomness)
     key, nonce = _derive_aead_key_and_nonce(seed)
     aead_ct = ChaCha20Poly1305(key).encrypt(nonce, plaintext, None)
-
-    c0 = _ob.multiply(mpk.base_point, r)
     return Ciphertext(c0, aead_ct)
 
 
@@ -380,36 +423,7 @@ def decrypt(
     idk_shares: list[IdentityDecryptionKeyShare], ciphertext: Ciphertext
 ) -> Result[bytes]:
     def task(_extra: dict) -> bytes:
-        if len(idk_shares) == 0:
-            raise ValueError("decrypt: no IDK shares provided")
-
-        xs = [fr_mod(s.eval_point) for s in idk_shares]
-        for i in range(len(xs)):
-            for j in range(i + 1, len(xs)):
-                if xs[i] == xs[j]:
-                    raise ValueError("decrypt: duplicate evalPoint")
-
-        lambdas: list[int] = []
-        for i, xi in enumerate(xs):
-            lam = 1
-            for j, xj in enumerate(xs):
-                if i == j:
-                    continue
-                lam = fr_mul(lam, fr_mul(fr_mod(-xj), fr_inv(fr_mod(xi - xj))))
-            lambdas.append(lam)
-
-        idk_full = None
-        for i, share in enumerate(idk_shares):
-            if lambdas[i] == 0:
-                continue
-            scaled = _ob.multiply(share.idk_share, lambdas[i])
-            idk_full = scaled if idk_full is None else _ob.add(idk_full, scaled)
-        if idk_full is None:
-            raise ValueError("decrypt: all Lagrange coefficients were zero")
-
-        # e(idkFull, c0) = e(s * H_G1(id), r * basePoint) = e(H_G1(id), basePoint)^{rs}
-        #                = e(H_G1(id), pk^r) = seed
-        seed = _gt_to_seed_bytes(idk_full, ciphertext.c0)
+        seed = ibe_reconstruct_seed(idk_shares, ciphertext.c0)
         key, nonce = _derive_aead_key_and_nonce(seed)
         return ChaCha20Poly1305(key).decrypt(nonce, ciphertext.aead_ct, None)
 

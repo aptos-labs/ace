@@ -52,7 +52,7 @@ export async function fetchIdentityKeySharesCustomFlow({
         networkState,
         customRequest,
         callerDecryptionKey: callerDecSk,
-        tibeScheme: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+        primitive: tibeScheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
     });
 }
 

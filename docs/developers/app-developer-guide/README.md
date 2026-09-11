@@ -12,6 +12,16 @@ ACE lets an app encrypt data or derive values scoped to a contract, account, and
 | [`ibe-solana-custom.md`](./ibe-solana-custom.md) | Your Solana program decides whether off-chain identity X can access object Y | ZK proofs, coupon codes, custom ACLs, off-chain credentials |
 | [`vrf-aptos.md`](./vrf-aptos.md) | Your Aptos contract decides who can derive values for a given contract, account, and label | per-object signing keys, deterministic grants, app-scoped randomness |
 
+## Large or seekable payloads: streaming
+
+The guides above encrypt a value all at once. When the payload is too big to hold in memory (files,
+video, backups) or a browser `<video>` must seek into encrypted media, use `ACE.StreamIBE_Aptos` /
+`ACE.StreamIBE_Solana` instead. They take the same `aceDeployment`, `keypairId`, contract id, and
+`label`, and support the same basic and custom decryption flows — you just encrypt and decrypt in
+chunks and get a decryptor that can jump to any byte range.
+
+How-to: [`ibe-aptos-stream.md`](./ibe-aptos-stream.md), [`ibe-solana-stream.md`](./ibe-solana-stream.md).
+
 ## Vocabulary
 
 - `aceDeployment`: the ACE network endpoint and ACE contract address. During preview, use the value provided by the ACE team or by a ready-to-run example/localnet config.

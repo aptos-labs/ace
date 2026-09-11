@@ -344,24 +344,37 @@ export function extract(mskScalar: bigint, id: Uint8Array): IdentityDecryptionKe
 
 // ── Encrypt / Decrypt ────────────────────────────────────────────────────────
 
-export function encryptWithRandomness(
+/**
+ * IBE-half of encryption, shared by the single-shot (`IBE_*`) and streaming (`StreamIBE_*`) DEMs:
+ * from `(mpk, id, r)` derive the raw Gt seed bytes fed into the DEM's HKDF, plus
+ * `c0 = r · basePoint`. Keeping this in one place guarantees block and stream share identical
+ * pairing math + seed canonicalization.
+ */
+export function ibeEncryptSeedAndC0(
     mpk: MasterPublicKey,
     id: Uint8Array,
-    plaintext: Uint8Array,
     randomness: Uint8Array,
-): Ciphertext {
+): { seed: Uint8Array; c0: WeierstrassPoint<Fp2> } {
     const r = bytesToNumberLE(randomness);
     // Q_id = H_G1(id)
     const idPoint = bls12_381.G1.hashToCurve(id, { DST: DST_HASH_ID_TO_CURVE }) as unknown as WeierstrassPoint<bigint>;
     // seed = e(H_G1(id), pk^r) ∈ Gt
     const seedElement = bls12_381.pairing(idPoint, mpk.pk.multiply(r));
     const seed = gtToSeedBytes(seedElement);
-
-    const { key, nonce } = deriveAeadKeyAndNonce(seed);
-    const aeadCt = chacha20poly1305(key, nonce).encrypt(plaintext);
-
     // c0 = r · basePoint (in G2)
     const c0 = mpk.basePoint.multiply(r);
+    return { seed, c0 };
+}
+
+export function encryptWithRandomness(
+    mpk: MasterPublicKey,
+    id: Uint8Array,
+    plaintext: Uint8Array,
+    randomness: Uint8Array,
+): Ciphertext {
+    const { seed, c0 } = ibeEncryptSeedAndC0(mpk, id, randomness);
+    const { key, nonce } = deriveAeadKeyAndNonce(seed);
+    const aeadCt = chacha20poly1305(key, nonce).encrypt(plaintext);
     return new Ciphertext(c0, aeadCt);
 }
 
@@ -393,41 +406,50 @@ export function verifyShare({ basePoint, sharePk, id, share }: {
     return bls12_381.fields.Fp12.eql(lhs, rhs);
 }
 
+/**
+ * IBE-half of decryption, shared by the single-shot (`IBE_*`) and streaming (`StreamIBE_*`) DEMs:
+ * Lagrange-interpolate the IDK shares in G1 to recover the full identity decryption key, then
+ * recover the raw Gt seed bytes via `e(idkFull, c0)`.
+ */
+export function ibeReconstructSeed(idkShares: IdentityDecryptionKeyShare[], c0: WeierstrassPoint<Fp2>): Uint8Array {
+    if (idkShares.length === 0) throw "decrypt: no IDK shares provided";
+
+    // Lagrange interpolation in the exponent (G1) to recover the full identity decryption key.
+    const xs = idkShares.map(s => frMod(s.evalPoint));
+    for (let i = 0; i < xs.length; i++) {
+        for (let j = i + 1; j < xs.length; j++) {
+            if (xs[i] === xs[j]) throw "decrypt: duplicate evalPoint";
+        }
+    }
+    const lambdas: bigint[] = xs.map((xi, i) => {
+        let lambda = 1n;
+        for (let j = 0; j < xs.length; j++) {
+            if (i === j) continue;
+            lambda = frMul(lambda, frMul(frMod(-xs[j]), frInv(frMod(xi - xs[j]))));
+        }
+        return lambda;
+    });
+
+    let idkFull: WeierstrassPoint<bigint> | null = null;
+    for (let i = 0; i < idkShares.length; i++) {
+        if (lambdas[i] === 0n) continue;
+        const scaled = idkShares[i].idkShare.multiply(lambdas[i]);
+        idkFull = idkFull === null ? scaled : idkFull.add(scaled);
+    }
+    if (idkFull === null) throw "decrypt: all Lagrange coefficients were zero";
+
+    // Standard BF-IBE decryption: e(idkFull, c0) = e(s · H_G1(id), r · basePoint)
+    //                                            = e(H_G1(id), basePoint)^{rs}
+    //                                            = e(H_G1(id), pk^r) = seed
+    const seedElement = bls12_381.pairing(idkFull, c0);
+    return gtToSeedBytes(seedElement);
+}
+
 export function decrypt({ idkShares, ciphertext }: { idkShares: IdentityDecryptionKeyShare[]; ciphertext: Ciphertext }): Result<Uint8Array> {
     return Result.capture({
         recordsExecutionTimeMs: true,
         task: () => {
-            if (idkShares.length === 0) throw "decrypt: no IDK shares provided";
-
-            // Lagrange interpolation in the exponent (G1) to recover the full identity decryption key.
-            const xs = idkShares.map(s => frMod(s.evalPoint));
-            for (let i = 0; i < xs.length; i++) {
-                for (let j = i + 1; j < xs.length; j++) {
-                    if (xs[i] === xs[j]) throw "decrypt: duplicate evalPoint";
-                }
-            }
-            const lambdas: bigint[] = xs.map((xi, i) => {
-                let lambda = 1n;
-                for (let j = 0; j < xs.length; j++) {
-                    if (i === j) continue;
-                    lambda = frMul(lambda, frMul(frMod(-xs[j]), frInv(frMod(xi - xs[j]))));
-                }
-                return lambda;
-            });
-
-            let idkFull: WeierstrassPoint<bigint> | null = null;
-            for (let i = 0; i < idkShares.length; i++) {
-                if (lambdas[i] === 0n) continue;
-                const scaled = idkShares[i].idkShare.multiply(lambdas[i]);
-                idkFull = idkFull === null ? scaled : idkFull.add(scaled);
-            }
-            if (idkFull === null) throw "decrypt: all Lagrange coefficients were zero";
-
-            // Standard BF-IBE decryption: e(idkFull, c0) = e(s · H_G1(id), r · basePoint)
-            //                                            = e(H_G1(id), basePoint)^{rs}
-            //                                            = e(H_G1(id), pk^r) = seed
-            const seedElement = bls12_381.pairing(idkFull, ciphertext.c0);
-            const seed = gtToSeedBytes(seedElement);
+            const seed = ibeReconstructSeed(idkShares, ciphertext.c0);
             const { key, nonce } = deriveAeadKeyAndNonce(seed);
             // ChaCha20-Poly1305 .decrypt() throws on tag mismatch; we let that propagate.
             return chacha20poly1305(key, nonce).decrypt(ciphertext.aeadCt);

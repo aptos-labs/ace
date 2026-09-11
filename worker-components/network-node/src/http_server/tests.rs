@@ -48,7 +48,7 @@ fn extract_rejects_vrf_only_share_for_tibe() {
     };
     assert!(detail
         .unwrap_or_default()
-        .contains("does not allow tibe_scheme"));
+        .contains("does not allow primitive"));
 }
 
 // ── Reconstruction flow ─────────────────────────────────────────────────────────

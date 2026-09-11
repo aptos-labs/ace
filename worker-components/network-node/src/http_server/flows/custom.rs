@@ -14,11 +14,11 @@ pub(crate) async fn handle_custom_flow(
     state: &AppState,
     snapshot: &Snapshot,
     req: CustomFlowRequest,
-    tibe_scheme: u8,
+    primitive: u8,
     ctx: &mut RequestContext,
 ) -> Outcome {
     let keypair_id = keypair_id_str(&req.keypair_id);
-    let entry = match timed_tibe_preflight(ctx, snapshot, &keypair_id, req.epoch, tibe_scheme) {
+    let entry = match timed_tibe_preflight(ctx, snapshot, &keypair_id, req.epoch, primitive) {
         Ok(entry) => entry,
         Err(outcome) => return outcome,
     };
@@ -29,5 +29,5 @@ pub(crate) async fn handle_custom_flow(
     }
     ctx.pfn_ms = Some(pfn_start.elapsed().as_millis() as u64);
     let identity = verify::identity_bytes(&req.keypair_id, &req.contract_id, &req.label);
-    timed_tibe_response(ctx, &entry, &identity, &req.enc_pk, tibe_scheme)
+    timed_tibe_response(ctx, &entry, &identity, &req.enc_pk, primitive)
 }

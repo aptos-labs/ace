@@ -138,6 +138,13 @@ Expected output:
 This last step is the punchline: domain-binding is what makes ACE's
 per-ciphertext access control meaningful.
 
+### Next: large or seekable payloads
+
+This tutorial encrypts small blobs. When the payload is large (files, video) or a browser
+`<video>` must seek into encrypted media, use `ACE.StreamIBE_Aptos` instead of `ACE.IBE_Aptos` —
+same access model, but you encrypt/decrypt in chunks and get a seekable decryptor. See the guide:
+[`docs/developers/app-developer-guide/ibe-aptos-stream.md`](../../docs/developers/app-developer-guide/ibe-aptos-stream.md).
+
 ## What's in this tutorial
 
 ```

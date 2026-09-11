@@ -14,10 +14,10 @@ pub(crate) fn timed_tibe_preflight(
     snapshot: &Snapshot,
     keypair_id: &str,
     epoch: u64,
-    tibe_scheme: u8,
+    primitive: u8,
 ) -> Result<ShareEntry, Outcome> {
     let start = Instant::now();
-    let result = preflight_tibe_share(snapshot, keypair_id, epoch, tibe_scheme);
+    let result = preflight_tibe_share(snapshot, keypair_id, epoch, primitive);
     if result.is_err() {
         ctx.extract_ms = Some(start.elapsed().as_millis() as u64);
     }
@@ -43,10 +43,10 @@ pub(crate) fn timed_tibe_response(
     entry: &ShareEntry,
     identity: &[u8],
     response_enc_key: &vss_common::pke::EncryptionKey,
-    tibe_scheme: u8,
+    primitive: u8,
 ) -> Outcome {
     let start = Instant::now();
-    let outcome = derive_tibe_share_and_respond(entry, identity, response_enc_key, tibe_scheme);
+    let outcome = derive_tibe_share_and_respond(entry, identity, response_enc_key, primitive);
     ctx.extract_ms = Some(start.elapsed().as_millis() as u64);
     outcome
 }

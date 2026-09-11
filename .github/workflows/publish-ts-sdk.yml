@@ -99,7 +99,8 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
-          TGZ=$(ls dist/*.tgz)
+          # Explicit ./ prefix: npm treats a bare "dist/x.tgz" as a git shorthand (EALLOWGIT).
+          TGZ=$(ls ./dist/*.tgz)
           ARGS=(--access public --provenance)
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: not publishing $TGZ"

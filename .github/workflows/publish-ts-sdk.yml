@@ -97,11 +97,23 @@ jobs:
       - name: Publish
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           # Explicit ./ prefix: npm treats a bare "dist/x.tgz" as a git shorthand (EALLOWGIT).
           TGZ=$(ls ./dist/*.tgz)
-          ARGS=(--access public --provenance)
+          # Maintenance lines (release-v3 while 5.x is current) must not move `latest`
+          # backwards: publish under `latest` only if this is the highest version ever
+          # published, otherwise under `release-v<major>` (e.g. @aptos-labs/ace-sdk@release-v3).
+          CURRENT=$(npm view @aptos-labs/ace-sdk version)
+          HIGHEST=$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)
+          if [ "$HIGHEST" = "$VERSION" ]; then
+            DIST_TAG=latest
+          else
+            DIST_TAG="release-v${VERSION%%.*}"
+          fi
+          echo "current latest=$CURRENT new=$VERSION -> dist-tag $DIST_TAG"
+          ARGS=(--access public --provenance --tag "$DIST_TAG")
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: not publishing $TGZ"
             ARGS+=(--dry-run)

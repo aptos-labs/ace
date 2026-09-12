@@ -10,6 +10,8 @@ pub mod client;
 pub mod common;
 pub mod deployment;
 pub mod discovery;
+#[cfg(feature = "aptos")]
+pub mod flows;
 pub mod known_deployments;
 #[cfg(feature = "aptos")]
 pub mod signer;
@@ -21,6 +23,8 @@ pub use client::{
 pub use common::*;
 pub use deployment::AceDeployment;
 pub use discovery::{DiscoveryViewV0, NodeInfo, SessionPks};
+#[cfg(feature = "aptos")]
+pub use flows::*;
 pub use known_deployments::{known_deployment, KnownDeployment, KNOWN_DEPLOYMENT_IDS};
 #[cfg(feature = "aptos")]
 pub use signer::{build_aptos_wallet_full_message, Ed25519Signer, MessageSigner, SignedMessage};

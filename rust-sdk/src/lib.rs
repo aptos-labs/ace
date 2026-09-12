@@ -6,7 +6,9 @@
 
 pub mod error;
 pub mod group;
+pub mod pedersen_polynomial_commitment;
 pub mod sig;
+pub mod sigma_dlog_linear;
 pub mod utils;
 pub mod wire;
 

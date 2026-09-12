@@ -97,10 +97,17 @@ jobs:
       - name: Publish
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          TGZ=$(ls dist/*.tgz)
-          ARGS=(--access public --provenance)
+          # Explicit ./ prefix: npm treats a bare "dist/x.tgz" as a git shorthand (EALLOWGIT).
+          TGZ=$(ls ./dist/*.tgz)
+          # Policy: CI never touches `latest`. Every publish goes under its release-line
+          # dist-tag (e.g. @aptos-labs/ace-sdk@release-v3); promoting a line to `latest`
+          # is a manual `npm dist-tag add`.
+          DIST_TAG="release-v${VERSION%%.*}"
+          echo "publishing $VERSION under dist-tag $DIST_TAG"
+          ARGS=(--access public --provenance --tag "$DIST_TAG")
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: not publishing $TGZ"
             ARGS+=(--dry-run)

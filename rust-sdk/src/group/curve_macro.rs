@@ -121,6 +121,43 @@ macro_rules! define_bls12381_group {
         }
         wire_via_serialize!(SecretShare);
 
+        // serde (BCS): same wire as `serialize`, so derived containers stay TS-compatible.
+        macro_rules! serde_via_bytes {
+            ($t:ty, $to:expr, $from:expr) => {
+                impl serde::Serialize for $t {
+                    fn serialize<S: serde::Serializer>(
+                        &self,
+                        s: S,
+                    ) -> core::result::Result<S::Ok, S::Error> {
+                        s.serialize_bytes(&($to)(self))
+                    }
+                }
+                impl<'de> serde::Deserialize<'de> for $t {
+                    fn deserialize<D: serde::Deserializer<'de>>(
+                        d: D,
+                    ) -> core::result::Result<Self, D::Error> {
+                        let v: Vec<u8> = <Vec<u8> as serde::Deserialize>::deserialize(d)?;
+                        ($from)(&v).map_err(serde::de::Error::custom)
+                    }
+                }
+            };
+        }
+        serde_via_bytes!(
+            PublicPoint,
+            |p: &PublicPoint| p.raw_bytes(),
+            PublicPoint::from_raw_bytes
+        );
+        serde_via_bytes!(
+            PrivateScalar,
+            |p: &PrivateScalar| fr_to_le_bytes(&p.scalar).to_vec(),
+            |b: &[u8]| fr_from_le_bytes(b).map(PrivateScalar::from_fr)
+        );
+        serde_via_bytes!(
+            SecretShare,
+            |p: &SecretShare| fr_to_le_bytes(&p.y).to_vec(),
+            |b: &[u8]| fr_from_le_bytes(b).map(SecretShare::from_fr)
+        );
+
         /// Feldman commitment `[g^{a_0}, ..., g^{a_{t-1}}]`. BCS: `uleb(len) ++ bytes(point)*`.
         #[derive(Clone, PartialEq, Eq, Debug)]
         pub struct PcsCommitment {

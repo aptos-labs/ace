@@ -34,8 +34,8 @@ macro_rules! wire_via_serialize {
 }
 pub(crate) use wire_via_serialize;
 
-/// BCS: `u8(scheme) ++ PrivateScalar`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// BCS: `u8(scheme) ++ PrivateScalar` (serde enum index == scheme).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Scalar {
     Bls12381G1(bls12381g1::PrivateScalar),
     Bls12381G2(bls12381g2::PrivateScalar),
@@ -88,8 +88,8 @@ impl Scalar {
 }
 wire_via_serialize!(Scalar);
 
-/// BCS: `u8(scheme) ++ PublicPoint`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// BCS: `u8(scheme) ++ PublicPoint` (serde enum index == scheme).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Element {
     Bls12381G1(bls12381g1::PublicPoint),
     Bls12381G2(bls12381g2::PublicPoint),

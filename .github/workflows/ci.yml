@@ -99,6 +99,8 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - name: Test
         run: cargo test
+      - name: Rust SDK without network features (what worker components will depend on)
+        run: cargo check -p ace-sdk --no-default-features
 
   unit-tests-python:
     name: Unit tests / Python SDK

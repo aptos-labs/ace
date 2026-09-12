@@ -39,6 +39,12 @@ function loadConfig(): SnapshotConfig & { port: number } {
         sampleIntervalMs: process.env.ACE_DISCOVERY_SAMPLE_INTERVAL_MS
             ? Number(process.env.ACE_DISCOVERY_SAMPLE_INTERVAL_MS)
             : DEFAULT_SAMPLE_INTERVAL_MS,
+        fetchTimeoutMs: process.env.ACE_DISCOVERY_FETCH_TIMEOUT_MS
+            ? Number(process.env.ACE_DISCOVERY_FETCH_TIMEOUT_MS)
+            : undefined,
+        maxStaleMs: process.env.ACE_DISCOVERY_MAX_STALE_MS
+            ? Number(process.env.ACE_DISCOVERY_MAX_STALE_MS)
+            : undefined,
         port: process.env.ACE_DISCOVERY_PORT ? Number(process.env.ACE_DISCOVERY_PORT) : DEFAULT_PORT,
     };
 }
@@ -71,6 +77,12 @@ function main() {
             return;
         }
         if (url === "/healthz") {
+            // lag mode: a ring whose newest sample is older than maxStaleMs is a broken sampler, not a
+            // healthy server -- report it so the platform restarts us instead of serving dead epochs.
+            if (cache.isStale()) {
+                res.writeHead(503, { "Content-Type": "text/plain" }).end("stale");
+                return;
+            }
             res.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
             return;
         }

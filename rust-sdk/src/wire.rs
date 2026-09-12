@@ -10,8 +10,9 @@ use crate::error::{AceError, Result};
 pub trait Wire: Sized {
     fn to_bytes(&self) -> Vec<u8>;
     fn from_bytes(bytes: &[u8]) -> Result<Self>;
+    /// Lower-case hex, no `0x` prefix (matches the TS `toHex`).
     fn to_hex(&self) -> String {
-        format!("0x{}", hex::encode(self.to_bytes()))
+        hex::encode(self.to_bytes())
     }
     fn from_hex(s: &str) -> Result<Self> {
         Self::from_bytes(&decode_hex(s)?)
@@ -25,7 +26,7 @@ pub fn decode_hex(s: &str) -> Result<Vec<u8>> {
 }
 
 pub fn encode_hex(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
+    hex::encode(bytes)
 }
 
 /// Implement [`Wire`] for a serde type whose derived BCS layout matches the TS layout.
@@ -139,7 +140,10 @@ impl<'a> Deserializer<'a> {
     }
     pub fn finish(self) -> Result<()> {
         if self.remaining() != 0 {
-            return Err(AceError::wire(format!("{} trailing bytes", self.remaining())));
+            return Err(AceError::wire(format!(
+                "{} trailing bytes",
+                self.remaining()
+            )));
         }
         Ok(())
     }

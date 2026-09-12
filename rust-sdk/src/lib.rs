@@ -5,6 +5,8 @@
 //! file it corresponds to.
 
 pub mod error;
+pub mod group;
+pub mod utils;
 pub mod wire;
 
 pub use error::{AceError, Result};

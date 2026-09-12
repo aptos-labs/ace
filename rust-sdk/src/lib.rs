@@ -7,6 +7,7 @@
 pub mod address;
 pub mod dkg;
 pub mod dkr;
+pub mod aptos;
 pub mod error;
 pub mod group;
 pub mod network;
@@ -15,6 +16,7 @@ pub mod pke;
 pub mod sig;
 pub mod sigma_dlog_linear;
 pub mod t_ibe;
+pub mod t_ibe_stream;
 pub mod utils;
 pub mod vss;
 pub mod wire;

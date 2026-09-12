@@ -13,6 +13,7 @@ pub mod sig;
 pub mod sigma_dlog_linear;
 pub mod utils;
 pub mod vss;
+pub mod network;
 pub mod wire;
 
 pub use address::AccountAddress;

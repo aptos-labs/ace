@@ -12,9 +12,15 @@ pub mod deployment;
 pub mod discovery;
 #[cfg(feature = "aptos")]
 pub mod flows;
+#[cfg(feature = "aptos")]
+pub mod ibe;
+#[cfg(feature = "aptos")]
+pub mod ibe_stream;
 pub mod known_deployments;
 #[cfg(feature = "aptos")]
 pub mod signer;
+#[cfg(feature = "aptos")]
+pub mod vrf;
 
 #[cfg(feature = "aptos")]
 pub use client::{

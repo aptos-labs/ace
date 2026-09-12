@@ -489,3 +489,49 @@ mod tests {
             .is_err());
     }
 }
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::aptos::known_deployment;
+    use crate::wire::Wire;
+
+    /// Fetches the real shelbynet master public key (discovery path and fullnode path) and
+    /// encrypts under it. Run with `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn shelbynet_fetch_pk_and_encrypt() {
+        let dep = known_deployment("shelbynet-20260731").unwrap();
+        let pk_disc = fetch_pk(&dep.ace_deployment, dep.ibe_keypair_id, None)
+            .await
+            .unwrap();
+        let full = dep.ace_deployment.clone().with_discovery_url(None);
+        let pk_full = fetch_pk(&full, dep.ibe_keypair_id, None).await.unwrap();
+        assert_eq!(pk_disc, pk_full);
+        assert_eq!(
+            pk_disc.scheme(),
+            crate::t_ibe::SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD
+        );
+        let target = Target {
+            ace_deployment: &dep.ace_deployment,
+            keypair_id: dep.ibe_keypair_id,
+            chain_id: dep.chain_id,
+            module_addr: AccountAddress::from_str_relaxed(
+                "0x10d3efec2ff80d77600bb0b61a05c12411759a3831c4d848d21af47e43de5cb0",
+            )
+            .unwrap(),
+            module_name: "presigned_access",
+        };
+        let ct = encrypt(EncryptArgs {
+            target,
+            label: b"rust-sdk/live-test",
+            plaintext: b"hello from rust",
+            tibe_scheme: None,
+            pk: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(ct.scheme(), 1);
+        assert!(ct.to_bytes().len() > 96);
+    }
+}

@@ -531,3 +531,64 @@ pub async fn derive(args: DeriveArgs<'_>) -> Result<Vec<u8>> {
         .derive_with_signature(signed.pub_key, signed.signature, signed.full_message)
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aptos::flows::CurrentSessionPks;
+    use crate::group::bls12381fr::{eval_poly, Fr};
+    use crate::group::{bls12381g1, bls12381g2};
+    use crate::wire::Wire;
+
+    fn committee(secret: Fr, input: &[u8]) -> (CurrentSessionPks, Vec<ThresholdVrfShare>) {
+        let coeffs = [secret, bls12381g2::sample().scalar];
+        let h = hash_vrf_input_to_g1(input).unwrap();
+        let g2 = bls12381g2::generator();
+        let mut pks = vec![];
+        let mut shares = vec![];
+        for i in 1..=3u64 {
+            let s = eval_poly(&coeffs, Fr::from(i));
+            pks.push(Element::Bls12381G2(
+                g2.scale(&bls12381g2::PrivateScalar::from_fr(s)),
+            ));
+            shares.push(ThresholdVrfShare {
+                eval_point: i,
+                share: Element::Bls12381G1(h.scale(&bls12381g1::PrivateScalar::from_fr(s))),
+            });
+        }
+        (
+            CurrentSessionPks {
+                base_point: Element::Bls12381G2(g2),
+                share_pks: pks,
+            },
+            shares,
+        )
+    }
+
+    #[test]
+    fn simulated_committee_verify_and_reconstruct() {
+        let secret = bls12381g2::sample().scalar;
+        let input = b"vrf-input";
+        let (pks, shares) = committee(secret, input);
+        for (i, s) in shares.iter().enumerate() {
+            assert!(verify_threshold_vrf_share(s, i, &pks, input));
+            assert!(!verify_threshold_vrf_share(s, (i + 1) % 3, &pks, input));
+            assert!(!verify_threshold_vrf_share(s, i, &pks, b"other"));
+        }
+        let full = hash_vrf_input_to_g1(input)
+            .unwrap()
+            .scale(&bls12381g1::PrivateScalar::from_fr(secret));
+        let mut pre = crate::utils::sha3_256(b"ACE::ThresholdVrfOutput").to_vec();
+        pre.extend(full.raw_bytes());
+        let expected = crate::utils::sha3_256(&pre).to_vec();
+        assert_eq!(reconstruct_threshold_vrf(&shares[..2]).unwrap(), expected);
+        assert_eq!(reconstruct_threshold_vrf(&shares[1..]).unwrap(), expected);
+        assert_eq!(reconstruct_threshold_vrf(&shares).unwrap(), expected);
+        assert_ne!(reconstruct_threshold_vrf(&shares[..1]).unwrap(), expected);
+        assert!(reconstruct_threshold_vrf(&[]).is_err());
+        assert!(reconstruct_threshold_vrf(&[shares[0].clone(), shares[0].clone()]).is_err());
+        let b = shares[0].to_bytes();
+        assert_eq!(b.len(), 8 + 1 + 1 + 48);
+        assert_eq!(ThresholdVrfShare::from_bytes(&b).unwrap(), shares[0]);
+    }
+}

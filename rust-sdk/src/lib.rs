@@ -5,6 +5,8 @@
 //! file it corresponds to.
 
 pub mod address;
+#[cfg(feature = "aptos")]
+pub mod admin_recovery;
 pub mod aptos;
 pub mod dkg;
 pub mod dkr;

@@ -6,7 +6,9 @@
 //! unconditionally; network calls need the `aptos` feature.
 
 pub mod deployment;
+pub mod discovery;
 pub mod known_deployments;
 
 pub use deployment::AceDeployment;
+pub use discovery::{DiscoveryViewV0, NodeInfo, SessionPks};
 pub use known_deployments::{known_deployment, KnownDeployment, KNOWN_DEPLOYMENT_IDS};

@@ -5,9 +5,9 @@
 //! file it corresponds to.
 
 pub mod address;
+pub mod aptos;
 pub mod dkg;
 pub mod dkr;
-pub mod aptos;
 pub mod error;
 pub mod group;
 pub mod network;

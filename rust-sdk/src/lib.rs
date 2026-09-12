@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod group;
+pub mod sig;
 pub mod utils;
 pub mod wire;
 

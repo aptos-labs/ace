@@ -46,3 +46,7 @@ async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Worker-parity tests: the workers must be able to adopt ace-sdk without changing any wire byte.
+vss-common = { path = "../worker-components/vss-common" }
+network-node = { path = "../worker-components/network-node" }
+ed25519-dalek = "2"

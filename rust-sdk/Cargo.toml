@@ -13,6 +13,11 @@ default = ["aptos"]
 # Network flows against Aptos fullnodes, ACE discovery and worker nodes.
 aptos = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:async-trait"]
 
+[[bin]]
+name = "rust-sdk-custom-flow-client"
+path = "src/bin/rust-sdk-custom-flow-client.rs"
+required-features = ["aptos"]
+
 [dependencies]
 thiserror = "1"
 hex = "0.4"
@@ -35,7 +40,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 hpke = { version = "0.12", default-features = false, features = ["std", "x25519"] }
 num-bigint = "0.4"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
-tokio = { version = "1", features = ["rt", "time", "fs", "sync"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "fs", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 async-trait = { version = "0.1", optional = true }
 

@@ -315,6 +315,51 @@ pub fn decrypt(
     }
 }
 
+/// Combine threshold IDK shares into the full identity decryption key, without decrypting
+/// anything. Returns the aggregate wrapped as a single [`IdentityDecryptionKeyShare`] at
+/// eval_point 0, so it round-trips through `serialize`/`to_bytes` like any other share and
+/// can be fed straight back into [`decrypt`] (a one-element set Lagrange-interpolates to
+/// itself).
+///
+/// This exposes the intermediate that [`decrypt`] otherwise computes and discards — useful
+/// when a caller needs to cache the reconstructed key, reuse it across many ciphertexts
+/// under the same identity, or hand it to another layer (e.g. a storage gateway's seed
+/// recovery) instead of the plaintext. All shares must carry the same scheme.
+pub fn aggregate_identity_decryption_key(
+    idk_shares: &[IdentityDecryptionKeyShare],
+) -> Result<IdentityDecryptionKeyShare> {
+    let scheme = idk_shares
+        .first()
+        .ok_or_else(|| AceError::crypto("aggregateIdentityDecryptionKey: no IDK shares provided"))?
+        .scheme();
+    if idk_shares.iter().any(|s| s.scheme() != scheme) {
+        return Err(AceError::crypto(
+            "aggregateIdentityDecryptionKey: scheme mismatch",
+        ));
+    }
+    match scheme {
+        SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC => {
+            let inner: Vec<shortpk::IdentityDecryptionKeyShare> = idk_shares
+                .iter()
+                .map(|s| s.as_shortpk_otp_hmac().cloned())
+                .collect::<Result<_>>()?;
+            Ok(IdentityDecryptionKeyShare::ShortPkOtpHmac(
+                shortpk::aggregate_identity_decryption_key(&inner)?,
+            ))
+        }
+        SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD => {
+            let inner: Vec<shortsig::IdentityDecryptionKeyShare> = idk_shares
+                .iter()
+                .map(|s| s.as_shortsig_aead().cloned())
+                .collect::<Result<_>>()?;
+            Ok(IdentityDecryptionKeyShare::ShortSigAead(
+                shortsig::aggregate_identity_decryption_key(&inner)?,
+            ))
+        }
+        s => Err(AceError::UnsupportedScheme(s)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,5 +511,44 @@ mod tests {
         // as_* accessors on the wrong variant.
         assert!(mpk1.as_shortpk_otp_hmac().is_err());
         assert!(mpk1.as_shortsig_aead().is_ok());
+    }
+
+    #[test]
+    fn aggregate_identity_decryption_key_via_tagged_api() {
+        let id = b"tagged aggregate id";
+        let pt = b"tagged aggregate plaintext";
+
+        // scheme 0 (shortpk-otp-hmac): two shares aggregate to a decryptable eval_point-0 key.
+        let msk0 = keygen_for_testing(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC).unwrap();
+        let mpk0 = derive_public_key(&msk0);
+        let ct0 = encrypt(&mpk0, id, pt).unwrap();
+        let scalar0 = msk0.as_shortpk_otp_hmac().unwrap().scalar;
+        let share0 = extract(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, &scalar0, id).unwrap();
+        let agg0 = aggregate_identity_decryption_key(&[share0.clone()]).unwrap();
+        assert_eq!(agg0.scheme(), SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC);
+        assert_eq!(agg0.as_shortpk_otp_hmac().unwrap().eval_point, 0);
+        assert_eq!(decrypt(&[agg0], &ct0).unwrap(), pt);
+
+        // scheme 1 (shortsig-aead): same shape.
+        let msk1 = keygen_for_testing(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap();
+        let mpk1 = derive_public_key(&msk1);
+        let ct1 = encrypt(&mpk1, id, pt).unwrap();
+        let scalar1 = msk1.as_shortsig_aead().unwrap().scalar;
+        let share1 = extract(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, &scalar1, id).unwrap();
+        let agg1 = aggregate_identity_decryption_key(&[share1.clone()]).unwrap();
+        assert_eq!(agg1.scheme(), SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD);
+        assert_eq!(agg1.as_shortsig_aead().unwrap().eval_point, 0);
+        assert_eq!(decrypt(&[agg1], &ct1).unwrap(), pt);
+
+        // Round-trips through the wire, tagged.
+        let agg1_again = aggregate_identity_decryption_key(&[share1.clone()]).unwrap();
+        assert_eq!(
+            IdentityDecryptionKeyShare::from_bytes(&agg1_again.to_bytes()).unwrap(),
+            agg1_again
+        );
+
+        // Mixed schemes and empty input both rejected.
+        assert!(aggregate_identity_decryption_key(&[share0, share1]).is_err());
+        assert!(aggregate_identity_decryption_key(&[]).is_err());
     }
 }

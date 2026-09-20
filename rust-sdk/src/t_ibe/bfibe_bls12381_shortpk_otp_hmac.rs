@@ -277,13 +277,25 @@ pub fn verify_share(
     lhs == rhs
 }
 
-/// Lagrange-combine the shares at x = 0 in the exponent, then standard BF-IBE decryption.
-pub fn decrypt(
+/// Combine threshold IDK shares into the full identity decryption key by Lagrange
+/// interpolation in the exponent (G2) at x=0.
+///
+/// The result is the same `idkFull = H(id)^s` that [`decrypt`] recovers internally: the
+/// value the shares interpolate to at x=0, i.e. the secret in the exponent — not a normal
+/// share (real shares live at x≥1). It's returned wrapped at eval_point 0 to reflect that.
+/// A one-element set still Lagrange-interpolates to itself (λ = 1), so it can be fed
+/// straight back into [`decrypt`].
+///
+/// This exposes the intermediate that [`decrypt`] otherwise computes and discards — useful
+/// when a caller needs to cache the reconstructed key, reuse it across many ciphertexts
+/// under the same identity, or hand it to another layer instead of the plaintext.
+pub fn aggregate_identity_decryption_key(
     idk_shares: &[IdentityDecryptionKeyShare],
-    ciphertext: &Ciphertext,
-) -> Result<Vec<u8>> {
+) -> Result<IdentityDecryptionKeyShare> {
     if idk_shares.is_empty() {
-        return Err(AceError::crypto("decrypt: no IDK shares provided"));
+        return Err(AceError::crypto(
+            "aggregateIdentityDecryptionKey: no IDK shares provided",
+        ));
     }
     let xs: Vec<Fr> = idk_shares
         .iter()
@@ -292,7 +304,9 @@ pub fn decrypt(
     for i in 0..xs.len() {
         for j in (i + 1)..xs.len() {
             if xs[i] == xs[j] {
-                return Err(AceError::crypto("decrypt: duplicate evalPoint"));
+                return Err(AceError::crypto(
+                    "aggregateIdentityDecryptionKey: duplicate evalPoint",
+                ));
             }
         }
     }
@@ -304,9 +318,9 @@ pub fn decrypt(
                 continue;
             }
             // λ_i = Π_{j≠i} (0 - x_j) / (x_i - x_j)  in Fr
-            let denom = (*xi - xj)
-                .inverse()
-                .ok_or_else(|| AceError::crypto("decrypt: duplicate evalPoint"))?;
+            let denom = (*xi - xj).inverse().ok_or_else(|| {
+                AceError::crypto("aggregateIdentityDecryptionKey: duplicate evalPoint")
+            })?;
             lambda *= -*xj * denom;
         }
         if lambda.is_zero() {
@@ -318,11 +332,27 @@ pub fn decrypt(
             Some(acc) => acc + scaled,
         });
     }
-    let idk_full =
-        idk_full.ok_or_else(|| AceError::crypto("decrypt: all Lagrange coefficients were zero"))?;
+    let idk_full = idk_full.ok_or_else(|| {
+        AceError::crypto("aggregateIdentityDecryptionKey: all Lagrange coefficients were zero")
+    })?;
+    // eval_point 0: this is the interpolation at x=0, i.e. the secret in the exponent, not
+    // a share at a node index.
+    Ok(IdentityDecryptionKeyShare {
+        eval_point: 0,
+        idk_share: bls12381g2::PublicPoint { pt: idk_full },
+        proof: None,
+    })
+}
+
+/// Lagrange-combine the shares at x = 0 in the exponent, then standard BF-IBE decryption.
+pub fn decrypt(
+    idk_shares: &[IdentityDecryptionKeyShare],
+    ciphertext: &Ciphertext,
+) -> Result<Vec<u8>> {
+    let idk_full = aggregate_identity_decryption_key(idk_shares)?.idk_share;
 
     // pair(c0, idkFull) = pair(base^r, H(id)^s) = pair(base, H(id))^{rs} = pair(pk^r, H(id))
-    let seed = gt_to_bytes(&pairing(&ciphertext.c0.pt, &idk_full));
+    let seed = gt_to_bytes(&pairing(&ciphertext.c0.pt, &idk_full.pt));
     let mac_key = kdf(&seed, DST_MAC, 32);
     let mac_another = hmac_sha3_256(&mac_key, &ciphertext.symmetric_ciph);
     if ciphertext.mac.as_slice() != mac_another.as_slice() {
@@ -414,6 +444,48 @@ mod tests {
         let mut t2 = ct.clone();
         t2.mac[5] ^= 1;
         assert!(is_verify(&decrypt(&idk_shares[..2], &t2)));
+    }
+
+    #[test]
+    fn shortpk_aggregate_identity_decryption_key_matches_decrypt_and_round_trips() {
+        let msk = keygen_for_testing();
+        let mpk = derive_public_key(&msk);
+        let shares = split(&msk, 2, 3);
+        let idk_shares: Vec<IdentityDecryptionKeyShare> = shares
+            .iter()
+            .map(|(x, s)| extract(s, *x, ID).unwrap())
+            .collect();
+        let ct = encrypt(&mpk, ID, MSG).unwrap();
+
+        // A single-element set Lagrange-interpolates to itself.
+        let single = aggregate_identity_decryption_key(&[idk_shares[0].clone()]).unwrap();
+        assert_eq!(single.idk_share, idk_shares[0].idk_share);
+        assert_eq!(single.eval_point, 0);
+
+        // The aggregate is at eval_point 0 and, fed back as a one-element share set, decrypts
+        // exactly like the original share set.
+        let full =
+            aggregate_identity_decryption_key(&[idk_shares[0].clone(), idk_shares[1].clone()])
+                .unwrap();
+        assert_eq!(full.eval_point, 0);
+        assert_eq!(decrypt(&[full.clone()], &ct).unwrap(), MSG);
+        assert_eq!(
+            decrypt(&[idk_shares[0].clone(), idk_shares[1].clone()], &ct).unwrap(),
+            MSG
+        );
+
+        // Round-trips through the wire like any other share.
+        assert_eq!(
+            IdentityDecryptionKeyShare::from_bytes(&full.to_bytes()).unwrap(),
+            full
+        );
+
+        // Errors mirror decrypt's degenerate-input checks.
+        assert!(aggregate_identity_decryption_key(&[]).is_err());
+        assert!(
+            aggregate_identity_decryption_key(&[idk_shares[0].clone(), idk_shares[0].clone()])
+                .is_err()
+        );
     }
 
     #[test]

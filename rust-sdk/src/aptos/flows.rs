@@ -224,6 +224,21 @@ pub fn decrypt_with_identity_key_shares(
     })
 }
 
+/// TS `ACE.aggregateIdentityDecryptionKey`. Combine the per-node identity key shares into the
+/// single aggregated identity decryption key, without decrypting a ciphertext. The returned
+/// share is the reconstructed key (at eval_point 0); serialize it with `to_bytes()` to persist
+/// or transport it, or pass it back to [`decrypt_with_identity_key_shares`] as a one-element
+/// slice to decrypt.
+pub fn aggregate_identity_decryption_key(
+    identity_key_shares: &[tibe::IdentityDecryptionKeyShare],
+) -> Result<tibe::IdentityDecryptionKeyShare> {
+    tibe::aggregate_identity_decryption_key(identity_key_shares).map_err(|e| {
+        AceError::crypto(format!(
+            "ACE.aggregateIdentityDecryptionKey: tibe.aggregateIdentityDecryptionKey failed: {e}"
+        ))
+    })
+}
+
 // ── Committee lookup + fan-out ───────────────────────────────────────────────────────────
 
 /// `(endpoint, enc_key)` for every node in `cur_nodes`, fetched concurrently (TS inner
@@ -580,5 +595,26 @@ mod tests {
         let got = parse_worker_response(&format!(" {}\n", ct.to_hex()), &eph_dk).unwrap();
         assert_eq!(got, share);
         assert!(parse_worker_response("zz", &eph_dk).is_err());
+    }
+
+    #[test]
+    fn aggregate_identity_decryption_key_then_decrypt_matches_direct_decrypt() {
+        let msk = tibe::keygen_for_testing(tibe::SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD).unwrap();
+        let mpk = tibe::derive_public_key(&msk);
+        let id = b"flows aggregate id";
+        let pt = b"flows aggregate plaintext";
+        let ct = tibe::encrypt(&mpk, id, pt).unwrap();
+
+        let scalar = msk.as_shortsig_aead().unwrap().scalar;
+        let share = tibe::extract(tibe::SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, &scalar, id).unwrap();
+
+        let aggregated = aggregate_identity_decryption_key(&[share.clone()]).unwrap();
+        let via_aggregate =
+            decrypt_with_identity_key_shares(&ct.to_bytes(), &[aggregated]).unwrap();
+        let direct = decrypt_with_identity_key_shares(&ct.to_bytes(), &[share]).unwrap();
+        assert_eq!(via_aggregate, pt);
+        assert_eq!(direct, pt);
+
+        assert!(aggregate_identity_decryption_key(&[]).is_err());
     }
 }

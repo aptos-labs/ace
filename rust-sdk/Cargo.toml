@@ -1,0 +1,52 @@
+# Copyright (c) Aptos Labs
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "ace-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SDK for ACE: threshold IBE / VRF client flows, wire types, and the underlying crypto (mirrors ts-sdk)."
+license = "Apache-2.0"
+
+[features]
+default = ["aptos"]
+# Network flows against Aptos fullnodes, ACE discovery and worker nodes.
+aptos = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:async-trait"]
+
+[[bin]]
+name = "rust-sdk-custom-flow-client"
+path = "src/bin/rust-sdk-custom-flow-client.rs"
+required-features = ["aptos"]
+
+[dependencies]
+thiserror = "1"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bcs = "0.1"
+rand = "0.8"
+sha2 = "0.10"
+sha3 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+chacha20poly1305 = "0.10"
+ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"] }
+ark-ec = { version = "0.4", default-features = false }
+ark-ff = { version = "0.4", default-features = false }
+ark-serialize = { version = "0.4", default-features = false }
+ark-std = { version = "0.4", default-features = false }
+curve25519-dalek = { version = "4", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hpke = { version = "0.12", default-features = false, features = ["std", "x25519"] }
+num-bigint = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "fs", "sync"], optional = true }
+futures = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Worker-parity tests: the workers must be able to adopt ace-sdk without changing any wire byte.
+vss-common = { path = "../worker-components/vss-common" }
+network-node = { path = "../worker-components/network-node" }
+ed25519-dalek = "2"

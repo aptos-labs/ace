@@ -498,6 +498,10 @@ mod live_tests {
 
     /// Fetches the real shelbynet master public key (discovery path and fullnode path) and
     /// encrypts under it. Run with `cargo test -- --ignored`.
+    ///
+    /// STALE as of the 2026-09-22 shelbynet reset (chain_id 118 -> 119): the
+    /// "shelbynet-20260731" deployment key was removed pending redeploy (contract +
+    /// DKG on the new chain). Update to the new dated key once it lands.
     #[tokio::test]
     #[ignore]
     async fn shelbynet_fetch_pk_and_encrypt() {

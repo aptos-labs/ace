@@ -319,6 +319,10 @@ mod live_tests {
     use crate::aptos::known_deployment;
 
     /// Hits the public shelbynet discovery service + fullnode. Run with `cargo test -- --ignored`.
+    ///
+    /// STALE as of the 2026-09-22 shelbynet reset (chain_id 118 -> 119): the
+    /// "shelbynet-20260731" deployment key was removed pending redeploy (contract +
+    /// DKG on the new chain). Update to the new dated key once it lands.
     #[tokio::test]
     #[ignore]
     async fn shelbynet_discovery_and_fullnode_agree() {

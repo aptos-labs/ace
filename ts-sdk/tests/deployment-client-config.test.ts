@@ -58,7 +58,7 @@ describe("AceDeployment client configuration", () => {
 
 describe("known deployments", () => {
     it("applies api key and client config in either order", () => {
-        const known = knownDeployments["shelbynet-20260731"];
+        const known = knownDeployments["shelby-beta-usce1"];
 
         for (const chained of [
             known.withApiKey("secret").withClientConfig({ http2: false }),
@@ -70,7 +70,7 @@ describe("known deployments", () => {
     });
 
     it("does not mutate the shared deployment", () => {
-        const known = knownDeployments["shelbynet-20260731"];
+        const known = knownDeployments["shelby-beta-usce1"];
         known.withApiKey("secret").withClientConfig({ http2: false });
 
         expect(known.aceDeployment.apiKey).toBeUndefined();

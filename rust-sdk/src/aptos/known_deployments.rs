@@ -47,7 +47,7 @@ fn dep(
 }
 
 pub const KNOWN_DEPLOYMENT_IDS: &[&str] =
-    &["preview20260610", "shelby-beta-usce1", "shelbynet-20260731"];
+    &["preview20260610", "shelby-beta-usce1"];
 
 /// Look up a known deployment by id (same ids as `knownDeployments` in TS / Python).
 pub fn known_deployment(id: &str) -> Option<KnownDeployment> {
@@ -69,15 +69,6 @@ pub fn known_deployment(id: &str) -> Option<KnownDeployment> {
             Some("https://ace.shelby-beta.aptoslabs.com/discovery"),
             "0x50ca2eb86412416256522777770b9846ced2b0185db1d301f233d5f47215f4c3",
             "0xf47b51b8c648a3dd53a1c0ec5d38e2b861f0b6d4c3181f0b84b0d535e274a98d",
-        ),
-        "shelbynet-20260731" => dep(
-            "shelbynet-20260731",
-            118,
-            "https://api.shelbynet.shelby.xyz/v1",
-            "0x2a800d06b231476e045e874b5319409f80aa4449d7cabcdc68d2e0b5a66ee43d",
-            Some("https://ace-discovery-646682240579.us-central1.run.app"),
-            "0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17",
-            "0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17",
         ),
         _ => return None,
     })

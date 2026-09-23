@@ -17,6 +17,9 @@ class KnownDeployment:
     ace_deployment: AceDeployment
     ibe_keypair_id: AccountAddress
     vrf_keypair_id: AccountAddress
+    # Keypair id for the streaming + seekable BFIBE-shortsig-aead-stream secret (primitive 3),
+    # where the deployment has generated one. None for older deployments that predate it.
+    stream_ibe_keypair_id: AccountAddress | None = None
 
     def with_api_key(self, api_key: str | None = None) -> "KnownDeployment":
         return KnownDeployment(
@@ -24,6 +27,7 @@ class KnownDeployment:
             ace_deployment=self.ace_deployment.with_api_key(api_key),
             ibe_keypair_id=self.ibe_keypair_id,
             vrf_keypair_id=self.vrf_keypair_id,
+            stream_ibe_keypair_id=self.stream_ibe_keypair_id,
         )
 
     def with_client_config(self, client_config: dict | None = None) -> "KnownDeployment":
@@ -32,6 +36,7 @@ class KnownDeployment:
             ace_deployment=self.ace_deployment.with_client_config(client_config),
             ibe_keypair_id=self.ibe_keypair_id,
             vrf_keypair_id=self.vrf_keypair_id,
+            stream_ibe_keypair_id=self.stream_ibe_keypair_id,
         )
 
 
@@ -71,32 +76,36 @@ known_deployments: dict[str, KnownDeployment] = {
             "0xf47b51b8c648a3dd53a1c0ec5d38e2b861f0b6d4c3181f0b84b0d535e274a98d"
         ),
     ),
-    "shelbynet-20260731": KnownDeployment(
-        chain_id=118,
+    # Redeployed 2026-09-23 after the shelbynet chain wipe (chain_id 118 -> 119, replacing the
+    # removed "shelbynet-20260731"). No discovery service is deployed for this one yet.
+    "shelbynet-20260923": KnownDeployment(
+        chain_id=119,
         ace_deployment=AceDeployment(
             api_endpoint="https://api.shelbynet.shelby.xyz/v1",
             contract_addr=_addr(
-                "0x2a800d06b231476e045e874b5319409f80aa4449d7cabcdc68d2e0b5a66ee43d"
+                "0x63b64cbbf60950e39dea70a88d6d84ef3457efd7430337a5d71864a790fbdeba"
             ),
-            discovery_url="https://ace-discovery-646682240579.us-central1.run.app",
         ),
         ibe_keypair_id=_addr(
-            "0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17"
+            "0xba96d96b639ebd8e8b651b9ea001da5b8cb07c85a2c4bd088b753d3f8d4ffdfe"
         ),
         vrf_keypair_id=_addr(
-            "0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17"
+            "0xd71f85f53eed44d1d8ea4ac978fc0d2c4c326208097692964d3cdd48d1367114"
+        ),
+        stream_ibe_keypair_id=_addr(
+            "0x4855d5c9e2cf26365e2d3bb75bebe71cadb388adfdfe7ecd0e4cc96de5980be2"
         ),
     ),
 }
 
 preview20260610 = known_deployments["preview20260610"]
 shelby_beta_usce1 = known_deployments["shelby-beta-usce1"]
-shelbynet_20260731 = known_deployments["shelbynet-20260731"]
+shelbynet_20260923 = known_deployments["shelbynet-20260923"]
 
 __all__ = [
     "KnownDeployment",
     "known_deployments",
     "preview20260610",
     "shelby_beta_usce1",
-    "shelbynet_20260731",
+    "shelbynet_20260923",
 ]

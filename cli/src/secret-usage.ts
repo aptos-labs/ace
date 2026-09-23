@@ -31,6 +31,12 @@ const PRIMITIVES: PrimitiveInfo[] = [
         groupScheme: 1,
         label: 'BLS12381 threshold VRF',
     },
+    {
+        id: aceNetwork.PRIMITIVE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM,
+        usage: aceNetwork.USAGE_BFIBE_BLS12381_SHORTSIG_AEADSTREAM,
+        groupScheme: 1,
+        label: 'BFIBE-BLS12381-ShortSig-AEAD-Stream (streaming + seekable)',
+    },
 ];
 
 function primitiveInfo(id: number): PrimitiveInfo | undefined {

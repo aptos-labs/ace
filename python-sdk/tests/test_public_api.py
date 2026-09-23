@@ -94,16 +94,16 @@ def serialize_discovery_snapshot_with_worker(
 
 
 def test_known_deployments_match_ts_registry_shape() -> None:
-    deployment = known_deployments.known_deployments["shelbynet-20260731"]
+    deployment = known_deployments.known_deployments["shelby-beta-usce1"]
 
-    assert deployment.chain_id == 118
-    assert deployment.ace_deployment.api_endpoint == "https://api.shelbynet.shelby.xyz/v1"
+    assert deployment.chain_id == 125
+    assert deployment.ace_deployment.api_endpoint == "https://api.beta.shelby.xyz/v1"
     assert (
         deployment.ace_deployment.discovery_url
-        == "https://ace-discovery-646682240579.us-central1.run.app"
+        == "https://ace.shelby-beta.aptoslabs.com/discovery"
     )
     assert str(deployment.ibe_keypair_id) == (
-        "0xa36e6db16b015c6c2c9a376afe3075b11031ee0df393c226e7d599f615759a17"
+        "0x50ca2eb86412416256522777770b9846ced2b0185db1d301f233d5f47215f4c3"
     )
 
     with_key = deployment.with_api_key("secret")

@@ -392,6 +392,10 @@ export async function deploymentNewCommand(): Promise<void> {
                 epochDuration,
             ],
         },
+        // The ts-sdk default (2,000,000) exceeds the max_transaction_gas_amount some
+        // networks configure in their gas schedule (e.g. shelbynet's post-reset genesis
+        // caps it at 250,000), which the VM rejects outright before simulation ever runs.
+        options: { maxGasAmount: 200_000 },
     });
     const resp = await aptos.signAndSubmitTransaction({ signer: adminAccount, transaction: txn });
     await aptos.waitForTransaction({ transactionHash: resp.hash, options: { checkSuccess: true } });

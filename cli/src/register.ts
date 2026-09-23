@@ -92,7 +92,12 @@ export async function registerOnChain(
         const txn = await aptos.transaction.build.simple({
             sender: account.accountAddress,
             data: { function: fn as `${string}::${string}::${string}`, functionArguments: args as any[] },
-            options: { replayProtectionNonce: BigInt(Date.now()) },
+            // The ts-sdk default (2,000,000) exceeds the max_transaction_gas_amount some
+            // networks configure in their gas schedule (e.g. shelbynet's post-reset genesis
+            // caps it at 250,000), which the VM rejects outright before simulation ever
+            // runs. These are small worker-registration entry calls, so a much lower budget
+            // is still comfortable headroom everywhere.
+            options: { replayProtectionNonce: BigInt(Date.now()), maxGasAmount: 200_000 },
             withFeePayer: !!node.gasStationKey,
         });
         const response = await aptos.signAndSubmitTransaction({ signer: account, transaction: txn });

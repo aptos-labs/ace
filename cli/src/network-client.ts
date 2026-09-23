@@ -172,7 +172,10 @@ export class NetworkClient {
                 function: `${this.aceAddr}::network::new_proposal` as `${string}::${string}::${string}`,
                 functionArguments: [serializeProposal(proposal)],
             },
-            options: { replayProtectionNonce: BigInt(Date.now()) },
+            // The ts-sdk default (2,000,000) exceeds the max_transaction_gas_amount some
+            // networks configure in their gas schedule (e.g. shelbynet's post-reset genesis
+            // caps it at 250,000), which the VM rejects outright before simulation ever runs.
+            options: { replayProtectionNonce: BigInt(Date.now()), maxGasAmount: 200_000 },
             withFeePayer: this.hasGasStation,
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });
@@ -188,7 +191,10 @@ export class NetworkClient {
                 function: `${this.aceAddr}::voting::vote` as `${string}::${string}::${string}`,
                 functionArguments: [votingSessionAddr.toStringLong()],
             },
-            options: { replayProtectionNonce: BigInt(Date.now()) },
+            // The ts-sdk default (2,000,000) exceeds the max_transaction_gas_amount some
+            // networks configure in their gas schedule (e.g. shelbynet's post-reset genesis
+            // caps it at 250,000), which the VM rejects outright before simulation ever runs.
+            options: { replayProtectionNonce: BigInt(Date.now()), maxGasAmount: 200_000 },
             withFeePayer: this.hasGasStation,
         });
         const response = await this.aptos.signAndSubmitTransaction({ signer: account, transaction: txn });

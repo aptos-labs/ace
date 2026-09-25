@@ -78,13 +78,13 @@ pub fn known_deployment(id: &str) -> Option<KnownDeployment> {
             None,
         ),
         // Redeployed 2026-09-23 after the shelbynet chain wipe (chain_id 118 -> 119, see the
-        // "shelbynet-20260731" removal). No discovery service is deployed for this one yet.
+        // "shelbynet-20260731" removal).
         "shelbynet-20260923" => dep(
             "shelbynet-20260923",
             119,
             "https://api.shelbynet.shelby.xyz/v1",
             "0x63b64cbbf60950e39dea70a88d6d84ef3457efd7430337a5d71864a790fbdeba",
-            None,
+            Some("https://ace-discovery-646682240579.us-central1.run.app"),
             "0xba96d96b639ebd8e8b651b9ea001da5b8cb07c85a2c4bd088b753d3f8d4ffdfe",
             "0xd71f85f53eed44d1d8ea4ac978fc0d2c4c326208097692964d3cdd48d1367114",
             Some("0x4855d5c9e2cf26365e2d3bb75bebe71cadb388adfdfe7ecd0e4cc96de5980be2"),

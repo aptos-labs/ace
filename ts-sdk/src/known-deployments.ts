@@ -56,12 +56,13 @@ export const knownDeployments = {
         vrfKeypairId: AccountAddress.fromString('0xf47b51b8c648a3dd53a1c0ec5d38e2b861f0b6d4c3181f0b84b0d535e274a98d'),
     }),
     // Redeployed 2026-09-23 after the shelbynet chain wipe (chain_id 118 -> 119, see the
-    // "shelbynet-20260731" removal). No discovery service is deployed for this one yet.
+    // "shelbynet-20260731" removal).
     'shelbynet-20260923': knownDeployment({
         chainId: 119,
         aceDeployment: new AceDeployment({
             apiEndpoint: 'https://api.shelbynet.shelby.xyz/v1',
             contractAddr: AccountAddress.fromString('0x63b64cbbf60950e39dea70a88d6d84ef3457efd7430337a5d71864a790fbdeba'),
+            discoveryUrl: 'https://ace-discovery-646682240579.us-central1.run.app',
         }),
         ibeKeypairId: AccountAddress.fromString('0xba96d96b639ebd8e8b651b9ea001da5b8cb07c85a2c4bd088b753d3f8d4ffdfe'),
         vrfKeypairId: AccountAddress.fromString('0xd71f85f53eed44d1d8ea4ac978fc0d2c4c326208097692964d3cdd48d1367114'),

@@ -77,7 +77,7 @@ known_deployments: dict[str, KnownDeployment] = {
         ),
     ),
     # Redeployed 2026-09-23 after the shelbynet chain wipe (chain_id 118 -> 119, replacing the
-    # removed "shelbynet-20260731"). No discovery service is deployed for this one yet.
+    # removed "shelbynet-20260731").
     "shelbynet-20260923": KnownDeployment(
         chain_id=119,
         ace_deployment=AceDeployment(
@@ -85,6 +85,7 @@ known_deployments: dict[str, KnownDeployment] = {
             contract_addr=_addr(
                 "0x63b64cbbf60950e39dea70a88d6d84ef3457efd7430337a5d71864a790fbdeba"
             ),
+            discovery_url="https://ace-discovery-646682240579.us-central1.run.app",
         ),
         ibe_keypair_id=_addr(
             "0xba96d96b639ebd8e8b651b9ea001da5b8cb07c85a2c4bd088b753d3f8d4ffdfe"

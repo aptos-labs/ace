@@ -21,6 +21,7 @@
 //! behind a load balancer.
 
 pub mod crypto;
+pub mod cvm_root;
 mod http_server;
 mod secret_usage;
 pub mod secrets;
@@ -197,6 +198,8 @@ pub enum Mode {
         max_concurrent: Option<usize>,
         /// Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
         reconstructor_pk: Option<String>,
+        /// Optional strict Google Confidential Space root-unlock policy JSON.
+        cvm_root_policy_json: Option<String>,
         /// ACE contract address (may be empty in handler-only mode); used for the
         /// reconstruction domain check when reconstruction is enabled.
         ace_addr: String,
@@ -228,6 +231,7 @@ pub struct HandlerLocalConfig {
     pub max_concurrent: Option<usize>,
     /// Optional disaster-recovery reconstructor public key (hex of BCS `sig::PublicKey`).
     pub reconstructor_pk: Option<String>,
+    pub cvm_root_policy_json: Option<String>,
 }
 
 // ── BCS mirror of ace::network::StateViewV0 ─────────────────────────────────
@@ -334,6 +338,7 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
             chain_rpc,
             max_concurrent,
             reconstructor_pk,
+            cvm_root_policy_json,
             ace_addr,
             ace_deployment_api,
         } => {
@@ -344,6 +349,7 @@ pub async fn run(mode: Mode, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
                 chain_rpc,
                 max_concurrent,
                 reconstructor_pk,
+                cvm_root_policy_json,
                 ace_addr,
                 ace_deployment_api,
                 shutdown_rx,
@@ -372,6 +378,12 @@ fn parse_reconstructor_pk(
         pk.scheme()
     );
     Ok(Some(Arc::new(pk)))
+}
+
+fn parse_cvm_root_policy(json: &Option<String>) -> Result<Option<Arc<cvm_root::CvmRootPolicy>>> {
+    json.as_ref()
+        .map(|raw| cvm_root::CvmRootPolicy::from_json(raw).map(Arc::new))
+        .transpose()
 }
 
 /// Best-effort fetch of the ACE chain id from the deployment fullnode, for the
@@ -457,6 +469,7 @@ async fn run_with_maintainer(
     // Optional user-request server (monolith only).
     if let Some(h) = handler_local {
         let reconstructor_pk = parse_reconstructor_pk(&h.reconstructor_pk)?;
+        let cvm_root_policy = parse_cvm_root_policy(&h.cvm_root_policy_json)?;
         // Fetch the ACE chain id for the reconstruction domain check (only when the
         // feature is on — avoids a startup RPC for nodes that don't need it).
         let recon_chain_id = if reconstructor_pk.is_some() {
@@ -480,6 +493,7 @@ async fn run_with_maintainer(
             pke_dk_bytes: pke_dk_bytes.clone(),
             status,
             reconstructor_pk,
+            cvm_root_policy,
             ace_addr: parse_ace_addr_opt(&ace),
             chain_id: recon_chain_id,
         };
@@ -784,6 +798,7 @@ async fn run_handler(
     chain_rpc: ChainRpcConfig,
     max_concurrent: Option<usize>,
     reconstructor_pk_hex: Option<String>,
+    cvm_root_policy_json: Option<String>,
     ace_addr: String,
     ace_deployment_api: String,
     shutdown_rx: oneshot::Receiver<()>,
@@ -793,6 +808,7 @@ async fn run_handler(
         maintainer_url
     );
     let reconstructor_pk = parse_reconstructor_pk(&reconstructor_pk_hex)?;
+    let cvm_root_policy = parse_cvm_root_policy(&cvm_root_policy_json)?;
     let ace_addr = parse_ace_addr_opt(&ace_addr);
     // Fetch the ACE chain id for the reconstruction domain check (only when the
     // feature is on and an ACE fullnode URL was supplied).
@@ -824,6 +840,7 @@ async fn run_handler(
         pke_dk_bytes,
         status,
         reconstructor_pk,
+        cvm_root_policy,
         ace_addr,
         chain_id: recon_chain_id,
     };

@@ -3,17 +3,24 @@
 
 use super::super::outcome::{Outcome, Reason};
 use crate::secrets::ShareEntry;
-use crate::verify::ThresholdVrfRequest;
+use crate::verify::{ThresholdVrfRequest, ThresholdVrfRequestPayload};
 
 pub(crate) fn derive_threshold_vrf_share(
     req: &ThresholdVrfRequest,
     entry: &ShareEntry,
 ) -> Result<Vec<u8>, Outcome> {
+    derive_threshold_vrf_share_from_payload(&req.payload, entry)
+}
+
+pub(crate) fn derive_threshold_vrf_share_from_payload(
+    payload: &ThresholdVrfRequestPayload,
+    entry: &ShareEntry,
+) -> Result<Vec<u8>, Outcome> {
     crate::crypto::partial_derive_threshold_vrf_share(
-        &req.payload.keypair_id,
-        &req.payload.contract_id,
-        &req.payload.account_address,
-        &req.payload.label,
+        &payload.keypair_id,
+        &payload.contract_id,
+        &payload.account_address,
+        &payload.label,
         &entry.scalar_le32,
         entry.eval_point,
         entry.group_scheme,

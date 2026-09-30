@@ -187,6 +187,42 @@ export class ThresholdVrfRequest {
     }
 }
 
+/** Attested c26t CVM root request (WorkerRequest variant 4). The Google
+ * Confidential Space token must carry `eat_nonce` over `payload.toBytes()`.
+ * The X25519 response secret key must stay inside the measured guest. */
+export class CvmRootVrfRequest {
+    payload: ThresholdVrfRequestPayload;
+    attestationJwt: string;
+
+    constructor(args: { payload: ThresholdVrfRequestPayload, attestationJwt: string }) {
+        this.payload = args.payload;
+        this.attestationJwt = args.attestationJwt;
+    }
+
+    serialize(serializer: Serializer): void {
+        this.payload.serialize(serializer);
+        serializer.serializeStr(this.attestationJwt);
+    }
+
+    toBytes(): Uint8Array {
+        return WorkerRequest.newCvmRootVrf(this).toBytes();
+    }
+}
+
+/** Google Confidential Space custom nonce for WorkerRequest variant 4. */
+export function cvmRootAttestationNonce(payload: ThresholdVrfRequestPayload): string {
+    const domain = new TextEncoder().encode("ace/c26t/cvm-root/attestation/v1\0");
+    const body = payload.toBytes();
+    const preimage = new Uint8Array(domain.length + body.length);
+    preimage.set(domain);
+    preimage.set(body, domain.length);
+    const digest = sha256(preimage);
+    return btoa(String.fromCharCode(...digest))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+}
+
 export class ThresholdVrfShare {
     evalPoint: number;
     share: group.Element;

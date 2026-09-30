@@ -170,6 +170,7 @@ mod tests {
             pke_dk_bytes: Arc::new(Vec::new()),
             status: node_status(),
             reconstructor_pk: None,
+            cvm_root_policy: None,
             ace_addr: None,
             chain_id: None,
         }

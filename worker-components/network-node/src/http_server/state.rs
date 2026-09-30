@@ -21,6 +21,8 @@ pub struct AppState {
     /// with `--reconstructor-pk`; when `None`, all `WorkerRequest::Reconstruction`
     /// requests are rejected (feature off).
     pub reconstructor_pk: Option<Arc<vss_common::sig::PublicKey>>,
+    /// Attested c26t root path is disabled unless this pinned policy is set.
+    pub cvm_root_policy: Option<Arc<crate::cvm_root::CvmRootPolicy>>,
     /// This node's ACE contract address, used to reject reconstruction requests
     /// whose signed `ace_addr` names a different deployment (cross-domain replay).
     /// `None` ⇒ the node doesn't know its ACE address (e.g. handler-only mode

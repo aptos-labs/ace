@@ -744,12 +744,13 @@ pub const WORKER_REQUEST_SCHEME_DECRYPTION_BASIC_FLOW: u8 = 0;
 pub const WORKER_REQUEST_SCHEME_DECRYPTION_CUSTOM_FLOW: u8 = 1;
 pub const WORKER_REQUEST_SCHEME_THRESHOLD_VRF: u8 = 2;
 pub const WORKER_REQUEST_SCHEME_RECONSTRUCTION: u8 = 3;
+pub const WORKER_REQUEST_SCHEME_CVM_ROOT_VRF: u8 = 4;
 
 /// Outer request envelope sent to a worker (TS: `WorkerRequest`).
 ///
 /// Layout: `u8(scheme) ++ body`, discriminants matching the worker-side Rust enum:
 /// 0 = [`DecryptionBasicFlowRequest`], 1 = [`DecryptionCustomFlowRequest`], 2 = threshold VRF
-/// request, 3 = reconstruction (disaster-recovery) request.
+/// request, 3 = reconstruction (disaster-recovery) request, 4 = attested CVM root VRF.
 ///
 /// The VRF (`vrf-for-aptos`) and reconstruction (`admin-recovery`) bodies are not ported yet, so
 /// those variants carry the **already-serialized** body bytes verbatim; on deserialization they
@@ -760,6 +761,7 @@ pub enum WorkerRequest {
     DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(Vec<u8>),
     Reconstruction(Vec<u8>),
+    CvmRootVrf(Vec<u8>),
 }
 
 impl WorkerRequest {
@@ -789,12 +791,18 @@ impl WorkerRequest {
         Self::Reconstruction(body.to_vec())
     }
 
+    /// `body` is BCS `ThresholdVrfRequestPayload ++ attestation_jwt`.
+    pub fn new_cvm_root_vrf(body: &[u8]) -> Self {
+        Self::CvmRootVrf(body.to_vec())
+    }
+
     pub fn scheme(&self) -> u8 {
         match self {
             Self::DecryptionBasicFlow(_) => WORKER_REQUEST_SCHEME_DECRYPTION_BASIC_FLOW,
             Self::DecryptionCustomFlow(_) => WORKER_REQUEST_SCHEME_DECRYPTION_CUSTOM_FLOW,
             Self::ThresholdVrf(_) => WORKER_REQUEST_SCHEME_THRESHOLD_VRF,
             Self::Reconstruction(_) => WORKER_REQUEST_SCHEME_RECONSTRUCTION,
+            Self::CvmRootVrf(_) => WORKER_REQUEST_SCHEME_CVM_ROOT_VRF,
         }
     }
 
@@ -803,7 +811,7 @@ impl WorkerRequest {
         match self {
             Self::DecryptionBasicFlow(x) => x.serialize(s),
             Self::DecryptionCustomFlow(x) => x.serialize(s),
-            Self::ThresholdVrf(b) | Self::Reconstruction(b) => {
+            Self::ThresholdVrf(b) | Self::Reconstruction(b) | Self::CvmRootVrf(b) => {
                 s.fixed(b);
             }
         }
@@ -821,6 +829,7 @@ impl WorkerRequest {
             WORKER_REQUEST_SCHEME_RECONSTRUCTION => {
                 Ok(Self::Reconstruction(d.fixed(d.remaining())?))
             }
+            WORKER_REQUEST_SCHEME_CVM_ROOT_VRF => Ok(Self::CvmRootVrf(d.fixed(d.remaining())?)),
             other => Err(AceError::UnsupportedScheme(other)),
         }
     }
@@ -984,9 +993,10 @@ mod tests {
             vec![2, 7, 8]
         );
         assert_eq!(rt(&WorkerRequest::new_reconstruction(&[])), vec![3]);
+        assert_eq!(rt(&WorkerRequest::new_cvm_root_vrf(&[7, 8])), vec![4, 7, 8]);
         assert!(matches!(
-            WorkerRequest::from_bytes(&[4]),
-            Err(AceError::UnsupportedScheme(4))
+            WorkerRequest::from_bytes(&[5]),
+            Err(AceError::UnsupportedScheme(5))
         ));
     }
 }

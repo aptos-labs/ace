@@ -57,12 +57,14 @@ pub use ibe_solana_basic_flow::SolanaProofOfPermission;
 ///   1 = DecryptionCustomFlow
 ///   2 = ThresholdVrf
 ///   3 = Reconstruction  (disaster-recovery; see [`ReconstructionRequest`])
+///   4 = CvmRootVrf    (attested c26t root unlock)
 #[derive(Serialize, Deserialize)]
 pub enum WorkerRequest {
     DecryptionBasicFlow(DecryptionBasicFlowRequest),
     DecryptionCustomFlow(DecryptionCustomFlowRequest),
     ThresholdVrf(ThresholdVrfRequest),
     Reconstruction(ReconstructionRequest),
+    CvmRootVrf(CvmRootVrfRequest),
 }
 
 /// The 5 fields the wallet signs over for a basic-flow request. Mirrors the
@@ -131,6 +133,16 @@ pub type AptosAccountSignatureProof = AptosProofOfPermission;
 pub struct ThresholdVrfRequest {
     pub payload: ThresholdVrfRequestPayload,
     pub auth_proof: AptosAccountSignatureProof,
+}
+
+/// The payload uses the ordinary threshold-VRF input and share format, but
+/// authorizes it with a Google Confidential Space attestation instead of an
+/// Aptos account signature. The token's `eat_nonce` binds the exact BCS
+/// payload, including its response-encryption key.
+#[derive(Serialize, Deserialize)]
+pub struct CvmRootVrfRequest {
+    pub payload: ThresholdVrfRequestPayload,
+    pub attestation_jwt: String,
 }
 
 /// Disaster-recovery reconstruction request. Unlike a decryption request, the

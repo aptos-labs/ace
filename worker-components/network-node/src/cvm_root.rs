@@ -13,18 +13,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use ed25519_dalek::{Signature, VerifyingKey};
 use ring::signature::{RsaPublicKeyComponents, RSA_PKCS1_2048_8192_SHA256};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use vss_common::pke::EncryptionKey;
+use vss_common::AptosRpc;
 
-use crate::verify::{ContractId, ThresholdVrfRequestPayload};
+use crate::verify::{ContractId, CvmRootVrfRequest, ThresholdVrfRequestPayload};
+use crate::ChainRpcConfig;
 
 const ISSUER: &str = "https://confidentialcomputing.googleapis.com";
 const JWKS_URL: &str = "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com";
 const NONCE_DOMAIN: &[u8] = b"ace/c26t/cvm-root/attestation/v1\0";
+const WORKER_SIGNATURE_DOMAIN: &[u8] = b"ace/c26t/cvm-root/worker-signature/v1\0";
 const ROOT_LABEL: &[u8] = b"c26t/root/v1";
+const CVM_ROOT_HOOK: &str = "on_ace_cvm_root_request";
 const MAX_JWT_BYTES: usize = 128 * 1024;
 const MAX_JWKS_BYTES: usize = 1024 * 1024;
 const MAX_TOKEN_AGE_SECONDS: i64 = 300;
@@ -134,13 +139,10 @@ impl CvmRootPolicy {
         }
     }
 
-    pub async fn verify_attestation(
-        &self,
-        payload: &ThresholdVrfRequestPayload,
-        jwt: &str,
-    ) -> Result<()> {
-        self.validate_payload(payload)?;
-        if jwt.len() > MAX_JWT_BYTES {
+    pub async fn verify_attestation(&self, req: &CvmRootVrfRequest) -> Result<()> {
+        self.validate_payload(&req.payload)?;
+        verify_worker_signature(req)?;
+        if req.attestation_jwt.len() > MAX_JWT_BYTES {
             bail!("cvm root attestation token exceeds size limit");
         }
         let response = self
@@ -166,16 +168,13 @@ impl CvmRootPolicy {
             .duration_since(UNIX_EPOCH)
             .context("system clock before epoch")?
             .as_secs() as i64;
-        self.verify_with_jwks(payload, jwt, &jwks, now)
+        self.verify_with_jwks(req, &jwks, now)
     }
 
-    fn verify_with_jwks(
-        &self,
-        payload: &ThresholdVrfRequestPayload,
-        jwt: &str,
-        jwks: &Value,
-        now: i64,
-    ) -> Result<()> {
+    fn verify_with_jwks(&self, req: &CvmRootVrfRequest, jwks: &Value, now: i64) -> Result<()> {
+        self.validate_payload(&req.payload)?;
+        verify_worker_signature(req)?;
+        let jwt = &req.attestation_jwt;
         if jwt.len() > MAX_JWT_BYTES {
             bail!("cvm root attestation token exceeds size limit");
         }
@@ -233,15 +232,10 @@ impl CvmRootPolicy {
             .verify(&RSA_PKCS1_2048_8192_SHA256, signed.as_bytes(), &sig)
             .map_err(|_| anyhow!("invalid attestation JWT signature"))?;
         let claims: Value = serde_json::from_slice(&decode_b64url(claims_b64)?)?;
-        self.check_claims(payload, &claims, now)
+        self.check_claims(req, &claims, now)
     }
 
-    fn check_claims(
-        &self,
-        payload: &ThresholdVrfRequestPayload,
-        claims: &Value,
-        now: i64,
-    ) -> Result<()> {
+    fn check_claims(&self, req: &CvmRootVrfRequest, claims: &Value, now: i64) -> Result<()> {
         let time = |name: &str| {
             claims
                 .get(name)
@@ -262,7 +256,7 @@ impl CvmRootPolicy {
         {
             bail!("attestation issuer or audience mismatch");
         }
-        let nonce = attestation_nonce(payload)?;
+        let nonce = attestation_nonce(req)?;
         let eat_nonce = claims.get("eat_nonce");
         if eat_nonce.and_then(Value::as_str) != Some(&nonce)
             && eat_nonce
@@ -321,6 +315,76 @@ impl CvmRootPolicy {
         }
         Ok(())
     }
+
+    /// ACE workers do not infer registration from the signed attestation.
+    /// The c26t contract must confirm that this exact key is active now.
+    pub async fn verify_registration(
+        &self,
+        req: &CvmRootVrfRequest,
+        chain_rpc: &ChainRpcConfig,
+    ) -> Result<()> {
+        self.validate_payload(&req.payload)?;
+        let contract = match &req.payload.contract_id {
+            ContractId::Aptos(contract) => contract,
+            _ => bail!("cvm root requires an Aptos contract"),
+        };
+        let rpc = chain_rpc.aptos_rpc_for_chain_id(contract.chain_id)?;
+        self.verify_registration_with_rpc(req, rpc).await
+    }
+
+    async fn verify_registration_with_rpc(
+        &self,
+        req: &CvmRootVrfRequest,
+        rpc: &AptosRpc,
+    ) -> Result<()> {
+        let contract = match &req.payload.contract_id {
+            ContractId::Aptos(contract) => contract,
+            _ => bail!("cvm root requires an Aptos contract"),
+        };
+        let func = format!(
+            "0x{}::{}::{}",
+            hex::encode(contract.module_addr),
+            contract.module_name,
+            CVM_ROOT_HOOK,
+        );
+        let args = [
+            json!(format!("0x{}", hex::encode(&req.payload.label))),
+            json!(format!("0x{}", hex::encode(req.payload.account_address))),
+            json!(format!("0x{}", hex::encode(req.worker_addr))),
+            json!(format!("0x{}", hex::encode(req.worker_pk))),
+        ];
+        let result = rpc
+            .call_view(&func, &args)
+            .await
+            .with_context(|| format!("c26t CVM root guard view {}", func))?;
+        if result.len() != 1 || result[0].as_bool() != Some(true) {
+            bail!("c26t CVM root guard denied worker");
+        }
+        Ok(())
+    }
+}
+
+/// The worker's Ed25519 proof binds its registered key to the root request and
+/// the TLS certificate clients see. The signed bytes have fixed-width fields.
+pub fn worker_signature_message(req: &CvmRootVrfRequest) -> Result<Vec<u8>> {
+    let mut message = WORKER_SIGNATURE_DOMAIN.to_vec();
+    message.extend_from_slice(&bcs::to_bytes(&req.payload)?);
+    message.extend_from_slice(&req.worker_addr);
+    message.extend_from_slice(&req.worker_pk);
+    message.extend_from_slice(&req.tls_spki_sha256);
+    Ok(message)
+}
+
+fn verify_worker_signature(req: &CvmRootVrfRequest) -> Result<()> {
+    if req.worker_signature.len() != 64 {
+        bail!("cvm root worker signature must be 64 bytes");
+    }
+    let key = VerifyingKey::from_bytes(&req.worker_pk)
+        .map_err(|_| anyhow!("invalid c26t worker Ed25519 public key"))?;
+    let signature = Signature::from_slice(&req.worker_signature)
+        .map_err(|_| anyhow!("invalid c26t worker Ed25519 signature encoding"))?;
+    key.verify_strict(&worker_signature_message(req)?, &signature)
+        .map_err(|_| anyhow!("invalid c26t worker Ed25519 signature"))
 }
 
 fn decode_b64url(input: &str) -> Result<Vec<u8>> {
@@ -334,12 +398,19 @@ fn decode_b64url(input: &str) -> Result<Vec<u8>> {
 }
 
 /// The guest passes this 43-character string to the launcher as its sole
-/// custom nonce. The BCS payload includes the response key, so substituting
-/// an attacker-owned key invalidates the signed token.
-pub fn attestation_nonce(payload: &ThresholdVrfRequestPayload) -> Result<String> {
+/// custom nonce. It binds the VRF request, registered worker, TLS certificate
+/// SPKI, and possession signature into the signed attestation.
+pub fn attestation_nonce(req: &CvmRootVrfRequest) -> Result<String> {
+    if req.worker_signature.len() != 64 {
+        bail!("cvm root worker signature must be 64 bytes");
+    }
     let mut hash = Sha256::new();
     hash.update(NONCE_DOMAIN);
-    hash.update(bcs::to_bytes(payload)?);
+    hash.update(bcs::to_bytes(&req.payload)?);
+    hash.update(req.worker_addr);
+    hash.update(req.worker_pk);
+    hash.update(req.tls_spki_sha256);
+    hash.update(&req.worker_signature);
     Ok(URL_SAFE_NO_PAD.encode(hash.finalize()))
 }
 
@@ -347,6 +418,7 @@ pub fn attestation_nonce(payload: &ThresholdVrfRequestPayload) -> Result<String>
 mod tests {
     use super::*;
     use crate::verify::{AptosContractId, CvmRootVrfRequest, WorkerRequest};
+    use ed25519_dalek::{Signer as _, SigningKey};
     use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
     use vss_common::pke_hpke_x25519_chacha20poly1305 as hpke;
 
@@ -360,7 +432,7 @@ mod tests {
             "keypair_id": hex::encode([1u8; 32]),
             "chain_id": 119,
             "module_addr": hex::encode([2u8; 32]),
-            "module_name": "c26t_vault",
+            "module_name": "confidential_worker",
             "account_address": hex::encode([3u8; 32]),
         });
         CvmRootPolicy::from_json(&json.to_string()).unwrap()
@@ -373,7 +445,7 @@ mod tests {
             contract_id: ContractId::Aptos(AptosContractId {
                 chain_id: 119,
                 module_addr: [2u8; 32],
-                module_name: "c26t_vault".to_string(),
+                module_name: "confidential_worker".to_string(),
             }),
             label: ROOT_LABEL.to_vec(),
             account_address: [3u8; 32],
@@ -383,14 +455,31 @@ mod tests {
         }
     }
 
-    fn claims(payload: &ThresholdVrfRequestPayload, now: i64) -> Value {
+    fn sample_request() -> CvmRootVrfRequest {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let mut req = CvmRootVrfRequest {
+            payload: sample_payload(),
+            worker_addr: [5u8; 32],
+            worker_pk: key.verifying_key().to_bytes(),
+            tls_spki_sha256: [6u8; 32],
+            worker_signature: Vec::new(),
+            attestation_jwt: String::new(),
+        };
+        req.worker_signature = key
+            .sign(&worker_signature_message(&req).unwrap())
+            .to_bytes()
+            .to_vec();
+        req
+    }
+
+    fn claims(req: &CvmRootVrfRequest, now: i64) -> Value {
         serde_json::json!({
             "iss": ISSUER,
             "aud": "ace-c26t-cvm-root-v1",
             "iat": now - 10,
             "nbf": now - 10,
             "exp": now + 60,
-            "eat_nonce": [attestation_nonce(payload).unwrap()],
+            "eat_nonce": [attestation_nonce(req).unwrap()],
             "swname": "CONFIDENTIAL_SPACE",
             "dbgstat": "disabled-since-boot",
             "hwmodel": "GCP_INTEL_TDX",
@@ -435,36 +524,58 @@ mod tests {
     fn valid_signed_attestation_binds_exact_response_key() {
         let now = 1_800_000_000;
         let policy = policy();
-        let payload = sample_payload();
-        let (jwt, jwks) = signed_jwt(&claims(&payload, now));
-        policy.verify_with_jwks(&payload, &jwt, &jwks, now).unwrap();
+        let mut req = sample_request();
+        let (jwt, jwks) = signed_jwt(&claims(&req, now));
+        req.attestation_jwt = jwt;
+        policy.verify_with_jwks(&req, &jwks, now).unwrap();
 
-        let mut changed = sample_payload();
-        changed.response_enc_key =
+        let mut changed = sample_request();
+        changed.payload.response_enc_key =
             EncryptionKey::HpkeX25519ChaCha20Poly1305(hpke::EncryptionKey { pk: vec![5u8; 32] });
-        assert!(policy.verify_with_jwks(&changed, &jwt, &jwks, now).is_err());
-        assert!(policy
-            .verify_with_jwks(&payload, &jwt, &jwks, now + 400)
-            .is_err());
+        changed.attestation_jwt = req.attestation_jwt.clone();
+        assert!(policy.verify_with_jwks(&changed, &jwks, now).is_err());
+        assert!(policy.verify_with_jwks(&req, &jwks, now + 400).is_err());
+
+        // A valid worker signature over a different TLS key is still rejected
+        // by the original attestation nonce.
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let mut changed = sample_request();
+        changed.tls_spki_sha256 = [8u8; 32];
+        changed.worker_signature = key
+            .sign(&worker_signature_message(&changed).unwrap())
+            .to_bytes()
+            .to_vec();
+        changed.attestation_jwt = req.attestation_jwt;
+        assert!(policy.verify_with_jwks(&changed, &jwks, now).is_err());
     }
 
     #[test]
     fn forged_signature_and_unapproved_workload_fail_closed() {
         let now = 1_800_000_000;
         let policy = policy();
-        let payload = sample_payload();
-        let (jwt, jwks) = signed_jwt(&claims(&payload, now));
+        let mut req = sample_request();
+        let (jwt, jwks) = signed_jwt(&claims(&req, now));
         let mut forged = jwt.into_bytes();
-        *forged.last_mut().unwrap() = b'A';
-        assert!(policy
-            .verify_with_jwks(&payload, std::str::from_utf8(&forged).unwrap(), &jwks, now)
-            .is_err());
+        let signature_start = forged.iter().rposition(|b| *b == b'.').unwrap() + 1;
+        forged[signature_start] = if forged[signature_start] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        req.attestation_jwt = std::str::from_utf8(&forged).unwrap().to_string();
+        assert!(policy.verify_with_jwks(&req, &jwks, now).is_err());
 
-        let mut unapproved = claims(&payload, now);
+        let mut req = sample_request();
+        let mut unapproved = claims(&req, now);
         unapproved["submods"]["container"]["image_digest"] =
             Value::String(format!("sha256:{}", "b".repeat(64)));
         let (jwt, jwks) = signed_jwt(&unapproved);
-        assert!(policy.verify_with_jwks(&payload, &jwt, &jwks, now).is_err());
+        req.attestation_jwt = jwt;
+        assert!(policy.verify_with_jwks(&req, &jwks, now).is_err());
+
+        let mut req = sample_request();
+        req.worker_signature[0] ^= 1;
+        assert!(verify_worker_signature(&req).is_err());
     }
 
     #[test]
@@ -472,26 +583,38 @@ mod tests {
         let policy = policy();
         let payload = sample_payload();
         policy.validate_payload(&payload).unwrap();
-        let root = WorkerRequest::CvmRootVrf(CvmRootVrfRequest {
-            payload,
-            attestation_jwt: "test.jwt".to_string(),
-        });
+        let mut req = sample_request();
+        req.attestation_jwt = "test.jwt".to_string();
+        assert_eq!(
+            attestation_nonce(&req).unwrap(),
+            "TUlW5QIbVxjiomgeFYQASwvhk8K6fKoM6Ab-BiEcsaQ"
+        );
+        assert_eq!(
+            hex::encode(req.worker_pk),
+            "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        );
+        assert_eq!(hex::encode(&req.worker_signature), "1df4d2fd976963346d4bb6026803a1f12bcfe908687fbe024701ccfac46769763297b0b04cdc7483d5c0a698a0c45fb2682cb0c722af44ba81ec5f4d9a559e0c");
+        let root = WorkerRequest::CvmRootVrf(req);
         let bytes = bcs::to_bytes(&root).unwrap();
         assert_eq!(bytes[0], 4);
         assert_eq!(&bytes[1..33], &[1u8; 32]);
         assert_eq!(
             hex::encode(&bytes),
             format!(
-                "04{}07000000000000000077{}0a633236745f7661756c740c633236742f726f6f742f7631{}0120{}08746573742e6a7774",
+                "04{}07000000000000000077{}13636f6e666964656e7469616c5f776f726b65720c633236742f726f6f742f7631{}0120{}{}{}{}40{}08746573742e6a7774",
                 "01".repeat(32),
                 "02".repeat(32),
                 "03".repeat(32),
                 "04".repeat(32),
+                "05".repeat(32),
+                "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+                "06".repeat(32),
+                "1df4d2fd976963346d4bb6026803a1f12bcfe908687fbe024701ccfac46769763297b0b04cdc7483d5c0a698a0c45fb2682cb0c722af44ba81ec5f4d9a559e0c",
             )
         );
         assert_eq!(
-            attestation_nonce(&sample_payload()).unwrap(),
-            "V5aLE5kkgTxD2AaOrc1IoUbpslJFUPfsnprk0tJUqCU"
+            bcs::to_bytes(&bcs::from_bytes::<WorkerRequest>(&bytes).unwrap()).unwrap(),
+            bytes
         );
 
         let mut changed = sample_payload();
@@ -500,5 +623,55 @@ mod tests {
         changed = sample_payload();
         changed.epoch += 1;
         policy.validate_payload(&changed).unwrap();
+    }
+
+    #[tokio::test]
+    async fn registration_view_requires_exact_true_and_fails_closed() {
+        use axum::{http::StatusCode, routing::post, Json, Router};
+
+        for (status, reply, approved) in [
+            (StatusCode::OK, json!([true]), true),
+            (StatusCode::OK, json!([false]), false),
+            (StatusCode::OK, json!(["true"]), false),
+            (StatusCode::OK, json!([]), false),
+            (StatusCode::INTERNAL_SERVER_ERROR, json!([true]), false),
+        ] {
+            let app = Router::new().route(
+                "/v1/view",
+                post(move |Json(body): Json<Value>| {
+                    let reply = reply.clone();
+                    async move {
+                        assert_eq!(
+                            body["function"],
+                            format!(
+                                "0x{}::confidential_worker::on_ace_cvm_root_request",
+                                "02".repeat(32)
+                            ),
+                        );
+                        assert_eq!(body["arguments"].as_array().unwrap().len(), 4);
+                        assert_eq!(
+                            body["arguments"][0],
+                            format!("0x{}", hex::encode(ROOT_LABEL))
+                        );
+                        assert_eq!(body["arguments"][1], format!("0x{}", "03".repeat(32)));
+                        assert_eq!(body["arguments"][2], format!("0x{}", "05".repeat(32)));
+                        assert_eq!(
+                            body["arguments"][3],
+                            format!("0x{}", hex::encode(sample_request().worker_pk))
+                        );
+                        (status, Json(reply))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let rpc = AptosRpc::new(format!("http://{}/v1", addr));
+            let result = policy()
+                .verify_registration_with_rpc(&sample_request(), &rpc)
+                .await;
+            assert_eq!(result.is_ok(), approved);
+            server.abort();
+        }
     }
 }

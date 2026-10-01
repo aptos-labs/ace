@@ -31,12 +31,13 @@ pub(crate) async fn handle_cvm_root_vrf(
         Err(outcome) => return outcome,
     };
     let verify_start = Instant::now();
-    let verification = policy
-        .verify_attestation(&req.payload, &req.attestation_jwt)
-        .await;
+    let verification = policy.verify_attestation(&req).await;
     ctx.pfn_ms = Some(verify_start.elapsed().as_millis() as u64);
     if let Err(e) = verification {
         return reject(&format!("CVM attestation failed: {:#}", e));
+    }
+    if let Err(e) = policy.verify_registration(&req, &state.chain_rpc).await {
+        return reject(&format!("CVM registration failed: {:#}", e));
     }
     let derive_start = Instant::now();
     let share = match derive_threshold_vrf_share_from_payload(&req.payload, &entry) {

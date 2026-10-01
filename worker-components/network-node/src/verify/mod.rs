@@ -136,12 +136,17 @@ pub struct ThresholdVrfRequest {
 }
 
 /// The payload uses the ordinary threshold-VRF input and share format, but
-/// authorizes it with a Google Confidential Space attestation instead of an
-/// Aptos account signature. The token's `eat_nonce` binds the exact BCS
-/// payload, including its response-encryption key.
+/// authorizes it with a registered worker signature and Google Confidential
+/// Space attestation instead of an Aptos user signature. The token's
+/// `eat_nonce` binds the worker, HTTPS certificate SPKI hash, signature, and
+/// exact BCS payload, including its response-encryption key.
 #[derive(Serialize, Deserialize)]
 pub struct CvmRootVrfRequest {
     pub payload: ThresholdVrfRequestPayload,
+    pub worker_addr: [u8; 32],
+    pub worker_pk: [u8; 32],
+    pub tls_spki_sha256: [u8; 32],
+    pub worker_signature: Vec<u8>,
     pub attestation_jwt: String,
 }
 

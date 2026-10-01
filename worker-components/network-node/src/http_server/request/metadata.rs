@@ -5,8 +5,8 @@ use vss_common::pke::EncryptionKey;
 
 use super::super::outcome::{Flow, RequestContext};
 use crate::verify::{
-    DecryptionBasicFlowRequest, DecryptionCustomFlowRequest, ReconstructionRequest,
-    ThresholdVrfRequest,
+    CvmRootVrfRequest, DecryptionBasicFlowRequest, DecryptionCustomFlowRequest,
+    ReconstructionRequest, ThresholdVrfRequest,
 };
 
 pub(crate) fn record_basic(ctx: &mut RequestContext, req: &DecryptionBasicFlowRequest) {
@@ -35,6 +35,13 @@ pub(crate) fn record_reconstruction(ctx: &mut RequestContext, req: &Reconstructi
     ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
     ctx.epoch = Some(req.payload.epoch);
     ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.eph_pke_ek);
+}
+
+pub(crate) fn record_cvm_root_vrf(ctx: &mut RequestContext, req: &CvmRootVrfRequest) {
+    ctx.flow = Some(Flow::CvmRootVrf);
+    ctx.keypair_short = Some(short_hex(&req.payload.keypair_id));
+    ctx.epoch = Some(req.payload.epoch);
+    ctx.enc_pk_hex = enc_pk_to_hex(&req.payload.response_enc_key);
 }
 
 fn enc_pk_to_hex(ek: &EncryptionKey) -> Option<String> {

@@ -38,6 +38,10 @@ pub(crate) async fn dispatch_request(
             metadata::record_reconstruction(ctx, &req);
             flows::handle_reconstruction(state, snapshot, req, ctx).await
         }
+        WorkerRequest::CvmRootVrf(req) => {
+            metadata::record_cvm_root_vrf(ctx, &req);
+            flows::handle_cvm_root_vrf(state, snapshot, req, ctx).await
+        }
     }
 }
 

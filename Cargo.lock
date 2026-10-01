@@ -29,6 +29,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "hpke",
+ "network-node",
  "num-bigint",
  "rand 0.8.6",
  "reqwest",
@@ -38,6 +39,7 @@ dependencies = [
  "sha3",
  "thiserror 1.0.69",
  "tokio",
+ "vss-common",
 ]
 
 [[package]]
@@ -1666,8 +1668,10 @@ dependencies = [
  "futures",
  "hex",
  "k256",
+ "openssl",
  "p256",
  "reqwest",
+ "ring",
  "serde",
  "serde_bytes",
  "serde_json",

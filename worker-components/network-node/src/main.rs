@@ -74,6 +74,10 @@ struct RunArgs {
     /// requests by releasing its raw scalar share. Leave unset to disable the feature.
     #[arg(long)]
     reconstructor_pk: Option<String>,
+    /// Enable the attested c26t root-VRF flow with an exact workload and VRF-input policy.
+    /// Omit to reject all `WorkerRequest::CvmRootVrf` requests.
+    #[arg(long)]
+    cvm_root_policy_json: Option<String>,
 
     // ── HTTP-server port (all modes) ─────────────────────────────────────────
     /// TCP port. In monolith and handler modes serves `POST /` (user requests);
@@ -126,6 +130,7 @@ struct EnvConfig {
     account_sk: Option<String>,
     pke_dk: Option<String>,
     reconstructor_pk: Option<String>,
+    cvm_root_policy_json: Option<String>,
     deployment_api_key: Option<String>,
     deployment_gas_key: Option<String>,
     aptos_mainnet_api_key: Option<String>,
@@ -185,6 +190,11 @@ impl RunArgs {
             self.reconstructor_pk,
             "ACE_RECONSTRUCTOR_PK",
             cfg.reconstructor_pk.clone(),
+        );
+        self.cvm_root_policy_json = option_or_env_or_config(
+            self.cvm_root_policy_json,
+            "ACE_CVM_ROOT_POLICY_JSON",
+            cfg.cvm_root_policy_json.clone(),
         );
         self.aptos_mainnet_apikey = option_or_env_or_config(
             self.aptos_mainnet_apikey,
@@ -291,6 +301,7 @@ async fn main() {
                         chain_rpc: build_chain_rpc(&args),
                         max_concurrent: args.max_concurrent,
                         reconstructor_pk: args.reconstructor_pk.clone(),
+                        cvm_root_policy_json: args.cvm_root_policy_json.clone(),
                     }),
                 },
                 CliMode::Maintainer => network_node::Mode::Maintainer {
@@ -304,6 +315,7 @@ async fn main() {
                     chain_rpc: build_chain_rpc(&args),
                     max_concurrent: args.max_concurrent,
                     reconstructor_pk: args.reconstructor_pk.clone(),
+                    cvm_root_policy_json: args.cvm_root_policy_json.clone(),
                     // Optional in handler mode; enable the reconstruction domain check.
                     ace_addr: args.ace_deployment_addr.clone(),
                     ace_deployment_api: args.ace_deployment_api.clone(),

@@ -187,85 +187,20 @@ export class ThresholdVrfRequest {
     }
 }
 
-const CVM_WORKER_SIGNATURE_DOMAIN = new TextEncoder().encode("ace/c26t/cvm-root/worker-signature/v1\0");
-const CVM_ATTESTATION_NONCE_DOMAIN = new TextEncoder().encode("ace/c26t/cvm-root/attestation/v1\0");
-
-function fixedBytes(name: string, value: Uint8Array, length: number): Uint8Array {
-    if (!(value instanceof Uint8Array) || value.length !== length) {
-        throw new Error(`${name} must be ${length} bytes`);
-    }
-    return value;
-}
-
-function concatCvmBytes(parts: Uint8Array[]): Uint8Array {
-    const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
-    let offset = 0;
-    for (const part of parts) {
-        out.set(part, offset);
-        offset += part.length;
-    }
-    return out;
-}
-
-/** Exact message the measured worker signs with its registered Ed25519 key. */
-export function cvmRootWorkerSignatureMessage(
-    payload: ThresholdVrfRequestPayload,
-    workerAddr: Uint8Array,
-    workerPk: Uint8Array,
-    tlsSpkiSha256: Uint8Array,
-): Uint8Array {
-    return concatCvmBytes([
-        CVM_WORKER_SIGNATURE_DOMAIN,
-        payload.toBytes(),
-        fixedBytes("workerAddr", workerAddr, 32),
-        fixedBytes("workerPk", workerPk, 32),
-        fixedBytes("tlsSpkiSha256", tlsSpkiSha256, 32),
-    ]);
-}
-
-export class CvmRootBinding {
-    workerAddr: Uint8Array;
-    workerPk: Uint8Array;
-    tlsSpkiSha256: Uint8Array;
-    workerSignature: Uint8Array;
-
-    constructor(args: {
-        workerAddr: Uint8Array,
-        workerPk: Uint8Array,
-        tlsSpkiSha256: Uint8Array,
-        workerSignature: Uint8Array,
-    }) {
-        this.workerAddr = fixedBytes("workerAddr", args.workerAddr, 32);
-        this.workerPk = fixedBytes("workerPk", args.workerPk, 32);
-        this.tlsSpkiSha256 = fixedBytes("tlsSpkiSha256", args.tlsSpkiSha256, 32);
-        this.workerSignature = fixedBytes("workerSignature", args.workerSignature, 64);
-    }
-
-    serialize(serializer: Serializer): void {
-        serializer.serializeFixedBytes(this.workerAddr);
-        serializer.serializeFixedBytes(this.workerPk);
-        serializer.serializeFixedBytes(this.tlsSpkiSha256);
-        serializer.serializeBytes(this.workerSignature);
-    }
-}
-
 /** Attested c26t CVM root request (WorkerRequest variant 4). The Google
- * Confidential Space token must carry `eat_nonce` over the response key,
- * worker Ed25519 proof, and HTTPS certificate SPKI hash. */
+ * Confidential Space token must carry `eat_nonce` over `payload.toBytes()`.
+ * The X25519 response secret key must stay inside the measured guest. */
 export class CvmRootVrfRequest {
     payload: ThresholdVrfRequestPayload;
-    binding: CvmRootBinding;
     attestationJwt: string;
 
-    constructor(args: { payload: ThresholdVrfRequestPayload, binding: CvmRootBinding, attestationJwt: string }) {
+    constructor(args: { payload: ThresholdVrfRequestPayload, attestationJwt: string }) {
         this.payload = args.payload;
-        this.binding = args.binding;
         this.attestationJwt = args.attestationJwt;
     }
 
     serialize(serializer: Serializer): void {
         this.payload.serialize(serializer);
-        this.binding.serialize(serializer);
         serializer.serializeStr(this.attestationJwt);
     }
 
@@ -275,15 +210,12 @@ export class CvmRootVrfRequest {
 }
 
 /** Google Confidential Space custom nonce for WorkerRequest variant 4. */
-export function cvmRootAttestationNonce(payload: ThresholdVrfRequestPayload, binding: CvmRootBinding): string {
-    const preimage = concatCvmBytes([
-        CVM_ATTESTATION_NONCE_DOMAIN,
-        payload.toBytes(),
-        binding.workerAddr,
-        binding.workerPk,
-        binding.tlsSpkiSha256,
-        binding.workerSignature,
-    ]);
+export function cvmRootAttestationNonce(payload: ThresholdVrfRequestPayload): string {
+    const domain = new TextEncoder().encode("ace/c26t/cvm-root/attestation/v1\0");
+    const body = payload.toBytes();
+    const preimage = new Uint8Array(domain.length + body.length);
+    preimage.set(domain);
+    preimage.set(body, domain.length);
     const digest = sha256(preimage);
     return btoa(String.fromCharCode(...digest))
         .replace(/\+/g, "-")

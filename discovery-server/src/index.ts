@@ -122,6 +122,11 @@ function main() {
         res.writeHead(404, { "Content-Type": "text/plain" }).end("not found");
     });
 
+    // GCP's external load balancer keeps backend connections idle for up to
+    // 600 seconds. Node's five-second default can close a connection just as
+    // the load balancer reuses it, returning an intermittent 503 to clients.
+    server.keepAliveTimeout = 620_000;
+
     server.listen(cfg.port, () => {
         const mode = cfg.lagMs > 0
             ? `lag=${cfg.lagMs}ms sample=${cfg.sampleIntervalMs}ms`

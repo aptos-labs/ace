@@ -243,15 +243,18 @@ Failure line (single-line; pretty-printed here):
 
 ```json
 { "probe": "presigned-access", "ok": false, "status": "unhealthy",
-  "severity": "ERROR", "reason": "permission-denied", "durationMs": 1446,
+  "severity": "ERROR", "reason": "chain-read-error", "detail": "discovery-http-503", "durationMs": 1446,
   "message": "…" }
 ```
 
 `reason` buckets the cause so you can build a failure-rate-by-cause metric off
-the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `permission-denied`,
-`threshold-not-met`, `decrypt-shares-insufficient`, `chain-read-error`,
+the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `worker-transport-error`, `permission-denied`,
+`threshold-not-met`, `decrypt-failed`, `chain-read-error`,
 `committee-drift`, `version-mismatch`, `plaintext-mismatch`,
 `chain-id-mismatch`, `keypair-missing`, `config-error`, `unknown`.
+`detail` is an optional, redacted cause such as `discovery-http-503`,
+`discovery-session-not-in-snapshot`, or `identity-shares-1-of-3`; it never
+contains the discovery URL, keys, plaintext, or a worker response body.
 
 ### Env reference
 

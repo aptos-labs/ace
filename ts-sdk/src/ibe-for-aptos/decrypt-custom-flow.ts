@@ -69,23 +69,38 @@ export async function decryptCustomFlow(args: {
     moduleAddr: AccountAddress,
     moduleName: string,
 }): Promise<Uint8Array> {
-    const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
-        .unwrapOrThrow('AptosCustomFlow.decrypt failed')
-        .scheme;
-    const identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
-        label: args.label,
-        encPk: args.encPk,
-        encSk: args.encSk,
-        payload: args.payload,
-        aceDeployment: args.aceDeployment,
-        keypairId: args.keypairId,
-        chainId: args.chainId,
-        moduleAddr: args.moduleAddr,
-        moduleName: args.moduleName,
-        tibeScheme,
-    });
-    return decryptWithIdentityKeyShares({
+    const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
+    if (!ciphertext.isOk) {
+        throw new Error('AptosCustomFlow.decrypt failed (parse ciphertext)', {cause: ciphertext.errValue});
+    }
+
+    let identityKeySharesResult: Result<tibe.IdentityDecryptionKeyShare[]>;
+    try {
+        identityKeySharesResult = await fetchIdentityKeySharesCustomFlow({
+            label: args.label,
+            encPk: args.encPk,
+            encSk: args.encSk,
+            payload: args.payload,
+            aceDeployment: args.aceDeployment,
+            keypairId: args.keypairId,
+            chainId: args.chainId,
+            moduleAddr: args.moduleAddr,
+            moduleName: args.moduleName,
+            tibeScheme: ciphertext.okValue!.scheme,
+        });
+    } catch (cause) {
+        throw new Error('AptosCustomFlow.decrypt failed (fetch identity key shares)', {cause});
+    }
+    if (!identityKeySharesResult.isOk) {
+        throw new Error('AptosCustomFlow.decrypt failed (fetch identity key shares)', {cause: identityKeySharesResult.errValue});
+    }
+
+    const decrypted = decryptWithIdentityKeyShares({
         ciphertext: args.ciphertext,
-        identityKeyShares: identityKeySharesResult.unwrapOrThrow('AptosCustomFlow.decrypt failed'),
-    }).unwrapOrThrow('AptosCustomFlow.decrypt failed');
+        identityKeyShares: identityKeySharesResult.okValue!,
+    });
+    if (!decrypted.isOk) {
+        throw new Error('AptosCustomFlow.decrypt failed (local decrypt)', {cause: decrypted.errValue});
+    }
+    return decrypted.okValue!;
 }

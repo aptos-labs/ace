@@ -74,6 +74,7 @@ jobs:
           pnpm --filter @aptos-labs/ace-cli test
           pnpm --filter tutorial-aptos typecheck
           pnpm --filter presigned-access-aptos typecheck
+          pnpm --filter presigned-access-aptos test:monitor
 
   unit-tests-ts:
     name: Unit tests / TypeScript

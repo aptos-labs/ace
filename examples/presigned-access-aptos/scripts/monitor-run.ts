@@ -32,37 +32,7 @@ import {
     aceDeploymentFromConfig, aptosFromConfig, buildBlobId, deriveAccessKeypair,
     readMonitorRunConfig, signWithAccessPrivateKey,
 } from './common.js';
-
-/**
- * Bucket a failure into a stable `reason` for cause stats. The precise signal
- * (per-worker HTTP status) lives in the SDK's own log lines, not the generic
- * thrown message (`decryptCustomFlow` collapses share shortfalls to
- * "AptosCustomFlow.decrypt failed"), so we scan both.
- */
-function classifyReason(message: string, sdkLogs: string[]): string {
-    const m = message.toLowerCase();
-    // Pre-decrypt asserts carry a specific thrown message.
-    if (m.includes('missing required env')) return 'config-error';
-    if (m.includes('chain id')) return 'chain-id-mismatch';
-    if (m.includes('not in network state')) return 'keypair-missing';
-    if (m.includes('committee size') || m.includes('threshold mismatch')) return 'committee-drift';
-    if (m.includes('contract version')) return 'version-mismatch';
-    if (m.includes('plaintext mismatch')) return 'plaintext-mismatch';
-
-    // Share-collection failures: infer from the per-worker lines.
-    const lines = sdkLogs.join('\n').toLowerCase();
-    if (lines.includes('http 403')) return 'permission-denied';
-    if (/http 5\d\d/.test(lines)) return 'worker-5xx';
-    if (/http 4\d\d/.test(lines)) return 'worker-4xx';
-    if (lines.includes('fetch error') || lines.includes('abort') || lines.includes('timeout')) return 'worker-timeout';
-    if ((m.includes('need ') && m.includes('got ')) || m.includes('identity key shares')) return 'threshold-not-met';
-    if (m.includes('decrypt failed')) return 'decrypt-shares-insufficient';
-
-    // Chain-side reads (network state / version / view).
-    if (m.includes('failed to parse ace network state') || m.includes('view') ||
-        m.includes('econn') || m.includes('fetch') || m.includes('network')) return 'chain-read-error';
-    return 'unknown';
-}
+import { classifyReason, failureDetail } from './monitor-diagnostics.js';
 
 /** Run the probe once. Throws on any failure; returns triage fields on success. */
 async function runProbe(): Promise<Record<string, unknown>> {
@@ -117,7 +87,7 @@ async function runProbe(): Promise<Record<string, unknown>> {
     });
     const decoded = new TextDecoder().decode(decrypted);
     if (decoded !== cfg.expectedPlaintext) {
-        throw new Error(`plaintext mismatch: expected ${JSON.stringify(cfg.expectedPlaintext)}, got ${JSON.stringify(decoded)}`);
+        throw new Error('plaintext mismatch');
     }
 
     return {
@@ -159,7 +129,8 @@ async function main(): Promise<void> {
         console.error(JSON.stringify({
             ...base,
             ok: false, status: 'unhealthy', severity: 'ERROR',
-            reason: classifyReason(message, sdkLogs),
+            reason: classifyReason(err, sdkLogs),
+            detail: failureDetail(err),
             durationMs: Date.now() - startedAt,
             message,
         }));

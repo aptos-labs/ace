@@ -17,6 +17,7 @@ import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
 import { State as NetworkState } from "../network";
+import type { ChainReader } from "../_internal/discovery";
 import {
     AceDeployment,
     ContractID,
@@ -27,6 +28,7 @@ import {
     decryptWithIdentityKeyShares,
     fetchIdentityKeySharesCore,
     buildPerNodeRequestCore,
+    getChainReader,
 } from "../_internal/common";
 
 export class BasicDecryptionSession {
@@ -38,6 +40,7 @@ export class BasicDecryptionSession {
     ephemeralEncryptionKey: pke.EncryptionKey;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
+    private reader: ChainReader | undefined;
 
     private constructor({
         aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, ciphertext, primitive,
@@ -101,8 +104,10 @@ export class BasicDecryptionSession {
      * WebAuthn-shaped challenge derived from the BCS body, not this hex.
      */
     async getRequestToSign(): Promise<string> {
+        const reader = getChainReader(this.aceDeployment);
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
-            this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+            reader, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+        this.reader = reader;
         this.networkState = networkState;
         this.request = request;
         return '0x' + bytesToHex(request.toBytes());
@@ -119,8 +124,10 @@ export class BasicDecryptionSession {
      * (passkeys) account type.
      */
     async getRequestToSignForWebAuthn(): Promise<Uint8Array> {
+        const reader = getChainReader(this.aceDeployment);
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
-            this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+            reader, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+        this.reader = reader;
         this.networkState = networkState;
         this.request = request;
         return request.toWebAuthnChallenge();
@@ -173,7 +180,7 @@ export class BasicDecryptionSession {
         if (!primitive.isOk) return Result.Err({error: primitive.errValue, extra: primitive.extra});
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
         return fetchIdentityKeySharesCore({
-            aceDeployment: this.aceDeployment,
+            reader: this.reader!,
             networkState: this.networkState!,
             request: this.request!,
             proof,
@@ -241,7 +248,7 @@ export class BasicDecryptionSession {
         });
         if (!proofResult.isOk) return Result.Err({ error: proofResult.errValue });
         return fetchIdentityKeySharesCore({
-            aceDeployment: this.aceDeployment,
+            reader: this.reader!,
             networkState: this.networkState!,
             request: this.request!,
             proof: proofResult.okValue!,
@@ -306,7 +313,7 @@ export class BasicDecryptionSession {
         if (!primitive.isOk) return Result.Err({error: primitive.errValue, extra: primitive.extra});
         const proof = ProofOfPermission.createAptos({userAddr, publicKey, signature, fullMessage});
         return buildPerNodeRequestCore({
-            aceDeployment: this.aceDeployment,
+            reader: this.reader!,
             networkState: this.networkState!,
             request: this.request!,
             proof,

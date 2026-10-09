@@ -166,8 +166,9 @@ export class DiscoveryChainReader implements ChainReader {
     constructor(private readonly discoveryUrl: string) {}
 
     private view0(): Promise<DiscoveryViewV0> {
-        // Fetch once per reader instance (i.e. once per operation phase). No cross-op cache: a
-        // fresh reader is created per call site, so state stays current across epoch changes.
+        // Fetch once per reader instance. One reader is passed through each request from its
+        // network-state read to its session and worker lookups. The next request gets a fresh
+        // reader, so it can observe an epoch change without mixing snapshots within a request.
         if (this.snapshot === undefined) this.snapshot = fetchDiscoveryView(this.discoveryUrl);
         return this.snapshot;
     }

@@ -630,12 +630,13 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
     });
 }
 
+/** Keep the reader with the signed request so later session and node reads use the same snapshot. */
 export async function fetchNetworkStateAndBuildRequest(
-    aceDeployment: AceDeployment,
+    reader: ChainReader,
     fullDecryptionDomain: FullDecryptionDomain,
     ephemeralEncryptionKey: pke.EncryptionKey,
 ): Promise<{networkState: NetworkState, request: DecryptionRequestPayload}> {
-    const networkState = await getChainReader(aceDeployment).networkState();
+    const networkState = await reader.networkState();
 
     const request = new DecryptionRequestPayload({
         keypairId: fullDecryptionDomain.keypairId,
@@ -694,7 +695,7 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
  * The discriminator `currentSession === keypairId` distinguishes the initial DKG (no DKR yet)
  * from subsequent DKR sessions.
  */
-export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
+export async function fetchCurrentSessionPks(reader: ChainReader, networkState: NetworkState, keypairId: AccountAddress): Promise<{basePoint: GroupElement, sharePks: GroupElement[]}> {
     const keypairIdStr = keypairId.toStringLong();
 
     const secret = networkState.secrets.find(s => s.keypairId.toStringLong() === keypairIdStr);
@@ -704,8 +705,7 @@ export async function fetchCurrentSessionPks(aceDeployment: AceDeployment, netwo
     // currentSession === keypairId => the initial DKG (no DKR yet); otherwise a DKR session.
     const isInitialDkg = secret.currentSession.toStringLong() === keypairIdStr;
 
-    const { basePoint, sharePks } = await getChainReader(aceDeployment)
-        .session(secret.currentSession.toStringLong(), isInitialDkg);
+    const { basePoint, sharePks } = await reader.session(secret.currentSession.toStringLong(), isInitialDkg);
     return { basePoint, sharePks };
 }
 
@@ -725,8 +725,8 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
     });
 }
 
-export async function fetchIdentityKeySharesCore({aceDeployment, networkState, request, proof, ephemeralDecryptionKey, primitive}: {
-    aceDeployment: AceDeployment,
+export async function fetchIdentityKeySharesCore({reader, networkState, request, proof, ephemeralDecryptionKey, primitive}: {
+    reader: ChainReader,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
@@ -735,8 +735,6 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const reader = getChainReader(aceDeployment);
-
             const fdd = new FullDecryptionDomain({
                 keypairId: request.keypairId,
                 contractId: request.contractId,
@@ -753,7 +751,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
                     ]);
                     return { endpoint, nodeEncKey };
                 })),
-                fetchCurrentSessionPks(aceDeployment, networkState, request.keypairId),
+                fetchCurrentSessionPks(reader, networkState, request.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
@@ -813,7 +811,7 @@ export async function fetchIdentityKeySharesCore({aceDeployment, networkState, r
 }
 
 export async function decryptCore(args: {
-    aceDeployment: AceDeployment,
+    reader: ChainReader,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
@@ -823,7 +821,7 @@ export async function decryptCore(args: {
     const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
     if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
     const identityKeySharesResult = await fetchIdentityKeySharesCore({
-        aceDeployment: args.aceDeployment,
+        reader: args.reader,
         networkState: args.networkState,
         request: args.request,
         proof: args.proof,
@@ -837,8 +835,8 @@ export async function decryptCore(args: {
     });
 }
 
-export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkState, customRequest, callerDecryptionKey, primitive}: {
-    aceDeployment: AceDeployment,
+export async function fetchIdentityKeySharesCoreCustom({reader, networkState, customRequest, callerDecryptionKey, primitive}: {
+    reader: ChainReader,
     networkState: NetworkState,
     customRequest: CustomFlowRequest,
     callerDecryptionKey: pke.DecryptionKey,
@@ -846,8 +844,6 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const reader = getChainReader(aceDeployment);
-
             const fdd = new FullDecryptionDomain({
                 keypairId: customRequest.keypairId,
                 contractId: customRequest.contractId,
@@ -864,7 +860,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
                     ]);
                     return { endpoint, nodeEncKey };
                 })),
-                fetchCurrentSessionPks(aceDeployment, networkState, customRequest.keypairId),
+                fetchCurrentSessionPks(reader, networkState, customRequest.keypairId),
             ]);
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
@@ -924,7 +920,7 @@ export async function fetchIdentityKeySharesCoreCustom({aceDeployment, networkSt
 }
 
 export async function decryptCoreCustom(args: {
-    aceDeployment: AceDeployment,
+    reader: ChainReader,
     networkState: NetworkState,
     customRequest: CustomFlowRequest,
     callerDecryptionKey: pke.DecryptionKey,
@@ -933,7 +929,7 @@ export async function decryptCoreCustom(args: {
     const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
     if (!ciphertext.isOk) return Result.Err({error: ciphertext.errValue, extra: ciphertext.extra});
     const identityKeySharesResult = await fetchIdentityKeySharesCoreCustom({
-        aceDeployment: args.aceDeployment,
+        reader: args.reader,
         networkState: args.networkState,
         customRequest: args.customRequest,
         callerDecryptionKey: args.callerDecryptionKey,
@@ -956,9 +952,9 @@ export async function decryptCoreCustom(args: {
  * current committee member's registered endpoint equals `targetEndpoint`.
  */
 export async function buildPerNodeRequestCore({
-    aceDeployment, networkState, request, proof, primitive, targetEndpoint,
+    reader, networkState, request, proof, primitive, targetEndpoint,
 }: {
-    aceDeployment: AceDeployment,
+    reader: ChainReader,
     networkState: NetworkState,
     request: DecryptionRequestPayload,
     proof: ProofOfPermission,
@@ -967,8 +963,6 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const reader = getChainReader(aceDeployment);
-
             const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
                 const addrStr = nodeAddr.toStringLong();
                 const [endpoint, nodeEncKey] = await Promise.all([

@@ -26,10 +26,10 @@ import {
     ContractID,
     getChainReader,
     fetchCurrentSessionPks,
-    fetchNetworkState,
     NetworkState,
     WorkerRequest,
 } from "../_internal/common";
+import type { ChainReader } from "../_internal/discovery";
 import { getPublicKeyScheme, getSignatureScheme } from "../_internal/aptos";
 import { frInv, frMod, frMul } from "../group/bls12381fr";
 
@@ -214,11 +214,9 @@ export class ThresholdVrfShare {
 }
 
 async function fetchCurrentNodeInfos(
-    aceDeployment: AceDeployment,
+    reader: ChainReader,
     networkState: NetworkState,
 ): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
-    const reader = getChainReader(aceDeployment);
-
     return Promise.all(networkState.curNodes.map(async (nodeAddr) => {
         const addrStr = nodeAddr.toStringLong();
         const [endpoint, nodeEncKey] = await Promise.all([
@@ -319,6 +317,7 @@ export class DerivationSession {
     networkState: NetworkState | undefined;
     payload: ThresholdVrfRequestPayload | undefined;
     message: string | undefined;
+    private reader: ChainReader | undefined;
 
     private constructor(args: RequestToSignArgs & {
         responseEncryptionKey: pke.EncryptionKey,
@@ -343,7 +342,8 @@ export class DerivationSession {
     }
 
     private async refreshPayload(): Promise<ThresholdVrfRequestPayload> {
-        const networkState = await fetchNetworkState(this.aceDeployment);
+        const reader = getChainReader(this.aceDeployment);
+        const networkState = await reader.networkState();
         const payload = new ThresholdVrfRequestPayload({
             keypairId: this.keypairId,
             epoch: networkState.epoch,
@@ -352,6 +352,7 @@ export class DerivationSession {
             accountAddress: this.accountAddress,
             responseEncKey: this.responseEncryptionKey,
         });
+        this.reader = reader;
         this.networkState = networkState;
         this.payload = payload;
         this.message = '0x' + bytesToHex(payload.toBytes());
@@ -392,8 +393,8 @@ export class DerivationSession {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: missing network state");
         }
         const [nodeInfos, sessionPks] = await Promise.all([
-            fetchCurrentNodeInfos(this.aceDeployment, networkState),
-            fetchCurrentSessionPks(this.aceDeployment, networkState, this.keypairId),
+            fetchCurrentNodeInfos(this.reader!, networkState),
+            fetchCurrentSessionPks(this.reader!, networkState, this.keypairId),
         ]);
         if (sessionPks.sharePks.length !== networkState.curNodes.length) {
             throw new Error(`ACE.VRF_Aptos.DerivationSession.deriveWithSignature: sharePks length ${sessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`);

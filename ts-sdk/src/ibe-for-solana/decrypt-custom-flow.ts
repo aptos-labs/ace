@@ -11,6 +11,7 @@ import {
     CustomFlowProof,
     CustomFlowRequest,
     fetchNetworkState,
+    getChainReader,
     decryptWithIdentityKeyShares,
     fetchIdentityKeySharesCoreCustom,
 } from "../_internal/common";
@@ -35,7 +36,8 @@ export async function fetchIdentityKeySharesCustomFlow({
     const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
         .unwrapOrThrow('SolanaCustomFlow.fetchIdentityKeyShares: parse encSk');
 
-    const networkState = await fetchNetworkState(aceDeployment);
+    const reader = getChainReader(aceDeployment);
+    const networkState = await reader.networkState();
     const contractId = ContractID.newSolana({knownChainName, programId});
     const proof = CustomFlowProof.createSolana(txn);
     const customRequest = new CustomFlowRequest({
@@ -48,7 +50,7 @@ export async function fetchIdentityKeySharesCustomFlow({
     });
 
     return fetchIdentityKeySharesCoreCustom({
-        aceDeployment,
+        reader,
         networkState,
         customRequest,
         callerDecryptionKey: callerDecSk,

@@ -255,6 +255,8 @@ the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `worker-transport-error`
 `detail` is an optional, redacted cause such as `discovery-http-503`,
 `discovery-session-not-in-snapshot`, or `identity-shares-1-of-3`; it never
 contains the discovery URL, keys, plaintext, or a worker response body.
+For custom-flow decrypt errors, `message` identifies the failing stage but
+does not serialize the SDK's underlying `Error.cause`.
 
 ### Env reference
 

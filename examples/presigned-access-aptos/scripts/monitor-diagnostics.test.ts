@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyReason, failureDetail } from './monitor-diagnostics.js';
+import { classifyReason, failureDetail, failureMessage } from './monitor-diagnostics.js';
 
 test('discovery HTTP errors retain status without logging URL or credentials', () => {
     const error = new Error('AptosCustomFlow.decrypt failed (fetch identity key shares)', {
@@ -36,6 +36,19 @@ test('local decrypt, transport errors and unknown wrapper are distinct', () => {
         cause: new TypeError('terminated'),
     }), []), 'chain-read-error');
     assert.equal(classifyReason(new Error('AptosCustomFlow.decrypt failed'), []), 'unknown');
+});
+
+test('local primitive failure is classified without serializing its raw cause', () => {
+    const error = new Error('AptosCustomFlow.decrypt failed (local decrypt)', {
+        cause: new Error('TEST_ONLY_PRIVATE_KEY=do-not-log'),
+    });
+    const logLine = JSON.stringify({
+        message: failureMessage(error),
+        reason: classifyReason(error, []),
+        detail: failureDetail(error),
+    });
+    assert.equal(classifyReason(error, []), 'decrypt-failed');
+    assert.doesNotMatch(logLine, /TEST_ONLY_PRIVATE_KEY|do-not-log/);
 });
 
 test('worker HTTP and transport failures still use per-worker log lines', () => {

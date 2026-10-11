@@ -32,7 +32,7 @@ import {
     aceDeploymentFromConfig, aptosFromConfig, buildBlobId, deriveAccessKeypair,
     readMonitorRunConfig, signWithAccessPrivateKey,
 } from './common.js';
-import { classifyReason, failureDetail } from './monitor-diagnostics.js';
+import { classifyReason, failureDetail, failureMessage } from './monitor-diagnostics.js';
 
 /** Run the probe once. Throws on any failure; returns triage fields on success. */
 async function runProbe(): Promise<Record<string, unknown>> {
@@ -125,7 +125,7 @@ async function main(): Promise<void> {
         process.exit(0);
     } catch (err) {
         console.log = origLog;
-        const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        const message = failureMessage(err);
         console.error(JSON.stringify({
             ...base,
             ok: false, status: 'unhealthy', severity: 'ERROR',

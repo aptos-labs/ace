@@ -88,4 +88,28 @@ describe('Aptos custom-flow decrypt errors', () => {
             cause: expect.anything(),
         });
     });
+
+    it('retains the primitive BF-IBE error through tibe and common without logging it', () => {
+        const parseCiphertext = vi.spyOn(tibe.Ciphertext, 'fromBytes');
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        for (const scheme of [
+            tibe.SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC,
+            tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD,
+        ]) {
+            parseCiphertext.mockReturnValueOnce(Result.Ok({
+                value: new tibe.Ciphertext(scheme, {c0: null}),
+            }));
+            const result = IBE_Aptos.decryptWithIdentityKeyShares({
+                ciphertext: new Uint8Array([1]), identityKeyShares: [],
+            });
+
+            expect(result.isOk).toBe(false);
+            expect(result.errValue).toBe('decrypt: no IDK shares provided');
+            expect(result.extra?._sdk_execution_time_ms).toEqual(expect.any(Number));
+        }
+        expect(log).not.toHaveBeenCalled();
+        expect(errorLog).not.toHaveBeenCalled();
+    });
 });

@@ -21,6 +21,17 @@ function errorMessages(error: unknown): string[] {
     return messages;
 }
 
+/** Keep the custom-flow stage, never serialize its raw Error.cause or stack. */
+export function failureMessage(error: unknown): string {
+    if (error instanceof Error) {
+        if (/^AptosCustomFlow\.decrypt failed \((?:parse ciphertext|fetch identity key shares|local decrypt)\)$/.test(error.message)) {
+            return error.message;
+        }
+        return error.stack ?? error.message;
+    }
+    return String(error);
+}
+
 /** A stable cause bucket; never return the raw SDK error, endpoint or response body. */
 export function failureDetail(error: unknown): string | undefined {
     const messages = errorMessages(error).join('\n');

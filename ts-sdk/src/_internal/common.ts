@@ -715,11 +715,18 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
 }): Result<Uint8Array> {
     return Result.capture({
         task: (_extra) => {
-            return tibe.decrypt({
+            const parsedCiphertext = tibe.Ciphertext.fromBytes(ciphertext);
+            if (!parsedCiphertext.isOk) {
+                throw parsedCiphertext.errValue ?? new Error('ACE.decryptWithIdentityKeyShares: parse ciphertext failed');
+            }
+            const decrypted = tibe.decrypt({
                 idkShares: identityKeyShares,
-                ciphertext: tibe.Ciphertext.fromBytes(ciphertext)
-                    .unwrapOrThrow('ACE.decryptWithIdentityKeyShares: parse ciphertext'),
-            }).unwrapOrThrow('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
+                ciphertext: parsedCiphertext.okValue!,
+            });
+            if (!decrypted.isOk) {
+                throw decrypted.errValue ?? new Error('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
+            }
+            return decrypted.okValue!;
         },
         recordsExecutionTimeMs: true,
     });

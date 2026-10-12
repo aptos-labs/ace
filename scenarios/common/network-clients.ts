@@ -60,6 +60,8 @@ export async function spawnDiscoveryServer(opts: {
     contractAddr: string;
     port: number;
     fullnode?: string;
+    cacheTtlMs?: number;
+    lagMs?: number;
 }): Promise<ChildProcess> {
     const dist = path.join(REPO_ROOT, 'discovery-server', 'dist', 'index.js');
     if (!fs.existsSync(dist)) {
@@ -78,6 +80,8 @@ export async function spawnDiscoveryServer(opts: {
             ACE_DISCOVERY_FULLNODE: opts.fullnode ?? LOCALNET_URL,
             ACE_DISCOVERY_CONTRACT_ADDR: opts.contractAddr,
             ACE_DISCOVERY_PORT: String(opts.port),
+            ...(opts.cacheTtlMs === undefined ? {} : { ACE_DISCOVERY_CACHE_TTL_MS: String(opts.cacheTtlMs) }),
+            ...(opts.lagMs === undefined ? {} : { ACE_DISCOVERY_LAG_MS: String(opts.lagMs) }),
         },
         stdio: ['ignore', logFd, logFd],
     });

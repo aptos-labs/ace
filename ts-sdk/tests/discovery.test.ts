@@ -171,7 +171,14 @@ describe("DiscoveryChainReader", () => {
     });
 });
 
-describe("discovery snapshot consistency across an epoch change", () => {
+// Reproduce the SDK's epoch-boundary race without depending on localnet timing: the first
+// discovery GET contains epoch 10/session C1, while every later GET contains epoch 11/session C2.
+// Each test drives a real SDK flow and checks that it reaches the worker using only the first
+// snapshot. The worker deliberately returns 503; reaching it proves the SDK did not fail earlier
+// with "session C1 not in snapshot". The test-epoch-buffer scenario also replays an epoch-2
+// signed request after real discovery and workers reach epoch 3; these tests isolate the
+// cross-GET consistency rule without relying on the timing of a live epoch change.
+describe("SDK discovery reads across a simulated epoch change", () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         vi.restoreAllMocks();

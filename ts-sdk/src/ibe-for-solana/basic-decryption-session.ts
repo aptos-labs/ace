@@ -6,6 +6,7 @@ import { Result } from "../result";
 import * as pke from "../pke";
 import * as tibe from "../t-ibe";
 import { State as NetworkState } from "../network";
+import type { ChainReader } from "../_internal/discovery";
 import {
     AceDeployment,
     ContractID,
@@ -15,6 +16,7 @@ import {
     fetchNetworkStateAndBuildRequest,
     decryptWithIdentityKeyShares,
     fetchIdentityKeySharesCore,
+    getChainReader,
 } from "../_internal/common";
 
 export class BasicDecryptionSession {
@@ -26,6 +28,7 @@ export class BasicDecryptionSession {
     ephemeralEncryptionKey: pke.EncryptionKey;
     request: DecryptionRequestPayload | undefined;
     networkState: NetworkState | undefined;
+    private reader: ChainReader | undefined;
 
     private constructor({
         aceDeployment, keypairId, knownChainName, programId, label, ciphertext, primitive,
@@ -68,8 +71,10 @@ export class BasicDecryptionSession {
     }
 
     async getRequestToSign(): Promise<Uint8Array> {
+        const reader = getChainReader(this.aceDeployment);
         const {networkState, request} = await fetchNetworkStateAndBuildRequest(
-            this.aceDeployment, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+            reader, this.fullDecryptionDomain, this.ephemeralEncryptionKey);
+        this.reader = reader;
         this.networkState = networkState;
         this.request = request;
         const s = new Serializer();
@@ -115,7 +120,7 @@ export class BasicDecryptionSession {
         if (!primitive.isOk) return Result.Err({error: primitive.errValue, extra: primitive.extra});
         const proof = ProofOfPermission.createSolana({txn});
         return fetchIdentityKeySharesCore({
-            aceDeployment: this.aceDeployment,
+            reader: this.reader!,
             networkState: this.networkState!,
             request: this.request!,
             proof,

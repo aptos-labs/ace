@@ -29,7 +29,7 @@
     "test-fault-tolerance": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-fault-tolerance.ts",
     "test-reconstruction": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-reconstruction.ts",
     "test-auto-epoch-change": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-auto-epoch-change.ts",
-    "test-epoch-buffer": "pnpm --filter @aptos-labs/ace-sdk build && tsx test-epoch-buffer.ts",
+    "test-epoch-buffer": "pnpm --filter @aptos-labs/ace-sdk build && pnpm --filter @aptos-labs/ace-discovery-server build && tsx test-epoch-buffer.ts",
     "run-local-network-forever": "pnpm --filter @aptos-labs/ace-sdk build && tsx run-local-network-forever.ts",
     "cli-testbed": "pnpm --filter @aptos-labs/ace-sdk build && tsx cli-testbed.ts",
     "large-committee": "pnpm --filter @aptos-labs/ace-sdk build && tsx large-committee.ts",

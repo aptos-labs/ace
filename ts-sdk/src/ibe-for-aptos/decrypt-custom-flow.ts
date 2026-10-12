@@ -10,7 +10,7 @@ import {
     ContractID,
     CustomFlowProof,
     CustomFlowRequest,
-    fetchNetworkState,
+    getChainReader,
     decryptWithIdentityKeyShares,
     fetchIdentityKeySharesCoreCustom,
 } from "../_internal/common";
@@ -35,7 +35,8 @@ export async function fetchIdentityKeySharesCustomFlow({
     const callerDecSk = pke.DecryptionKey.fromBytes(encSk)
         .unwrapOrThrow('AptosCustomFlow.fetchIdentityKeyShares: parse encSk');
 
-    const networkState = await fetchNetworkState(aceDeployment);
+    const reader = getChainReader(aceDeployment);
+    const networkState = await reader.networkState();
     const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
     const proof = CustomFlowProof.createAptos(payload);
     const customRequest = new CustomFlowRequest({
@@ -48,7 +49,7 @@ export async function fetchIdentityKeySharesCustomFlow({
     });
 
     return fetchIdentityKeySharesCoreCustom({
-        aceDeployment,
+        reader,
         networkState,
         customRequest,
         callerDecryptionKey: callerDecSk,

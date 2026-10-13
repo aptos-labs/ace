@@ -243,8 +243,8 @@ Failure line (single-line; pretty-printed here):
 
 ```json
 { "probe": "presigned-access", "ok": false, "status": "unhealthy",
-  "severity": "ERROR", "reason": "chain-read-error", "detail": "discovery-http-503", "durationMs": 1446,
-  "message": "…" }
+  "severity": "ERROR", "reason": "chain-read-error", "durationMs": 1446,
+  "message": "Error: AptosCustomFlow.decrypt failed (fetch identity key shares)\n    at …\nCaused by:\nError: ACE discovery: GET … -> HTTP 503\n    at …" }
 ```
 
 `reason` buckets the cause so you can build a failure-rate-by-cause metric off
@@ -252,11 +252,10 @@ the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `worker-transport-error`
 `threshold-not-met`, `decrypt-failed`, `chain-read-error`,
 `committee-drift`, `version-mismatch`, `plaintext-mismatch`,
 `chain-id-mismatch`, `keypair-missing`, `config-error`, `unknown`.
-`detail` is an optional, redacted cause such as `discovery-http-503`,
-`discovery-session-not-in-snapshot`, or `identity-shares-1-of-3`; it never
-contains the discovery URL, keys, plaintext, or a worker response body.
-For custom-flow decrypt errors, `message` identifies the failing stage but
-does not serialize the SDK's underlying `Error.cause`.
+On failure, `message` includes the full stack of the thrown error followed by
+each available `Error.cause` stack or value. The SDK's per-worker lines are
+printed separately. The error text can contain endpoint URLs and worker
+responses, so grant Cloud Logging access accordingly.
 
 ### Env reference
 

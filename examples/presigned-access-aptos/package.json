@@ -8,7 +8,6 @@
     "typecheck": "pnpm --filter @aptos-labs/ace-sdk build && tsc --noEmit",
     "monitor:setup": "tsx scripts/monitor-setup.ts",
     "monitor:run": "tsx scripts/monitor-run.ts",
-    "test:monitor": "tsx --test scripts/monitor-diagnostics.test.ts",
     "1-setup": "tsx scripts/1-setup.ts",
     "2-deploy-contract": "tsx scripts/2-deploy-contract.ts",
     "3-grant": "tsx scripts/3-grant.ts",

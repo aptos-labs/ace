@@ -43,18 +43,23 @@ export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, mo
         task: async (_extra) => {
             const contractId = ContractID.newAptos({chainId, moduleAddr, moduleName});
             const fdd = new FullDecryptionDomain({keypairId, contractId, label});
-            const mpk = pk ?? (await fetchPk({
-                aceDeployment,
-                keypairId,
-                tibeScheme: effectiveTibeScheme,
-            })).unwrapOrThrow('AptosEncrypt: fetchPk failed');
+            let mpk = pk;
+            if (mpk === undefined) {
+                const fetched = await fetchPk({aceDeployment, keypairId, tibeScheme: effectiveTibeScheme});
+                if (!fetched.isOk) {
+                    throw new Error('AptosEncrypt: fetchPk failed', {cause: fetched.errValue});
+                }
+                mpk = fetched.okValue!;
+            }
             if (mpk.scheme !== effectiveTibeScheme) {
                 throw `AptosEncrypt: pk.scheme ${mpk.scheme} does not match tibeScheme=${effectiveTibeScheme}`;
             }
 
-            return tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
-                .unwrapOrThrow('AptosEncrypt: tibe.encrypt failed')
-                .toBytes();
+            const encrypted = tibe.encrypt({mpk, id: fdd.toBytes(), plaintext});
+            if (!encrypted.isOk) {
+                throw new Error('AptosEncrypt: tibe.encrypt failed', {cause: encrypted.errValue});
+            }
+            return encrypted.okValue!.toBytes();
         },
         recordsExecutionTimeMs: true,
     });

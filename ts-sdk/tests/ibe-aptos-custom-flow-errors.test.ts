@@ -113,3 +113,27 @@ describe('Aptos custom-flow decrypt errors', () => {
         expect(errorLog).not.toHaveBeenCalled();
     });
 });
+
+describe('Aptos encrypt errors', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('preserves the discovery failure behind the encrypt Result', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => ({ok: false, status: 503})));
+
+        const result = await IBE_Aptos.encrypt({
+            aceDeployment: deployment,
+            keypairId: address,
+            chainId: 1,
+            moduleAddr: address,
+            moduleName: 'monitor',
+            label: new Uint8Array(),
+            plaintext: new Uint8Array([1]),
+        });
+
+        expect(result.isOk).toBe(false);
+        expect(result.errValue).toMatchObject({
+            message: 'AptosEncrypt: fetchPk failed',
+            cause: expect.objectContaining({message: expect.stringContaining('HTTP 503')}),
+        });
+    });
+});

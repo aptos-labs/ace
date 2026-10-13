@@ -623,8 +623,13 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
             const { basePoint, resultPk } = await getChainReader(aceDeployment).session(keypairId.toStringLong(), true);
             if (!resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
 
-            return tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk)
-                .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`);
+            const publicKey = tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk);
+            if (!publicKey.isOk) {
+                throw new Error(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`, {
+                    cause: publicKey.errValue,
+                });
+            }
+            return publicKey.okValue!;
         },
         recordsExecutionTimeMs: true,
     });
@@ -890,28 +895,29 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
                         return null;
                     }
                     const hexText = (await resp.text()).trim();
-                    const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
-                    if (respCt === null) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                    const parsedResponse = pke.Ciphertext.fromHex(hexText);
+                    if (!parsedResponse.isOk) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed — ${parsedResponse.errValue}`);
                         return null;
                     }
-                    const shareBytes = (await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: respCt})).okValue ?? null;
-                    if (shareBytes === null) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                    const decryptedResponse = await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: parsedResponse.okValue!});
+                    if (!decryptedResponse.isOk) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed — ${decryptedResponse.errValue}`);
                         return null;
                     }
-                    const share = tibe.IdentityDecryptionKeyShare.fromBytes(shareBytes).okValue ?? null;
-                    if (share === null) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed`);
+                    const parsedShare = tibe.IdentityDecryptionKeyShare.fromBytes(decryptedResponse.okValue!);
+                    if (!parsedShare.isOk) {
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed — ${parsedShare.errValue}`);
                         return null;
                     }
+                    const share = parsedShare.okValue!;
                     if (!verifyIdkShare({share, sdkIdx: i, sessionPks: currentSessionPks, id: fddBytes, nodeAddr, endpoint, label: 'decrypt-custom'})) {
                         return null;
                     }
                     console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
                 } catch (e) {
-                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e}`);
+                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
                     return null;
                 }
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);

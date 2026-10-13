@@ -623,13 +623,8 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
             const { basePoint, resultPk } = await getChainReader(aceDeployment).session(keypairId.toStringLong(), true);
             if (!resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
 
-            const publicKey = tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk);
-            if (!publicKey.isOk) {
-                throw new Error(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`, {
-                    cause: publicKey.errValue,
-                });
-            }
-            return publicKey.okValue!;
+            return tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk)
+                .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`);
         },
         recordsExecutionTimeMs: true,
     });
@@ -721,18 +716,11 @@ export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
 }): Result<Uint8Array> {
     return Result.capture({
         task: (_extra) => {
-            const parsedCiphertext = tibe.Ciphertext.fromBytes(ciphertext);
-            if (!parsedCiphertext.isOk) {
-                throw parsedCiphertext.errValue ?? new Error('ACE.decryptWithIdentityKeyShares: parse ciphertext failed');
-            }
-            const decrypted = tibe.decrypt({
+            return tibe.decrypt({
                 idkShares: identityKeyShares,
-                ciphertext: parsedCiphertext.okValue!,
-            });
-            if (!decrypted.isOk) {
-                throw decrypted.errValue ?? new Error('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
-            }
-            return decrypted.okValue!;
+                ciphertext: tibe.Ciphertext.fromBytes(ciphertext)
+                    .unwrapOrThrow('ACE.decryptWithIdentityKeyShares: parse ciphertext'),
+            }).unwrapOrThrow('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
         },
         recordsExecutionTimeMs: true,
     });

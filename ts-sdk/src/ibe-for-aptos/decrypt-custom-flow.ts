@@ -69,10 +69,9 @@ export async function decryptCustomFlow(args: {
     moduleAddr: AccountAddress,
     moduleName: string,
 }): Promise<Uint8Array> {
-    const ciphertext = tibe.Ciphertext.fromBytes(args.ciphertext);
-    if (!ciphertext.isOk) {
-        throw new Error('AptosCustomFlow.decrypt failed (parse ciphertext)', {cause: ciphertext.errValue});
-    }
+    const tibeScheme = tibe.Ciphertext.fromBytes(args.ciphertext)
+        .unwrapOrThrow('AptosCustomFlow.decrypt failed (parse ciphertext)')
+        .scheme;
 
     let identityKeySharesResult: Result<tibe.IdentityDecryptionKeyShare[]>;
     try {
@@ -86,21 +85,13 @@ export async function decryptCustomFlow(args: {
             chainId: args.chainId,
             moduleAddr: args.moduleAddr,
             moduleName: args.moduleName,
-            tibeScheme: ciphertext.okValue!.scheme,
+            tibeScheme,
         });
     } catch (cause) {
         throw new Error('AptosCustomFlow.decrypt failed (fetch identity key shares)', {cause});
     }
-    if (!identityKeySharesResult.isOk) {
-        throw new Error('AptosCustomFlow.decrypt failed (fetch identity key shares)', {cause: identityKeySharesResult.errValue});
-    }
-
-    const decrypted = decryptWithIdentityKeyShares({
+    return decryptWithIdentityKeyShares({
         ciphertext: args.ciphertext,
-        identityKeyShares: identityKeySharesResult.okValue!,
-    });
-    if (!decrypted.isOk) {
-        throw new Error('AptosCustomFlow.decrypt failed (local decrypt)', {cause: decrypted.errValue});
-    }
-    return decrypted.okValue!;
+        identityKeyShares: identityKeySharesResult.unwrapOrThrow('AptosCustomFlow.decrypt failed (fetch identity key shares)'),
+    }).unwrapOrThrow('AptosCustomFlow.decrypt failed (local decrypt)');
 }

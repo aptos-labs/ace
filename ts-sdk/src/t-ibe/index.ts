@@ -500,20 +500,16 @@ export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionK
         const scheme = ciphertext.scheme;
         for (const idkShare of idkShares) if (idkShare.scheme !== scheme) throw 'scheme mismatch';
         if (scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
-            const decrypted = BfibeBls12381ShortPkOtpHmac.decrypt({
+            return BfibeBls12381ShortPkOtpHmac.decrypt({
                 idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare),
                 ciphertext: ciphertext.inner as BfibeBls12381ShortPkOtpHmac.Ciphertext,
-            });
-            if (!decrypted.isOk) throw decrypted.errValue ?? new Error('decrypt failed');
-            return decrypted.okValue!;
+            }).unwrapOrThrow('decrypt failed');
         }
         if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
-            const decrypted = BfibeBls12381ShortSigAead.decrypt({
+            return BfibeBls12381ShortSigAead.decrypt({
                 idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare),
                 ciphertext: ciphertext.inner as BfibeBls12381ShortSigAead.Ciphertext,
-            });
-            if (!decrypted.isOk) throw decrypted.errValue ?? new Error('decrypt failed');
-            return decrypted.okValue!;
+            }).unwrapOrThrow('decrypt failed');
         }
         throw `decrypt: unknown scheme ${scheme}`;
     };

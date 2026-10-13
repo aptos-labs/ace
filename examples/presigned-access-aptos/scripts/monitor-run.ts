@@ -73,13 +73,11 @@ async function runProbe(): Promise<Record<string, unknown>> {
     const label = new TextEncoder().encode(blobId);
     const plaintext = new TextEncoder().encode(cfg.expectedPlaintext);
 
-    const encrypted = await ACE.IBE_Aptos.encrypt({
+    const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment, keypairId: ibeKeypairId, chainId,
         moduleAddr, moduleName: cfg.appModuleName,
         label, plaintext,
-    });
-    if (!encrypted.isOk) throw new Error('IBE encrypt failed', { cause: encrypted.errValue });
-    const ciphertext = encrypted.okValue!;
+    })).unwrapOrThrow('IBE encrypt failed');
 
     const { accessPrivateKey } = await deriveAccessKeypair({
         aceDeployment, vrfKeypairId, chainId, moduleAddr, moduleName: cfg.appModuleName,
@@ -103,7 +101,7 @@ async function runProbe(): Promise<Record<string, unknown>> {
     });
     const decoded = new TextDecoder().decode(decrypted);
     if (decoded !== cfg.expectedPlaintext) {
-        throw new Error('plaintext mismatch');
+        throw new Error(`plaintext mismatch: expected ${JSON.stringify(cfg.expectedPlaintext)}, got ${JSON.stringify(decoded)}`);
     }
 
     return {

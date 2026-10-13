@@ -106,7 +106,13 @@ describe('Aptos custom-flow decrypt errors', () => {
             });
 
             expect(result.isOk).toBe(false);
-            expect(result.errValue).toBe('decrypt: no IDK shares provided');
+            expect(result.errValue).toMatchObject({
+                message: 'ACE.decryptWithIdentityKeyShares: tibe.decrypt failed',
+                cause: {
+                    message: 'decrypt failed',
+                    cause: 'decrypt: no IDK shares provided',
+                },
+            });
             expect(result.extra?._sdk_execution_time_ms).toEqual(expect.any(Number));
         }
         expect(log).not.toHaveBeenCalled();

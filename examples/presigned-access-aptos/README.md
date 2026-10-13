@@ -243,15 +243,10 @@ Failure line (single-line; pretty-printed here):
 
 ```json
 { "probe": "presigned-access", "ok": false, "status": "unhealthy",
-  "severity": "ERROR", "reason": "chain-read-error", "durationMs": 1446,
+  "severity": "ERROR", "durationMs": 1446,
   "message": "Error: AptosCustomFlow.decrypt failed (fetch identity key shares)\n    at …\nCaused by:\nError: ACE discovery: GET … -> HTTP 503\n    at …" }
 ```
 
-`reason` buckets the cause so you can build a failure-rate-by-cause metric off
-the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `worker-transport-error`, `permission-denied`,
-`threshold-not-met`, `decrypt-failed`, `chain-read-error`,
-`committee-drift`, `version-mismatch`, `plaintext-mismatch`,
-`chain-id-mismatch`, `keypair-missing`, `config-error`, `unknown`.
 On failure, `message` includes the full stack of the thrown error followed by
 each available `Error.cause` stack or value. `workerLogs` contains the SDK's
 per-worker diagnostics when workers were contacted; those lines are also
@@ -285,7 +280,7 @@ git clone --depth 1 <repo-url> ace && cd ace && pnpm install && \
 ```
 
 Trigger it on a schedule (Cloud Scheduler → Cloud Run job) and alert on the
-job's failure metric or a log-based metric over the `reason` field.
+job's failure metric. Consumers can classify the raw failure log as needed.
 
 ## Layout
 

@@ -388,14 +388,14 @@ export function derivePublicKey(msk: MasterPrivateKey): Result<MasterPublicKey> 
     return Result.capture({task, recordsExecutionTimeMs: true});
 }
 
-export function encrypt({mpk, id, plaintext}: {mpk: MasterPublicKey, id: Uint8Array, plaintext: Uint8Array}): Result<Ciphertext> {
+export function encrypt({mpk, id, plaintext, detailedErrors}: {mpk: MasterPublicKey, id: Uint8Array, plaintext: Uint8Array, detailedErrors?: boolean}): Result<Ciphertext> {
     const task = (_extra: Record<string, any>) => {
         if (mpk.scheme === SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC) {
             const innerCiph = BfibeBls12381ShortPkOtpHmac.encrypt({
                 mpk: mpk.inner as BfibeBls12381ShortPkOtpHmac.MasterPublicKey,
                 id,
                 plaintext,
-            }).unwrapOrThrow('encrypt failed');
+            }).unwrapOrThrow('encrypt failed', detailedErrors);
             return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTPK_OTP_HMAC, innerCiph);
         }
         if (mpk.scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
@@ -403,7 +403,7 @@ export function encrypt({mpk, id, plaintext}: {mpk: MasterPublicKey, id: Uint8Ar
                 mpk: mpk.inner as BfibeBls12381ShortSigAead.MasterPublicKey,
                 id,
                 plaintext,
-            }).unwrapOrThrow('encrypt failed');
+            }).unwrapOrThrow('encrypt failed', detailedErrors);
             return Ciphertext._create(SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD, innerCiph);
         }
         throw `encrypt: unknown scheme ${mpk.scheme}`;
@@ -495,7 +495,7 @@ export function extract({scheme, mskScalar, id}: {scheme?: number, mskScalar: bi
     });
 }
 
-export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionKeyShare[], ciphertext: Ciphertext}): Result<Uint8Array> {
+export function decrypt({idkShares, ciphertext, detailedErrors}: {idkShares: IdentityDecryptionKeyShare[], ciphertext: Ciphertext, detailedErrors?: boolean}): Result<Uint8Array> {
     const task = (_extra: Record<string, any>) => {
         const scheme = ciphertext.scheme;
         for (const idkShare of idkShares) if (idkShare.scheme !== scheme) throw 'scheme mismatch';
@@ -503,13 +503,13 @@ export function decrypt({idkShares, ciphertext}: {idkShares: IdentityDecryptionK
             return BfibeBls12381ShortPkOtpHmac.decrypt({
                 idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortPkOtpHmac.IdentityDecryptionKeyShare),
                 ciphertext: ciphertext.inner as BfibeBls12381ShortPkOtpHmac.Ciphertext,
-            }).unwrapOrThrow('decrypt failed');
+            }).unwrapOrThrow('decrypt failed', detailedErrors);
         }
         if (scheme === SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD) {
             return BfibeBls12381ShortSigAead.decrypt({
                 idkShares: idkShares.map(idkShare => idkShare.inner as BfibeBls12381ShortSigAead.IdentityDecryptionKeyShare),
                 ciphertext: ciphertext.inner as BfibeBls12381ShortSigAead.Ciphertext,
-            }).unwrapOrThrow('decrypt failed');
+            }).unwrapOrThrow('decrypt failed', detailedErrors);
         }
         throw `decrypt: unknown scheme ${scheme}`;
     };

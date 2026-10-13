@@ -17,15 +17,14 @@
  *   - Exactly one structured JSON line is printed — to stdout on success, to
  *     stderr on failure — so Cloud Run ships it to Cloud Logging as
  *     jsonPayload. The SDK's own `[decrypt-custom]`/`[tVRF]` per-worker lines
- *     also flow to stdout, so a failed run is fully diagnosable from logs.
- *     `reason` buckets the failure so you can break down failure causes with a
- *     log-based metric.
+ *     also flow to stdout and are included in the failure record.
  */
 
 import {
     Account, AccountAddress, Ed25519PrivateKey, PrivateKey, PrivateKeyVariants,
 } from '@aptos-labs/ts-sdk';
 import * as ACE from '@aptos-labs/ace-sdk';
+import { inspect } from 'node:util';
 
 import {
     ReaderProof, SignableRequest,
@@ -33,35 +32,20 @@ import {
     readMonitorRunConfig, signWithAccessPrivateKey,
 } from './common.js';
 
-/**
- * Bucket a failure into a stable `reason` for cause stats. The precise signal
- * (per-worker HTTP status) lives in the SDK's own log lines, not the generic
- * thrown message (`decryptCustomFlow` collapses share shortfalls to
- * "AptosCustomFlow.decrypt failed"), so we scan both.
- */
-function classifyReason(message: string, sdkLogs: string[]): string {
-    const m = message.toLowerCase();
-    // Pre-decrypt asserts carry a specific thrown message.
-    if (m.includes('missing required env')) return 'config-error';
-    if (m.includes('chain id')) return 'chain-id-mismatch';
-    if (m.includes('not in network state')) return 'keypair-missing';
-    if (m.includes('committee size') || m.includes('threshold mismatch')) return 'committee-drift';
-    if (m.includes('contract version')) return 'version-mismatch';
-    if (m.includes('plaintext mismatch')) return 'plaintext-mismatch';
-
-    // Share-collection failures: infer from the per-worker lines.
-    const lines = sdkLogs.join('\n').toLowerCase();
-    if (lines.includes('http 403')) return 'permission-denied';
-    if (/http 5\d\d/.test(lines)) return 'worker-5xx';
-    if (/http 4\d\d/.test(lines)) return 'worker-4xx';
-    if (lines.includes('fetch error') || lines.includes('abort') || lines.includes('timeout')) return 'worker-timeout';
-    if ((m.includes('need ') && m.includes('got ')) || m.includes('identity key shares')) return 'threshold-not-met';
-    if (m.includes('decrypt failed')) return 'decrypt-shares-insufficient';
-
-    // Chain-side reads (network state / version / view).
-    if (m.includes('failed to parse ace network state') || m.includes('view') ||
-        m.includes('econn') || m.includes('fetch') || m.includes('network')) return 'chain-read-error';
-    return 'unknown';
+/** Include every available stack in an Error.cause chain in the failure log. */
+function describeFailure(error: unknown): string {
+    const stacks: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current !== undefined && current !== null && !seen.has(current)) {
+        seen.add(current);
+        const value = current instanceof Error ? current.message
+            : (typeof current === 'string' ? current : inspect(current, { depth: null }));
+        stacks.push(current instanceof Error ? (current.stack ?? `${current.name}: ${value}`) : value);
+        current = current instanceof Error ? current.cause : undefined;
+    }
+    if (current !== undefined && current !== null) stacks.push('[circular Error.cause]');
+    return stacks.join('\nCaused by:\n');
 }
 
 /** Run the probe once. Throws on any failure; returns triage fields on success. */
@@ -92,8 +76,8 @@ async function runProbe(): Promise<Record<string, unknown>> {
     const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment, keypairId: ibeKeypairId, chainId,
         moduleAddr, moduleName: cfg.appModuleName,
-        label, plaintext,
-    })).unwrapOrThrow('IBE encrypt failed');
+        label, plaintext, detailedErrors: true,
+    })).unwrapOrThrow('IBE encrypt failed', true);
 
     const { accessPrivateKey } = await deriveAccessKeypair({
         aceDeployment, vrfKeypairId, chainId, moduleAddr, moduleName: cfg.appModuleName,
@@ -113,7 +97,7 @@ async function runProbe(): Promise<Record<string, unknown>> {
         ciphertext, label,
         encPk: userEpkBytes, encSk: edk.toBytes(), payload,
         aceDeployment, keypairId: ibeKeypairId, chainId,
-        moduleAddr, moduleName: cfg.appModuleName,
+        moduleAddr, moduleName: cfg.appModuleName, detailedErrors: true,
     });
     const decoded = new TextDecoder().decode(decrypted);
     if (decoded !== cfg.expectedPlaintext) {
@@ -134,12 +118,13 @@ async function main(): Promise<void> {
         checkedAt: new Date().toISOString(),
     };
 
-    // Tee the SDK's per-worker log lines into an array so we can classify the
-    // failure precisely, while still letting them print to stdout for Logging.
+    // Include the SDK's per-worker logs in the failure record while also
+    // letting them print to stdout for Logging.
     const sdkLogs: string[] = [];
     const origLog = console.log.bind(console);
     console.log = (...args: unknown[]): void => {
-        sdkLogs.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+        sdkLogs.push(args.map(a => a instanceof Error ? describeFailure(a)
+            : (typeof a === 'string' ? a : inspect(a, { depth: null }))).join(' '));
         origLog(...args);
     };
 
@@ -155,13 +140,13 @@ async function main(): Promise<void> {
         process.exit(0);
     } catch (err) {
         console.log = origLog;
-        const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        const failure = describeFailure(err);
         console.error(JSON.stringify({
             ...base,
             ok: false, status: 'unhealthy', severity: 'ERROR',
-            reason: classifyReason(message, sdkLogs),
             durationMs: Date.now() - startedAt,
-            message,
+            message: failure,
+            workerLogs: sdkLogs.length > 0 ? sdkLogs : undefined,
         }));
         process.exit(1);
     }

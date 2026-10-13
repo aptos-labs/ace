@@ -6,20 +6,22 @@ import { Result } from "../result";
 import * as tibe from "../t-ibe";
 import { AceDeployment, ContractID, FullDecryptionDomain, fetchTibePublicKey } from "../_internal/common";
 
-export async function fetchPk({aceDeployment, keypairId, tibeScheme}: {
+export async function fetchPk({aceDeployment, keypairId, tibeScheme, detailedErrors = false}: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
     tibeScheme?: number,
+    detailedErrors?: boolean,
 }): Promise<Result<tibe.MasterPublicKey>> {
     return fetchTibePublicKey({
         aceDeployment,
         keypairId,
         tibeScheme,
+        detailedErrors,
         context: 'AptosEncrypt.fetchPk',
     });
 }
 
-export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, plaintext, tibeScheme, pk}: {
+export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, moduleName, label, plaintext, tibeScheme, pk, detailedErrors = false}: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
     chainId: number,
@@ -37,6 +39,8 @@ export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, mo
     tibeScheme?: number,
     /** Optional cached public key from `fetchPk`; avoids an Aptos view call per encryption. */
     pk?: tibe.MasterPublicKey,
+    /** Opt in to Error.cause chains on failure; default error values remain unchanged. */
+    detailedErrors?: boolean,
 }): Promise<Result<Uint8Array>> {
     const effectiveTibeScheme = tibeScheme ?? pk?.scheme ?? tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
@@ -47,13 +51,14 @@ export async function encrypt({aceDeployment, keypairId, chainId, moduleAddr, mo
                 aceDeployment,
                 keypairId,
                 tibeScheme: effectiveTibeScheme,
-            })).unwrapOrThrow('AptosEncrypt: fetchPk failed');
+                detailedErrors,
+            })).unwrapOrThrow('AptosEncrypt: fetchPk failed', detailedErrors);
             if (mpk.scheme !== effectiveTibeScheme) {
                 throw `AptosEncrypt: pk.scheme ${mpk.scheme} does not match tibeScheme=${effectiveTibeScheme}`;
             }
 
-            return tibe.encrypt({mpk, id: fdd.toBytes(), plaintext})
-                .unwrapOrThrow('AptosEncrypt: tibe.encrypt failed')
+            return tibe.encrypt({mpk, id: fdd.toBytes(), plaintext, detailedErrors})
+                .unwrapOrThrow('AptosEncrypt: tibe.encrypt failed', detailedErrors)
                 .toBytes();
         },
         recordsExecutionTimeMs: true,

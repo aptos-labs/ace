@@ -73,8 +73,14 @@ export class Result<T> {
         }
     }
 
-    unwrapOrThrow(tothrow: any): T {
-        if (!this.isOk) throw tothrow;
+    /** Opt in to an Error with errValue as cause; the default keeps the original thrown value. */
+    unwrapOrThrow(tothrow: any, withCause = false): T {
+        if (!this.isOk) {
+            if (!withCause) throw tothrow;
+            const error = new Error(String(tothrow), { cause: this.errValue });
+            Object.assign(error, { err: tothrow });
+            throw error;
+        }
         return this.okValue!;
     }
 
@@ -83,4 +89,3 @@ export class Result<T> {
         return this.errValue;
     }
 }
-

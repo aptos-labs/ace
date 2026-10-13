@@ -427,18 +427,20 @@ export class DerivationSession {
                     return;
                 }
                 const hexText = (await resp.text()).trim();
-                const respCt = pke.Ciphertext.fromHex(hexText).okValue ?? null;
+                const parsedResponse = pke.Ciphertext.fromHex(hexText);
+                const respCt = parsedResponse.okValue ?? null;
                 if (respCt === null) {
-                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`);
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`, parsedResponse.errValue);
                     workerErrors.push(`${nodeAddr}: response ciphertext parse failed`);
                     return;
                 }
-                const shareBytes = (await pke.decrypt({
+                const decryptedResponse = await pke.decrypt({
                     decryptionKey: this.responseDecryptionKey,
                     ciphertext: respCt,
-                })).okValue ?? null;
+                });
+                const shareBytes = decryptedResponse.okValue ?? null;
                 if (shareBytes === null) {
-                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response decryption failed`);
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): response decryption failed`, decryptedResponse.errValue);
                     workerErrors.push(`${nodeAddr}: response decryption failed`);
                     return;
                 }
@@ -451,11 +453,11 @@ export class DerivationSession {
                     shares.push(share);
                     console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): OK`);
                 } catch (e) {
-                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share parse failed - ${e}`);
+                    console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): share parse failed`, e);
                     workerErrors.push(`${nodeAddr}: share parse failed`);
                 }
             } catch (e) {
-                console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error - ${e}`);
+                console.log(`  [tVRF] worker ${nodeAddr} (${endpoint}): fetch error`, e);
                 workerErrors.push(`${nodeAddr}: ${e}`);
             }
         }));

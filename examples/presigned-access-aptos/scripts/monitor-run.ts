@@ -76,8 +76,8 @@ async function runProbe(): Promise<Record<string, unknown>> {
     const ciphertext = (await ACE.IBE_Aptos.encrypt({
         aceDeployment, keypairId: ibeKeypairId, chainId,
         moduleAddr, moduleName: cfg.appModuleName,
-        label, plaintext,
-    })).unwrapOrThrow('IBE encrypt failed');
+        label, plaintext, detailedErrors: true,
+    })).unwrapOrThrow('IBE encrypt failed', true);
 
     const { accessPrivateKey } = await deriveAccessKeypair({
         aceDeployment, vrfKeypairId, chainId, moduleAddr, moduleName: cfg.appModuleName,
@@ -97,7 +97,7 @@ async function runProbe(): Promise<Record<string, unknown>> {
         ciphertext, label,
         encPk: userEpkBytes, encSk: edk.toBytes(), payload,
         aceDeployment, keypairId: ibeKeypairId, chainId,
-        moduleAddr, moduleName: cfg.appModuleName,
+        moduleAddr, moduleName: cfg.appModuleName, detailedErrors: true,
     });
     const decoded = new TextDecoder().decode(decrypted);
     if (decoded !== cfg.expectedPlaintext) {

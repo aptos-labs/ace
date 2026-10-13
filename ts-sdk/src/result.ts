@@ -73,9 +73,10 @@ export class Result<T> {
         }
     }
 
-    /** Throw an Error with String(tothrow) as message, tothrow as err, and errValue as cause. */
-    unwrapOrThrow(tothrow: any): T {
+    /** Opt in to an Error with errValue as cause; the default keeps the original thrown value. */
+    unwrapOrThrow(tothrow: any, withCause = false): T {
         if (!this.isOk) {
+            if (!withCause) throw tothrow;
             const error = new Error(String(tothrow), { cause: this.errValue });
             Object.assign(error, { err: tothrow });
             throw error;
@@ -88,4 +89,3 @@ export class Result<T> {
         return this.errValue;
     }
 }
-

@@ -610,11 +610,12 @@ export async function fetchNetworkState(aceDeployment: AceDeployment): Promise<N
     return getChainReader(aceDeployment).networkState();
 }
 
-export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, context}: {
+export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, context, detailedErrors}: {
     aceDeployment: AceDeployment,
     keypairId: AccountAddress,
     tibeScheme?: number,
     context: string,
+    detailedErrors?: boolean,
 }): Promise<Result<tibe.MasterPublicKey>> {
     if (tibeScheme === undefined) tibeScheme = tibe.SCHEME_BFIBE_BLS12381_SHORTSIG_AEAD;
     return Result.captureAsync({
@@ -624,7 +625,7 @@ export async function fetchTibePublicKey({aceDeployment, keypairId, tibeScheme, 
             if (!resultPk) throw `${context}: DKG session has no resultPk (not yet finalized)`;
 
             return tibe.MasterPublicKey.fromGroupElements(tibeScheme, basePoint, resultPk)
-                .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`);
+                .unwrapOrThrow(`${context}: keypairId ${keypairId.toStringLong()} is incompatible with tibeScheme=${tibeScheme}`, detailedErrors);
         },
         recordsExecutionTimeMs: true,
     });
@@ -710,17 +711,19 @@ export async function fetchCurrentSessionPks(reader: ChainReader, networkState: 
     return { basePoint, sharePks };
 }
 
-export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares}: {
+export function decryptWithIdentityKeyShares({ciphertext, identityKeyShares, detailedErrors}: {
     ciphertext: Uint8Array,
     identityKeyShares: tibe.IdentityDecryptionKeyShare[],
+    detailedErrors?: boolean,
 }): Result<Uint8Array> {
     return Result.capture({
         task: (_extra) => {
             return tibe.decrypt({
                 idkShares: identityKeyShares,
                 ciphertext: tibe.Ciphertext.fromBytes(ciphertext)
-                    .unwrapOrThrow('ACE.decryptWithIdentityKeyShares: parse ciphertext'),
-            }).unwrapOrThrow('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed');
+                    .unwrapOrThrow('ACE.decryptWithIdentityKeyShares: parse ciphertext', detailedErrors),
+                detailedErrors,
+            }).unwrapOrThrow('ACE.decryptWithIdentityKeyShares: tibe.decrypt failed', detailedErrors);
         },
         recordsExecutionTimeMs: true,
     });

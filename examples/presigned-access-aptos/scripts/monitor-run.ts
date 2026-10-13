@@ -162,7 +162,8 @@ async function main(): Promise<void> {
     const sdkLogs: string[] = [];
     const origLog = console.log.bind(console);
     console.log = (...args: unknown[]): void => {
-        sdkLogs.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+        sdkLogs.push(args.map(a => a instanceof Error ? describeFailure(a).stack
+            : (typeof a === 'string' ? a : inspect(a, { depth: null }))).join(' '));
         origLog(...args);
     };
 
@@ -185,6 +186,7 @@ async function main(): Promise<void> {
             reason: classifyReason(failure.messages, sdkLogs),
             durationMs: Date.now() - startedAt,
             message: failure.stack,
+            workerLogs: sdkLogs.length > 0 ? sdkLogs : undefined,
         }));
         process.exit(1);
     }

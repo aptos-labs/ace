@@ -253,7 +253,8 @@ the logs: `worker-5xx`, `worker-4xx`, `worker-timeout`, `worker-transport-error`
 `committee-drift`, `version-mismatch`, `plaintext-mismatch`,
 `chain-id-mismatch`, `keypair-missing`, `config-error`, `unknown`.
 On failure, `message` includes the full stack of the thrown error followed by
-each available `Error.cause` stack or value. The SDK's per-worker lines are
+each available `Error.cause` stack or value. `workerLogs` contains the SDK's
+per-worker diagnostics when workers were contacted; those lines are also
 printed separately. The error text can contain endpoint URLs and worker
 responses, so grant Cloud Logging access accordingly.
 

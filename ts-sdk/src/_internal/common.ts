@@ -676,14 +676,15 @@ function verifyIdkShare({share, sdkIdx, sessionPks, id, nodeAddr, endpoint, labe
         console.log(`  [${label}] worker ${nodeAddr} (${endpoint}): evalPoint mismatch (got ${inner.evalPoint}, expected ${expectedEval})`);
         return false;
     }
-    const ok = tibe.verifyShare({
+    const verification = tibe.verifyShare({
         basePoint: sessionPks.basePoint,
         sharePk: sessionPks.sharePks[sdkIdx],
         id,
         share,
-    }).okValue ?? false;
-    if (!ok) {
-        console.log(`  [${label}] worker ${nodeAddr} (${endpoint}): share failed pairing verification`);
+    });
+    if (verification.okValue !== true) {
+        console.log(`  [${label}] worker ${nodeAddr} (${endpoint}): share failed pairing verification`,
+            ...(verification.errValue === undefined ? [] : [verification.errValue]));
         return false;
     }
     return true;
@@ -897,17 +898,17 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
                     const hexText = (await resp.text()).trim();
                     const parsedResponse = pke.Ciphertext.fromHex(hexText);
                     if (!parsedResponse.isOk) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed — ${parsedResponse.errValue}`);
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response ciphertext parse failed`, parsedResponse.errValue);
                         return null;
                     }
                     const decryptedResponse = await pke.decrypt({decryptionKey: callerDecryptionKey, ciphertext: parsedResponse.okValue!});
                     if (!decryptedResponse.isOk) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed — ${decryptedResponse.errValue}`);
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): response decryption failed`, decryptedResponse.errValue);
                         return null;
                     }
                     const parsedShare = tibe.IdentityDecryptionKeyShare.fromBytes(decryptedResponse.okValue!);
                     if (!parsedShare.isOk) {
-                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed — ${parsedShare.errValue}`);
+                        console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): share parse failed`, parsedShare.errValue);
                         return null;
                     }
                     const share = parsedShare.okValue!;
@@ -917,7 +918,7 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
                     console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): OK`);
                     return share;
                 } catch (e) {
-                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error — ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+                    console.log(`  [decrypt-custom] worker ${nodeAddr} (${endpoint}): fetch error`, e);
                     return null;
                 }
             }))).filter((s): s is tibe.IdentityDecryptionKeyShare => s !== null);

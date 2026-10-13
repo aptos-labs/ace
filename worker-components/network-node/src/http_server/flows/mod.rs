@@ -3,6 +3,7 @@
 
 mod basic;
 mod custom;
+mod cvm_root;
 mod reconstruction;
 mod timing;
 mod vrf;
@@ -12,6 +13,7 @@ use super::outcome::{Outcome, Reason};
 
 pub(crate) use basic::handle_basic_flow;
 pub(crate) use custom::handle_custom_flow;
+pub(crate) use cvm_root::handle_cvm_root_vrf;
 pub(crate) use reconstruction::handle_reconstruction;
 pub(crate) use vrf::handle_threshold_vrf;
 

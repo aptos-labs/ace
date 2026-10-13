@@ -54,6 +54,7 @@ pub(crate) fn app_state_with_reconstructor(
         pke_dk_bytes: Arc::new(Vec::new()),
         status: Arc::new(NodeStatus::new(PublicNodeConfig::new("test"), Vec::new())),
         reconstructor_pk: reconstructor_pk.map(Arc::new),
+        cvm_root_policy: None,
         ace_addr,
         chain_id,
     }

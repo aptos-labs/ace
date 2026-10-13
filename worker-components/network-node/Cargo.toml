@@ -47,7 +47,9 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"]
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
+ring = "0.17"
 futures = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+openssl = "0.10"

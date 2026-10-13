@@ -254,6 +254,27 @@ def derive_core(
     per_node_timeout_ms: int = 8000,
     log: Callable[[str], None] | None = None,
 ) -> bytes:
+    request_bytes = _WorkerRequest(ThresholdVrfRequest(payload, auth_proof)).to_bytes()
+    return _derive_core_with_request_bytes(
+        ace_deployment,
+        network_state,
+        payload,
+        request_bytes,
+        response_decryption_key,
+        per_node_timeout_ms,
+        log,
+    )
+
+
+def _derive_core_with_request_bytes(
+    ace_deployment: AceDeployment,
+    network_state,
+    payload: ThresholdVrfRequestPayload,
+    request_bytes: bytes,
+    response_decryption_key: pke.DecryptionKey,
+    per_node_timeout_ms: int = 8000,
+    log: Callable[[str], None] | None = None,
+) -> bytes:
     reader = get_chain_reader(ace_deployment)
     log_fn = log or (lambda _msg: None)
     session_pks = fetch_current_session_pks(ace_deployment, network_state, payload.keypair_id)
@@ -267,7 +288,6 @@ def derive_core(
             "ACE.VRF_Aptos.derive_core: threshold VRF requires a G2 keypair, "
             f"got basePoint scheme {session_pks.base_point.scheme}"
         )
-    request_bytes = _WorkerRequest(ThresholdVrfRequest(payload, auth_proof)).to_bytes()
     vrf_input = payload.to_vrf_input_bytes()
     shares: list[ThresholdVrfShare] = []
     errors: list[str] = []

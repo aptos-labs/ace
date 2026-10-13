@@ -16,7 +16,7 @@ from ace_sdk import (
     vrf_aptos,
     vss,
 )
-from ace_sdk import admin_recovery, decryption, ibe_aptos
+from ace_sdk import admin_recovery, cvm_root, decryption, ibe_aptos
 from ace_sdk._internal.deployment import AceDeployment
 from ace_sdk._internal.discovery import DiscoveryViewV0
 from ace_sdk._internal.common import ContractID, FullDecryptionDomain
@@ -29,6 +29,7 @@ __all__ = [
     "FullDecryptionDomain",
     "Result",
     "admin_recovery",
+    "cvm_root",
     "decryption",
     "dkg",
     "dkr",

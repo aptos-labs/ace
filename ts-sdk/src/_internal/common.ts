@@ -522,6 +522,7 @@ export class DecryptionBasicFlowRequest {
 //   1 = DecryptionCustomFlow
 //   2 = ThresholdVrf
 //   3 = Reconstruction  (disaster-recovery; see ts-sdk/src/admin-recovery)
+//   4 = CvmRootVrf     (Google Confidential Space attestation)
 
 interface SerializableWorkerRequest {
     serialize(serializer: Serializer): void;
@@ -532,6 +533,7 @@ export class WorkerRequest {
     static readonly SCHEME_DECRYPTION_CUSTOM_FLOW = 1;
     static readonly SCHEME_THRESHOLD_VRF = 2;
     static readonly SCHEME_RECONSTRUCTION = 3;
+    static readonly SCHEME_CVM_ROOT_VRF = 4;
 
     scheme: number;
     /** The scheme-specific request body. `scheme` discriminates which class
@@ -586,6 +588,13 @@ export class WorkerRequest {
     static newReconstruction(request: SerializableWorkerRequest): WorkerRequest {
         return new WorkerRequest(
             WorkerRequest.SCHEME_RECONSTRUCTION,
+            request,
+        );
+    }
+
+    static newCvmRootVrf(request: SerializableWorkerRequest): WorkerRequest {
+        return new WorkerRequest(
+            WorkerRequest.SCHEME_CVM_ROOT_VRF,
             request,
         );
     }

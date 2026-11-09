@@ -19,7 +19,7 @@ module ace::network {
     const MIN_RESHARING_INTERVAL_SECS: u64 = 30;
     const MAX_DESCRIPTION_BYTES: u64 = 1024;
 
-    const E_ONLY_ADMIN_CAN_DO_THIS: u64 = 1;
+    const E_ONLY_GOVERNANCE_ACCOUNT: u64 = 1;
     const E_INVALID_NODE: u64 = 2;
     const E_EPOCH_CHANGE_ALREADY_IN_PROGRESS: u64 = 3;
     const E_ONLY_ADMIN_OR_CURRENT_NODE_CAN_PROPOSE: u64 = 6;
@@ -280,10 +280,10 @@ module ace::network {
     }
 
     entry fun start_initial_epoch(ace: &signer, nodes: vector<address>, threshold: u64, resharing_interval_secs: u64) {
-        assert!(@ace == ace.address_of(), error::invalid_argument(E_ONLY_ADMIN_CAN_DO_THIS));
+        assert!(@ace == ace.address_of(), error::invalid_argument(E_ONLY_GOVERNANCE_ACCOUNT));
+        assert!(aptos_framework::transaction_context::is_multisig_payload_txn(), error::permission_denied(E_ONLY_GOVERNANCE_ACCOUNT));
         let n = nodes.length();
-        let t = threshold;
-        assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
+        validate_committee(&nodes, threshold);
         assert!(resharing_interval_secs >= MIN_RESHARING_INTERVAL_SECS, error::invalid_argument(E_INVALID_RESHARING_INTERVAL));
         nodes.for_each(|node| {
             assert!(worker_config::has_pke_enc_key(node), error::invalid_argument(E_INVALID_NODE));
@@ -336,49 +336,7 @@ module ace::network {
                 state.epoch_change_info = option::none();
             }
         } else {
-            // Touch all voting sessions.
-            state.proposals.for_each_ref(|proposal: &Option<ProposalState>|{
-                if (proposal.is_some()) {
-                    let session = proposal.borrow().voting_session;
-                    voting::touch(session);
-                }
-            });
-
-            // Try find an approved proposal.
-            let approved_proposal_found = false;
-            let approved_proposal_idx = 0;
-            let i = 0;
-            while (i < state.proposals.length()) {
-                let proposal = &state.proposals[i];
-                if (proposal.is_some() && voting::completed(proposal.borrow().voting_session)) {
-                    approved_proposal_found = true;
-                    approved_proposal_idx = i;
-                    break;
-                };
-                i += 1;
-            };
-            if (approved_proposal_found) {
-                let proposed_epoch_config = state.proposals[approved_proposal_idx].borrow().proposal;                 
-                // Create a new epoch change session.
-                let signer_store = &SignerStore[@ace];
-                let service_account = signer_store.extend_ref.generate_signer_for_extending();
-                let session = epoch_change::new_session(
-                    &service_account,
-                    state.cur_nodes,
-                    state.cur_threshold,
-                    proposed_epoch_config.nodes,
-                    proposed_epoch_config.threshold,
-                    proposed_epoch_config.epoch_duration_micros,
-                    proposed_epoch_config.secrets_to_retain,
-                    proposed_epoch_config.new_secrets,
-                );
-                state.epoch_change_info = option::some(EpochChangeInfo {
-                    triggering_proposal_idx: option::some(approved_proposal_idx),
-                    session_addr: session,
-                });
-
-
-            } else if (now_micros - state.epoch_start_time_micros >= state.epoch_duration_micros) {
+            if (now_micros - state.epoch_start_time_micros >= state.epoch_duration_micros) {
                 let signer_store = &SignerStore[@ace];
                 let service_account = signer_store.extend_ref.generate_signer_for_extending();
                 let epoch_change_session = epoch_change::new_session(
@@ -400,30 +358,33 @@ module ace::network {
     }
 
     #[randomness]
-    entry fun new_proposal(proposer: &signer, proposal_bcs: vector<u8>) {
+    /// Execute an epoch configuration approved by the native multisig at @ace.
+    /// Fresh deployment must bind @ace to that multisig's governance signer.
+    entry fun execute_epoch_config(governance: &signer, proposal_bcs: vector<u8>) {
+        assert!(@ace == governance.address_of(), error::permission_denied(E_ONLY_GOVERNANCE_ACCOUNT));
+        assert!(aptos_framework::transaction_context::is_multisig_payload_txn(), error::permission_denied(E_ONLY_GOVERNANCE_ACCOUNT));
         let state = &mut State[@ace];
-        let proposer_addr = proposer.address_of();
-        let (proposed_by_node, node_idx) = state.cur_nodes.find(|node| *node == proposer_addr);
-        assert!(@ace == proposer_addr || proposed_by_node, error::permission_denied(E_ONLY_ADMIN_OR_CURRENT_NODE_CAN_PROPOSE));
         assert!(state.epoch_change_info.is_none(), error::invalid_state(E_EPOCH_CHANGE_ALREADY_IN_PROGRESS));
         let proposal = proposal_from_bcs(proposal_bcs);
         validate_proposal(state, &proposal);
 
         let signer_store = &SignerStore[@ace];
         let service_account = signer_store.extend_ref.generate_signer_for_extending();
-        let voting_session = voting::new_session(&service_account, state.cur_nodes, state.cur_threshold);
-        let proposal_state = ProposalState {
-            proposal,
-            voting_session,
-        };
-        let proposer_idx = if (@ace == proposer_addr) { state.cur_nodes.length() } else { node_idx };
-        assert!(state.proposals[proposer_idx].is_none(), error::invalid_state(E_YOU_ALREADY_PROPOSED_IN_THIS_EPOCH));
-        state.proposals[proposer_idx] = option::some(proposal_state);
-
-        // Self-approve.
-        if (proposed_by_node) {
-            voting::vote(proposer, voting_session);
-        }
+        let session = epoch_change::new_session(
+            &service_account,
+            state.cur_nodes,
+            state.cur_threshold,
+            proposal.nodes,
+            proposal.threshold,
+            proposal.epoch_duration_micros,
+            proposal.secrets_to_retain,
+            proposal.new_secrets,
+        );
+        // Native multisig tracks the proposal; no ACE voting slot is created.
+        state.epoch_change_info = option::some(EpochChangeInfo {
+            triggering_proposal_idx: option::none(),
+            session_addr: session,
+        });
     }
 
     fun proposal_from_bcs(proposal_bcs: vector<u8>): ProposedEpochConfig {
@@ -447,14 +408,7 @@ module ace::network {
     }
 
     fun validate_proposal(state: &State, proposal: &ProposedEpochConfig) {
-        // Validate target epoch — reject stale proposals.
-        assert!(proposal.target_epoch == state.epoch, error::invalid_argument(E_PROPOSAL_IS_NOT_CURRENT));
-        assert!(string::length(&proposal.description) <= MAX_DESCRIPTION_BYTES, error::invalid_argument(E_DESCRIPTION_TOO_LONG));
-
-        // Validate nodes and threshold.
-        let n = proposal.nodes.length();
-        let t = proposal.threshold;
-        assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
+        validate_proposal_header(state.epoch, proposal);
         proposal.nodes.for_each_ref(|node| {
             assert!(worker_config::has_pke_enc_key(*node), error::invalid_argument(E_INVALID_NODE));
         });
@@ -471,5 +425,112 @@ module ace::network {
         proposal.secrets_to_retain.for_each_ref(|secret_addr| {
             assert!(state.secrets.contains(secret_addr), error::invalid_argument(E_CAN_ONLY_RETAIN_ACTIVE_SECRET));
         });
+    }
+
+    fun validate_proposal_header(current_epoch: u64, proposal: &ProposedEpochConfig) {
+        // Validate target epoch before node/resource checks — reject stale proposals.
+        assert!(proposal.target_epoch == current_epoch, error::invalid_argument(E_PROPOSAL_IS_NOT_CURRENT));
+        assert!(string::length(&proposal.description) <= MAX_DESCRIPTION_BYTES, error::invalid_argument(E_DESCRIPTION_TOO_LONG));
+        validate_committee(&proposal.nodes, proposal.threshold);
+    }
+
+    fun validate_committee(nodes: &vector<address>, threshold: u64) {
+        let n = nodes.length();
+        let t = threshold;
+        assert!(t >= 2 && 2*t > n && t <= n, error::invalid_argument(E_INVALID_SECRET_SHARING_PARAMETERS));
+        let seen: vector<address> = vector[];
+        nodes.for_each_ref(|node| {
+            assert!(!seen.contains(node), error::invalid_argument(E_INVALID_NODE));
+            seen.push_back(*node);
+        });
+    }
+
+    #[test]
+    fun test_committee_accepts_unique_nodes() {
+        validate_committee(&vector[@0xc, @0xa, @0xb], 2);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 65538, location = Self)]
+    fun test_committee_rejects_duplicate_nodes() {
+        validate_committee(&vector[@0xa, @0xa], 2);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 65538, location = Self)]
+    fun test_proposal_header_rejects_nonadjacent_duplicate_nodes() {
+        let proposal = proposal_header_fixture();
+        proposal.nodes = vector[@0xa, @0xb, @0xa];
+        validate_proposal_header(7, &proposal);
+    }
+
+    #[test_only]
+    fun proposal_header_fixture(): ProposedEpochConfig {
+        ProposedEpochConfig {
+            nodes: vector[@0xa, @0xb],
+            threshold: 2,
+            epoch_duration_micros: MIN_RESHARING_INTERVAL_SECS * 1_000_000,
+            secrets_to_retain: vector[],
+            new_secrets: vector[],
+            description: string::utf8(b"configuration test"),
+            target_epoch: 7,
+        }
+    }
+
+    // These test config-header validation, not native multisig approval thresholds.
+    #[test]
+    fun test_proposal_header_accepts_current_epoch_and_threshold() {
+        let proposal = proposal_header_fixture();
+        validate_proposal_header(7, &proposal);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 65554, location = Self)]
+    fun test_proposal_header_rejects_stale_epoch() {
+        let proposal = proposal_header_fixture();
+        validate_proposal_header(8, &proposal);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 65550, location = Self)]
+    fun test_proposal_header_rejects_invalid_threshold() {
+        let proposal = proposal_header_fixture();
+        proposal.threshold = 1;
+        validate_proposal_header(7, &proposal);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 65556, location = Self)]
+    fun test_proposal_header_rejects_long_description() {
+        let proposal = proposal_header_fixture();
+        proposal.description = string::utf8(range(0, MAX_DESCRIPTION_BYTES + 1).map(|_| 97u8));
+        validate_proposal_header(7, &proposal);
+    }
+
+    // No State, SignerStore or worker configuration is initialized in these tests.
+    // Authorization must reject before payload decoding or resource access.
+    // The pinned framework reports a non-multisig context in ordinary unit tests.
+    #[test(governance = @ace)]
+    #[expected_failure(abort_code = 327681, location = Self)]
+    fun test_direct_governance_signer_cannot_execute(governance: signer) {
+        execute_epoch_config(&governance, vector[]);
+    }
+
+    #[test(other = @0xbad)]
+    #[expected_failure(abort_code = 327681, location = Self)]
+    fun test_other_signer_cannot_execute(other: signer) {
+        execute_epoch_config(&other, vector[]);
+    }
+
+    #[test(governance = @ace)]
+    #[expected_failure(abort_code = 327681, location = Self)]
+    fun test_direct_governance_signer_cannot_bootstrap(governance: signer) {
+        start_initial_epoch(&governance, vector[], 0, MIN_RESHARING_INTERVAL_SECS);
+    }
+
+    #[test(other = @0xbad)]
+    #[expected_failure(abort_code = 65537, location = Self)]
+    fun test_other_signer_cannot_bootstrap(other: signer) {
+        start_initial_epoch(&other, vector[], 0, MIN_RESHARING_INTERVAL_SECS);
     }
 }

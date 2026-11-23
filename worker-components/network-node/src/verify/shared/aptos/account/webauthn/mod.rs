@@ -40,7 +40,7 @@ fn parse_signature(assertion: &WebAuthnAssertion) -> Result<P256Signature> {
             e
         )
     })?;
-    if sig.normalize_s().is_some() {
+    if sig.normalize_s() != sig {
         return Err(anyhow!(
             "verify_webauthn_signature: Secp256r1 signature has high s (malleable)"
         ));

@@ -16,7 +16,7 @@ vss-common = { path = "../vss-common" }
 anyhow = "1"
 bcs = "0.1"
 postgres = "0.19"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 postgres-native-tls = "0.5"
 native-tls = "0.2"

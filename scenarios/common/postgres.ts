@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
 export type TempPostgres = {
@@ -100,15 +100,18 @@ function commandOutput(output: unknown): string {
 
 export function findPostgresBinDir(): string {
     const pathDirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+    const linuxPgDirs = existsSync('/usr/lib/postgresql')
+        ? readdirSync('/usr/lib/postgresql')
+              .sort((a, b) => Number(b) - Number(a) || b.localeCompare(a))
+              .map((version) => path.join('/usr/lib/postgresql', version, 'bin'))
+        : [];
     const candidates = [
         ...pathDirs,
         '/opt/homebrew/opt/postgresql@16/bin',
         '/usr/local/opt/postgresql@16/bin',
         '/opt/homebrew/opt/postgresql/bin',
         '/usr/local/opt/postgresql/bin',
-        '/usr/lib/postgresql/16/bin',
-        '/usr/lib/postgresql/15/bin',
-        '/usr/lib/postgresql/14/bin',
+        ...linuxPgDirs,
     ];
     for (const dir of candidates) {
         if (

@@ -3,7 +3,7 @@
 # Safe to re-run — skips tools that are already at the pinned version.
 set -euo pipefail
 
-APTOS_CLI_VERSION="9.0.0"
+APTOS_CLI_VERSION="9.6.0"
 
 # ---------------------------------------------------------------------------
 # Aptos CLI
@@ -165,10 +165,12 @@ find_postgres_bin() {
         "/usr/local/opt/postgresql@16/bin"
         "/opt/homebrew/opt/postgresql/bin"
         "/usr/local/opt/postgresql/bin"
-        "/usr/lib/postgresql/16/bin"
-        "/usr/lib/postgresql/15/bin"
-        "/usr/lib/postgresql/14/bin"
     )
+    if [[ -d /usr/lib/postgresql ]]; then
+        while IFS= read -r dir; do
+            candidates+=("$dir")
+        done < <(find /usr/lib/postgresql -maxdepth 2 -mindepth 2 -type d -name bin 2>/dev/null | sort -Vr)
+    fi
     for dir in "${candidates[@]}"; do
         if [[ -x "${dir}/initdb" && -x "${dir}/pg_ctl" && -x "${dir}/createdb" && -x "${dir}/psql" ]]; then
             echo "${dir}"

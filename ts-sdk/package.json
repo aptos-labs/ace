@@ -50,9 +50,10 @@
   "devDependencies": {
     "@aptos-labs/ts-sdk": "^5.2.0",
     "@types/node": "^20.0.0",
-    "postcss": "8.5.16",
+    "postcss": "8.5.33",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.6"
+    "vite": "^7.3.8",
+    "vitest": "^4.1.12"
   }
 }

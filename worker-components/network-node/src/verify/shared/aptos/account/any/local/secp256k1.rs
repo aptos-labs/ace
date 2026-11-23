@@ -31,7 +31,7 @@ fn parse_signature(sig_bytes: &[u8]) -> Result<K256Signature> {
             e
         )
     })?;
-    if sig.normalize_s().is_some() {
+    if sig.normalize_s() != sig {
         return Err(anyhow!(
             "verify_any_signature_only: Secp256k1 signature has high s (malleable)"
         ));

@@ -23,12 +23,12 @@
     "@inquirer/core": "^11.1.9",
     "@inquirer/prompts": "^7.0.0",
     "commander": "^12.1.0",
-    "smol-toml": "^1.6.1",
-    "undici": "6"
+    "smol-toml": "^1.9.0",
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "postcss": "8.5.16",
+    "postcss": "8.5.33",
     "tsup": "^8.5.0",
     "tsx": "^4.0.0",
     "typescript": "^5.8.3"

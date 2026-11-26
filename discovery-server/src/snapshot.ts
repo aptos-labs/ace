@@ -88,13 +88,14 @@ export class SnapshotCache {
         private readonly cfg: SnapshotConfig,
         private readonly nowMs: () => number = Date.now,
         fetcher?: () => Promise<string>,
+        viewVersion: "v0" | "v1" = "v0",
     ) {
         this.aptos = new Aptos(new AptosConfig({
             network: Network.CUSTOM,
             fullnode: cfg.fullnode,
             clientConfig: cfg.apiKey ? { HEADERS: { Authorization: `Bearer ${cfg.apiKey}` } } : undefined,
         }));
-        this.fn = `${cfg.contractAddr}::network::discovery_view_v0_bcs`;
+        this.fn = `${cfg.contractAddr}::network::discovery_view_${viewVersion}_bcs`;
         this.fetchTimeoutMs = cfg.fetchTimeoutMs ?? Math.max(5_000, 3 * cfg.sampleIntervalMs);
         this.maxStaleMs = cfg.maxStaleMs ?? Math.max(60_000, 6 * cfg.lagMs);
         this.rawFetch = fetcher ?? (() => this.viewUpstream());
@@ -261,7 +262,7 @@ export class SnapshotCache {
             payload: { function: this.fn, typeArguments: [], functionArguments: [] },
         });
         if (typeof hex !== "string") {
-            throw new Error(`discovery_view_v0_bcs returned a non-string: ${typeof hex}`);
+            throw new Error(`${this.fn} returned a non-string: ${typeof hex}`);
         }
         return hex;
     }

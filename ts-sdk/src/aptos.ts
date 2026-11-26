@@ -33,7 +33,7 @@ export { AceDeployment, ContractID };
 export { knownDeployments };
 
 // Aggregated discovery snapshot (decoder + human-readable projection) — used by the discovery service.
-export { DiscoveryViewV0 } from "./_internal/discovery";
+export { DiscoveryViewV0, DiscoveryViewV1 } from "./_internal/discovery";
 export type { DiscoveryReadableV0, SessionPks } from "./_internal/discovery";
 
 // Aptos IBE and VRF APIs

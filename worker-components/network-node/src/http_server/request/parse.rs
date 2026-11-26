@@ -24,10 +24,10 @@ pub(crate) fn decrypt_and_parse_request(
         .map_err(|e| bad_request(format!("bcs decode WorkerRequest failed: {}", e)))
 }
 
-pub(crate) async fn fetch_snapshot(state: &AppState) -> Result<Arc<Snapshot>, Outcome> {
+pub(crate) async fn fetch_snapshot(state: &AppState, keypair_id: &str, epoch: u64) -> Result<Arc<Snapshot>, Outcome> {
     state
         .provider
-        .snapshot()
+        .snapshot_for(keypair_id, epoch)
         .await
         .map_err(|e| Outcome::Rejected {
             reason: Reason::ServiceUnavailable,

@@ -6,8 +6,8 @@ import { AccountAddress, Ed25519PublicKey, Ed25519Signature, Serializer } from "
 import { bytesToHex } from "@noble/hashes/utils";
 import * as group from "../src/group";
 import * as pke from "../src/pke";
-import { DiscoveryViewV0, DiscoveryChainReader } from "../src/_internal/discovery";
-import { AceDeployment, ContractID } from "../src/_internal/common";
+import { DiscoveryViewV0, DiscoveryViewV1, DiscoveryChainReader } from "../src/_internal/discovery";
+import { AceDeployment, ContractID, DecryptionRequestPayload, ProofOfPermission, buildPerNodeRequestCore } from "../src/_internal/common";
 import { fetchIdentityKeySharesCustomFlow } from "../src/ibe-for-aptos/decrypt-custom-flow";
 import { BasicDecryptionSession } from "../src/ibe-for-aptos/basic-decryption-session";
 import { DerivationSession } from "../src/vrf-for-aptos";
@@ -91,6 +91,29 @@ const blob = () => buildBlob(fixtureNodes, fixtureSessions);
 
 const long = (a: string) => AccountAddress.fromString(a).toStringLong();
 
+function buildV1Blob(
+    serving: Uint8Array, grace: Uint8Array | null, deadlineMicros: bigint | null,
+    servingReady: boolean[] = [true], graceReady: boolean[] = [true],
+): Uint8Array {
+    const s = new Serializer();
+    s.serializeFixedBytes(serving);
+    s.serializeU64(2n); // serving feature bits
+    s.serializeU32AsUleb128(servingReady.length);
+    for (const ready of servingReady) s.serializeBool(ready);
+    s.serializeU8(grace === null ? 0 : 1);
+    if (grace !== null) s.serializeFixedBytes(grace);
+    s.serializeU8(grace === null ? 0 : 1);
+    if (grace !== null) s.serializeU64(1n);
+    s.serializeU8(grace === null ? 0 : 1);
+    if (grace !== null) {
+        s.serializeU32AsUleb128(graceReady.length);
+        for (const ready of graceReady) s.serializeBool(ready);
+    }
+    s.serializeU8(deadlineMicros === null ? 0 : 1);
+    if (deadlineMicros !== null) s.serializeU64(deadlineMicros);
+    return s.toUint8Array();
+}
+
 describe("DiscoveryViewV0.fromBytes", () => {
     it("round-trips the typed Move BCS layout", () => {
         const view = DiscoveryViewV0.fromBytes(blob());
@@ -127,7 +150,9 @@ describe("DiscoveryChainReader", () => {
     function stubFetch(mode: "hex" | "json" = "hex") {
         const hex = "0x" + bytesToHex(blob());
         const body = mode === "hex" ? hex : JSON.stringify({ discoveryViewV0Bcs: hex });
-        const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => body }));
+        const fetchMock = vi.fn(async (url: string) => url.endsWith("/bcs/v1")
+            ? { ok: false, status: 404, text: async () => "not found" }
+            : { ok: true, status: 200, text: async () => body });
         vi.stubGlobal("fetch", fetchMock);
         return fetchMock;
     }
@@ -145,10 +170,10 @@ describe("DiscoveryChainReader", () => {
         expect(s.resultPk!.equals(EL)).toBe(true);
         expect(s.sharePks).toHaveLength(2);
 
-        // Snapshot fetched exactly once for the whole operation, from the base URL + /bcs
-        // (trailing slash collapsed).
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-        expect(fetchMock.mock.calls[0][0]).toBe("https://discovery.example/bcs");
+        // V0 deployments answer /bcs after rejecting the optional V1 route.
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[0][0]).toBe("https://discovery.example/bcs/v1");
+        expect(fetchMock.mock.calls[1][0]).toBe("https://discovery.example/bcs");
     });
 
     it("also accepts a JSON-enveloped body", async () => {
@@ -168,6 +193,80 @@ describe("DiscoveryChainReader", () => {
         const reader = new DiscoveryChainReader("https://discovery.example/");
         const unknown = "0x0000000000000000000000000000000000000000000000000000000000000099";
         await expect(reader.session(unknown, true)).rejects.toThrow(/not in snapshot/);
+    });
+});
+
+describe("DiscoveryViewV1 grace routing", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    const serving = buildBlob(
+        [{ addr: NODE_B, endpoint: "https://node-b.example/", encKey: ENC_KEY }],
+        [{ addr: NEXT_SESSION, basePoint: EL, resultPk: EL, sharePks: [EL] }],
+        { epoch: 6, curNodes: [NODE_B], threshold: 1, secrets: [{ keypairId: KEYPAIR, currentSession: NEXT_SESSION }] },
+    );
+    const grace = buildBlob(
+        [{ addr: NODE_A, endpoint: "https://node-a.example/", encKey: ENC_KEY }],
+        [{ addr: SESSION, basePoint: EL, resultPk: EL, sharePks: [EL] }],
+        { epoch: 5, curNodes: [NODE_A], threshold: 1, secrets: [{ keypairId: KEYPAIR, currentSession: SESSION }] },
+    );
+
+    it("keeps E5's committee and session available while E6 serves", async () => {
+        const deadline = BigInt(Date.now() + 60_000) * 1000n;
+        const bytes = buildV1Blob(serving, grace, deadline);
+        const decoded = DiscoveryViewV1.fromBytes(bytes);
+        expect(decoded.serving.state.epoch).toBe(6);
+        expect(decoded.networkStateForEpoch(5).curNodes[0].toStringLong()).toBe(long(NODE_A));
+        expect(decoded.grace?.state.secrets[0].currentSession.toStringLong()).toBe(long(SESSION));
+
+        const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => "0x" + bytesToHex(bytes) }));
+        vi.stubGlobal("fetch", fetchMock);
+        const reader = new DiscoveryChainReader("https://discovery.example");
+        expect((await reader.networkState()).epoch).toBe(6);
+        expect((await reader.networkStateForEpoch(5)).epoch).toBe(5);
+        expect(await reader.readyNodeIndices(5)).toEqual([0]);
+        expect(await reader.workerEndpoint(NODE_A)).toBe("https://node-a.example/");
+        expect((await reader.session(SESSION, false)).sharePks).toHaveLength(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not route to E5 after its grace deadline", () => {
+        const expired = buildV1Blob(serving, grace, BigInt(Date.now() - 1_000) * 1000n);
+        expect(() => DiscoveryViewV1.fromBytes(expired).networkStateForEpoch(5)).toThrow(/neither serving nor/);
+    });
+
+    it("preserves original indices when skipping an unready serving node", async () => {
+        const twoNodeServing = buildBlob(
+            [fixtureNodes[0], { addr: NODE_B, endpoint: "https://node-b.example/", encKey: ENC_KEY }],
+            [{ addr: NEXT_SESSION, basePoint: EL, resultPk: EL, sharePks: [EL, EL] }],
+            { epoch: 6, curNodes: [NODE_A, NODE_B], threshold: 1,
+                secrets: [{ keypairId: KEYPAIR, currentSession: NEXT_SESSION }] },
+        );
+        const bytes = buildV1Blob(twoNodeServing, null, null, [false, true]);
+        const view = DiscoveryViewV1.fromBytes(bytes);
+        expect(view.readyNodeIndices(6)).toEqual([1]);
+        vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "0x" + bytesToHex(bytes) })));
+        const reader = new DiscoveryChainReader("https://discovery.example");
+        const request = new DecryptionRequestPayload({
+            keypairId: AccountAddress.fromString(KEYPAIR), epoch: 6,
+            contractId: ContractID.newAptos({ chainId: 1, moduleAddr: AccountAddress.fromString("0x1"), moduleName: "test" }),
+            domain: new Uint8Array([1]), ephemeralEncKey: ENC_KEY,
+        });
+        const proof = ProofOfPermission.createAptos({
+            userAddr: AccountAddress.fromString("0x2"),
+            publicKey: new Ed25519PublicKey(new Uint8Array(32)),
+            signature: new Ed25519Signature(new Uint8Array(64)), fullMessage: "test",
+        });
+        const ready = await buildPerNodeRequestCore({
+            reader, networkState: view.serving.state, request, proof, primitive: 1,
+            targetEndpoint: "https://node-b.example/",
+        });
+        expect(ready.isOk).toBe(true);
+        expect(ready.okValue?.sdkIdx).toBe(1);
+        const unready = await buildPerNodeRequestCore({
+            reader, networkState: view.serving.state, request, proof, primitive: 1,
+            targetEndpoint: "https://node-a.example/",
+        });
+        expect(unready.isOk).toBe(false);
     });
 });
 
@@ -204,6 +303,9 @@ describe("SDK discovery reads across a simulated epoch change", () => {
         let discoveryReads = 0;
         let workerReads = 0;
         vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+            if (url === "https://discovery.example/bcs/v1") {
+                return { ok: false, status: 404, text: async () => "not found" };
+            }
             if (url === "https://discovery.example/bcs") {
                 const blob = discoveryReads++ === 0 ? oldBlob : newBlob;
                 return { ok: true, status: 200, text: async () => "0x" + bytesToHex(blob) };

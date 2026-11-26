@@ -29,6 +29,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "hpke",
+ "network-node",
  "num-bigint",
  "rand 0.8.6",
  "reqwest",
@@ -38,6 +39,7 @@ dependencies = [
  "sha3",
  "thiserror 1.0.69",
  "tokio",
+ "vss-common",
 ]
 
 [[package]]
@@ -911,6 +913,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "epoch-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bcs",
+ "clap",
+ "epoch-change-cur",
+ "epoch-change-nxt",
+ "hex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "vss-common",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1681,7 @@ dependencies = [
  "ed25519-dalek",
  "epoch-change-cur",
  "epoch-change-nxt",
+ "epoch-worker",
  "futures",
  "hex",
  "k256",

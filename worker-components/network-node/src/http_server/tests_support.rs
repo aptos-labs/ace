@@ -48,6 +48,7 @@ pub(crate) fn app_state_with_reconstructor(
     AppState {
         provider: Arc::new(SecretsProvider::Local(LocalSecrets {
             shares: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            visible_epochs: Arc::new(tokio::sync::RwLock::new(None)),
         })),
         chain_rpc: Arc::new(dummy_chain_rpc()),
         concurrency: Arc::new(Semaphore::new(1)),

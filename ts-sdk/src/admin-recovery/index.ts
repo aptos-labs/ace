@@ -27,6 +27,7 @@ import {
     WorkerRequest,
     getChainReader,
     fetchTibePublicKey,
+    readyNodeIndices,
 } from "../_internal/common";
 
 /** Fields the reconstructor signs over. BCS layout must match the Rust
@@ -126,6 +127,7 @@ export async function reconstructSecret({
     const reader = getChainReader(aceDeployment);
     const networkState = await reader.networkState();
     const { epoch, curThreshold, curNodes } = networkState;
+    const readyIndices = await readyNodeIndices(reader, networkState);
 
     const aceAddr = aceDeployment.contractAddr;
     const eph = await pke.keygen();
@@ -141,11 +143,12 @@ export async function reconstructSecret({
         new ReconstructionRequest(payload, signature),
     ).toBytes();
 
-    log(`Requesting shares for keypair ${keypairId.toStringLong()} at epoch ${epoch} from ${curNodes.length} nodes (threshold ${curThreshold})…`);
+    log(`Requesting shares for keypair ${keypairId.toStringLong()} at epoch ${epoch} from ${readyIndices.length} ready nodes (threshold ${curThreshold})…`);
 
     const points = (
         await Promise.all(
-            curNodes.map(async (nodeAddr) => {
+            readyIndices.map(async (sdkIdx) => {
+                const nodeAddr = curNodes[sdkIdx];
                 const addrStr = nodeAddr.toStringLong();
                 try {
                     const [endpoint, nodeEncKey] = await Promise.all([

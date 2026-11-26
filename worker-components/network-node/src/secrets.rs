@@ -96,19 +96,52 @@ impl Snapshot {
 #[derive(Clone)]
 pub struct LocalSecrets {
     pub shares: Arc<RwLock<HashMap<(String, u64), ShareEntry>>>,
+    /// V6 stages reconstructed INIT shares before they can be served. A value
+    /// of None means SERVING/HANDOFF; Some(deadline) means GRACE. Absent epochs
+    /// are hidden. Legacy V5 deployments leave the inner value unset.
+    pub visible_epochs: Arc<RwLock<Option<HashMap<u64, Option<u64>>>>>,
 }
 
 impl LocalSecrets {
+    async fn visible_epochs(&self) -> Option<HashMap<u64, Option<u64>>> {
+        self.visible_epochs.read().await.clone()
+    }
+
+    fn epoch_is_visible(visibility: &Option<HashMap<u64, Option<u64>>>, epoch: u64, now_micros: u64) -> bool {
+        match visibility {
+            None => true,
+            Some(epochs) => match epochs.get(&epoch) {
+                Some(None) => true,
+                Some(Some(deadline)) => now_micros < *deadline,
+                None => false,
+            },
+        }
+    }
+
     pub async fn snapshot(&self) -> Snapshot {
+        let visibility = self.visible_epochs().await;
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
         Snapshot {
-            entries: Arc::new(self.shares.read().await.clone()),
+            entries: Arc::new(self.shares.read().await.iter()
+                .filter(|((_, epoch), _)| Self::epoch_is_visible(&visibility, *epoch, now_micros))
+                .map(|(key, share)| (key.clone(), share.clone()))
+                .collect()),
         }
     }
 
     pub async fn snapshot_wire(&self) -> SecretsSnapshotWire {
+        let visibility = self.visible_epochs().await;
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
         let entries = self.shares.read().await;
         let mut shares: Vec<ShareWire> = entries
             .iter()
+            .filter(|((_, epoch), _)| Self::epoch_is_visible(&visibility, *epoch, now_micros))
             .map(|((kp, epoch), e)| ShareWire {
                 keypair_id: kp.clone(),
                 epoch: *epoch,
@@ -141,6 +174,8 @@ pub struct RemoteSecrets {
     ttl: Duration,
 }
 
+const MISSING_SHARE_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+
 impl RemoteSecrets {
     pub fn new(maintainer_url: String) -> Self {
         let client = reqwest::Client::builder()
@@ -169,6 +204,27 @@ impl RemoteSecrets {
         if let Some((snap, at)) = guard.as_ref() {
             if at.elapsed() < self.ttl {
                 return Ok(snap.clone());
+            }
+        }
+        let fresh = Arc::new(self.fetch().await?);
+        *guard = Some((fresh.clone(), Instant::now()));
+        Ok(fresh)
+    }
+
+    /// A newly activated epoch may be absent from the handler's 1-second
+    /// cache even though the maintainer staged its shares before activation.
+    /// Refresh a missing key once per 100 ms, with the cache write lock acting
+    /// as a singleflight gate for concurrent misses.
+    pub async fn snapshot_for(&self, keypair_id: &str, epoch: u64) -> Result<Arc<Snapshot>> {
+        let snapshot = self.snapshot().await?;
+        if snapshot.lookup(keypair_id, epoch).is_some() {
+            return Ok(snapshot);
+        }
+        let mut guard = self.state.write().await;
+        if let Some((cached, at)) = guard.as_ref() {
+            if cached.lookup(keypair_id, epoch).is_some()
+                || at.elapsed() < MISSING_SHARE_REFRESH_INTERVAL {
+                return Ok(cached.clone());
             }
         }
         let fresh = Arc::new(self.fetch().await?);
@@ -236,6 +292,13 @@ impl SecretsProvider {
             SecretsProvider::Remote(r) => r.snapshot().await,
         }
     }
+
+    pub async fn snapshot_for(&self, keypair_id: &str, epoch: u64) -> Result<Arc<Snapshot>> {
+        match self {
+            SecretsProvider::Local(local) => Ok(Arc::new(local.snapshot().await)),
+            SecretsProvider::Remote(remote) => remote.snapshot_for(keypair_id, epoch).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +331,7 @@ mod tests {
 
         let local = LocalSecrets {
             shares: Arc::new(RwLock::new(shares)),
+            visible_epochs: Arc::new(RwLock::new(None)),
         };
 
         let wire = local.snapshot_wire().await;
@@ -298,8 +362,42 @@ mod tests {
     async fn snapshot_wire_empty_when_no_shares() {
         let local = LocalSecrets {
             shares: Arc::new(RwLock::new(HashMap::new())),
+            visible_epochs: Arc::new(RwLock::new(None)),
         };
         let SecretsSnapshotWire::V1 { shares } = local.snapshot_wire().await;
         assert!(shares.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_cache_refreshes_new_epoch_share_on_lookup_miss() {
+        use axum::{routing::get, Json, Router};
+
+        let local = LocalSecrets {
+            shares: Arc::new(RwLock::new(HashMap::new())),
+            visible_epochs: Arc::new(RwLock::new(None)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let serving = local.clone();
+        let router = Router::new().route("/", get(move || {
+            let local = serving.clone();
+            async move { Json(local.snapshot_wire().await) }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let remote = RemoteSecrets::new(url);
+        let keypair_id = format!("0x{}", "ab".repeat(32));
+        assert!(remote.snapshot().await.unwrap().lookup(&keypair_id, 6).is_none());
+        local.shares.write().await.insert((keypair_id.clone(), 6), ShareEntry {
+            scalar_le32: [7; 32],
+            group_scheme: 1,
+            expected_usage: 2,
+            eval_point: 1,
+            note: String::new(),
+        });
+        assert!(remote.snapshot().await.unwrap().lookup(&keypair_id, 6).is_none());
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(remote.snapshot_for(&keypair_id, 6).await.unwrap().lookup(&keypair_id, 6).is_some());
+        server.abort();
     }
 }

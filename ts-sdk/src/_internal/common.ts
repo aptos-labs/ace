@@ -14,7 +14,7 @@ import { State as NetworkState } from "../network";
 export { NetworkState };
 import { ContractID as AptosContractID, ProofOfPermission as AptosProofOfPermission } from "./aptos";
 import { AceDeployment } from "./deployment";
-import { ChainReader, DiscoveryChainReader, SessionPks } from "./discovery";
+import { ChainReader, DiscoveryChainReader, DiscoveryViewV1, SessionPks } from "./discovery";
 import {
     ContractID as SolanaContractID,
     ProofOfPermission as SolanaProofOfPermission,
@@ -650,6 +650,25 @@ export async function fetchNetworkStateAndBuildRequest(
     return {networkState, request};
 }
 
+/** A request's signed epoch determines which committee and share PKs verify it. */
+export async function stateForRequestEpoch(reader: ChainReader, state: NetworkState, epoch: number): Promise<NetworkState> {
+    if (state.epoch === epoch) return state;
+    if (reader.networkStateForEpoch === undefined) {
+        throw new Error(`ACE: request epoch ${epoch} differs from supplied network state epoch ${state.epoch}`);
+    }
+    return reader.networkStateForEpoch(epoch);
+}
+
+/** Preserve each node's original committee index for eval-point/share-PK checks. */
+export async function readyNodeIndices(reader: ChainReader, state: NetworkState): Promise<number[]> {
+    const indices = await reader.readyNodeIndices?.(state.epoch)
+        ?? state.curNodes.map((_, index) => index);
+    if (indices.length < state.curThreshold) {
+        throw new Error(`ACE: epoch ${state.epoch} has ${indices.length} ready nodes, need ${state.curThreshold}`);
+    }
+    return indices;
+}
+
 /**
  * Verify that `share` is the IDK share node `sdkIdx` is supposed to return:
  * - the embedded `evalPoint` matches its position in the SDK's `curNodes` order (1-based)
@@ -739,6 +758,7 @@ export async function fetchIdentityKeySharesCore({reader, networkState, request,
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
+            networkState = await stateForRequestEpoch(reader, networkState, request.epoch);
             const fdd = new FullDecryptionDomain({
                 keypairId: request.keypairId,
                 contractId: request.contractId,
@@ -746,17 +766,19 @@ export async function fetchIdentityKeySharesCore({reader, networkState, request,
             });
             const fddBytes = fdd.toBytes();
 
-            const [nodeInfos, currentSessionPks] = await Promise.all([
-                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+            const [indices, currentSessionPks] = await Promise.all([
+                readyNodeIndices(reader, networkState),
+                fetchCurrentSessionPks(reader, networkState, request.keypairId),
+            ]);
+            const nodeInfos = await Promise.all(indices.map(async (i) => {
+                    const nodeAddr = networkState.curNodes[i];
                     const addrStr = nodeAddr.toStringLong();
                     const [endpoint, nodeEncKey] = await Promise.all([
                         reader.workerEndpoint(addrStr),
                         reader.workerEncKey(addrStr),
                     ]);
-                    return { endpoint, nodeEncKey };
-                })),
-                fetchCurrentSessionPks(reader, networkState, request.keypairId),
-            ]);
+                    return { i, endpoint, nodeEncKey };
+                }));
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
                 throw `ACE.fetchIdentityKeySharesCore: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
@@ -764,7 +786,7 @@ export async function fetchIdentityKeySharesCore({reader, networkState, request,
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, primitive).toBytes();
 
-            const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
+            const idkShares = (await Promise.all(nodeInfos.map(async ({i, endpoint, nodeEncKey}) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
                 try {
                     const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
@@ -848,6 +870,7 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
 }): Promise<Result<tibe.IdentityDecryptionKeyShare[]>> {
     return Result.captureAsync({
         task: async (_extra) => {
+            networkState = await stateForRequestEpoch(reader, networkState, customRequest.epoch);
             const fdd = new FullDecryptionDomain({
                 keypairId: customRequest.keypairId,
                 contractId: customRequest.contractId,
@@ -855,17 +878,19 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
             });
             const fddBytes = fdd.toBytes();
 
-            const [nodeInfos, currentSessionPks] = await Promise.all([
-                Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+            const [indices, currentSessionPks] = await Promise.all([
+                readyNodeIndices(reader, networkState),
+                fetchCurrentSessionPks(reader, networkState, customRequest.keypairId),
+            ]);
+            const nodeInfos = await Promise.all(indices.map(async (i) => {
+                    const nodeAddr = networkState.curNodes[i];
                     const addrStr = nodeAddr.toStringLong();
                     const [endpoint, nodeEncKey] = await Promise.all([
                         reader.workerEndpoint(addrStr),
                         reader.workerEncKey(addrStr),
                     ]);
-                    return { endpoint, nodeEncKey };
-                })),
-                fetchCurrentSessionPks(reader, networkState, customRequest.keypairId),
-            ]);
+                    return { i, endpoint, nodeEncKey };
+                }));
 
             if (currentSessionPks.sharePks.length !== networkState.curNodes.length) {
                 throw `ACE.fetchIdentityKeySharesCoreCustom: sharePks length ${currentSessionPks.sharePks.length} != curNodes length ${networkState.curNodes.length}`;
@@ -873,7 +898,7 @@ export async function fetchIdentityKeySharesCoreCustom({reader, networkState, cu
 
             const reqBytes = WorkerRequest.newDecryptionCustomFlow(customRequest, primitive).toBytes();
 
-            const idkShares = (await Promise.all(nodeInfos.map(async ({endpoint, nodeEncKey}, i) => {
+            const idkShares = (await Promise.all(nodeInfos.map(async ({i, endpoint, nodeEncKey}) => {
                 const nodeAddr = networkState.curNodes[i].toStringLong();
                 try {
                     const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
@@ -968,20 +993,23 @@ export async function buildPerNodeRequestCore({
 }): Promise<Result<{ encReqHex: string, epoch: number, sdkIdx: number }>> {
     return Result.captureAsync({
         task: async (_extra) => {
-            const nodeInfos = await Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+            networkState = await stateForRequestEpoch(reader, networkState, request.epoch);
+            const indices = await readyNodeIndices(reader, networkState);
+            const nodeInfos = await Promise.all(indices.map(async (i) => {
+                const nodeAddr = networkState.curNodes[i];
                 const addrStr = nodeAddr.toStringLong();
                 const [endpoint, nodeEncKey] = await Promise.all([
                     reader.workerEndpoint(addrStr),
                     reader.workerEncKey(addrStr),
                 ]);
-                return { endpoint, nodeEncKey };
+                return { i, endpoint, nodeEncKey };
             }));
 
-            const sdkIdx = nodeInfos.findIndex(n => n.endpoint === targetEndpoint);
-            if (sdkIdx < 0) {
+            const selected = nodeInfos.find(n => n.endpoint === targetEndpoint);
+            if (selected === undefined) {
                 throw `ACE.buildPerNodeRequest: targetEndpoint ${targetEndpoint} is not in the current committee. Registered endpoints: ${nodeInfos.map(n => n.endpoint).join(', ')}`;
             }
-            const { nodeEncKey } = nodeInfos[sdkIdx];
+            const { i: sdkIdx, nodeEncKey } = selected;
 
             const reqBytes = WorkerRequest.newDecryptionBasicFlow(request, proof, primitive).toBytes();
             const encReqHex = (await pke.encrypt({encryptionKey: nodeEncKey, plaintext: reqBytes})).toHex();
@@ -1041,6 +1069,12 @@ class FullnodeChainReader implements ChainReader {
         const [stateHex] = await this.view("network::state_view_v0_bcs", []);
         return NetworkState.fromBytes(hexToBytes((stateHex as string).replace(/^0x/, '')))
             .unwrapOrThrow('ACE: parse network state');
+    }
+
+    async networkStateForEpoch(epoch: number): Promise<NetworkState> {
+        const [hex] = await this.view("network::discovery_view_v1_bcs", []);
+        const view = DiscoveryViewV1.fromBytes(hexToBytes((hex as string).replace(/^0x/, '')));
+        return view.networkStateForEpoch(epoch);
     }
 
     async session(addr: string, isDkg: boolean): Promise<SessionPks> {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import http from "node:http";
-import { DiscoveryViewV0 } from "@aptos-labs/ace-sdk";
+import { DiscoveryViewV0, DiscoveryViewV1 } from "@aptos-labs/ace-sdk";
 import { SnapshotCache, type SnapshotConfig } from "./snapshot";
 
 function hexToBytes(hex: string): Uint8Array {
@@ -60,6 +60,9 @@ function main() {
     }
     const cache = new SnapshotCache(cfg);
     cache.start(); // no-op unless lagMs>0
+    // V1 already gates activation on node readiness; keep it current and use
+    // the on-chain grace deadline rather than delaying the epoch boundary.
+    const v1Cache = new SnapshotCache({ ...cfg, lagMs: 0 }, Date.now, undefined, "v1");
 
     const server = http.createServer(async (req, res) => {
         // Public, read-only, no API key required. Discovery data is the same for everyone.
@@ -100,6 +103,25 @@ function main() {
             } catch (err) {
                 res.writeHead(502, { "Content-Type": "text/plain" })
                     .end(`upstream discovery view failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            return;
+        }
+
+        // Versioned dual-epoch view. V5 contracts do not expose this function;
+        // their existing /bcs endpoint remains available to older deployments.
+        if (url === "/bcs/v1" || url === "/json/v1") {
+            try {
+                const hex = await v1Cache.get();
+                if (url === "/bcs/v1") {
+                    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", ...noStore }).end(hex);
+                } else {
+                    const readable = DiscoveryViewV1.fromBytes(hexToBytes(hex)).toReadable();
+                    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...noStore })
+                        .end(JSON.stringify(readable, null, 2));
+                }
+            } catch (err) {
+                res.writeHead(502, { "Content-Type": "text/plain" })
+                    .end(`upstream discovery V1 view failed: ${err instanceof Error ? err.message : String(err)}`);
             }
             return;
         }

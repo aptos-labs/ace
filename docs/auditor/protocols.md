@@ -2,6 +2,8 @@
 
 This document describes the protocols ACE runs (sub-protocols + roles + the off-chain decryption-request flow), then drills into how each is realized as an on-chain state machine. For cryptographic primitives, see [`cryptography/`](./cryptography/). For wire formats, see [`wire-formats.md`](./wire-formats.md). For terms used without definition (`keypair_id`, `label`, `epoch`, dealer/recipient roles, etc.), see [`glossary.md`](./glossary.md).
 
+The network governance and epoch sections below describe v5. The v6 epoch protocol and native multisig handoff are described in [`v6-epoch-lifecycle.md`](./v6-epoch-lifecycle.md).
+
 > **Convention.** State-code values listed below are the literal `u8` constants in the corresponding Move module (`STATE__*`). Function signatures are abridged; see the source for full types.
 
 ---

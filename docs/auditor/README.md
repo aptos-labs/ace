@@ -8,6 +8,7 @@ Audit-oriented technical specifications. These docs are versioned with the code;
 | [`cryptography/`](./cryptography/) | Cryptographic auditor | One file per scheme (PKE, t-IBE, VSS, DKG, DKR, KDF, HMAC, identifiers). Start at [`cryptography/README.md`](./cryptography/README.md). |
 | [`trust-model.md`](./trust-model.md) | Protocol auditor / security reviewer | Actors, threat model, what each adversary class can/cannot do, non-goals |
 | [`protocols.md`](./protocols.md) | Protocol auditor / implementer | On-chain state machines (VSS, DKG, DKR, voting, epoch_change, network), end-to-end decryption-request flow |
+| [`v6-epoch-lifecycle.md`](./v6-epoch-lifecycle.md) | Protocol auditor / implementer | V6 per-epoch protocol stages, concurrent worker CLI instances, governance handoff, and feature activation |
 | [`wire-formats.md`](./wire-formats.md) | Auditor + cross-implementation reviewer | Byte-level BCS layouts for every type that crosses a chain or network boundary |
 
 **Reading order for a fresh auditor:** trust-model → [`cryptography/`](./cryptography/) → protocols → wire-formats. Each doc cross-references the others where relevant.

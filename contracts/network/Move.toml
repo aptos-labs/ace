@@ -30,7 +30,13 @@ local = '../voting'
 [dependencies.EpochChange]
 local = '../epoch-change'
 
+[dependencies.Epoch]
+local = '../epoch'
+
+[dependencies.Publisher]
+local = '../publisher'
+
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"
-rev = "mainnet"
+rev = "4f0d278f806da6d7006f98f43a66f774f07e4d37"
 subdir = "aptos-framework"

@@ -3,7 +3,7 @@
 A tiny HTTP service that lets ACE clients operate **without a node API key and
 without a backend proxy**.
 
-It reads the on-chain aggregate view `ace::network::discovery_view_v0_bcs()` once
+It reads the on-chain aggregate discovery views
 (with the operator's node API key), caches it, and serves the raw snapshot to any
 client. Clients using `@aptos-labs/ace-sdk` point their `AceDeployment.discoveryUrl`
 at this service; the SDK then makes **zero fullnode calls** for enc/dec/VRF
@@ -24,14 +24,17 @@ All responses are `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`
 Clients fetch fresh per operation; the upstream fullnode is shielded by this
 server's own short-TTL cache, not by client-side caching.
 
-- `GET /bcs` (and `GET /` for convenience) → the `0x`-prefixed BCS hex of
-  `DiscoveryViewV0` as a plain-text body. **This is what the SDK consumes**: set
-  `AceDeployment.discoveryUrl` to the service base URL and the SDK appends `/bcs`.
-  Pure pass-through, authoritative.
+- `GET /bcs` (and `GET /`) → the legacy `DiscoveryViewV0` BCS hex for the current epoch.
+- `GET /bcs/v1` → `DiscoveryViewV1` BCS hex with the serving epoch and, until its
+  on-chain deadline, the previous grace epoch. The SDK tries this endpoint first and
+  falls back to `/bcs` on older deployments. The V1 response is current, even when
+  `ACE_DISCOVERY_LAG_MS` is configured for V0.
 - `GET /json` → a human-readable JSON projection of the same snapshot (epoch,
   threshold, nodes with endpoints + enc keys, keypairs with master/base/share PKs;
   all crypto material hex-encoded). For eyeballing/debugging — decoded via the
   SDK's `DiscoveryViewV0` so it can't drift from what the SDK reads.
+- `GET /json/v1` → a readable projection of the serving and grace snapshots,
+  feature bits, and grace deadline.
 - `GET /healthz` → `ok`.
 
 ## Configuration (env)
@@ -67,3 +70,5 @@ docker run -p 8080:8080 \
 
 > Requires the contract to expose `network::discovery_view_v0_bcs()` (added
 > alongside this service). Against an older deployment, `GET /bcs` and `/json` return 502.
+> The dual-epoch endpoints additionally require `network::discovery_view_v1_bcs()`;
+> on a V5 contract, `/bcs/v1` and `/json/v1` return 502 while V0 remains available.

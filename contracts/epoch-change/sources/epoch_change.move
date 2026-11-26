@@ -20,6 +20,8 @@ module ace::epoch_change {
         nxt_nodes: vector<address>,
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
+        /// The feature set agreed for this transition, fixed before DKR/DKG start.
+        features: u64,
         secrets_to_reshare: vector<address>,
         new_secret_requests: vector<secret_usage::SecretRequest>,
         state_code: u8,
@@ -39,6 +41,7 @@ module ace::epoch_change {
         nxt_nodes: vector<address>,
         nxt_threshold: u64,
         nxt_epoch_duration_micros: u64,
+        features: u64,
         secrets_to_reshare: vector<address>,
         new_secret_requests: vector<secret_usage::SecretRequest>,
     ): address {
@@ -59,6 +62,7 @@ module ace::epoch_change {
             nxt_nodes,
             nxt_threshold,
             nxt_epoch_duration_micros,
+            features,
             secrets_to_reshare,
             new_secret_requests,
             state_code: STATE__START_DKRS,
@@ -118,6 +122,11 @@ module ace::epoch_change {
     public fun completed(session_addr: address): bool {
         let session = &Session[session_addr];
         session.state_code == STATE__DONE
+    }
+
+    /// Immutable feature set chosen before either committee runs this transition.
+    public fun features(session_addr: address): u64 {
+        Session[session_addr].features
     }
 
     /// Returns (nxt_nodes, nxt_threshold) for external view composition (e.g. network::state_view_v0_bcs).

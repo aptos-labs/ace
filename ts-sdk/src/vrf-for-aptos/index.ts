@@ -26,6 +26,8 @@ import {
     ContractID,
     getChainReader,
     fetchCurrentSessionPks,
+    readyNodeIndices,
+    stateForRequestEpoch,
     NetworkState,
     WorkerRequest,
 } from "../_internal/common";
@@ -216,14 +218,16 @@ export class ThresholdVrfShare {
 async function fetchCurrentNodeInfos(
     reader: ChainReader,
     networkState: NetworkState,
-): Promise<Array<{ nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
-    return Promise.all(networkState.curNodes.map(async (nodeAddr) => {
+): Promise<Array<{ sdkIdx: number, nodeAddr: string, endpoint: string, nodeEncKey: pke.EncryptionKey }>> {
+    const indices = await readyNodeIndices(reader, networkState);
+    return Promise.all(indices.map(async (sdkIdx) => {
+        const nodeAddr = networkState.curNodes[sdkIdx];
         const addrStr = nodeAddr.toStringLong();
         const [endpoint, nodeEncKey] = await Promise.all([
             reader.workerEndpoint(addrStr),
             reader.workerEncKey(addrStr),
         ]);
-        return { nodeAddr: addrStr, endpoint, nodeEncKey };
+        return { sdkIdx, nodeAddr: addrStr, endpoint, nodeEncKey };
     }));
 }
 
@@ -388,10 +392,10 @@ export class DerivationSession {
         ).toBytes();
         if (requestBytes.length === 0) throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: empty request");
 
-        const networkState = this.networkState;
-        if (networkState === undefined) {
+        if (this.networkState === undefined) {
             throw new Error("ACE.VRF_Aptos.DerivationSession.deriveWithSignature: missing network state");
         }
+        const networkState = await stateForRequestEpoch(this.reader!, this.networkState, this.payload.epoch);
         const [nodeInfos, sessionPks] = await Promise.all([
             fetchCurrentNodeInfos(this.reader!, networkState),
             fetchCurrentSessionPks(this.reader!, networkState, this.keypairId),
@@ -407,7 +411,7 @@ export class DerivationSession {
         let sawNotImplemented = false;
         const shares: ThresholdVrfShare[] = [];
 
-        await Promise.all(nodeInfos.map(async ({ nodeAddr, endpoint, nodeEncKey }, sdkIdx) => {
+        await Promise.all(nodeInfos.map(async ({ sdkIdx, nodeAddr, endpoint, nodeEncKey }) => {
             try {
                 const encReqHex = (await pke.encrypt({ encryptionKey: nodeEncKey, plaintext: requestBytes })).toHex();
                 const ctrl = new AbortController();

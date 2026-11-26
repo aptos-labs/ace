@@ -155,6 +155,7 @@ mod tests {
     fn local_secrets() -> LocalSecrets {
         LocalSecrets {
             shares: Arc::new(RwLock::new(HashMap::new())),
+            visible_epochs: Arc::new(RwLock::new(None)),
         }
     }
 

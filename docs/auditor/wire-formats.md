@@ -4,6 +4,8 @@ Authoritative byte-level reference for every BCS-encoded wire format in the ACE 
 
 For the cryptographic operations that produce / consume these bytes, see [`cryptography/`](./cryptography/). For protocol context, see [`protocols.md`](./protocols.md). For protocol-level term definitions (`keypair_id`, `epoch`, `identity`, etc.), see [`glossary.md`](./glossary.md).
 
+The `network::StateViewV0` and proposal descriptions below document v5. V6 adds versioned epoch and discovery views, with both serving and grace descriptors; see [`v6-epoch-lifecycle.md`](./v6-epoch-lifecycle.md).
+
 ---
 
 ## 0. BCS primer (the rules we use)

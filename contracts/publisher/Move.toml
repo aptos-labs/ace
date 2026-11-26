@@ -1,0 +1,13 @@
+[package]
+name = "Publisher"
+version = "1.0.0"
+authors = []
+
+[addresses]
+ace = "0xcafe"
+initial_multisig = "0xfeed"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "4f0d278f806da6d7006f98f43a66f774f07e4d37"
+subdir = "aptos-framework"

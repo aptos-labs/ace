@@ -42,7 +42,7 @@ export { AceDeployment, ContractID } from "./_internal/common";
 export { knownDeployments } from "./known-deployments";
 
 // Aggregated discovery snapshot (decoder + human-readable projection) — used by the discovery service.
-export { DiscoveryViewV0 } from "./_internal/discovery";
+export { DiscoveryViewV0, DiscoveryViewV1 } from "./_internal/discovery";
 export type { DiscoveryReadableV0, SessionPks } from "./_internal/discovery";
 
 // Threshold IBE (encrypt + basic/custom-flow decrypt) — per chain

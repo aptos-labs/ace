@@ -15,7 +15,7 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/gas-station.test.ts",
+    "test": "tsx --test src/gas-station.test.ts src/commands/v6-governance.test.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

@@ -25,6 +25,7 @@ mod http_server;
 mod secret_usage;
 pub mod secrets;
 pub mod verify;
+mod v6;
 
 /// ISO 8601 UTC timestamp with millisecond precision, e.g. `2026-04-30T16:53:26.877Z`.
 pub fn now_utc_iso() -> String {
@@ -450,7 +451,10 @@ async fn run_with_maintainer(
     let expiry_queue: Arc<Mutex<Vec<(Instant, String, u64)>>> =
         Arc::new(Mutex::new(Vec::new()));
 
-    let local = LocalSecrets { shares: shares.clone() };
+    let local = LocalSecrets {
+        shares: shares.clone(),
+        visible_epochs: Arc::new(RwLock::new(None)),
+    };
     let deployment_dependency =
         http_server::DependencyTarget::aptos("ace_deployment_api", rpc.clone(), None);
 
@@ -543,6 +547,7 @@ async fn run_with_maintainer(
     let mut urh_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut epoch_change_cur_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     let mut epoch_change_nxt_tasks: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    let mut legacy_v5 = false;
 
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -557,6 +562,33 @@ async fn run_with_maintainer(
                 return Ok(());
             }
             _ = interval.tick() => {}
+        }
+
+        if !legacy_v5 {
+            match v6::fetch_state(&rpc, &ace).await {
+                Ok(v6_state) => {
+                    wlog!("network-node: detected v6 epoch protocol");
+                    stop_tasks(&mut urh_tasks);
+                    stop_tasks(&mut epoch_change_cur_tasks);
+                    stop_tasks(&mut epoch_change_nxt_tasks);
+                    return v6::run(config, local, v6_state, shutdown_rx).await;
+                }
+                Err(v6_error) => {
+                    // A transient/bad V1 response on a V6 contract must not
+                    // start the legacy V5 maintenance loop against its state.
+                    match rpc.get_resource_data(&ace, &format!("{ace}::network::State")).await {
+                        Ok(data) if data.get("epoch").is_some() => legacy_v5 = true,
+                        Ok(_) => {
+                            wlog!("network-node: v6 state view unavailable: {v6_error:#}");
+                            continue;
+                        }
+                        Err(error) => {
+                            wlog!("network-node: cannot identify network version: {error:#}");
+                            continue;
+                        }
+                    }
+                }
+            }
         }
 
         let state = match fetch_state_view_v0(&rpc, &ace).await {

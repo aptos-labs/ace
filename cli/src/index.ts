@@ -20,9 +20,39 @@ import { deploymentNewCommand } from './commands/deployment-new.js';
 import { reconstructionSetupCommand } from './commands/reconstruction-setup.js';
 import { reconstructSecretCommand } from './commands/reconstruct-secret.js';
 import { ibeEncryptCommand, ibeAdminExtractCommand, ibeAdminDecryptCommand } from './commands/ibe.js';
+import { v6GovernancePayloadCommand, type V6PayloadKind } from './commands/v6-governance.js';
+import { v6BootstrapPlanCommand } from './commands/v6-bootstrap.js';
 
 const program = new Command();
 program.name('ace').description('ACE network CLI (operator + admin)').version('0.1.0');
+
+// v6 native multisig operations are explicit and offline; the v5 deployment
+// wizard and proposal-voting commands below retain their existing behavior.
+program.command('governance')
+    .description('Build unsigned ACE v6 native multisig proposal payloads')
+    .command('payload <kind> <file>')
+    .description('Print a BCS MultisigTransactionPayload hex; kind: resource-publish, publisher-bootstrap, initial-epoch, epoch-config, publish-upgrade')
+    .option('--ace <address>', 'Fixed @ace resource-account address (all kinds except resource-publish)')
+    .action((kind: string, file: string, opts: { ace?: string }) => {
+        try {
+            const kinds = new Set(['resource-publish', 'publisher-bootstrap', 'initial-epoch', 'epoch-config', 'publish-upgrade']);
+            if (!kinds.has(kind)) throw new Error(`Unsupported v6 payload kind: ${kind}`);
+            v6GovernancePayloadCommand(kind as V6PayloadKind, file, opts.ace);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
+
+program.command('v6-bootstrap-plan <file>')
+    .description('Compile all v6 packages and write ordered unsigned M0 multisig payloads')
+    .requiredOption('-o, --out <path>', 'New JSON plan file (created with mode 0600)')
+    .action((file: string, opts: { out: string }) => {
+        try {
+            v6BootstrapPlanCommand(file, opts.out);
+        } catch (e) {
+            exitOnError(e);
+        }
+    });
 
 // ──────────────────────────────────────────────────────────────────────────────
 // `ace deployment` — admin-side commands (manage deployment profiles)

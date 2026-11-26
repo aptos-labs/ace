@@ -121,17 +121,105 @@ def epoch_config_multisig_payload(ace_address: bytes, config_bcs: bytes) -> byte
     return _entry_function_payload(ace_address, "execute_epoch_config", [argument.to_bytes()])
 
 
+def epoch_config_bcs(
+    nodes: list[bytes],
+    threshold: int,
+    epoch_duration_micros: int,
+    secrets_to_retain: list[bytes],
+    new_secrets: list[tuple[int, str]],
+    description: str,
+    target_epoch: int,
+    next_admin_multisig: bytes,
+    features_to_activate: list[int],
+) -> bytes:
+    """Serialize the v6 ``network::ProposedEpochConfig`` passed to the multisig.
+
+    Each ``new_secrets`` element is ``(expected_usage, note)``. Membership of
+    the proposed multisig and active-secret references are verified on chain.
+    """
+    if not isinstance(nodes, list) or len(nodes) != len(set(nodes)):
+        raise ValueError("nodes must be a list of unique addresses")
+    if not isinstance(threshold, int) or isinstance(threshold, bool) or not (2 <= threshold <= len(nodes) and 2 * threshold > len(nodes)):
+        raise ValueError("invalid secret-sharing threshold")
+    if not isinstance(epoch_duration_micros, int) or isinstance(epoch_duration_micros, bool) or not (30_000_000 <= epoch_duration_micros < 1 << 64):
+        raise ValueError("epoch_duration_micros must be a u64 of at least 30 seconds")
+    if not isinstance(description, str) or len(description.encode("utf-8")) > 1024:
+        raise ValueError("description must be UTF-8 and at most 1024 bytes")
+    if not isinstance(target_epoch, int) or isinstance(target_epoch, bool) or not (0 <= target_epoch < 1 << 64):
+        raise ValueError("target_epoch must be a u64")
+    _validate_address(next_admin_multisig)
+    if not isinstance(secrets_to_retain, list) or len(secrets_to_retain) != len(set(secrets_to_retain)):
+        raise ValueError("secrets_to_retain must contain unique session addresses")
+
+    result = Serializer()
+    _serialize_addresses(result, nodes)
+    result.serialize_u64(threshold)
+    result.serialize_u64(epoch_duration_micros)
+    _serialize_addresses(result, secrets_to_retain)
+    if not isinstance(new_secrets, list):
+        raise TypeError("new_secrets must be a list")
+    result.serialize_u32_as_uleb128(len(new_secrets))
+    for request in new_secrets:
+        if not isinstance(request, (tuple, list)) or len(request) != 2:
+            raise ValueError("new_secrets entries must be (expected_usage, note) pairs")
+        expected_usage, note = request
+        if not isinstance(expected_usage, int) or isinstance(expected_usage, bool) or not isinstance(note, str):
+            raise ValueError("invalid new secret request")
+        if not (1 <= expected_usage <= 15) or ((expected_usage & 1) and (expected_usage & 14)):
+            raise ValueError("new secret request has unsupported or mixed-group usage bits")
+        if len(note.encode("utf-8")) > 256:
+            raise ValueError("new secret request note exceeds 256 UTF-8 bytes")
+        result.serialize_u64(expected_usage)
+        result.serialize_str(note)
+    result.serialize_str(description)
+    result.serialize_u64(target_epoch)
+    result.serialize_fixed_bytes(next_admin_multisig)
+    if not isinstance(features_to_activate, list) or len(features_to_activate) != len(set(features_to_activate)):
+        raise ValueError("features_to_activate must be a list of distinct feature IDs")
+    result.serialize_u32_as_uleb128(len(features_to_activate))
+    for feature in features_to_activate:
+        if type(feature) is not int or not (0 <= feature < 64):
+            raise ValueError("feature IDs must be in [0, 63]")
+        result.serialize_u64(feature)
+    return result.to_bytes()
+
+
+def publish_upgrade_multisig_payload(
+    ace_address: bytes,
+    metadata_serialized: bytes,
+    modules: list[bytes],
+) -> bytes:
+    """Encode the current epoch multisig's compatible ``network::publish_upgrade`` proposal."""
+    return _entry_function_payload(
+        ace_address,
+        "publish_upgrade",
+        _publish_package_arguments(metadata_serialized, modules),
+    )
+
+
+def _serialize_addresses(serializer: Serializer, addresses: list[bytes]) -> None:
+    if not isinstance(addresses, list):
+        raise TypeError("addresses must be a list")
+    serializer.serialize_u32_as_uleb128(len(addresses))
+    for address in addresses:
+        _validate_address(address)
+        serializer.serialize_fixed_bytes(address)
+
+
 def bootstrap_multisig_payload(
     ace_address: bytes,
     nodes: list[bytes],
     threshold: int,
     resharing_interval_secs: int,
+    initial_secret_requests_bcs: bytes = b"\x00",
+    initial_features: list[int] | None = None,
 ) -> bytes:
     """Encode ``network::start_initial_epoch`` for native multisig approval.
 
     The threshold here is the secret-sharing threshold, not the multisig's
-    mutable approval quorum. Node PKE-key registration is checked on chain.
-    No account is created and no transaction is signed or submitted.
+    mutable approval quorum. An empty request list is BCS ``b"\x00"``, not
+    zero-length bytes. Node PKE-key registration and request validity are
+    checked on chain. No account is created or transaction signed/submitted.
     """
     if type(threshold) is not int or not (2 <= threshold <= len(nodes) and 2 * threshold > len(nodes)):
         raise ValueError("invalid secret-sharing threshold")
@@ -151,10 +239,91 @@ def bootstrap_multisig_payload(
     threshold_argument.serialize_u64(threshold)
     interval_argument = Serializer()
     interval_argument.serialize_u64(resharing_interval_secs)
+    if not isinstance(initial_secret_requests_bcs, bytes):
+        raise TypeError("initial_secret_requests_bcs must be bytes")
+    if not initial_secret_requests_bcs:
+        raise ValueError("initial_secret_requests_bcs must contain BCS data")
+    if not isinstance(initial_features, (list, type(None))):
+        raise TypeError("initial_features must be a list of u64 values")
+    request_argument = _serialize_bytes_argument(initial_secret_requests_bcs)
+    feature_argument = Serializer()
+    features = [] if initial_features is None else initial_features
+    feature_argument.serialize_u32_as_uleb128(len(features))
+    for feature in features:
+        if type(feature) is not int or not (0 <= feature < 64):
+            raise ValueError("initial_features must contain feature IDs in [0, 63]")
+        feature_argument.serialize_u64(feature)
     return _entry_function_payload(
         ace_address, "start_initial_epoch",
-        [node_argument.to_bytes(), threshold_argument.to_bytes(), interval_argument.to_bytes()],
+        [
+            node_argument.to_bytes(),
+            threshold_argument.to_bytes(),
+            interval_argument.to_bytes(),
+            request_argument,
+            feature_argument.to_bytes(),
+        ],
     )
+
+
+def resource_account_create_and_publish_multisig_payload(
+    seed: bytes,
+    metadata_serialized: bytes,
+    modules: list[bytes],
+) -> bytes:
+    """Encode M0's first-package ``resource_account::create_resource_account_and_publish_package`` proposal.
+
+    M0 is the outer native multisig account, so its signer is implicit. The
+    resulting resource address must match the ``ace`` address compiled into
+    the package. This only builds the inner payload; it does not create an
+    account, sign, submit, or approve a transaction.
+    """
+    if not isinstance(seed, bytes):
+        raise TypeError("seed must be bytes")
+    arguments = [_serialize_bytes_argument(seed), *_publish_package_arguments(metadata_serialized, modules)]
+    return _entry_function_payload(
+        bytes(31) + b"\x01",
+        "create_resource_account_and_publish_package",
+        arguments,
+        module="resource_account",
+    )
+
+
+def publisher_bootstrap_multisig_payload(
+    ace_address: bytes,
+    metadata_serialized: bytes,
+    modules: list[bytes],
+) -> bytes:
+    """Encode M0's ``ace::publisher::bootstrap_publish`` proposal for a later package.
+
+    The publisher closes this path when network::init_module takes the
+    one-shot handoff capability. This only builds an unsigned inner payload.
+    """
+    return _entry_function_payload(
+        ace_address,
+        "bootstrap_publish",
+        _publish_package_arguments(metadata_serialized, modules),
+        module="publisher",
+    )
+
+
+def _serialize_bytes_argument(value: bytes) -> bytes:
+    argument = Serializer()
+    argument.serialize_bytes(value)
+    return argument.to_bytes()
+
+
+def _publish_package_arguments(metadata_serialized: bytes, modules: list[bytes]) -> list[bytes]:
+    if not isinstance(metadata_serialized, bytes) or not metadata_serialized:
+        raise ValueError("metadata_serialized must be nonempty bytes")
+    if not isinstance(modules, list) or not modules:
+        raise ValueError("modules must be a nonempty list of bytecode bytes")
+    module_argument = Serializer()
+    module_argument.serialize_u32_as_uleb128(len(modules))
+    for module in modules:
+        if not isinstance(module, bytes) or not module:
+            raise ValueError("each module must be nonempty bytecode bytes")
+        module_argument.serialize_bytes(module)
+    return [_serialize_bytes_argument(metadata_serialized), module_argument.to_bytes()]
 
 
 def _validate_address(address: bytes) -> None:

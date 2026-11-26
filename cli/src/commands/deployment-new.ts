@@ -229,6 +229,11 @@ async function promptAdminKey(): Promise<Account> {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function deploymentNewCommand(): Promise<void> {
+    if (existsSync(path.join(REPO_ROOT, 'contracts', 'publisher', 'Move.toml'))) {
+        throw new Error(
+            'This checkout contains the v6 multisig publisher. The legacy deployment wizard uses a single admin key and cannot initialize v6. Use `ace v6-bootstrap-plan <config.json> --out <plan.json>` with an existing initial committee multisig.',
+        );
+    }
     // 1. Pre-flight.
     const { tag, commit, version } = preflightTagAndCleanCheck();
     const versionNote = tag.startsWith('untagged-')

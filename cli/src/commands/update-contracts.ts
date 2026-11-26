@@ -20,6 +20,8 @@
 
 import { confirm } from '@inquirer/prompts';
 import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import * as path from 'path';
 import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
 
 import { deriveRpcLabel, loadConfig, saveConfig } from '../config.js';
@@ -45,6 +47,9 @@ export async function updateContractsCommand(opts: {
     version?: string;
     yes?: boolean;
 }): Promise<void> {
+    if (existsSync(path.join(REPO_ROOT, 'contracts', 'publisher', 'Move.toml'))) {
+        throw new Error('This checkout contains v6 multisig governance. Package upgrades must use an active-committee native multisig proposal for network::publish_upgrade; the legacy single-key publisher cannot authorize them.');
+    }
     const { deploymentKey, deployment } = resolveDeployment(opts.profile, opts.account);
 
     // Version selection: --version overrides; otherwise read from the git tag at HEAD.
